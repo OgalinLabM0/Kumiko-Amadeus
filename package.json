@@ -1,0 +1,122 @@
+{
+  "name": "kumiko-ai-amadeus",
+  "private": true,
+  "version": "2.0.1",
+  "description": "Kumiko Amadeus desktop companion focused on long-term memory and natural character interaction.",
+  "author": "Codex + User",
+  "type": "module",
+  "main": "electron-main.cjs",
+  "scripts": {
+    "desktop:dev": "concurrently -k \"npm run dev\" \"wait-on tcp:3000 && electron .\"",
+    "desktop:build": "npm run build:cap && electron-builder && npm run release:latest-yml",
+    "dev": "vite",
+    "build": "vite build",
+    "build:cap": "vite build --base ./",
+    "release:latest-yml": "node scripts/generate-latest-yml.cjs",
+    "cap:sync": "npm run build:cap && npx cap sync ios",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@capacitor/core": "^7.2.0",
+    "@google/genai": "^1.31.0",
+    "@tanstack/react-virtual": "^3.13.23",
+    "@xenova/transformers": "^2.17.2",
+    "better-sqlite3": "^12.8.0",
+    "browser-image-compression": "^2.0.2",
+    "dexie": "^4.3.0",
+    "electron-updater": "^6.8.3",
+    "file-saver": "^2.0.5",
+    "framer-motion": "^11.0.0",
+    "hnswlib-node": "^3.0.0",
+    "jszip": "^3.10.1",
+    "lucide-react": "^0.555.0",
+    "onnxruntime-node": "^1.24.3",
+    "onnxruntime-web": "^1.14.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^7.2.0",
+    "@capacitor/ios": "^7.2.0",
+    "@types/file-saver": "^2.0.7",
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "concurrently": "^9.2.1",
+    "electron": "^41.0.3",
+    "electron-builder": "^26.8.1",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0",
+    "vite-plugin-pwa": "^1.2.0",
+    "wait-on": "^9.0.4",
+    "workbox-precaching": "^7.4.0"
+  },
+  "build": {
+    "appId": "com.kumiko.ai",
+    "productName": "Kumiko·Amadeus",
+    "executableName": "Kumiko-Amadeus",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "OgalinLabM0",
+        "repo": "Kumiko-Amadeus",
+        "releaseType": "release"
+      }
+    ],
+    "nsis": {
+      "artifactName": "Kumiko-Amadeus-Setup.exe",
+      "uninstallDisplayName": "Kumiko·Amadeus",
+      "oneClick": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "installerIcon": "public/favicon-KA.ico",
+      "uninstallerIcon": "public/favicon-KA.ico",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "uninstallerSidebar": "build/installerSidebar.bmp",
+      "installerHeader": "build/installerHeader.bmp",
+      "installerHeaderIcon": "public/favicon-KA.ico",
+      "include": "build/installer.nsh"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron-main.cjs",
+      "preload.cjs",
+      "electron-rag.cjs",
+      "rag-worker.cjs",
+      "services/ragRebuildCore.js",
+      "public/**/*"
+    ],
+    "asarUnpack": [
+      "node_modules/better-sqlite3/**",
+      "node_modules/onnxruntime-node/**",
+      "node_modules/hnswlib-node/**"
+    ],
+    "extraResources": [
+      {
+        "from": "models/bge-m3-onnx",
+        "to": "models/bge-m3-onnx",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "node_modules/onnxruntime-web/dist",
+        "to": "onnxruntime-web-dist",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "public/favicon-KA.ico"
+    }
+  }
+}

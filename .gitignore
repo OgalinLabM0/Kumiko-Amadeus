@@ -1,0 +1,39 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+node_modules
+dist
+dist-ssr
+dev-dist
+release
+*.local
+.cursor
+migrated_prompt_history
+models/bge-m3-onnx/*.onnx
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Capacitor iOS (Pods 由 CocoaPods 生成；ios/ 工程本身应提交以便无 Mac 成员同步)
+ios/App/Pods
+ios/App/build
+ios/**/DerivedData

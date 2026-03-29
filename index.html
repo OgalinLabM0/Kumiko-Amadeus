@@ -1,0 +1,179 @@
+
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#000000" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="K·A" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/x-icon" href="/favicon-KA.ico" />
+    <link rel="apple-touch-icon" href="/favicon-KA.ico" />
+    <!-- iOS Splash Screen (Basic fallback) -->
+    <link rel="apple-touch-startup-image" href="/favicon-KA.ico" />
+    <title>Kumiko·Amadeus</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;600&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+      
+      :root {
+        --app-height: 100%;
+      }
+
+      html {
+        height: 100%;
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        /* Critical for iOS: prevents pull-to-refresh/rubber-banding on the body */
+        overscroll-behavior-y: none;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        /* Prevent double-tap zoom on buttons */
+        touch-action: manipulation;
+        background-color: #000; /* Dark background to match app */
+      }
+
+      body {
+        height: 100%;
+        width: 100%;
+        margin: 0;
+        padding: 0;
+        font-family: 'Exo 2', 'Noto Sans SC', sans-serif;
+        background-color: #000; /* Dark background to match app */
+        color: #e0e0e0;
+        overflow: hidden; /* Prevent body scroll, handle in app */
+        -webkit-tap-highlight-color: transparent;
+      }
+      
+      #root {
+        height: 100%;
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* Custom Scrollbar */
+      ::-webkit-scrollbar {
+        width: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: rgba(0, 0, 0, 0.1);
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #b8860b;
+        border-radius: 4px;
+      }
+
+      /* Hide Scrollbar Utility */
+      .no-scrollbar::-webkit-scrollbar {
+        display: none;
+      }
+      .no-scrollbar {
+        -ms-overflow-style: none;  /* IE and Edge */
+        scrollbar-width: none;  /* Firefox */
+      }
+
+      /* --- iOS Momentum Scrolling Helper --- */
+      .touch-scroll {
+        -webkit-overflow-scrolling: touch;
+      }
+      
+      /* --- iOS Safe Area Helper --- */
+      .safe-area-padding {
+        padding-top: env(safe-area-inset-top) !important;
+        padding-bottom: env(safe-area-inset-bottom) !important;
+      }
+      .safe-area-padding-modal {
+        padding-top: max(1rem, env(safe-area-inset-top)) !important;
+        padding-bottom: max(1rem, env(safe-area-inset-bottom)) !important;
+      }
+      @media (min-width: 768px) {
+        .safe-area-padding-modal {
+          padding-top: max(2.5rem, env(safe-area-inset-top)) !important;
+          padding-bottom: max(2.5rem, env(safe-area-inset-bottom)) !important;
+        }
+      }
+      .safe-area-pb {
+        padding-bottom: calc(0.5rem + env(safe-area-inset-bottom)) !important;
+      }
+      @media (min-width: 768px) {
+        .safe-area-pb {
+          padding-bottom: calc(1rem + env(safe-area-inset-bottom)) !important;
+        }
+      }
+
+      /* Animations - Simplified for Mobile Performance */
+      @keyframes scanline {
+        0% { transform: translateY(-100%); }
+        100% { transform: translateY(100%); }
+      }
+      
+      @keyframes breathe {
+        0%, 100% { transform: scale(1); opacity: 0.9; }
+        50% { transform: scale(1.02); opacity: 1; }
+      }
+
+      @keyframes float {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-10px); }
+      }
+
+      @keyframes blink {
+        0%, 90%, 100% { opacity: 1; }
+        95% { opacity: 0; }
+      }
+
+      .scanline-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(
+          to bottom,
+          rgba(255, 255, 255, 0),
+          rgba(255, 255, 255, 0) 50%,
+          rgba(0, 0, 0, 0.1) 50%,
+          rgba(0, 0, 0, 0.1)
+        );
+        background-size: 100% 4px;
+        pointer-events: none;
+        z-index: 50;
+        opacity: 0.2;
+      }
+
+      /* --- IOS HEAT/PERFORMANCE OPTIMIZATION --- */
+      @media screen and (max-width: 768px) {
+        .scanline-overlay {
+          display: none; /* Disable scanlines entirely on mobile */
+        }
+      }
+
+      .glitch-text {
+        position: relative;
+      }
+      
+      .amadeus-bg-grid {
+        background-image: 
+          linear-gradient(rgba(184, 134, 11, 0.05) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(184, 134, 11, 0.05) 1px, transparent 1px);
+        background-size: 40px 40px;
+        /* PERFORMANCE FIX: Removed 'will-change: transform' to save VRAM on static background */
+      }
+
+      /* --- iOS ZOOM FIX --- */
+      @media screen and (max-width: 768px) {
+        input, textarea, select {
+          font-size: 16px !important;
+        }
+      }
+    </style>
+</head>
+  <body>
+    <div id="root"></div>
+  <script type="module" src="/index.tsx"></script>
+</body>
+</html>

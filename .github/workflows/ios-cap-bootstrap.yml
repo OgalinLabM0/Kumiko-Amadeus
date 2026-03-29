@@ -1,0 +1,39 @@
+# 无本地 Mac 时：在 GitHub 云端 macOS 上生成 ios/ 工程，下载 Artifact 后解压提交到仓库。
+# 使用：仓库 → Actions → 「iOS Capacitor bootstrap」→ Run workflow。
+name: iOS Capacitor bootstrap
+
+on:
+  workflow_dispatch:
+
+jobs:
+  bootstrap:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web (relative base for WKWebView)
+        run: npm run build:cap
+
+      - name: Add iOS platform (if missing)
+        run: |
+          if [ ! -d ios ]; then
+            npx cap add ios
+          fi
+
+      - name: Sync Capacitor
+        run: npx cap sync ios
+
+      - name: Upload ios folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-project
+          path: ios
+          if-no-files-found: error

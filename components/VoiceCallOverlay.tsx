@@ -1,0 +1,182 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Phone, PhoneOff, Loader2, X } from 'lucide-react';
+import { loadRingtoneFile } from '../services/voiceFileService';
+import type { Language } from '../types';
+import { UI_TRANSLATIONS } from '../constants';
+
+interface VoiceCallOverlayProps {
+  reminderEvent: string;
+  reminderText?: string;
+  isDarkMode: boolean;
+  language: Language;
+  onAccept: () => void;
+  onReject: () => void;
+  onClose?: () => void;
+  isConnecting?: boolean;
+  isPlayingVoice?: boolean;
+  isEnded?: boolean;
+}
+
+export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
+  reminderEvent,
+  reminderText,
+  isDarkMode,
+  language,
+  onAccept,
+  onReject,
+  onClose,
+  isConnecting,
+  isPlayingVoice,
+  isEnded,
+}) => {
+  const t = UI_TRANSLATIONS[language];
+  const ringtoneRef = useRef<HTMLAudioElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+  const acceptedRef = useRef(false);
+  const callStartRef = useRef<number>(0);
+  const [phase, setPhase] = useState<'ringing' | 'connecting' | 'active' | 'ended'>('ringing');
+  const [callDuration, setCallDuration] = useState(0);
+
+  useEffect(() => {
+    if (isEnded) setPhase('ended');
+    else if (isConnecting) setPhase('connecting');
+    else if (isPlayingVoice) {
+      setPhase('active');
+      if (!callStartRef.current) callStartRef.current = Date.now();
+    } else setPhase('ringing');
+  }, [isConnecting, isPlayingVoice, isEnded]);
+
+  useEffect(() => {
+    if (phase === 'ended') {
+      if (callStartRef.current) {
+        setCallDuration(Math.round((Date.now() - callStartRef.current) / 1000));
+      }
+      const timer = setTimeout(() => { onClose?.(); }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [phase, onClose]);
+
+  useEffect(() => {
+    if (phase !== 'ringing') return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const buf = await loadRingtoneFile();
+        if (cancelled) return;
+        if (buf) {
+          const blob = new Blob([buf], { type: 'audio/mpeg' });
+          const url = URL.createObjectURL(blob);
+          objectUrlRef.current = url;
+          const audio = new Audio(url);
+          audio.loop = true;
+          audio.volume = 0.6;
+          ringtoneRef.current = audio;
+          await audio.play().catch(() => {});
+        }
+      } catch { /* no custom ringtone */ }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (ringtoneRef.current) {
+        ringtoneRef.current.pause();
+        ringtoneRef.current.src = '';
+        ringtoneRef.current = null;
+      }
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
+  }, [phase]);
+
+  const handleAccept = useCallback(() => {
+    if (acceptedRef.current) return;
+    acceptedRef.current = true;
+    if (ringtoneRef.current) { ringtoneRef.current.pause(); }
+    onAccept();
+  }, [onAccept]);
+
+  const handleReject = useCallback(() => {
+    if (ringtoneRef.current) { ringtoneRef.current.pause(); }
+    onReject();
+  }, [onReject]);
+
+  const formatDuration = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${m.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+  };
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center"
+      style={{ background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.95) 100%)' }}>
+      <div className="flex flex-col items-center gap-8 text-white animate-[breathe_0.3s_ease-out]">
+        <div className="relative">
+          <div className={`w-28 h-28 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-4xl font-bold shadow-2xl overflow-hidden ${phase === 'ringing' ? 'animate-pulse' : ''}`}>
+            <img src="./CCA-P2.png" alt="Kumiko" className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.parentElement!.innerText = '久'; }} />
+          </div>
+          {phase === 'ringing' && (
+            <>
+              <div className="absolute inset-0 rounded-full border-2 border-purple-400/40 animate-ping" />
+              <div className="absolute inset-[-8px] rounded-full border border-purple-400/20 animate-ping" style={{ animationDelay: '0.5s' }} />
+            </>
+          )}
+        </div>
+
+        <div className="text-center">
+          <div className="text-xl font-semibold tracking-wide">黄前久美子</div>
+          <div className="text-sm text-gray-400 mt-1">
+            {phase === 'ringing' && t.voiceCallIncoming}
+            {phase === 'connecting' && t.voiceCallConnecting}
+            {phase === 'active' && '🔊'}
+            {phase === 'ended' && (language === 'zh' ? `通话结束  ${formatDuration(callDuration)}` : `Call ended  ${formatDuration(callDuration)}`)}
+          </div>
+        </div>
+
+        <div className={`rounded-xl px-5 py-3 text-center max-w-[280px] ${isDarkMode ? 'bg-white/10' : 'bg-white/10'}`}>
+          <div className="text-[11px] text-gray-400 uppercase tracking-wider mb-1">{t.voiceCallReminder}</div>
+          <div className="text-sm">{reminderText || reminderEvent}</div>
+        </div>
+
+        {(phase === 'active' || phase === 'ended') && reminderText && (
+          <div className="rounded-xl px-5 py-3 text-center max-w-[300px] bg-purple-500/15 border border-purple-400/20">
+            <div className="text-[11px] text-purple-300 mb-1">{language === 'zh' ? '久美子说' : 'Kumiko says'}</div>
+            <div className="text-sm text-white/90 leading-relaxed">{reminderText}</div>
+          </div>
+        )}
+
+        {phase === 'ringing' ? (
+          <div className="flex items-center gap-16 mt-4">
+            <button onClick={handleReject}
+              className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center transition-colors shadow-lg shadow-red-500/30">
+              <PhoneOff size={24} />
+            </button>
+            <button onClick={handleAccept} disabled={acceptedRef.current}
+              className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors shadow-lg shadow-green-500/30 ${acceptedRef.current ? 'bg-green-800 opacity-50 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600 animate-bounce'}`}>
+              <Phone size={24} />
+            </button>
+          </div>
+        ) : phase === 'connecting' ? (
+          <div className="flex flex-col items-center gap-3 mt-4">
+            <Loader2 size={32} className="animate-spin text-purple-400" />
+          </div>
+        ) : phase === 'active' ? (
+          <div className="flex flex-col items-center gap-3 mt-4">
+            <div className="flex items-center gap-1">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="w-1 bg-purple-400 rounded-full animate-pulse"
+                  style={{ height: `${12 + Math.random() * 20}px`, animationDelay: `${i * 0.1}s` }} />
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="flex flex-col items-center gap-2 mt-4 opacity-60">
+            <PhoneOff size={20} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};

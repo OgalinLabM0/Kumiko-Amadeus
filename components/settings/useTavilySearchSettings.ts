@@ -1,0 +1,107 @@
+import { useEffect, useState } from 'react';
+import { Language } from '../../types';
+import { SettingsDialogConfig } from './useSettingsDialog';
+
+interface SearchTranslations {
+  searchStatusTesting: string;
+  searchStatusSuccess: string;
+  searchStatusFailed: string;
+}
+
+type ShowDialog = (config: Omit<SettingsDialogConfig, 'isOpen'>) => void;
+
+export const useTavilySearchSettings = (
+  isSettingsOpen: boolean,
+  isInternetSearchOpen: boolean,
+  language: Language,
+  t: SearchTranslations,
+  showDialog: ShowDialog
+) => {
+  const [tavilyApiKey, setTavilyApiKey] = useState('');
+  const [enableInternetSearch, setEnableInternetSearch] = useState(false);
+  const [tavilyUsage, setTavilyUsage] = useState<string | null>(null);
+  const [searchStatus, setSearchStatus] = useState<string>('');
+  const [searchStatusType, setSearchStatusType] = useState<'neutral' | 'success' | 'error'>('neutral');
+
+  useEffect(() => {
+    const storedTavilyKey = localStorage.getItem('tavily_api_key') || '';
+    const storedEnableSearch = localStorage.getItem('enable_internet_search') === 'true';
+    setTavilyApiKey(storedTavilyKey);
+    setEnableInternetSearch(storedEnableSearch);
+  }, [isSettingsOpen]);
+
+  const refreshUsage = async (key = tavilyApiKey) => {
+    if (!key) {
+      setTavilyUsage(null);
+      return;
+    }
+    try {
+      const res = await fetch('https://search.omkk.org/api/usage', {
+        headers: { 'x-api-key': key }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTavilyUsage(`${data.used} / ${data.limit}`);
+      } else {
+        setTavilyUsage('Error fetching usage');
+      }
+    } catch {
+      setTavilyUsage('Network error');
+    }
+  };
+
+  useEffect(() => {
+    if (isInternetSearchOpen && tavilyApiKey) {
+      refreshUsage(tavilyApiKey);
+    }
+  }, [isInternetSearchOpen, tavilyApiKey]);
+
+  const saveConfig = (key: string, enabled: boolean) => {
+    setTavilyApiKey(key);
+    setEnableInternetSearch(enabled);
+    localStorage.setItem('tavily_api_key', key);
+    localStorage.setItem('enable_internet_search', String(enabled));
+  };
+
+  const testSearch = async () => {
+    if (!tavilyApiKey) {
+      showDialog({
+        title: language === 'zh' ? '错误' : 'Error',
+        message: language === 'zh' ? '请先输入 API Key' : 'Please enter API Key first',
+        type: 'alert'
+      });
+      return;
+    }
+    setSearchStatus(t.searchStatusTesting);
+    setSearchStatusType('neutral');
+    try {
+      const res = await fetch(`https://search.omkk.org/api/search?q=${encodeURIComponent('test')}`, {
+        headers: { 'x-api-key': tavilyApiKey }
+      });
+      if (res.ok) {
+        setSearchStatus(t.searchStatusSuccess);
+        setSearchStatusType('success');
+        refreshUsage(tavilyApiKey);
+      } else {
+        setSearchStatus(t.searchStatusFailed);
+        setSearchStatusType('error');
+      }
+    } catch {
+      setSearchStatus(t.searchStatusFailed);
+      setSearchStatusType('error');
+    }
+  };
+
+  return {
+    tavilyApiKey,
+    enableInternetSearch,
+    tavilyUsage,
+    searchStatus,
+    searchStatusType,
+    setSearchStatus,
+    setSearchStatusType,
+    saveConfig,
+    testSearch,
+    refreshUsage
+  };
+};
