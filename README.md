@@ -38,7 +38,7 @@
 
 ## ONNX 模型说明
 
-本项目的本地语义检索使用 `bge-m3` 的 ONNX 权重。
+本项目的本地语义检索使用 `bge-m3-onnx` 目录下的 ONNX 权重。
 
 仓库里已经带着：
 
@@ -50,6 +50,17 @@
 - `models/bge-m3-onnx/model_int8.onnx`
 
 如果你只是安装别人已经打好的 `Kumiko-Amadeus-Setup.exe`，通常不需要自己再单独下载模型；只有在“从源码自构建”或者“拿到的安装包本身缺资源”时，才需要手动补这个文件。
+
+下载入口：
+
+- 官方页面：<https://huggingface.co/Xenova/bge-m3/tree/main/onnx>
+- 官方直链：<https://huggingface.co/Xenova/bge-m3/resolve/main/onnx/model_int8.onnx?download=true>
+- 国内镜像页面：<https://hugging-face.cn/Xenova/bge-m3>
+- 国内镜像直链：<https://hugging-face.cn/Xenova/bge-m3/resolve/main/onnx/model_int8.onnx?download=true>
+
+更详细的放置位置和安装说明见：
+
+- [`docs/windows-manual-install.md`](docs/windows-manual-install.md)
 
 ## 开发
 
