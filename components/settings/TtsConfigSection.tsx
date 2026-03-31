@@ -51,6 +51,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   const [isRingtonePlaying, setIsRingtonePlaying] = useState(false);
   const [previewingRingtoneId, setPreviewingRingtoneId] = useState<string | null>(null);
   const [ringtoneDurations, setRingtoneDurations] = useState<Record<string, string>>({});
+  const [ringtoneCurrentTime, setRingtoneCurrentTime] = useState<string>('');
   const ringtoneInputRef = useRef<HTMLInputElement>(null);
   const ringtoneAudioRef = useRef<HTMLAudioElement | null>(null);
   const ringtoneUrlRef = useRef<string | null>(null);
@@ -189,6 +190,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       }
       setIsRingtonePlaying(false);
       setPreviewingRingtoneId(null);
+      setRingtoneCurrentTime('');
       if (ringtoneUrlRef.current) { URL.revokeObjectURL(ringtoneUrlRef.current); ringtoneUrlRef.current = null; }
       return;
     }
@@ -207,11 +209,20 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       const secs = Math.floor(duration % 60);
       setRingtoneDurations(prev => ({ ...prev, [ringtoneId]: `${mins}:${secs.toString().padStart(2, '0')}` }));
     };
-    audio.onended = () => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); };
-    audio.onerror = () => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); };
+    audio.ontimeupdate = () => {
+      const current = audio.currentTime;
+      const duration = audio.duration || 0;
+      const currentMins = Math.floor(current / 60);
+      const currentSecs = Math.floor(current % 60);
+      const durationMins = Math.floor(duration / 60);
+      const durationSecs = Math.floor(duration % 60);
+      setRingtoneCurrentTime(`${currentMins}:${currentSecs.toString().padStart(2, '0')} / ${durationMins}:${durationSecs.toString().padStart(2, '0')}`);
+    };
+    audio.onended = () => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); setRingtoneCurrentTime(''); };
+    audio.onerror = () => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); setRingtoneCurrentTime(''); };
     setPreviewingRingtoneId(ringtoneId);
     setIsRingtonePlaying(true);
-    audio.play().catch(() => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); });
+    audio.play().catch(() => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); setRingtoneCurrentTime(''); });
   }, [previewingRingtoneId, isRingtonePlaying]);
 
   const modeOptions: { value: VoiceMode; label: string; desc: string }[] = [
@@ -376,12 +387,13 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                           </span>
                         )}
                       </div>
-                      <div className={`text-[10px] truncate ${isSelected ? (isDarkMode ? 'text-amber-400/90' : 'text-amber-600') : (isDarkMode ? 'text-gray-500' : 'text-gray-500')}`}>
+                      <div className={`text-[10px] truncate ${isSelected ? (isDarkMode ? 'text-amber-400/90' : 'text-amber-600') : (isDarkMode ? 'text-gray-500' : 'text-gray-500')}`}
+                        title={language === 'zh' ? ringtone.nameZh : ringtone.nameEn}>
                         {language === 'zh' ? ringtone.nameZh : ringtone.nameEn}
                       </div>
                       {ringtoneDurations[ringtone.id] && (
                         <div className={`text-[9px] mt-0.5 ${isSelected ? (isDarkMode ? 'text-amber-500/70' : 'text-amber-500') : (isDarkMode ? 'text-gray-600' : 'text-gray-400')}`}>
-                          {ringtoneDurations[ringtone.id]}
+                          {isPreviewing && ringtoneCurrentTime ? ringtoneCurrentTime : ringtoneDurations[ringtone.id]}
                         </div>
                       )}
                     </button>
