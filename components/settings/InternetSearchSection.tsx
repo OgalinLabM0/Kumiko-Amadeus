@@ -106,7 +106,7 @@ export const InternetSearchSection: React.FC<InternetSearchSectionProps> = ({
                   <button
                     type="button"
                     onClick={() => openExternalUrl('https://tavily.com/')}
-                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 transition-colors ${isDarkMode ? 'text-[#d8ba81] hover:text-[#f3d59a] hover:bg-white/5' : 'text-[#a06b22] hover:text-[#84551a] hover:bg-[#fff8ea]'}`}
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 transition-colors text-xs ${isDarkMode ? 'text-[#d8ba81] hover:text-[#f3d59a] hover:bg-white/5' : 'text-[#a06b22] hover:text-[#84551a] hover:bg-[#fff8ea]'}`}
                   >
                     <ExternalLink size={11} />
                     tavily.com

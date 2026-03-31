@@ -1364,6 +1364,7 @@ export const DEFAULT_TTS_CONFIG: import('./types').TtsConfig = {
     format: 'mp3',
     latency: 'balanced',
     speed: 1.0,
+    ringtoneFileId: '01.mp3',
 };
 
 export const SOFTWARE_GUIDE_SECTIONS = {

@@ -7,6 +7,17 @@ import { saveRingtoneFile, loadRingtoneFile, deleteRingtoneFile, isVoiceServiceA
 
 const VALID_RINGTONE_FILE_RE = /^custom\.(mp3|wav|ogg|m4a|aac|flac)$/i;
 
+const BUILT_IN_RINGTONES = [
+  { id: '01.mp3', nameZh: '小小恋歌 - 秀久合唱', nameEn: 'Koibito - Shuukyuu Gasshou' },
+  { id: '02.mp3', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '1.15M km Film - Kumiko' },
+  { id: '03.mp3', nameZh: '天空的碎片 - 黄前久美子', nameEn: 'Sky Fragments - Kumiko' },
+  { id: '04.mp3', nameZh: 'ヘミソフィア - 黄前久美子', nameEn: 'Hemisphere - Kumiko' },
+  { id: '05.mp3', nameZh: 'アンインストール - 黄前久美子', nameEn: 'Uninstall - Kumiko' },
+  { id: '06.mp3', nameZh: 'DREAM SOLISTER - 黄前久美子', nameEn: 'DREAM SOLISTER - Kumiko' },
+  { id: '07.mp3', nameZh: 'サウンドスケープ - 黄前久美子', nameEn: 'Soundscape - Kumiko' },
+  { id: '08.mp3', nameZh: 'ReCoda - 黄前久美子', nameEn: 'ReCoda - Kumiko' },
+];
+
 interface TtsConfigSectionProps {
   isOpen: boolean;
   onToggle: () => void;
@@ -38,6 +49,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   const [hasRingtone, setHasRingtone] = useState(false);
   const [ringtoneFileName, setRingtoneFileName] = useState<string | null>(null);
   const [isRingtonePlaying, setIsRingtonePlaying] = useState(false);
+  const [previewingRingtoneId, setPreviewingRingtoneId] = useState<string | null>(null);
   const ringtoneInputRef = useRef<HTMLInputElement>(null);
   const ringtoneAudioRef = useRef<HTMLAudioElement | null>(null);
   const ringtoneUrlRef = useRef<string | null>(null);
@@ -168,6 +180,33 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     audio.play().catch(() => { setIsRingtonePlaying(false); URL.revokeObjectURL(url); ringtoneUrlRef.current = null; });
   }, [isRingtonePlaying]);
 
+  const handleBuiltInRingtonePreview = useCallback(async (ringtoneId: string) => {
+    if (previewingRingtoneId === ringtoneId && isRingtonePlaying) {
+      if (ringtoneAudioRef.current) {
+        ringtoneAudioRef.current.pause();
+        ringtoneAudioRef.current.currentTime = 0;
+      }
+      setIsRingtonePlaying(false);
+      setPreviewingRingtoneId(null);
+      if (ringtoneUrlRef.current) { URL.revokeObjectURL(ringtoneUrlRef.current); ringtoneUrlRef.current = null; }
+      return;
+    }
+    if (ringtoneAudioRef.current) {
+      ringtoneAudioRef.current.pause();
+      ringtoneAudioRef.current.currentTime = 0;
+    }
+    if (ringtoneUrlRef.current) { URL.revokeObjectURL(ringtoneUrlRef.current); ringtoneUrlRef.current = null; }
+    const url = `/ringtones/${ringtoneId}`;
+    ringtoneUrlRef.current = url;
+    const audio = new Audio(url);
+    ringtoneAudioRef.current = audio;
+    audio.onended = () => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); };
+    audio.onerror = () => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); };
+    setPreviewingRingtoneId(ringtoneId);
+    setIsRingtonePlaying(true);
+    audio.play().catch(() => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); });
+  }, [previewingRingtoneId, isRingtonePlaying]);
+
   const modeOptions: { value: VoiceMode; label: string; desc: string }[] = [
     { value: 'text', label: t.ttsModeText, desc: (t as any).ttsModeTextDesc || '' },
     { value: 'full', label: t.ttsModeFull, desc: (t as any).ttsModeFullDesc || '' },
@@ -297,14 +336,55 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
           </div>
           <div className={`${innerCardClass} p-4 rounded-[1.15rem]`}>
             <div className={fieldLabelClass}>{t.ttsRingtone}</div>
-            <div className={`${helperClass} mt-0.5 mb-1.5 leading-relaxed`}>
-              {(t as any).ttsRingtoneDesc || ''}
+            <div className={`${helperClass} mt-0.5 mb-3 leading-relaxed`}>
+              {language === 'zh' ? '选择内置铃声或上传自定义铃声' : 'Select built-in ringtones or upload custom ringtone'}
             </div>
-            <div className="flex items-center gap-2 mt-1">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+              {BUILT_IN_RINGTONES.map(ringtone => {
+                const isSelected = ttsConfig.ringtoneFileId === ringtone.id;
+                const isPreviewing = previewingRingtoneId === ringtone.id && isRingtonePlaying;
+                return (
+                  <div key={ringtone.id} className="relative group">
+                    <button
+                      onClick={() => update({ ringtoneFileId: ringtone.id })}
+                      className={`w-full p-2 rounded-lg border transition-all text-left ${
+                        isSelected
+                          ? (isDarkMode ? 'bg-amber-500/15 border-amber-500/40' : 'bg-amber-50 border-amber-300')
+                          : (isDarkMode ? 'bg-[#1a1510] border-[#3d3020] hover:border-[#5d4830]' : 'bg-white border-gray-200 hover:border-gray-300')
+                      }`}
+                    >
+                      <div className={`text-xs font-semibold truncate ${isSelected ? (isDarkMode ? 'text-amber-300' : 'text-amber-700') : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>
+                        {ringtone.id.replace('.mp3', '')}
+                      </div>
+                      <div className={`text-[10px] truncate mt-0.5 ${isSelected ? (isDarkMode ? 'text-amber-400/80' : 'text-amber-600') : (isDarkMode ? 'text-gray-500' : 'text-gray-500')}`}>
+                        {language === 'zh' ? ringtone.nameZh : ringtone.nameEn}
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => handleBuiltInRingtonePreview(ringtone.id)}
+                      className={`absolute top-1 right-1 p-1 rounded-full transition-all opacity-0 group-hover:opacity-100 ${
+                        isPreviewing
+                          ? 'bg-amber-500 text-white'
+                          : (isDarkMode ? 'bg-black/50 text-white hover:bg-amber-500' : 'bg-black/30 text-white hover:bg-amber-500')
+                      }`}
+                      title={isPreviewing ? (language === 'zh' ? '停止' : 'Stop') : (language === 'zh' ? '试听' : 'Preview')}
+                    >
+                      {isPreviewing ? <Square size={10} /> : <Play size={10} />}
+                    </button>
+                    {isSelected && (
+                      <div className="absolute -top-1 -right-1 w-3 h-3 bg-amber-500 rounded-full flex items-center justify-center">
+                        <span className="text-[8px] text-black font-bold">✓</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-2 mt-2 pt-3 border-t border-gray-500/10">
               <input ref={ringtoneInputRef} type="file" accept=".mp3,.wav,.ogg" className="hidden" onChange={handleRingtoneUpload} />
               <button onClick={() => ringtoneInputRef.current?.click()}
                 className={`flex items-center gap-1 px-2.5 py-1.5 rounded ka-copy-sm font-semibold ${actionChipClass}`}>
-                <Upload size={12} /> {t.ttsRingtoneUpload}
+                <Upload size={12} /> {language === 'zh' ? '自定义上传' : 'Upload Custom'}
               </button>
               {hasRingtone && (
                 <>
@@ -317,15 +397,10 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded ka-copy-sm font-semibold text-red-400 hover:text-red-300">
                     <Trash2 size={12} /> {t.ttsRingtoneDelete}
                   </button>
+                  <span className={helperClass}>
+                    {language === 'zh' ? `已上传 · ${ringtoneFileName}` : `Uploaded · ${ringtoneFileName}`}
+                  </span>
                 </>
-              )}
-              {!hasRingtone && (
-                <span className={helperClass}>{t.ttsRingtoneDefault}</span>
-              )}
-              {hasRingtone && ringtoneFileName && (
-                <span className={helperClass}>
-                  {language === 'zh' ? `已上传 · ${ringtoneFileName}` : `Uploaded · ${ringtoneFileName}`}
-                </span>
               )}
             </div>
           </div>
