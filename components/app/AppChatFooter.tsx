@@ -84,15 +84,15 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
 
       {isSelectionMode ? (
         <div className={`pt-2 px-3 border-t flex items-center justify-between pb-[max(0.5rem,env(safe-area-inset-bottom))] md:pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] ${isDarkMode ? 'bg-red-900/10 border-red-900/30' : 'bg-red-50 border-red-200'}`}>
-          <span className={`font-mono text-sm ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>{selectedIdsCount} {selectedLabel}</span>
-          <button onClick={onDeleteSelected} disabled={selectedIdsCount === 0} className="flex items-center gap-2 px-6 py-2 bg-red-600 text-white font-mono font-bold rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed">
+          <span className={`ka-label ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>{selectedIdsCount} {selectedLabel}</span>
+          <button onClick={onDeleteSelected} disabled={selectedIdsCount === 0} className="flex items-center gap-2 px-6 py-2 bg-red-600 text-white ka-label rounded hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed">
             <Trash2 size={16} /> {deleteLabel}
           </button>
         </div>
       ) : (
         <div className={`pt-2 px-3 border-t transition-colors duration-500 pb-[max(0.25rem,env(safe-area-inset-bottom))] md:pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] ${inputAreaBg} ${inputShadow}`}>
           {replyingToMsg && (
-            <div className={`flex items-center justify-between mb-2 p-2 rounded-lg text-xs border-l-2 ${isDarkMode ? 'bg-white/5 border-yellow-500 text-gray-300' : 'bg-black/5 border-yellow-600 text-gray-700'} animate-in slide-in-from-bottom-2`}>
+            <div className={`flex items-center justify-between mb-2 p-2 rounded-lg ka-copy-sm border-l-2 ${isDarkMode ? 'bg-white/5 border-yellow-500 text-gray-300' : 'bg-black/5 border-yellow-600 text-gray-700'} animate-in slide-in-from-bottom-2`}>
               <div className="flex flex-col overflow-hidden">
                 <span className="font-bold flex items-center gap-1 opacity-70">
                   <Quote size={10} /> {replyingToLabel}: {replyingToMsg.role === 'model' ? roleModelLabel : roleUserLabel}
@@ -129,7 +129,7 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
               onChange={(e) => onInputChange(e.target.value)}
               onKeyDown={onKeyDown}
               placeholder={sendPlaceholder}
-              className={`w-full px-3 h-10 rounded outline-none font-mono text-[16px] md:text-sm leading-normal transition-all focus:ring-1 focus:ring-yellow-600/50 ${inputBoxBg}`}
+              className={`w-full px-3 h-10 rounded outline-none ka-input-copy transition-all focus:ring-1 focus:ring-yellow-600/50 ${inputBoxBg}`}
             />
             <button
               onMouseDown={(e) => e.preventDefault()}
@@ -142,7 +142,7 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
           </div>
 
           <div className="hidden md:block text-right mt-1">
-            <span className={`text-[10px] font-mono ${isDarkMode ? 'text-yellow-600/60' : 'text-gray-400'}`}>{statusText}</span>
+            <span className={`ka-micro ${isDarkMode ? 'text-yellow-600/60' : 'text-gray-400'}`}>{statusText}</span>
           </div>
         </div>
       )}

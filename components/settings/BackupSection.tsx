@@ -20,6 +20,7 @@ import {
   UserCircle
 } from 'lucide-react';
 import { BackupConfig } from '../../types';
+import { SettingsToggle } from './SettingsToggle';
 
 interface BackupSectionTranslations {
   backupTitle: string;
@@ -128,36 +129,38 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
   onDisconnectLocalFile
 }) => {
   return (
-    <div className={`flex flex-col rounded-lg border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
-      <button onClick={onToggle} className="flex items-center justify-between p-4 w-full">
+    <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
+      <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
         <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-full ${isDarkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-700'}`}>
-            <Server size={20} />
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-blue-500/20 bg-blue-900/20 text-blue-300' : 'border-blue-200 bg-blue-50/90 text-blue-700'}`}>
+            <Server size={18} />
           </div>
           <div className="text-left">
-            <h3 className={`font-bold text-sm ${isDarkMode ? 'text-yellow-100' : 'text-gray-900'}`}>{t.backupTitle}</h3>
-            {!isOpen && <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.backupDesc}</p>}
+            <h3 className={`ka-section-title ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{t.backupTitle}</h3>
+            {!isOpen && <p className={`ka-section-desc ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.backupDesc}</p>}
           </div>
         </div>
-        {isOpen ? <ChevronUp size={16} className="opacity-50" /> : <ChevronDown size={16} className="opacity-50" />}
+        {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
       {isOpen && (
-        <div className="p-4 pt-0 animate-in slide-in-from-top-2 max-h-[400px] overflow-y-auto scrollbar-thin">
-          <p className={`text-xs mb-3 font-mono ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>{t.backupDesc}</p>
+        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 overflow-visible">
+          <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#cdbca9]' : 'text-[#7c6245]'}`}>{t.backupDesc}</p>
 
           <div className="flex flex-col py-2 border-t border-gray-500/10">
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-3">
                 <HardDrive size={18} className={backupConfig.localEnabled ? (isDarkMode ? 'text-green-400' : 'text-green-600') : 'opacity-50'} />
                 <div>
-                  <span className={`text-sm font-bold block ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>{t.localBackup}</span>
-                  <span className={`text-[10px] font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>{t.localStorageHelp}</span>
+                  <span className={`ka-setting-item-title block ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>{t.localBackup}</span>
+                  <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>{t.localStorageHelp}</span>
                 </div>
               </div>
-              <button onClick={onToggleLocalBackup} className={`w-10 h-5 rounded-full relative transition-colors ${backupConfig.localEnabled ? 'bg-green-600' : 'bg-gray-600'}`}>
-                <div className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${backupConfig.localEnabled ? 'left-6' : 'left-1'}`}></div>
-              </button>
+              <div className="flex-shrink-0">
+                <button onClick={onToggleLocalBackup} className={`relative inline-flex h-6 w-11 shrink-0 items-center overflow-hidden rounded-full p-[2px] transition-colors ${backupConfig.localEnabled ? 'justify-end bg-green-600/95' : `justify-start ${isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]'}`}`}>
+                  <div className="h-5 w-5 rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,0.18)] transition-all duration-200"></div>
+                </button>
+              </div>
             </div>
             
             {/* Status feedback for Local Backup */}
@@ -165,14 +168,14 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
               {backupConfig.localEnabled ? (
                 <>
                   <Check size={12} className="text-green-500" />
-                  <span className={`text-[10px] font-mono ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
+                  <span className={`ka-micro ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
                     {t.localBackupStatusOn}
                   </span>
                 </>
               ) : (
                 <>
                   <AlertCircle size={12} className="text-gray-400" />
-                  <span className={`text-[10px] font-mono ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  <span className={`ka-micro ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                     {t.localBackupStatusOff}
                   </span>
                 </>
@@ -183,28 +186,28 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
           <div className={`mt-2 mb-2 p-3 rounded border border-dashed transition-all ${connectedFileName ? (isDarkMode ? 'border-green-500/30 bg-green-500/5' : 'border-green-500/30 bg-green-50') : (isDarkMode ? 'border-gray-700 bg-black/20' : 'border-gray-300 bg-gray-50')}`}>
             <div className="flex items-center gap-2 mb-2">
               <FileJson size={16} className={connectedFileName ? (isDarkMode ? 'text-green-400' : 'text-green-600') : (isDarkMode ? 'text-gray-400' : 'text-gray-600')} />
-              <span className={`text-xs font-bold font-mono ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>{t.advancedLocalSync}</span>
+              <span className={`ka-setting-item-title ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>{t.advancedLocalSync}</span>
             </div>
 
             <div className="flex flex-col gap-2">
               <div className="flex flex-col gap-2">
                 {!connectedFileName ? (
                   <div className="flex gap-2">
-                    <button onClick={onSelectLocalFile} className={`flex-1 py-2 px-1 rounded text-[10px] font-bold border transition-colors flex items-center justify-center gap-1 ${isDarkMode ? 'border-gray-600 text-gray-400 hover:border-green-500 hover:text-green-500' : 'border-gray-300 text-gray-600 hover:border-green-600 hover:text-green-600'}`}>
+                    <button onClick={onSelectLocalFile} className={`flex-1 py-2 px-1 rounded ka-label border transition-colors flex items-center justify-center gap-1 ${isDarkMode ? 'border-gray-600 text-gray-400 hover:border-green-500 hover:text-green-500' : 'border-gray-300 text-gray-600 hover:border-green-600 hover:text-green-600'}`}>
                       <FilePlus size={12} /> {t.btnCreateFile}
                     </button>
                     {onOpenLocalFile && (
-                      <button onClick={onOpenLocalFile} className={`flex-1 py-2 px-1 rounded text-[10px] font-bold border transition-colors flex items-center justify-center gap-1 ${isDarkMode ? 'border-gray-600 text-gray-400 hover:border-blue-500 hover:text-blue-500' : 'border-gray-300 text-gray-600 hover:border-blue-600 hover:text-blue-600'}`}>
+                      <button onClick={onOpenLocalFile} className={`flex-1 py-2 px-1 rounded ka-label border transition-colors flex items-center justify-center gap-1 ${isDarkMode ? 'border-gray-600 text-gray-400 hover:border-blue-500 hover:text-blue-500' : 'border-gray-300 text-gray-600 hover:border-blue-600 hover:text-blue-600'}`}>
                         <FileSearch size={12} /> {t.btnOpenFile}
                       </button>
                     )}
                   </div>
                 ) : (
                   <div className="flex gap-2">
-                    <button onClick={onSelectLocalFile} className={`flex-1 py-1.5 px-3 rounded text-xs font-bold border transition-colors ${connectedFileName ? 'border-green-500/50 text-green-500 hover:bg-green-500/10' : ''}`}>
+                    <button onClick={onSelectLocalFile} className={`flex-1 py-1.5 px-3 rounded ka-copy-sm font-semibold border transition-colors ${connectedFileName ? 'border-green-500/50 text-green-500 hover:bg-green-500/10' : ''}`}>
                       {t.changeFile} (Create New)
                     </button>
-                    <button onClick={onOpenLocalFile} className={`flex-1 py-1.5 px-3 rounded text-xs font-bold border transition-colors ${connectedFileName ? 'border-blue-500/50 text-blue-500 hover:bg-blue-500/10' : ''}`}>
+                    <button onClick={onOpenLocalFile} className={`flex-1 py-1.5 px-3 rounded ka-copy-sm font-semibold border transition-colors ${connectedFileName ? 'border-blue-500/50 text-blue-500 hover:bg-blue-500/10' : ''}`}>
                       {t.btnOpenFile}
                     </button>
                   </div>
@@ -214,12 +217,12 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
               {!connectedFileName && isInIframe && (
                 <div className="flex items-start gap-2 p-2 rounded bg-orange-500/10 border border-orange-500/20 text-orange-500">
                   <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
-                  <p className="text-[10px] font-mono leading-tight">{t.iframeWarning}</p>
+                  <p className="ka-copy-sm leading-tight">{t.iframeWarning}</p>
                 </div>
               )}
 
               {connectedFileName ? (
-                <div className={`text-[10px] font-mono space-y-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                <div className={`ka-copy-sm font-mono space-y-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2 text-green-500 truncate pr-2">
                       <Check size={10} className="flex-shrink-0" /> 
@@ -228,7 +231,7 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
                     {onDisconnectLocalFile && (
                       <button 
                         onClick={onDisconnectLocalFile}
-                        className={`flex-shrink-0 px-2 py-0.5 rounded text-[9px] font-bold flex items-center gap-1 transition-colors ${isDarkMode ? 'bg-red-900/40 hover:bg-red-800/60 text-red-400' : 'bg-red-50 hover:bg-red-100 text-red-500 border border-red-200'}`}
+                        className={`flex-shrink-0 px-2 py-0.5 rounded ka-micro flex items-center gap-1 transition-colors ${isDarkMode ? 'bg-red-900/40 hover:bg-red-800/60 text-red-400' : 'bg-red-50 hover:bg-red-100 text-red-500 border border-red-200'}`}
                       >
                         <RotateCcw size={10} /> {t.disconnect}
                       </button>
@@ -237,19 +240,19 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
                   {lastBackupTime && <div className="opacity-80">{t.lastAutoSave}{formatLastBackup(lastBackupTime)}</div>}
                   <div className="flex gap-2 mt-2 pt-2 border-t border-dashed border-gray-500/30">
                     {onManualLocalSave && (
-                      <button onClick={onManualLocalSave} className={`flex-1 py-1.5 rounded flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors shadow-sm ${isDarkMode ? 'bg-green-800/50 hover:bg-green-700 text-green-100' : 'bg-green-100 hover:bg-green-200 text-green-800'}`} title="Force Save to Local File">
-                        <Upload size={12} /> {t.manualSave}
-                      </button>
-                    )}
-                    {onManualLocalLoad && (
-                      <button onClick={onManualLocalLoad} className={`flex-1 py-1.5 rounded flex items-center justify-center gap-1.5 text-[10px] font-bold transition-colors shadow-sm ${isDarkMode ? 'bg-blue-800/50 hover:bg-blue-700 text-blue-100' : 'bg-blue-100 hover:bg-blue-200 text-blue-800'}`} title="Reload from Local File">
-                        <Download size={12} /> {t.manualLoad}
-                      </button>
-                    )}
+                    <button onClick={onManualLocalSave} className={`flex-1 py-1.5 rounded flex items-center justify-center gap-1.5 ka-copy-sm font-semibold transition-colors shadow-sm ${isDarkMode ? 'bg-green-800/50 hover:bg-green-700 text-green-100' : 'bg-green-100 hover:bg-green-200 text-green-800'}`} title="Force Save to Local File">
+                      <Upload size={12} /> {t.manualSave}
+                    </button>
+                  )}
+                  {onManualLocalLoad && (
+                    <button onClick={onManualLocalLoad} className={`flex-1 py-1.5 rounded flex items-center justify-center gap-1.5 ka-copy-sm font-semibold transition-colors shadow-sm ${isDarkMode ? 'bg-blue-800/50 hover:bg-blue-700 text-blue-100' : 'bg-blue-100 hover:bg-blue-200 text-blue-800'}`} title="Reload from Local File">
+                      <Download size={12} /> {t.manualLoad}
+                    </button>
+                  )}
                   </div>
                 </div>
               ) : (
-                <div className={`flex items-start gap-2 text-[10px] ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                <div className={`flex items-start gap-2 ka-copy-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                   <AlertTriangle size={12} className="mt-0.5" />
                   <p>{t.fsSyncDesc}</p>
                 </div>
@@ -263,20 +266,26 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-3">
                 <div className="text-left">
-                  <span className={`text-sm font-bold block ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>{t.autoZipBackup}</span>
-                  <span className={`text-[10px] font-bold ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.autoZipBackupDesc}</span>
+                  <span className={`ka-setting-item-title block ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>{t.autoZipBackup}</span>
+                  <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.autoZipBackupDesc}</span>
                 </div>
               </div>
-              <button onClick={onToggleAutoZip} className={`w-10 h-5 rounded-full relative transition-colors ${autoZipEnabled ? 'bg-green-600' : 'bg-gray-600'}`}>
-                <div className={`absolute top-1 w-3 h-3 rounded-full bg-white transition-all ${autoZipEnabled ? 'left-6' : 'left-1'}`}></div>
-              </button>
+              <div className="flex-shrink-0">
+                <SettingsToggle
+                  checked={autoZipEnabled}
+                  onClick={onToggleAutoZip}
+                  activeTrackClass="bg-green-600/95"
+                  inactiveTrackClass={isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]'}
+                  ariaLabel={t.autoZipBackup}
+                />
+              </div>
             </div>
-            <span className={`text-[10px] font-mono font-bold mb-1 ${isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]'}`}>{t.manualBackup}</span>
+            <span className={`ka-setting-item-title mb-1 ${isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]'}`}>{t.manualBackup}</span>
             <div className="flex gap-2">
-              <button onClick={onExportBackup} className={`flex-1 py-2 px-3 rounded flex items-center justify-center gap-2 text-xs font-bold transition-colors ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'}`}>
+              <button onClick={onExportBackup} className={`flex-1 py-2 px-3 rounded flex items-center justify-center gap-2 ka-copy-sm font-semibold transition-colors ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'}`}>
                 <Upload size={14} /> {t.export}
               </button>
-              <button onClick={onOpenImportDialog} className={`flex-1 py-2 px-3 rounded flex items-center justify-center gap-2 text-xs font-bold transition-colors ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'}`}>
+              <button onClick={onOpenImportDialog} className={`flex-1 py-2 px-3 rounded flex items-center justify-center gap-2 ka-copy-sm font-semibold transition-colors ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'}`}>
                 <Download size={14} /> {t.import}
               </button>
             </div>

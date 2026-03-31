@@ -1,4 +1,5 @@
 import { AnchorEntry, EmotionType, Language, LocationConfig, Message, SummaryArchiveState, WorldBookEntry } from '../../types';
+import { DailyFragmentEntity, KumikoDiaryEntity, PsycheStateEntity, WorldCharacterStatusMap } from '../../services/db';
 
 export interface RelativeReminderBackup {
   id: string;
@@ -36,6 +37,10 @@ export interface BackupPayload {
   kumikoNotebook: string;
   relativeReminders: RelativeReminderBackup[];
   dailyReminders: DailyReminderBackup[];
+  worldCharacterStatus?: WorldCharacterStatusMap;
+  kumikoDiary?: KumikoDiaryEntity[];
+  dailyFragments?: DailyFragmentEntity[];
+  psycheState?: PsycheStateEntity | null;
 }
 
 interface BuildBackupDataParams {
@@ -52,6 +57,10 @@ interface BuildBackupDataParams {
   kumikoNotebook: string;
   relativeReminders: RelativeReminderBackup[];
   dailyReminders: DailyReminderBackup[];
+  worldCharacterStatus?: WorldCharacterStatusMap;
+  kumikoDiary?: KumikoDiaryEntity[];
+  dailyFragments?: DailyFragmentEntity[];
+  psycheState?: PsycheStateEntity | null;
   defaultWorldBook: WorldBookEntry[];
   localizedWorldBook: Record<Language, WorldBookEntry[]>;
 }
@@ -91,6 +100,10 @@ export const buildBackupData = ({
   kumikoNotebook,
   relativeReminders,
   dailyReminders,
+  worldCharacterStatus,
+  kumikoDiary,
+  dailyFragments,
+  psycheState,
   defaultWorldBook,
   localizedWorldBook,
 }: BuildBackupDataParams): BackupPayload => ({
@@ -107,6 +120,10 @@ export const buildBackupData = ({
   kumikoNotebook,
   relativeReminders,
   dailyReminders,
+  worldCharacterStatus,
+  kumikoDiary,
+  dailyFragments,
+  psycheState,
 });
 
 export const validateBackupData = (

@@ -66,26 +66,26 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
   const installDisabled = !updateState.isPackaged || updateState.status !== 'downloaded';
 
   return (
-    <div className={`flex flex-col rounded-lg border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
-      <button onClick={onToggle} className="flex items-center justify-between p-4 w-full">
+    <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
+      <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
         <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-full ${isDarkMode ? 'bg-cyan-900/30 text-cyan-300' : 'bg-cyan-100 text-cyan-700'}`}>
-            <Rocket size={20} />
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-cyan-500/20 bg-cyan-900/20 text-cyan-300' : 'border-cyan-200 bg-cyan-50/90 text-cyan-700'}`}>
+            <Rocket size={18} />
           </div>
           <div className="text-left">
-            <h3 className={`font-bold text-sm ${isDarkMode ? 'text-yellow-100' : 'text-gray-900'}`}>{t.updateSection}</h3>
-            {!isOpen && <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{statusText}</p>}
+            <h3 className={`ka-section-title ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{t.updateSection}</h3>
+            {!isOpen && <p className={`ka-section-desc ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{statusText}</p>}
           </div>
         </div>
-        {isOpen ? <ChevronUp size={16} className="opacity-50" /> : <ChevronDown size={16} className="opacity-50" />}
+        {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
       {isOpen && (
-        <div className="p-4 pt-0 animate-in slide-in-from-top-2 flex flex-col gap-3">
-          <p className={`text-xs font-mono ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.updateSectionDesc}</p>
+        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 flex flex-col gap-3">
+          <p className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.updateSectionDesc}</p>
 
           <div className={`rounded-lg border p-3 ${isDarkMode ? 'border-white/10 bg-black/30' : 'border-gray-200 bg-white'}`}>
-            <div className={`text-xs font-mono flex flex-col gap-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+            <div className={`ka-copy-sm flex flex-col gap-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
               <div>{t.updateCurrentVersion}: <span className="font-bold">v{updateState.currentVersion}</span></div>
               {updateState.availableVersion && <div>{t.updateLatestVersion}: <span className="font-bold">v{updateState.availableVersion}</span></div>}
               {releaseDate && <div>{t.updateReleaseDate}: {releaseDate}</div>}
@@ -95,36 +95,36 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
 
           {updateState.status === 'downloading' && (
             <div className={`rounded-lg border p-3 ${isDarkMode ? 'border-cyan-500/20 bg-cyan-500/5' : 'border-cyan-200 bg-cyan-50'}`}>
-              <div className="flex items-center justify-between text-xs mb-2">
+              <div className="flex items-center justify-between ka-copy-sm mb-2">
                 <span>{t.updateDownloadProgress}</span>
                 <span>{progressPercent.toFixed(1)}%</span>
               </div>
               <div className={`h-2 rounded-full overflow-hidden ${isDarkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
                 <div className="h-full bg-cyan-500 transition-all duration-200" style={{ width: `${progressPercent}%` }} />
               </div>
-              <div className={`mt-2 text-[11px] font-mono ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              <div className={`mt-2 ka-copy-sm font-mono ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                 {formatBytes(updateState.transferred)} / {formatBytes(updateState.total)}
               </div>
             </div>
           )}
 
           {updateState.status === 'error' && updateState.error && (
-            <div className={`rounded-lg border p-3 text-xs font-mono whitespace-pre-wrap ${isDarkMode ? 'border-red-500/30 bg-red-500/10 text-red-200' : 'border-red-200 bg-red-50 text-red-700'}`}>
+            <div className={`rounded-lg border p-3 ka-copy-sm font-mono whitespace-pre-wrap ${isDarkMode ? 'border-red-500/30 bg-red-500/10 text-red-200' : 'border-red-200 bg-red-50 text-red-700'}`}>
               {updateState.error}
             </div>
           )}
 
           {!updateState.isPackaged && (
-            <div className={`rounded-lg border p-3 text-xs ${isDarkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+            <div className={`rounded-lg border p-3 ka-copy-sm ${isDarkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
               {t.updateUnsupported}
             </div>
           )}
 
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+          <div className="flex flex-col gap-2">
             <button
               onClick={onCheckForUpdates}
               disabled={checkDisabled}
-              className={`py-2.5 rounded flex items-center justify-center gap-2 text-xs font-mono font-bold transition-colors ${
+              className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
                 checkDisabled
                   ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
                   : (isDarkMode ? 'bg-sky-500/20 text-sky-200 hover:bg-sky-500/30' : 'bg-sky-100 text-sky-700 hover:bg-sky-200')
@@ -136,7 +136,7 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
             <button
               onClick={onDownloadUpdate}
               disabled={downloadDisabled}
-              className={`py-2.5 rounded flex items-center justify-center gap-2 text-xs font-mono font-bold transition-colors ${
+              className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
                 downloadDisabled
                   ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
                   : (isDarkMode ? 'bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30' : 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200')
@@ -148,7 +148,7 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
             <button
               onClick={onInstallUpdate}
               disabled={installDisabled}
-              className={`py-2.5 rounded flex items-center justify-center gap-2 text-xs font-mono font-bold transition-colors ${
+              className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
                 installDisabled
                   ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
                   : (isDarkMode ? 'bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200')

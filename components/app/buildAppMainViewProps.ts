@@ -29,6 +29,8 @@ interface BuildAppMainViewPropsParams {
   setIsMessageCenterOpen: React.Dispatch<React.SetStateAction<boolean>>;
   isTaskPanelOpen: boolean;
   setIsTaskPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  isDiaryOpen: boolean;
+  setIsDiaryOpen: React.Dispatch<React.SetStateAction<boolean>>;
   flushIfDirty: () => void;
   coreMemory: string;
   contextLimit: number;
@@ -181,11 +183,13 @@ export const buildAppMainViewProps = (
     setIsProfileOpen,
     isSettingsOpen,
     setIsSettingsOpen,
-    isMessageCenterOpen,
-    setIsMessageCenterOpen,
-    isTaskPanelOpen,
-    setIsTaskPanelOpen,
-    flushIfDirty,
+  isMessageCenterOpen,
+  setIsMessageCenterOpen,
+  isTaskPanelOpen,
+  setIsTaskPanelOpen,
+  isDiaryOpen,
+  setIsDiaryOpen,
+  flushIfDirty,
     coreMemory,
     contextLimit,
     messages,
@@ -343,7 +347,7 @@ export const buildAppMainViewProps = (
       anchors,
       onDeleteAnchor: handleDeleteAnchor,
       onImageClick: setViewingImage,
-      kumikoNotebook
+      kumikoNotebook,
     },
     profilePanelProps: {
       isOpen: isProfileOpen,
@@ -392,6 +396,11 @@ export const buildAppMainViewProps = (
       onToggleAutoZip: handleToggleAutoZip,
       onDisconnectLocalFile: handleDisconnectLocalFile
     },
+    diaryPanelProps: isDiaryOpen ? {
+      onClose: () => setIsDiaryOpen(false),
+      language,
+      isDarkMode
+    } : null,
     deleteConfirmationModalProps: {
       isOpen: showDeleteConfirm,
       isDarkMode,
@@ -513,6 +522,7 @@ export const buildAppMainViewProps = (
       onToggleFullscreen: toggleFullscreen,
       onToggleSelectionMode: toggleSelectionMode,
       onOpenMemory: () => setIsMemoryPanelOpen(true),
+      onOpenDiary: () => setIsDiaryOpen(true),
       onToggleTheme: toggleTheme,
       onOpenProfile: () => setIsProfileOpen(true),
       onOpenInbox: () => {

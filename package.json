@@ -1,20 +1,22 @@
 {
   "name": "kumiko-ai-amadeus",
   "private": true,
-  "version": "2.0.1",
+  "version": "2.3.37",
   "description": "Kumiko Amadeus desktop companion focused on long-term memory and natural character interaction.",
   "author": "Codex + User",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
     "desktop:dev": "concurrently -k \"npm run dev\" \"wait-on tcp:3000 && electron .\"",
-    "desktop:build": "npm run build:cap && electron-builder && npm run release:latest-yml",
+    "desktop:build": "npm run build:cap && npm run release:clean:prebuild && electron-builder && npm run release:latest-yml && npm run release:clean:postbuild",
     "dev": "vite",
     "build": "vite build",
     "build:cap": "vite build --base ./",
     "release:latest-yml": "node scripts/generate-latest-yml.cjs",
     "cap:sync": "npm run build:cap && npx cap sync ios",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "release:clean:prebuild": "node scripts/clean-release.cjs prebuild",
+    "release:clean:postbuild": "node scripts/clean-release.cjs postbuild"
   },
   "dependencies": {
     "@capacitor/core": "^7.2.0",
@@ -24,6 +26,7 @@
     "better-sqlite3": "^12.8.0",
     "browser-image-compression": "^2.0.2",
     "dexie": "^4.3.0",
+    "dexie-react-hooks": "^4.4.0",
     "electron-updater": "^6.8.3",
     "file-saver": "^2.0.5",
     "framer-motion": "^11.0.0",

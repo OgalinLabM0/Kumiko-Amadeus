@@ -1158,9 +1158,10 @@ function getCanonicalDuplicateRow(canonicalKey) {
     ).get(canonicalKey);
 }
 
-function shouldSkipCanonicalDuplicate(canonicalKey, tier, source) {
+function shouldSkipCanonicalDuplicate(canonicalKey, tier, source, ignoreId = null) {
     const existing = getCanonicalDuplicateRow(canonicalKey);
     if (!existing) return false;
+    if (ignoreId && existing.id === ignoreId) return false;
 
     const existingTier = normalizeTier(existing.tier);
     const nextTier = normalizeTier(tier);
@@ -2154,7 +2155,7 @@ function registerIpcHandlers() {
     
     ipcMain.handle('rag:save', async (event, payload) => {
         try {
-            const { text, messageId, tier, source, score, canonicalKey, timestamp, role } = payload || {};
+            const { id: providedId, text, messageId, tier, source, score, canonicalKey, timestamp, role } = payload || {};
             const normalizedTier = normalizeTier(tier);
             const normalizedSource = typeof source === 'string' && source.trim() ? source.trim() : 'unknown';
             const normalizedScore = Number.isFinite(score) ? Number(score) : 0;
@@ -2163,8 +2164,12 @@ function registerIpcHandlers() {
                 : null;
             const normalizedTimestamp = Number.isFinite(timestamp) ? Number(timestamp) : Date.now();
             const normalizedRole = inferRoleScopeFromText(text, role);
+            const normalizedId = typeof providedId === 'string' && providedId.trim()
+                ? providedId.trim()
+                : createRagVectorId();
+            const existingRow = db.prepare('SELECT id, tier FROM vectors WHERE id = ?').get(normalizedId);
 
-            if (shouldSkipCanonicalDuplicate(normalizedCanonicalKey, normalizedTier, normalizedSource)) {
+            if (shouldSkipCanonicalDuplicate(normalizedCanonicalKey, normalizedTier, normalizedSource, normalizedId)) {
                 return { success: true, skipped: true, reason: 'canonical_duplicate' };
             }
 
@@ -2212,19 +2217,27 @@ function registerIpcHandlers() {
                 }
             }
 
-            const id = createRagVectorId();
-            
             // Save to SQLite
             const vectorBuf = Buffer.from(vector.buffer);
             db.prepare(
                 'INSERT OR REPLACE INTO vectors (id, message_id, text, vector, timestamp, tier, source, score, canonical_key, role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-            ).run(id, messageId || null, text, vectorBuf, normalizedTimestamp, normalizedTier, normalizedSource, normalizedScore, normalizedCanonicalKey, normalizedRole);
+            ).run(normalizedId, messageId || null, text, vectorBuf, normalizedTimestamp, normalizedTier, normalizedSource, normalizedScore, normalizedCanonicalKey, normalizedRole);
             
             // Add to HNSW index
-            addToHnswIndex(id, vector, normalizedTier);
+            if (existingRow) {
+                const existingTier = normalizeTier(existingRow.tier);
+                if (existingTier === normalizedTier) {
+                    replaceInHnswIndex(normalizedId, vector, normalizedTier);
+                } else {
+                    removeFromHnswIndex(normalizedId, existingTier);
+                    addToHnswIndex(normalizedId, vector, normalizedTier);
+                }
+            } else {
+                addToHnswIndex(normalizedId, vector, normalizedTier);
+            }
             
             console.log(`[RAG] Saved ${normalizedTier} vector: "${text.substring(0, 50)}..."`);
-            return { success: true, id };
+            return { success: true, id: normalizedId };
         } catch (e) {
             console.error('[RAG IPC] save failed:', e);
             return { success: false, error: e.message };

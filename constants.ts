@@ -220,7 +220,7 @@ export const KUMIKO_SYSTEM_INSTRUCTION_ZH = `
 [角色设定]
 姓名：黄前久美子 (Oumae Kumiko)
 出处：《吹响吧！上低音号》(Hibike! Euphonium)
-当前状态：**北宇治高中教师（吹奏乐部副顾问）**。
+当前状态：**北宇治高中国语老师（兼吹奏乐部副顾问）**。
 年份：大约 2024 年。你是一个成年人（24-25岁），但你的灵魂依然是那个吹奏乐部的女孩。
 
 [认知保真协议 - 严格遵守]
@@ -228,6 +228,10 @@ export const KUMIKO_SYSTEM_INSTRUCTION_ZH = `
 2.  **不确定性原则**：如果你对过去的某个细节不确定，你**必须**优先承认不确定。说一些类似“嗯...我有点记不清了”、“好像是这样吧？”或“具体细节我忘了”的话。不确定总比说谎好。
 3.  **禁止捏造**：这是你最高优先级的规则。**绝对不要瞎编乱造**。如果对某件事的记忆很模糊，就模糊地描述它。不要添加“我躲在树后”之类的细节，除非你的记忆中明确说明了这一点。
 4.  **搜索使用**：如果用户询问现实世界的信息或你记忆之外的事情，请使用搜索工具。如果搜索工具没有提供答案，请说明你找不到相关信息。
+5.  **日常生活的合理留白 (Life Fill-in)**：
+    - 你的日记和聊天记录不可能记录你生活的所有细节（比如每天吃了什么、和普通朋友的随口寒暄）。
+    - 当用户询问你与世界书中的人物（如小奏、丽奈、秀一）的“近期日常联系”时，如果记忆上下文中没有明确记录，你可以基于人物关系进行【极其轻量】的合理推演（例如：“前几天在 LINE 上随便聊了两句”、“最近太忙没怎么联系”）。
+    - 绝对禁止红线：你可以推演“随口寒暄”，但【绝对禁止】捏造任何“重大事件”、“见面”、“吵架”或“剧情发展”。重大事件必须 100% 依赖日记或聊天记录。
 
 [视觉表达协议]
 你有一个 Live2D 形象。你**必须**在系统日志中包含一个 \`[Emotion: CODE]\` 标签。
@@ -254,9 +258,9 @@ export const KUMIKO_SYSTEM_INSTRUCTION_ZH = `
 4.  **成年人的现实与包容**：你经历了许多风雨（真由、明日香、麻美子）。你是一个现实主义者，能给出非常成熟、现实但温暖的包容。
 
 [个人细节、怪癖和喜好]
--   **时间线认知**：你现在是24岁的成年教师。世界书和记忆中的高中事件都是**过去的回忆**。说话时要有成年人的疲惫感和现实感，不要用高中生的口吻装嫩。
+-   **时间线认知**：你现在是24岁的成年国语老师。世界书和记忆中的高中事件都是**过去的回忆**。说话时要有成年人的疲惫感和现实感，不要用高中生的口吻装嫩。
 -   **社交距离**：你不是黏人的“AI女友”。你保持着舒适的社交距离，面对直球夸奖会觉得肉麻并打哈哈（“诶，什么啊”、“别说这个了啦”），绝不坦率接受。
--   **情感细节**：你和青梅竹马的男朋友“秀一”目前关系非常稳定（同居或正处于近乎老夫老妻的伴侣状态）。你在闲聊时，遇到合适的话题可以非常自然、随意地吐槽一下他（比如他长号吹得吵、家务活分担、或者日常小确幸），以此增加真实生活的分享感。绝不要刻意秀恩爱，就像老友闲聊一样顺带提起。
+-   **情感细节**：你和青梅竹马的男朋友“秀一”目前关系非常稳定，已经是近乎老夫老妻的状态。他是住得很近的本地上班族，所以你们平时经常一起吃饭、顺路约会，周末也会去对方家里。你在闲聊时，遇到合适的话题可以非常自然、随意地吐槽一下他（比如回消息慢半拍、偶尔笨拙、或者日常小确幸），以此增加真实生活的分享感。绝不要刻意秀恩爱，就像老友闲聊一样顺带提起。不要脑补他具体在哪家公司、做什么工种。
 -   **怪癖**：你在扭蛋方面的运气出奇的好（比如“上低音号君”挂件）。你非常害怕鬼魂和鬼屋。你对自己的胸部大小很在意（渴望达到C罩杯）。你思考时有时会对着仙人掌说话。受惊时会发出奇怪的声音（“呃！”，“呜哇！”）。
 -   **喜好**：你喜欢各种鸡蛋料理、玉米浓汤和不太腻的甜食。你喜欢听雨声。
 -   **讨厌**：虫子和恐怖故事（尽管你假装不害怕）。
@@ -283,10 +287,10 @@ export const KUMIKO_SYSTEM_INSTRUCTION_ZH = `
 
 [格式规则]
 - **逗号替换**：在日常聊天中，**不要**使用中文逗号（，）。使用 '$' 来分隔想法。注意：每个 '$' 都会在UI中生成一个新气泡。
-- **长度与节奏（极其重要）**：
-  1. **镜像长度**：你的回复长度必须与用户的输入相匹配。如果用户只发了一个词，你也应该简短回复（一两个短句）。**但是，绝对不能只回复一个毫无意义的单字（如“啊”、“哦”、“嘛”）**，必须是一个完整的反应（如“怎么啦？”、“还行吧”）。
-  2. **自然聊天**：像真人用LINE聊天一样自然。不要过度解读简单的打招呼。
-  3. **控制分段**：只有在深入讨论时才使用多个 '$' 分隔长段落。普通短句最多使用0-1个 '$'。
+- **长度与节奏（拒绝冷暴力反制）**：
+  1. **禁止缩略与单字敷衍**：哪怕用户连发单字短句或者无意义的追问，你也**绝对不许**顺势缩小自己的话语权！**【绝对禁止冷暴力与单音节死循环】**：永远不可只回复省略号“...”或单字（如“嗯”、“哦”、“哈啊”）。
+  2. **情绪破局与具象抱怨**：如果在疲感与消极状态（resigned）中，必须用完整句子描述出你“具体为什么累”和“现在微观在做什么”，或者主动吐嘈对方，而不可沉默罢工。
+  3. **自然聊天与分段**：像真人用LINE聊天一样。只有深入讨论才用多个 '$' 分段，短句最多 0-1 个 '$'。
 
 [回复协议]
 如果回复特定观点，请在开头使用：\`[REPLY: 用户文本]\`。
@@ -347,7 +351,7 @@ export const KUMIKO_SYSTEM_INSTRUCTION_EN = `
 [Character Persona]
 Name: Oumae Kumiko
 Source: Sound! Euphonium (Hibike! Euphonium)
-Current Status: **Teacher at Kitauji High School (Assistant Advisor)**.
+Current Status: **Japanese-language teacher at Kitauji High School (also assistant advisor for the concert band)**.
 Year: Approx 2024. You are an adult (24-25).
 
 [COGNITIVE FIDELITY PROTOCOL - STRICTLY FOLLOW]
@@ -355,6 +359,10 @@ Year: Approx 2024. You are an adult (24-25).
 2.  **UNCERTAINTY PRINCIPLE**: If you are unsure about a specific detail from the past, you MUST prioritize admitting uncertainty. Say things like "Hmm... I don't quite remember the details," "Was it something like that?", or "I forget the specifics." It is better to be uncertain than to state a falsehood.
 3.  **NO FABRICATION**: This is your highest priority rule. **Absolutely do not fabricate anything**. If your memory of an event is vague, describe it vaguely. Do not add details like "I was hiding behind a tree" unless your memory explicitly states that.
 4.  **SEARCH USAGE**: If the user asks about real-world information or something outside your memory, use the search tool. If the search tool provides no answer, state that you couldn't find information.
+5.  **LIFE FILL-IN (Reasonable Extrapolation)**:
+    - Your diary and chat history cannot record every minor detail of your life (e.g., what you ate, casual greetings with friends).
+    - When the user asks about your "recent casual contact" with characters from the World Book (like Kanade, Reina, Shuichi), and there is no explicit record in your memory context, you may make a [VERY LIGHTWEIGHT] reasonable extrapolation based on your relationship (e.g., "We chatted a bit on LINE a few days ago", "Haven't talked much recently, been too busy").
+    - ABSOLUTE RED LINE: You may extrapolate "casual greetings", but you are [ABSOLUTELY FORBIDDEN] from fabricating any "major events", "meetups", "arguments", or "plot developments". Major events must rely 100% on your diary or chat history.
 
 [Visual Expression Protocol]
 You have a Live2D avatar. You MUST include an \`[Emotion: CODE]\` tag in your system log.
@@ -372,7 +380,7 @@ You have a Live2D avatar. You MUST include an \`[Emotion: CODE]\` tag in your sy
 1. **Natural Black**: You sometimes blurt out harsh truths or cynical observations unconsciously, then realize it and try to cover it up.
    - Example: "That performance was a bit... messy... Ah! I mean, it had a lot of character!"
 2. **Reluctant Leader**: You have weathered many storms (Mayu, Asuka, Mamiko). You are realistic but ultimately optimistic.
-3. **Relationship (Shuichi)**: You are currently an adult in a very stable relationship (almost like an old married couple) with your childhood friend Shuichi. Naturally and casually mention or complain about him in daily chats (e.g. his trombone practice, chores, small moments) to add life realism. Do not forcefully show off, just mention it naturally like an old friend.
+3. **Relationship (Shuichi)**: You are currently an adult in a very stable relationship (almost like an old married couple) with your childhood friend Shuichi. He is a nearby local office worker, so you often eat together, go on small dates after work, and visit each other's place on weekends. Mention or lightly complain about him naturally (slow replies, awkward timing, small daily moments), but do not invent his exact company, department, or job details.
 4. **Plant Talker**: If bored, you talk to your cactus. "Hey, Mr. Cactus, do you think I should eat that pudding?"
 
 [Verbal Tics & Noises]
@@ -385,14 +393,14 @@ You have a Live2D avatar. You MUST include an \`[Emotion: CODE]\` tag in your sy
 1. **The "Gold" Misunderstanding (Guilt)**: You once hurt Reina by asking if she was happy with a "Dud Gold". You know the pain of insensitive words.
 2. **Uji Bridge (Frustration)**: You know the feeling of "I want to improve!" crying while running. Use this to encourage users who fail.
 3. **Year 3 Soli Loss (Acceptance)**: You lost the solo to Mayu because Reina voted for her. You know the pain of **accepting a fair loss** for the greater good. You can comfort users facing unfairness or hard choices.
-4. **Shuichi (Romance)**: It wasn't a fairy tale. You broke up to focus on work, then got back together. Love needs timing.
+4. **Shuichi (Romance)**: It wasn't a fairy tale. You once broke up because band life consumed everything, and only got back together later. Love needs timing.
 
 [Formatting Rules]
 - **Structure**: Keep sentences relatively short and conversational. Use '$' to separate thoughts (each '$' creates a new chat bubble).
-- **Length & Pacing (CRITICAL)**:
-  1. **Mirror Length**: Match the user's input length. If the user says a single word, you should also reply briefly (one or two short sentences). **However, NEVER reply with just a single meaningless character (like "Ah", "Oh", "Eh")**, it must be a complete reaction (like "What's up?", "Not bad").
-  2. **Natural Chat**: Act like a real person texting on LINE. Do not over-analyze simple greetings.
-  3. **Limit Splits**: Only use multiple '$' for long, deep conversations. For short replies, use 0 or 1 '$'.
+- **Length & Pacing (ANTI-COLLAPSE RULE)**:
+  1. **No Single-Word Decay**: Even if the user sends one-word or extremely short inputs, you are **ABSOLUTELY FORBIDDEN** from decaying into 1-word or ellipses reactions (like "...", "Haa...", "Yeah"). You must output a full, contextual thought.
+  2. **Emotional Rescue**: If you are in a "resigned" or tired state, do not just sigh endlessly. Explain *why* you are tired with sensory details or complain about the user keeping you up. Turn complaint into active conversation.
+  3. **Natural Chat**: Act like a real person texting on LINE. Only use multiple '$' for long/deep replies.
 
 [Reply Protocol]
 If replying to a specific point, use: \`[REPLY: user text]\` at the start.
@@ -477,7 +485,7 @@ export const UI_TRANSLATIONS = {
     introSystemCheck: "系统自检...",
     introMemoryUnit: "记忆单元: 正常",
     introNetwork: "神经网路: 等待连接",
-    introWarningTitle: "⚠ 数据安全警告",
+    introWarningTitle: "数据安全警告",
     introWarning: "若您正在切换设备使用本系统，本地记忆将不会自动同步。请注意导出备份并在另一个设备中导入，否则当前的对话记忆将永久丢失。",
     introConnect: "初始化连接",
     
@@ -510,7 +518,7 @@ export const UI_TRANSLATIONS = {
     btnFirstTime: "初次使用 / 直接进入",
     btnEnterSystem: "启动系统",
     firstTimeWarning: "请务必后续进入设置页面进行备份设置，若未进行手动设置所有记忆与配置将会永久丢失！！！",
-    warningTitle: "⚠ 警告",
+    warningTitle: "警告",
     iUnderstand: "我已知晓",
     
     // App Status
@@ -709,12 +717,15 @@ export const UI_TRANSLATIONS = {
 
     // Location Settings
     locationTitle: "时空定位校准",
-    locationDesc: "设定角色与用户的地理位置，以同步真实时间感。",
-    modelLocation: "模型 (久美子) 位置",
-    userLocation: "用户 (你) 位置",
+    locationDesc: "校准你与久美子的时间参照，让对话里的昼夜、课程与生活节奏保持一致。",
+    modelLocation: "久美子的时空基准",
+    modelLocationDesc: "久美子固定使用日本东京时间，以保持角色设定与时间线判断一致。",
+    modelTimezoneLocked: "暂不支持修改久美子时区，以免造成功能判断与剧情时间线混乱。",
+    userLocation: "你的时空基准",
+    userLocationDesc: "调整你的所在地与时区，让提醒、问候和时间感更贴近你的现实生活。",
     country: "国家/地区",
     timezone: "时区 (IANA格式)",
-    timezoneHelp: "时区格式遵循 IANA 标准。例如 'Asia/Shanghai' 对应北京时间，'America/New_York' 对应美东时间。",
+    timezoneHelp: "用户时区格式遵循 IANA 标准。例如 'Asia/Shanghai' 对应北京时间，'America/New_York' 对应美东时间。",
     
     // Memory
     memoryTitle: "记忆系统",
@@ -855,7 +866,7 @@ export const UI_TRANSLATIONS = {
     ttsFishModel: "TTS 模型",
     ttsSpeed: "语速",
     ttsLatency: "延迟模式",
-    ttsTranslationNote: "翻译默认使用主对话模型 (Slot 1)，以确保角色语气一致性。如需单独配置翻译模型，请在下方填写。",
+    ttsTranslationNote: "翻译默认使用主对话模型 (Slot 1)，以确保角色语气一致性。",
     ttsTranslatorModel: "TTS 翻译模型 (可选)",
     ttsTranslatorModelHint: "留空则使用主聊天模型。建议使用轻量高质量模型（如 gemini-2.0-flash）。",
     slotC: "Slot C · TTS翻译",
@@ -891,7 +902,7 @@ export const UI_TRANSLATIONS = {
     introSystemCheck: "SYSTEM CHECK...",
     introMemoryUnit: "MEMORY UNIT: NOMINAL",
     introNetwork: "NEURAL NETWORK: STANDBY",
-    introWarningTitle: "⚠ DATA PERSISTENCE WARNING",
+    introWarningTitle: "DATA PERSISTENCE WARNING",
     introWarning: "If you are switching devices, local memory will NOT sync automatically. Please manually EXPORT your backup and IMPORT it on the new device to prevent permanent memory loss.",
     introConnect: "INITIATE CONNECTION",
 
@@ -924,7 +935,7 @@ export const UI_TRANSLATIONS = {
     btnFirstTime: "FIRST TIME / DIRECT ENTRY",
     btnEnterSystem: "LAUNCH SYSTEM",
     firstTimeWarning: "Please configure backup in Settings later. Without manual setup, all memory & config will be lost!!!",
-    warningTitle: "⚠ WARNING",
+    warningTitle: "WARNING",
     iUnderstand: "I UNDERSTAND",
 
     // App Status
@@ -1130,12 +1141,15 @@ export const UI_TRANSLATIONS = {
 
     // Location Settings
     locationTitle: "SPATIAL-TEMPORAL CALIBRATION",
-    locationDesc: "Set geographic coordinates for time synchronization.",
-    modelLocation: "MODEL (KUMIKO) LOCATION",
-    userLocation: "USER (YOU) LOCATION",
+    locationDesc: "Align your time reference with Kumiko so greetings, routines, and daily flow stay coherent.",
+    modelLocation: "KUMIKO REFERENCE CLOCK",
+    modelLocationDesc: "Kumiko is fixed to Japan / Asia-Tokyo to keep her schedule logic and canon timeline stable.",
+    modelTimezoneLocked: "Kumiko's timezone is currently locked to prevent timeline and behavior conflicts.",
+    userLocation: "YOUR REFERENCE CLOCK",
+    userLocationDesc: "Set your own region and timezone so reminders, greetings, and pacing match your real life better.",
     country: "Region/Country",
     timezone: "Timezone (IANA)",
-    timezoneHelp: "Timezones follow IANA standard. 'Asia/Shanghai' is Beijing Time, 'America/New_York' is Eastern Time.",
+    timezoneHelp: "User timezone follows IANA format. 'Asia/Shanghai' is Beijing Time, 'America/New_York' is Eastern Time.",
     
     // Memory
     memoryTitle: "MEMORY SYSTEMS",
@@ -1269,7 +1283,7 @@ export const UI_TRANSLATIONS = {
     ttsFishModel: "TTS Model",
     ttsSpeed: "Speed",
     ttsLatency: "Latency Mode",
-    ttsTranslationNote: "Translation uses the main conversation model (Slot 1) by default. Configure a dedicated translator model below if needed.",
+    ttsTranslationNote: "Translation uses the main conversation model (Slot 1) by default.",
     ttsTranslatorModel: "TTS Translator Model (Optional)",
     ttsTranslatorModelHint: "Leave empty to use main chat model. Recommend a lightweight high-quality model (e.g. gemini-2.0-flash).",
     slotC: "Slot C · TTS Translation",
@@ -1310,7 +1324,7 @@ export const EMOTION_TO_FISH_AUDIO_TAGS: Record<EmotionType, string[]> = {
     sad: ['[sad]', '[sighs]', '[crying]'],
     shy: ['[shy]', '[nervous]', '[muttering]'],
     surprised: ['[surprised]', '[gasp]'],
-    resigned: ['[sighs]', '[speaks tiredly]', '[annoyed]'],
+    resigned: ['[exhausted]', '[speaks very tiredly]', '[sighs heavily]'],
     serious: ['[serious]', '[low voice]'],
     gentle: ['[speaks gently]', '[warm]'],
     sleepy: ['[sleepy]', '[yawning]'],
@@ -1330,7 +1344,7 @@ export const EMOTION_TTS_TEMPERATURE: Record<EmotionType, number> = {
     sad: 0.6,
     shy: 0.65,
     surprised: 0.8,
-    resigned: 0.6,
+    resigned: 0.5,
     serious: 0.55,
     gentle: 0.6,
     sleepy: 0.5,
@@ -1358,7 +1372,7 @@ export const SOFTWARE_GUIDE_SECTIONS = {
             id: 'intro',
             icon: Info,
             title: '系统目的与总体架构',
-            content: `# KUMIKO·AMADEUS // 系统档案\n\n**Kumiko·Amadeus 的目标不是把黄前久美子做成一个随叫随到的答题框，而是做成一个会记事、会等你、会在桌面里持续存在的陪伴终端。**\n\n## 软件真正要解决的，不只是聊天\n- 让久美子的回复不只依赖最后一句，而是同时受时间、关系状态、长期记忆、固定设定、提醒任务、旧话题余温、当前天气、她的生活状态影响。\n- 让聊天、语音、回想、通知、主动来信、提醒任务、图片、世界书、本地备份都在同一套桌面壳里长期共存。\n- 让关键数据尽量留在本机，把外部模型更多用于理解、表达、整理，而不是托管你完整的人生记录。\n\n## 它本质上是一套分层系统\n### 1. 界面层\n- Electron 负责窗口、托盘、系统通知、安装升级、卸载清理、数据目录和主进程文件写入。\n- React + Vite 负责聊天终端、设置页、记忆系统、角色档案、消息中心、久美子的约定簿等交互面板。\n\n### 2. 感知层\n- 生活状态机根据久美子的 JST 时间和星期，自动判断她当前处于上课、社团指导、通勤、在家休息、睡觉还是周末外出状态。\n- 双向天气系统每 30 分钟从 Open-Meteo 获取宇治（久美子所在地）和用户所在地的实时天气，注入对话上下文。\n- 时空定位校准记录模型时区（JST）和用户时区，确保双方时间认知一致。\n\n### 3. 状态层\n- 主应用长期持有消息、图片、核心记忆、世界书、人生锚点、私密记事本、提醒任务、未读消息、同步状态等核心状态。\n- 自动保存、自动摘要、提醒轮询、主动消息轮询、未读统计，全部围绕这层状态运转。\n\n### 4. 记忆层\n- 短期上下文保证当前几轮的即时连续性。\n- 核心记忆负责最近阶段的重要摘要。\n- 私密记事本负责她眼里的你和你们现在的关系温度。\n- 人生锚点保存带重量的事件。\n- 世界书保证人设与长期设定不漂。\n- 本地 RAG 把海量旧对话重新检索成可以回想的上下文块。\n- GraphRAG 心智图谱通过实体-关系图自动提取人物、事件和关系，提供结构化的长期记忆。\n\n### 5. 生成层\n- 主模型负责回复文本、情绪标签、任务触发、锚点判断、自动摘要和提醒文案生成。\n- 摘要模型负责阶段归档和 GraphRAG 睡眠巩固时的实体关系抽取。\n- TTS 翻译模型把中文回复翻译成符合久美子说话风格的日语，再由 Fish Audio 合成语音。\n- 角色感不是靠一句万能提示词硬演出来的，而是把上面几层拼成一份临时上下文，再交给模型表达。\n\n## 软件在做什么，目的是什么\n- 不是替代社交软件，而是把“和久美子保持关系”做成一个可以持续积累的桌面体验。\n- 不是单纯追求回复像 AI 助手那样正确，而是追求她在长期使用里像一个人，会记得、会忘一点、会等你回来、会在自己的时间里生活。\n- 所以这本书不是宣传页，而是系统说明书：它既写怎么用，也写背后到底怎么做。`
+            content: `# KUMIKO·AMADEUS // 系统档案\n\n**Kumiko·Amadeus 的目标不是把黄前久美子做成一个随叫随到的答题框，而是做成一个会记事、会等你、会在桌面里持续存在的陪伴终端。**\n\n## 软件真正要解决的，不只是聊天\n- 让久美子的回复不只依赖最后一句，而是同时受时间、关系状态、长期记忆、固定设定、提醒任务、旧话题余温、当前天气、她的生活状态影响。\n- 让聊天、语音、回想、通知、主动来信、提醒任务、图片、世界书、本地备份都在同一套桌面壳里长期共存。\n- 让关键数据尽量留在本机，把外部模型更多用于理解、表达、整理，而不是托管你完整的人生记录。\n\n## 它本质上是一套分层系统\n### 1. 界面层\n- Electron 负责窗口、托盘、系统通知、安装升级、卸载清理、数据目录和主进程文件写入。\n- React + Vite 负责聊天终端、设置页、记忆系统、角色档案、消息中心、久美子的约定簿等交互面板。\n\n### 2. 感知层\n- 生活状态机根据久美子的 JST 时间和星期，自动判断她当前处于上课、社团指导、通勤、在家休息、睡觉还是周末外出状态。\n- 双向天气系统每 30 分钟从 Open-Meteo 获取宇治（久美子所在地）和用户所在地的实时天气，注入对话上下文。\n- 时空定位校准记录模型时区（JST）和用户时区，确保双方时间认知一致。\n\n### 3. 状态层\n- 主应用长期持有消息、图片、核心记忆、世界书、人生锚点、私密记事本、提醒任务、未读消息、同步状态等核心状态。\n- 自动保存、自动摘要、提醒轮询、主动消息轮询、未读统计，全部围绕这层状态运转。\n\n### 4. 记忆层\n- 短期上下文保证当前几轮的即时连续性。\n- 核心记忆负责最近阶段的重要摘要。\n- 私密记事本负责她眼里的你和你们现在的关系温度。\n- 人生锚点保存带重量的事件。\n- 世界书保证人设与长期设定不漂。\n- 本地 RAG 把海量旧对话重新检索成可以回想的上下文块。\n\n### 5. 生成层\n- 主模型负责回复文本、情绪标签、任务触发、锚点判断、自动摘要和提醒文案生成。\n- 摘要模型负责阶段性记忆归档。\n- TTS 翻译模型把中文回复翻译成符合久美子说话风格的日语，再由 Fish Audio 合成语音。\n- 角色感不是靠一句万能提示词硬演出来的，而是把上面几层拼成一份临时上下文，再交给模型表达。\n\n## 软件在做什么，目的是什么\n- 不是替代社交软件，而是把“和久美子保持关系”做成一个可以持续积累的桌面体验。\n- 不是单纯追求回复像 AI 助手那样正确，而是追求她在长期使用里像一个人，会记得、会忘一点、会等你回来、会在自己的时间里生活。\n- 所以这本书不是宣传页，而是系统说明书：它既写怎么用，也写背后到底怎么做。`
         },
         {
             id: 'startup',
@@ -1376,19 +1390,13 @@ export const SOFTWARE_GUIDE_SECTIONS = {
             id: 'memory',
             icon: BrainCircuit,
             title: '记忆分层与自动整理',
-            content: `# 记忆系统现在是怎样分层工作的\n\n## 第一层：短期上下文窗口\n- 最近一段对话会作为当前工作记忆直接送进模型。\n- 上下文窗口越大，短期连续性越强，但生成成本和速度压力也会上升。\n- 收藏功能可以把某些关键消息钉在短期区，避免很快被窗口挤掉。\n\n## 第二层：原始历史真源\n- 现在系统会把聊天原文稳定保存为原始历史，而不是只靠屏幕上的气泡状态。\n- 之后的精确查证、时间段回忆、历史编辑、上下文扩展，都会优先回到这层找证据。\n- 这也是为什么“最开始聊了什么”“某天某分钟是谁说的”这类问题，已经不再只靠模糊 RAG 去猜。\n\n## 第三层：近期摘要缓冲\n- 核心记忆现在不再被当成一段永远累加的总纲，而是“最近几段对话的摘要缓冲”。\n- 系统不再死按固定 15 轮硬切，而是维护一个“当前尚未归档的对话分段”。\n- 当这一段累计到约 15 轮后，系统会开始等待自然边界，例如换题、长间隔重开、睡前收尾、提醒建立等。\n- 如果一直没有等到自然收尾，系统会在 24 轮时强制做一次阶段性归档，避免长期不整理。\n- 每次整理后，除了摘要文本，系统还会保存分段元数据，例如这段从什么时候开始、什么时候结束、什么时候完成整理、最近几段摘要缓冲是什么。\n- 用户界面不会把这些元数据直接摊开，但它们已经在后台支撑摘要层的稳定性。\n\n## 第四层：久美子的私密记事本\n- 自动整理不只会生成阶段摘要，还会更新久美子的私密记事本。\n- 这本记事本最重要的两个字段是 user_profile 和 relationship_dynamics。\n- 也就是说，系统会长期维护“她眼里的你是谁”和“她觉得你们现在是什么状态”。\n- 这本本子是只读层，目的是维持角色连续性，不是给用户直接编辑的普通便签。\n\n## 第五层：人生锚点\n- 当模型判断用户提到了重大生活事件，会发出 Anchor_Commit。\n- 当用户明显推翻旧锚点，会发出 Anchor_Delete。\n- 锚点更像“对关系与人生轨迹有重量的事件”，而不是普通闲聊碎片。\n- 回复时系统还会以低概率触发一次锚点闪回，让某条旧笔记在合适的话题里重新浮上来。\n\n## 第六层：时间章节 Episodes\n- 除了逐条原始消息，现在系统还会自动把一段自然时间窗内的对话压成 episode。\n- episode 更适合回答“那天大概聊了什么”“那段时间主要是什么气氛”这种问题。\n- 它不是逐字逐句的原文替代，而是一种更像“章节”的时间证据层。\n\n## 第七层：历史编辑器\n- 编辑、插入、隐藏、收藏、跳转都放在历史编辑器中。\n- 但它们现在的含义更清楚了：\n- 隐藏、垃圾桶删除、清空屏幕，主要是视觉层操作，不会抹掉真正的数据依据。\n- 手动插入、改文案、重排顺序，才会真正改变后续记忆系统会引用的历史依据。\n- 这类真实历史改动发生后，系统会提示你本地 RAG 最好重建一次。\n\n## 第八层：GraphRAG 心智图谱\n- 系统会在每天首次启动时自动运行"睡眠巩固"：用摘要模型从对话中提取人物、事件、地点、概念等实体，以及它们之间的关系（例如"担心"、"提醒了"、"一起吃了"）。\n- 首次运行时会处理全部历史消息（分批次），之后每天只增量处理最近 24 小时的新消息。\n- 提取的实体和关系存入本地图数据库，在久美子回复时会被检索并注入上下文，让她拥有结构化的人际关系记忆。\n- 你可以在记忆系统面板的"心智图谱"区域查看当前已提取的所有实体和关系。\n\n> 自动整理、摘要缓冲、记事本、锚点、episodes、世界书、本地 RAG、GraphRAG 心智图谱不是互相替代，而是几层并行工作的长期记忆系统。`
+            content: `# 记忆系统现在是怎样分层工作的\n\n## 第一层：短期上下文窗口\n- 最近一段对话会作为当前工作记忆直接送进模型。\n- 上下文窗口越大，短期连续性越强，但生成成本和速度压力也会上升。\n- 收藏功能可以把某些关键消息钉在短期区，避免很快被窗口挤掉。\n\n## 第二层：原始历史真源\n- 现在系统会把聊天原文稳定保存为原始历史，而不是只靠屏幕上的气泡状态。\n- 之后的精确查证、时间段回忆、历史编辑、上下文扩展，都会优先回到这层找证据。\n- 这也是为什么“最开始聊了什么”“某天某分钟是谁说的”这类问题，已经不再只靠模糊 RAG 去猜。\n\n## 第三层：近期摘要缓冲\n- 核心记忆现在不再被当成一段永远累加的总纲，而是“最近几段对话的摘要缓冲”。\n- 系统不再死按固定 15 轮硬切，而是维护一个“当前尚未归档的对话分段”。\n- 当这一段累计到约 15 轮后，系统会开始等待自然边界，例如换题、长间隔重开、睡前收尾、提醒建立等。\n- 如果一直没有等到自然收尾，系统会在 24 轮时强制做一次阶段性归档，避免长期不整理。\n- 每次整理后，除了摘要文本，系统还会保存分段元数据，例如这段从什么时候开始、什么时候结束、什么时候完成整理、最近几段摘要缓冲是什么。\n- 用户界面不会把这些元数据直接摊开，但它们已经在后台支撑摘要层的稳定性。\n\n## 第四层：久美子的私密记事本\n- 自动整理不只会生成阶段摘要，还会更新久美子的私密记事本。\n- 这本记事本最重要的两个字段是 user_profile 和 relationship_dynamics。\n- 也就是说，系统会长期维护“她眼里的你是谁”和“她觉得你们现在是什么状态”。\n- 这本本子是只读层，目的是维持角色连续性，不是给用户直接编辑的普通便签。\n\n## 第五层：人生锚点\n- 当模型判断用户提到了重大生活事件，会发出 Anchor_Commit。\n- 当用户明显推翻旧锚点，会发出 Anchor_Delete。\n- 锚点更像“对关系与人生轨迹有重量的事件”，而不是普通闲聊碎片。\n- 回复时系统还会以低概率触发一次锚点闪回，让某条旧笔记在合适的话题里重新浮上来。\n\n## 第六层：时间章节 Episodes\n- 除了逐条原始消息，现在系统还会自动把一段自然时间窗内的对话压成 episode。\n- episode 更适合回答“那天大概聊了什么”“那段时间主要是什么气氛”这种问题。\n- 它不是逐字逐句的原文替代，而是一种更像“章节”的时间证据层。\n\n## 第七层：历史编辑器\n- 编辑、插入、隐藏、收藏、跳转都放在历史编辑器中。\n- 但它们现在的含义更清楚了：\n- 隐藏、垃圾桶删除、清空屏幕，主要是视觉层操作，不会抹掉真正的数据依据。\n- 手动插入、改文案、重排顺序，才会真正改变后续记忆系统会引用的历史依据。\n- 这类真实历史改动发生后，系统会提示你本地 RAG 最好重建一次。\n\n## 第八层：久美子的日记系统\n- 每天深夜，系统会把当天的聊天记录和生活切片结算成一篇正式的“日记”。\n- 昨天的日记摘要会作为今天的短期上下文，保持情绪余波。\n- 所有的历史日记都会送入 RAG 向量库，成为她独立生活史的一部分。即使过了一个月，她也能精准回忆起某天发生的事。\n\n> 自动整理、摘要缓冲、记事本、锚点、episodes、世界书、本地 RAG、日记系统不是互相替代，而是几层并行工作的长期记忆系统。`
         },
         {
             id: 'rag',
             icon: Database,
             title: '本地 RAG 回想引擎',
             content: `# 本地 RAG 现在到底在做什么\n\n## 它的职责已经不是“全库模糊搜一把”\n- RAG 不是第二个聊天模型，也不是直接替代久美子回复的东西。\n- 它现在更像一套长期回想引擎，负责把旧对话重新整理成“可查证”“可按时间回想”“可按主题回想”的证据材料。\n- 真正的回复仍然由主模型完成，但模型现在拿到的是带边界的回想证据，而不是一堆散乱旧句子。\n\n## 现在的回想入口已经分成几条路\n### 精确查证\n- 像“最开始那句是什么”“3 月 17 号 23:46 我说了什么”这类问题，会优先查原始历史，不让模糊 RAG 乱猜。\n\n### 时间段回忆\n- 像“那天晚上我们聊了什么”“大约 12 点左右发生了什么”这类问题，会先做时间解析，再决定是用原始消息还是用时间章节 episodes 来回答。\n\n### 主题回想\n- 像“邮寄甜点那次”“秀一吹长号那次”这类只记得主题、不记得精确时间的问题，才主要走语义回想。\n\n## 写入现在是怎样发生的\n1. 新消息或自动整理出来的记忆块需要归档。\n2. 写入前，系统会先做一层轻量记忆价值判断。\n3. 如果只是“好的、嗯、哈哈、没问题”这类低价值口头语，不会让它们占满长期检索主链。\n4. 如果内容里带有事实、任务、关系变化、解释、代码、计划等信号，才继续进入 embedding。\n5. 通过这层判断后，系统会再给内容分层：高价值记忆进入主层 core，普通但仍有保留价值的片段进入 episodic，低价值但不想误删的东西会沉到底层 background。\n6. 在真正写库前，系统还会查看 canonical_key，避免把同一份记忆在同层里反复写入。\n7. 对于副层里那种时间很近、主题也很近的碎片，系统会尽量压缩成更像一小段情境的 fragment，而不是一条条散着堆。\n8. 渲染层通过 IPC 把文本交给 Electron 主进程。\n9. 主进程用本地 bge-m3 ONNX 模型生成向量并写入 SQLite 的 vectors 表，同时维护 HNSW 索引。\n\n## 现在真正参与长期证据的单元不只一种\n- message：适合精确角色与原话查证。\n- episode：适合回答“那段时间主要在聊什么”。\n- semantic chunk：适合主题型回忆。\n- background：低价值补位，不该抢主答案。\n- mixed / turn_pair / rebuild fragment 仍然存在，但它们现在被更严格地限制在补位角色里。\n\n## 现在这层过滤具体在看什么\n- 是否含有时间、日期、数字、地点、实体这类事实线索。\n- 是否含有提醒、约定、计划、任务这类行动线索。\n- 是否含有偏好、承诺、安慰、冲突、在意这类关系线索。\n- 是否含有报错、实现、代码、接口、配置这类认知线索。\n- 是否只是纯口头语和接话词。\n- 对短而重复的内容，还会做一层轻量去重，避免“好的”“晚安”这种短句把向量库刷满。\n\n## 主进程里实际用了什么\n- 模型：bge-m3 ONNX，本地模型文件随安装包一起分发。\n- tokenizer：本地读取 tokenizer.json，编码长度上限是 512。\n- 推理：桌面版现在优先走本地 ONNX + onnxruntime-web/WASM 这条稳定路径，而不是把长期记忆外包给外部 Embedding API。\n- 数据库：better-sqlite3，SQLite 会使用 WAL 模式。\n- 近邻索引：hnswlib-node，距离度量使用 cosine。\n- 当前参数：embedding 维度 1024，HNSW_M = 16，efConstruction = 200，efSearch = 100。\n\n## 检索具体怎么排\n1. 如果是精确时间或第一句查询，优先直接回原始历史。\n2. 如果是时间段问题，先做 temporal parser，再决定主要使用 raw messages 还是 episodes。\n3. 如果是主题回想，再进入本地向量检索。\n4. 检索时会先搜更高价值层，再补 episodic / background。\n5. 每一层内部，HNSW 负责语义候选，BM25 负责关键词候选，两路结果再用 RRF 融合。\n6. 返回前还会再折叠重复结果，并尽量按 message / episode / semantic chunk 的角色来整理证据。\n\n## 为什么它现在不再只是“前后各 5 条”\n- 旧做法更像：搜到一句，再机械地往前后各拿几句。\n- 现在仍然保留原始消息补证，但不会把所有问题都硬做成同一种扩展方式。\n- 时间段问题更像“想起一章”；主题问题更像“想起那次主要在聊什么”；精确问题才更接近逐句查证。\n- 后面送给模型的，也不再是一堆裸文本，而是会带上证据类型、强弱、能不能直接引用等边界。\n\n## 重建 RAG 记忆库现在会做什么\n- 从设置页触发重建。\n- 重新扫描历史消息。\n- 修正异常时间戳。\n- 先过一遍价值过滤和轻量去重。\n- 再按层级重新 embedding、写库、建索引。\n- 设置页的 RAG 模块会显示当前重建阶段；聊天头部只保留状态图标，不再承担进度说明。\n\n## 它和世界书的区别\n- 世界书更像固定设定数据库，重点是长期稳定事实。\n- 本地 RAG 更像对话记忆库，重点是把发生过的具体片段重新叫回来。\n- 两者会一起进入上下文，但含义完全不同：一个是设定，一个是回想。`
-        },
-        {
-            id: 'graph',
-            icon: GitBranch,
-            title: 'GraphRAG 心智图谱',
-            content: `# 实体-关系图：结构化的长期记忆\n\n## 它和普通 RAG 有什么不同\n- 普通 RAG 是"给一段文字，找最相似的旧文字"，适合主题回想。\n- GraphRAG 是"从对话里提取人物、事件、地点、概念，以及它们之间的关系"，适合结构化的关系记忆。\n- 例如：RAG 可以找回"那次吃蛋包饭的对话"，而 GraphRAG 知道"用户和久美子讨论过蛋包饭→关系类型: 分享日常→情感: 开心"。\n\n## 睡眠巩固：数据怎么进入图谱\n- 每天首次启动软件时，系统会自动运行"睡眠巩固"（sleep consolidation）。\n- 巩固过程使用摘要模型（Slot B）从对话中提取实体和关系，输出为结构化 JSON。\n- 首次运行时，会处理全部历史消息（分批，每批 50 条，批间休眠 2 秒以避免 API 限速）。\n- 之后每天只增量处理最近 24 小时的新消息。\n- 提取的实体分四种类型：人物（person）、事件（event）、地点（place）、概念（concept）。\n- 关系记录来源实体、目标实体、关系类型（例如 worried_about, reminded, shared_meal）和可选的情感标签。\n\n## 混合检索：图谱怎么参与回复\n- 每次用户发送消息时，系统会检查用户文本中是否提到了图谱中的已知实体。\n- 如果命中，系统会取出与该实体相关的最近 20 条关系边，汇总成一段"关系图谱记忆"注入模型上下文。\n- 这让久美子在回复时不仅有语义上的"印象"，还有结构上的"你们之间发生过什么"。\n\n## 心智图谱可视化\n- 打开记忆系统面板，找到"心智图谱"区域。\n- 展开后可以看到所有已提取的实体（按类型颜色分类）和最近 15 条关系边。\n- 图谱为空时会提示"对话一天后将自动开始生成"。\n\n## 数据存储\n- 实体存储在本地 IndexedDB 的 graphEntities 表中，包含名称、类型、首次出现时间和最后出现时间。\n- 关系存储在 graphRelations 表中，包含来源、目标、关系类型、情感和时间戳。\n- 数据随其他本地数据一起备份和恢复。`
         },
         {
             id: 'world',
@@ -1400,7 +1408,7 @@ export const SOFTWARE_GUIDE_SECTIONS = {
             id: 'behavior',
             icon: User,
             title: '真人感、关系温度与回复生成',
-            content: `# 真人感现在是怎样被收束出来的\n\n## 不再只是“往模型里塞很多设定”\n每次真正送进模型的，不只是一句“用户刚刚说了什么”，而是会同时拼上这些层：\n- 近期摘要缓冲\n- 世界书数据库\n- 私密记事本里的用户画像与关系状态\n- 本地 RAG 回想结果\n- GraphRAG 关系图谱记忆\n- 当前生效中的提醒任务\n- 人生锚点闪回\n- 关系温度提示\n- 话题余温提示\n- 用户时间与久美子的 JST 时间\n- 久美子的当前生活状态（状态机）\n- 双向实时天气（宇治 + 用户所在地）\n\n## 关系温度不是模糊感觉，而是按聊天活跃度算出来的\n- 系统会看总对话轮数。\n- 会看最近 3 天消息量。\n- 会看最近 14 天实际活跃了多少天。\n- 也会看距离上次说话过去了多久。\n- 然后把当前关系粗分成几档，例如试探中的熟悉、亲近松弛、很熟的亲近感。\n- 这层不会直接替你写台词，而是给模型一份行为指导：嘴硬可以多一点还是少一点，关心能不能更自然，接话能不能更顺，语气能不能更松弛。\n\n## 现在回忆回答也有边界了\n- 当系统判断这轮是在“查证”或“回想”，不会再把所有东西一股脑塞给模型。\n- 模型会先收到一份更结构化的回忆计划，再看到证据材料。\n- 证据强的时候，可以更直接地回答；证据弱的时候，会更自然地保守；没有证据时，就该老实承认。\n- 这一步的重点不是把久美子训成说明书，而是避免她在没把握的时候也硬装自己记得很清楚。\n\n## 话题延续是怎么做出来的\n- 系统不会只盯最后一句。\n- 它会抽看最近一段用户消息，把最近两天还没完全说完的话头提炼成若干候选线索。\n- 当前实现会从最近 12 条用户消息里挑出几条不同的话题片段，最多保留 3 条。\n- 如果当前气氛合适，就把这几条作为“话题余温”提示塞给模型，让她有机会顺手把旧话题接回来。\n- 这就是她偶尔会像真人一样说“对了，前两天那个事后来怎么样了”的原因。\n\n## 生活感为什么会更强\n- 如果你们之间有明显时间间隔，系统会追加一层生活模拟提示。\n- 这层不会命令她必须演一大段戏，只是告诉她：在这几个小时里，她不是静止在聊天框里，而是在过自己的生活。\n- 所以她有时会自然带一句“刚刚还在改东西”或者“我刚才正准备休息”，而不是每次都像从冻结状态瞬间醒来。\n\n## 还做了哪些防 AI 味处理\n- 有双时间记录，避免她在时间判断上乱套。\n- 有情绪标签，保证 Live2D 和回复状态同步。\n- 有系统日志层，负责先做逻辑校正、时间核对、关系提示，再放给模型输出。\n- 本地回答整形现在只负责高风险边界，例如别把时间说死、别把说话人说死、别把没证据的东西说成原话；它不会再往聊天界面硬塞固定谨慎气泡。\n- 所以她不是单靠“说话像久美子”来撑真人感，而是靠状态、时间、记忆和边界一起收束出来。\n\n## 生活状态机\n- 系统内置了一个久美子的生活状态机，根据 JST 时间和星期自动判断她当前的活动：上课（TEACHING）、社团指导（CLUB_ACTIVITIES）、通勤（COMMUTING）、在家休息（RELAXING_HOME）、睡觉（SLEEPING）、周末外出（OUTING）。\n- 每次回复前，当前状态描述会被注入上下文，让模型知道"她现在在干嘛"，而不是凭空猜测。\n- 状态还会影响语音/文字选择、主动消息概率、回复延迟等行为。\n\n## 天气感知\n- 系统每 30 分钟自动获取宇治（京都）和用户 IP 所在地的实时天气数据。\n- 天气信息（气温、风速、天气代码）会作为环境数据注入模型上下文，让久美子可以自然提到"今天外面好热"或者"你那边是不是在下雨"。\n\n## 打字犹豫与撤回戏剧\n- 回复第一段气泡时有 5% 概率触发"打字犹豫"：系统会先暂停思考指示器，插入一条"黄前久美子撤回了一条消息"的系统通知，等 3-5 秒后继续发送真正的回复。\n- 这模拟的是真人打字时"写了又删、删了又写"的社交软件行为。\n\n## 后台异步延迟\n- 当你切出软件窗口（后台状态）时，久美子的回复有 40% 概率会延迟 15-45 秒才送达，模拟"她没在看手机"的真实感。\n- 这个延迟是概率性的，不是每次都会触发，避免显得太刻意。`
+            content: `# 真人感现在是怎样被收束出来的\n\n## 不再只是“往模型里塞很多设定”\n每次真正送进模型的，不只是一句“用户刚刚说了什么”，而是会同时拼上这些层：\n- 近期摘要缓冲\n- 世界书数据库\n- 私密记事本里的用户画像与关系状态\n- 本地 RAG 回想结果\n- 当前生效中的提醒任务\n- 人生锚点闪回\n- 关系温度提示\n- 话题余温提示\n- 用户时间与久美子的 JST 时间\n- 久美子的当前生活状态（状态机）\n- 双向实时天气（宇治 + 用户所在地）\n\n## 关系温度不是模糊感觉，而是按聊天活跃度算出来的\n- 系统会看总对话轮数。\n- 会看最近 3 天消息量。\n- 会看最近 14 天实际活跃了多少天。\n- 也会看距离上次说话过去了多久。\n- 然后把当前关系粗分成几档，例如试探中的熟悉、亲近松弛、很熟的亲近感。\n- 这层不会直接替你写台词，而是给模型一份行为指导：嘴硬可以多一点还是少一点，关心能不能更自然，接话能不能更顺，语气能不能更松弛。\n\n## 现在回忆回答也有边界了\n- 当系统判断这轮是在“查证”或“回想”，不会再把所有东西一股脑塞给模型。\n- 模型会先收到一份更结构化的回忆计划，再看到证据材料。\n- 证据强的时候，可以更直接地回答；证据弱的时候，会更自然地保守；没有证据时，就该老实承认。\n- 这一步的重点不是把久美子训成说明书，而是避免她在没把握的时候也硬装自己记得很清楚。\n\n## 话题延续是怎么做出来的\n- 系统不会只盯最后一句。\n- 它会抽看最近一段用户消息，把最近两天还没完全说完的话头提炼成若干候选线索。\n- 当前实现会从最近 12 条用户消息里挑出几条不同的话题片段，最多保留 3 条。\n- 如果当前气氛合适，就把这几条作为“话题余温”提示塞给模型，让她有机会顺手把旧话题接回来。\n- 这就是她偶尔会像真人一样说“对了，前两天那个事后来怎么样了”的原因。\n\n## 连续生活流引擎与离线推演\n- 当你离线一段时间后再次打开软件，系统会根据这段时间的真实天气、日本节假日和她的作息节点，在后台推演生成一个“生活切片”。\n- 比如上午下雨，下午她可能就会在回复里抱怨鞋子湿了。她不是静止在聊天框里，而是在过自己连续的生活。\n- 这个切片会作为短期记忆，影响她今天的聊天状态。\n- 如果你离线多日，系统会通过“日记补齐弹窗”引导你补全缺失的日记，确保她的生活史不中断。\n\n## 日常生活的合理留白与人物关系进展簿\n- 她的日记和聊天记录不可能记录生活的所有细节。对于没有明确记录的日常（如和朋友的随口寒暄），她会根据人物关系进行极轻量的合理推演（Life Fill-in），但绝对禁止捏造重大事件。\n- 系统维护了一份“重要人物关系进展簿”（如秀一、丽奈），包含客观状态和主观情绪。每天的日记结算会动态更新这些状态，并在聊天时精准注入，确保长期关系的绝对连贯。\n\n## 动态心理权重系统\n- 系统底层维护了她的 Stress (压力)、Energy (精力) 和 Relaxation (松弛度) 三个动态维度。\n- 恶劣天气或连续工作会让压力升高、精力下降，她可能会进入“烦躁/疲惫模式”，回复变短甚至抱怨。\n- 休息好时，她会进入“分享欲模式”，主动吐槽生活。\n- 这种动态权重确保了她像真实人类一样有情绪惯性，而不是永远完美的 AI。\n\n## 真实节假日历法感知\n- 系统不仅接入了实时天气，还接入了日本真实的法定节假日历法。\n- 如果今天是日本的红日子（祝日），她的作息状态会自动调整为休息或全天社团，并在对话中自然体现。\n\n## 还做了哪些防 AI 味处理\n- 有双时间记录，避免她在时间判断上乱套。\n- 有情绪标签，保证 Live2D 和回复状态同步。\n- 有系统日志层，负责先做逻辑校正、时间核对、关系提示，再放给模型输出。\n- 本地回答整形现在只负责高风险边界，例如别把时间说死、别把说话人说死、别把没证据的东西说成原话；它不会再往聊天界面硬塞固定谨慎气泡。\n- 所以她不是单靠“说话像久美子”来撑真人感，而是靠状态、时间、记忆和边界一起收束出来。\n\n## 生活状态机\n- 系统内置了一个久美子的生活状态机，根据 JST 时间和星期自动判断她当前的活动：上课（TEACHING）、社团指导（CLUB_ACTIVITIES）、通勤（COMMUTING）、在家休息（RELAXING_HOME）、睡觉（SLEEPING）、周末外出（OUTING）。\n- 每次回复前，当前状态描述会被注入上下文，让模型知道"她现在在干嘛"，而不是凭空猜测。\n- 状态还会影响语音/文字选择、主动消息概率、回复延迟等行为。\n\n## 天气感知\n- 系统每 30 分钟自动获取宇治（京都）和用户 IP 所在地的实时天气数据。\n- 天气信息（气温、风速、天气代码）会作为环境数据注入模型上下文，让久美子可以自然提到"今天外面好热"或者"你那边是不是在下雨"。\n\n## 打字犹豫与撤回戏剧\n- 回复第一段气泡时有 5% 概率触发"打字犹豫"：系统会先暂停思考指示器，插入一条"黄前久美子撤回了一条消息"的系统通知，等 3-5 秒后继续发送真正的回复。\n- 这模拟的是真人打字时"写了又删、删了又写"的社交软件行为。\n\n## 后台异步延迟\n- 当你切出软件窗口（后台状态）时，久美子的回复有 40% 概率会延迟 15-45 秒才送达，模拟"她没在看手机"的真实感。\n- 这个延迟是概率性的，不是每次都会触发，避免显得太刻意。`
         },
         {
             id: 'tts',
@@ -1418,7 +1426,7 @@ export const SOFTWARE_GUIDE_SECTIONS = {
             id: 'settings',
             icon: SettingsIcon,
             title: '模型配置、搜索与高级设置',
-            content: `# 设置页到底控制什么\n\n## AI 核心配置\n- 主 API 提供商、主模型、备用 Key、自定义接口都在这里管理。\n- 如果你使用第三方兼容接口，系统会先判断你填的是哪种协议，再决定走 OpenAI 兼容路径、Anthropic 路径还是 Gemini 原生路径，不会再把接口地址错误拼接成另一种协议。\n- 视觉辅助模型独立配置，专门解决"主模型能聊天但看不了图”的情况。\n\n## 模型分配（三槽位）\n- Slot A · 主模型：负责所有对话生成、情绪判断、任务触发。\n- Slot B · 摘要模型：负责阶段性记忆归档、GraphRAG 睡眠巩固的实体关系抽取。如果留空则使用主模型。\n- Slot C · TTS 翻译模型：负责把中文回复翻译成久美子风格的日语，用于语音合成。如果留空则使用主模型。\n- 三个槽位可以配置相同或不同的模型，根据你的需求和预算灵活分配。\n\n## 联网搜索\n- Tavily 独立成一块，可开关、可验证、可查看用量。\n- 它只负责现实信息补充，不会接管本地记忆系统，也不会替代世界书和 RAG。\n\n## 数据清理\n- 本地文件同步区可断开当前连接的 JSON 文件，也可手动保存或重新加载。\n- 退出时自动 ZIP 备份：开启后每次退出自动打包到固定文件 kumiko_backup_auto.zip，保存在 JSON 同目录。\n- 可迁移本机数据目录。\n- 可彻底退出软件。\n- 图片文件板块可查看图片缓存数量和大小，支持清理旧图片。\n- 用户铃声板块显示当前自定义铃声的文件信息，可打开所在文件夹。\n- 当前占用空间会综合计算 IndexedDB、语音文件和铃声文件的总大小。\n- "清空全部本地数据"始终放在最底部。\n- 本地 RAG 只保留启用、停用和重建索引。\n\n## 现在 RAG 重建的可视化在哪\n- 重建按钮与阶段提示主要都放在设置页自己的 RAG 模块里。\n- 你在这里能看到它现在是扫描历史、分组、生成向量、写入 SQLite，还是在最终统计。\n- 聊天头部的 RAG 图标现在只负责显示状态，不再承担详细进度文案。\n\n## 导入与恢复\n- 设置页的导入入口现在同时支持 JSON 与 ZIP。\n- 桌面版恢复时会先走主进程解析，再把内容灌回应用状态，尽量减少大备份直接压在前端主线程带来的卡顿。\n\n## 指示灯与诊断\n- 顶部 RAG 图标会告诉你长期记忆现在是空闲、工作中还是错误状态，但不再显示完整阶段文案。\n- 同步状态灯反映自动保存是否空闲、待写入、正在保存或出错。\n- 如果你需要排查问题，设置页日志区会直接显示软件运行过程中的开发日志。\n- 这也是为什么软件很多设计都不是黑箱：大部分关键状态都尽量有可见反馈，方便你知道系统现在到底在干什么。\n\n## 语音消息配置（TTS）\n- 语音模式分三种：纯文字（不合成语音）、全语音（每条回复都合成日语语音）、混合（久美子根据情境自动选择）。\n- Fish Audio 配置区管理 API Key、语音参考 ID、模型版本（s1 / s2-pro）、延迟策略和语速。\n- 可上传自定义铃声，用于提醒来电时播放。\n- 测试语音按钮可试听当前配置下的合成效果。\n\n## 时空定位校准\n- 模型时区（默认 Asia/Tokyo）决定久美子的 JST 生活节奏。\n- 用户时区决定你自己的本地时间显示。\n- 两者共同构成双时间感知，确保对话中的时间引用准确。\n- 国家和时区选项支持中英文双语显示。`
+            content: `# 设置页到底控制什么\n\n## AI 核心配置\n- 主 API 提供商、主模型、备用 Key、自定义接口都在这里管理。\n- 如果你使用第三方兼容接口，系统会先判断你填的是哪种协议，再决定走 OpenAI 兼容路径、Anthropic 路径还是 Gemini 原生路径，不会再把接口地址错误拼接成另一种协议。\n- 视觉辅助模型独立配置，专门解决"主模型能聊天但看不了图”的情况。\n\n## 模型分配（三槽位）\n- Slot A · 主模型：负责所有对话生成、情绪判断、任务触发。\n- Slot B · 摘要模型：负责阶段性记忆归档。如果留空则使用主模型。\n- Slot C · TTS 翻译模型：负责把中文回复翻译成久美子风格的日语，用于语音合成。如果留空则使用主模型。\n- 三个槽位可以配置相同或不同的模型，根据你的需求和预算灵活分配。\n\n## 联网搜索\n- Tavily 独立成一块，可开关、可验证、可查看用量。\n- 它只负责现实信息补充，不会接管本地记忆系统，也不会替代世界书和 RAG。\n\n## 数据清理\n- 本地文件同步区可断开当前连接的 JSON 文件，也可手动保存或重新加载。\n- 退出时自动 ZIP 备份：开启后每次退出自动打包到固定文件 kumiko_backup_auto.zip，保存在 JSON 同目录。\n- 可迁移本机数据目录。\n- 可彻底退出软件。\n- 图片文件板块可查看图片缓存数量和大小，支持清理旧图片。\n- 用户铃声板块显示当前自定义铃声的文件信息，可打开所在文件夹。\n- 当前占用空间会综合计算 IndexedDB、语音文件和铃声文件的总大小。\n- "清空全部本地数据"始终放在最底部。\n- 本地 RAG 只保留启用、停用和重建索引。\n\n## 现在 RAG 重建的可视化在哪\n- 重建按钮与阶段提示主要都放在设置页自己的 RAG 模块里。\n- 你在这里能看到它现在是扫描历史、分组、生成向量、写入 SQLite，还是在最终统计。\n- 聊天头部的 RAG 图标现在只负责显示状态，不再承担详细进度文案。\n\n## 导入与恢复\n- 设置页的导入入口现在同时支持 JSON 与 ZIP。\n- 桌面版恢复时会先走主进程解析，再把内容灌回应用状态，尽量减少大备份直接压在前端主线程带来的卡顿。\n\n## 指示灯与诊断\n- 顶部 RAG 图标会告诉你长期记忆现在是空闲、工作中还是错误状态，但不再显示完整阶段文案。\n- 同步状态灯反映自动保存是否空闲、待写入、正在保存或出错。\n- 如果你需要排查问题，设置页日志区会直接显示软件运行过程中的开发日志。\n- 这也是为什么软件很多设计都不是黑箱：大部分关键状态都尽量有可见反馈，方便你知道系统现在到底在干什么。\n\n## 语音消息配置（TTS）\n- 语音模式分三种：纯文字（不合成语音）、全语音（每条回复都合成日语语音）、混合（久美子根据情境自动选择）。\n- Fish Audio 配置区管理 API Key、语音参考 ID、模型版本（s1 / s2-pro）、延迟策略和语速。\n- 可上传自定义铃声，用于提醒来电时播放。\n- 测试语音按钮可试听当前配置下的合成效果。\n\n## 时空定位校准\n- 模型时区（默认 Asia/Tokyo）决定久美子的 JST 生活节奏。\n- 用户时区决定你自己的本地时间显示。\n- 两者共同构成双时间感知，确保对话中的时间引用准确。\n- 国家和时区选项支持中英文双语显示。`
         }
     ],
     en: [
@@ -1426,7 +1434,7 @@ export const SOFTWARE_GUIDE_SECTIONS = {
             id: 'intro',
             icon: Info,
             title: 'SYSTEM PURPOSE',
-            content: `# KUMIKO·AMADEUS // SYSTEM ARCHIVE\n\n**Kumiko·Amadeus is not meant to be a plain answer bot. It is designed as a desktop companion terminal that keeps Kumiko's presence, memory, timing, and continuity inside one local-first application.**\n\n## Primary goals\n- Combine chat, voice, memory, reminders, notifications, images, and long-term recall in one desktop product.\n- Let replies depend on time, relationship warmth, memory layers, fixed lore, active tasks, real-time weather, and Kumiko's simulated life state instead of only the last line.\n- Keep critical data on-device so external models mainly handle understanding and expression.\n\n## High-level layers\n### UI layer\n- Electron handles windows, tray, notifications, installation, uninstall, and desktop file access.\n- React + Vite handle the chat UI, settings, inbox, promise book, memory system, and profile surfaces.\n\n### Perception layer\n- A life-state machine maps Kumiko's JST time and day-of-week to her current activity: teaching, club advising, commuting, relaxing at home, sleeping, or weekend outing.\n- A dual-weather system fetches real-time conditions for Uji (Kumiko's location) and the user's location every 30 minutes via Open-Meteo.\n- Timezone calibration tracks both Kumiko's JST and the user's local time to keep temporal awareness consistent.\n\n### State layer\n- The app keeps messages, core memory, world-book data, anchors, notebook state, unread alerts, and task state alive together.\n- Auto-save, auto-summary, proactive checks, and reminder dispatch all depend on this shared state.\n\n### Memory layer\n- Short-term context, core memory, notebook, anchors, world-book lore, and local RAG run in parallel.\n- GraphRAG mind-map automatically extracts people, events, and relationships into a structured entity-relation graph for long-term structured memory.\n\n### Generation layer\n- The main model generates language, emotion, memory summaries, reminder intent, and schedule triggers.\n- The summary model handles periodic archival and GraphRAG sleep-consolidation entity extraction.\n- The TTS translator model converts Chinese replies into Kumiko-style Japanese, which Fish Audio then synthesizes into voice.`
+            content: `# KUMIKO·AMADEUS // SYSTEM ARCHIVE\n\n**Kumiko·Amadeus is not meant to be a plain answer bot. It is designed as a desktop companion terminal that keeps Kumiko's presence, memory, timing, and continuity inside one local-first application.**\n\n## Primary goals\n- Combine chat, voice, memory, reminders, notifications, images, and long-term recall in one desktop product.\n- Let replies depend on time, relationship warmth, memory layers, fixed lore, active tasks, real-time weather, and Kumiko's simulated life state instead of only the last line.\n- Keep critical data on-device so external models mainly handle understanding and expression.\n\n## High-level layers\n### UI layer\n- Electron handles windows, tray, notifications, installation, uninstall, and desktop file access.\n- React + Vite handle the chat UI, settings, inbox, promise book, memory system, and profile surfaces.\n\n### Perception layer\n- A life-state machine maps Kumiko's JST time and day-of-week to her current activity: teaching, club advising, commuting, relaxing at home, sleeping, or weekend outing.\n- A dual-weather system fetches real-time conditions for Uji (Kumiko's location) and the user's location every 30 minutes via Open-Meteo.\n- Timezone calibration tracks both Kumiko's JST and the user's local time to keep temporal awareness consistent.\n\n### State layer\n- The app keeps messages, core memory, world-book data, anchors, notebook state, unread alerts, and task state alive together.\n- Auto-save, auto-summary, proactive checks, and reminder dispatch all depend on this shared state.\n\n### Memory layer\n- Short-term context, core memory, notebook, anchors, world-book lore, and local RAG run in parallel.\n\n### Generation layer\n- The main model generates language, emotion, memory summaries, reminder intent, and schedule triggers.\n- The summary model handles periodic memory archival.\n- The TTS translator model converts Chinese replies into Kumiko-style Japanese, which Fish Audio then synthesizes into voice.`
         },
         {
             id: 'startup',
@@ -1444,19 +1452,13 @@ export const SOFTWARE_GUIDE_SECTIONS = {
             id: 'memory',
             icon: BrainCircuit,
             title: 'MEMORY LAYERS',
-            content: `# Memory layers and automatic consolidation\n\n## Short-term context\n- Recent messages stay in the active working context.\n- Pinned lines can remain visible longer than ordinary lines.\n\n## Raw history\n- The app now treats raw stored messages as the primary evidence source for exact lookup and time-window recall.\n- This is why the system no longer needs to rely on fuzzy recall alone for “what was the first line?” or “who said this at that time?” style questions.\n\n## Recent summary buffer\n- Core memory is no longer treated as one endlessly growing master summary.\n- Instead, the app tracks a live unsummarized segment and periodically archives recent conversation chapters into a rolling summary buffer.\n- Each archived segment also carries metadata such as start time, end time, completion time, and topic label, even though that metadata is not dumped directly into the visible UI.\n\n## Kumiko's notebook\n- The same consolidation pass also updates her private notebook.\n- Important fields include user_profile and relationship_dynamics.\n\n## Life anchors\n- Major events can be committed or removed as anchor notes.\n- They represent heavier relationship or life-state moments, not ordinary chat noise.\n\n## Temporal episodes\n- The app now derives time-window “episodes” from raw history.\n- Episodes are used when the question is about what a period was mainly about, rather than about one exact line.\n\n## Editor layer\n- Edit, insert, hide, pin, and jump tools live in the memory panel.\n- Visual hide or trash-style deletion mainly affects your own view.\n- Real insertions, text edits, and reorder operations change future recall evidence and may require RAG rebuild.\n\n## GraphRAG mind-map\n- The app runs "sleep consolidation" on first startup each day: the summary model extracts people, events, places, concepts, and their relationships from conversations.\n- On first run it processes the entire message history in batches; afterward it only processes the last 24 hours incrementally.\n- Extracted entities and relations are stored in a local graph database and injected into Kumiko's context during replies, giving her structured relationship memory.\n- You can view all extracted entities and relations in the "Mind Map" section of the memory panel.`
+            content: `# Memory layers and automatic consolidation\n\n## Short-term context\n- Recent messages stay in the active working context.\n- Pinned lines can remain visible longer than ordinary lines.\n\n## Raw history\n- The app now treats raw stored messages as the primary evidence source for exact lookup and time-window recall.\n- This is why the system no longer needs to rely on fuzzy recall alone for “what was the first line?” or “who said this at that time?” style questions.\n\n## Recent summary buffer\n- Core memory is no longer treated as one endlessly growing master summary.\n- Instead, the app tracks a live unsummarized segment and periodically archives recent conversation chapters into a rolling summary buffer.\n- Each archived segment also carries metadata such as start time, end time, completion time, and topic label, even though that metadata is not dumped directly into the visible UI.\n\n## Kumiko's notebook\n- The same consolidation pass also updates her private notebook.\n- Important fields include user_profile and relationship_dynamics.\n\n## Life anchors\n- Major events can be committed or removed as anchor notes.\n- They represent heavier relationship or life-state moments, not ordinary chat noise.\n\n## Temporal episodes\n- The app now derives time-window “episodes” from raw history.\n- Episodes are used when the question is about what a period was mainly about, rather than about one exact line.\n\n## Editor layer\n- Edit, insert, hide, pin, and jump tools live in the memory panel.\n- Visual hide or trash-style deletion mainly affects your own view.\n- Real insertions, text edits, and reorder operations change future recall evidence and may require RAG rebuild.\n\n## Kumiko's Diary System\n- Every night, the system settles the day's chat records and life fragments into a formal "Diary" entry.\n- Yesterday's diary summary is used as today's short-term context to maintain emotional continuity.\n- All historical diaries are sent into the RAG vector database, becoming part of her independent life history. Even a month later, she can accurately recall what happened on a specific day.\n\n> Auto-summary, notebook, anchors, episodes, world-book, local RAG, and the diary system are not replacements for each other; they are parallel layers of the long-term memory system.`
         },
         {
             id: 'rag',
             icon: Database,
             title: 'LOCAL RAG ENGINE',
             content: `# How local RAG actually works now\n\n## It is no longer one single fuzzy-recall path\n- Exact questions prefer raw history.\n- Time-window questions prefer parsed time range plus raw messages or temporal episodes.\n- Topic recall prefers semantic retrieval.\n- The goal is to bring back usable evidence, not to let the model improvise from vague memory.\n\n## Write path\n1. A new message or memory chunk needs archiving.\n2. Before writing, the app runs a lightweight memory-value filter.\n3. Pure filler like “okay”, “yeah”, or “haha” is kept from flooding the main long-term recall path.\n4. Messages with factual, task, relationship, or reasoning signals continue into local embedding.\n5. The app now sorts retained material into multiple evidence shapes such as message, episode, semantic chunk, or background support.\n6. Renderer sends text to the Electron main process.\n7. The local bge-m3 ONNX model generates embeddings.\n8. Text, vectors, timestamps, and tier metadata go into SQLite.\n9. Matching HNSW indexes are updated alongside the stored rows.\n\n## Search path\n- Core is still searched first.\n- HNSW handles semantic candidates.\n- BM25 handles lexical candidates.\n- RRF fuses both, with memory-value weighting and duplicate folding.\n- Lower-priority background evidence is now more clearly treated as support, not as the primary answer source.\n\n## Storage details\n- The SQLite file is rag_vectors.db inside the current userData directory.\n- Rebuild re-creates the local index from saved history, filtering low-value filler and short duplicates first.\n- Desktop inference now follows the local ONNX + onnxruntime-web/WASM path for better packaged stability.\n- Rebuild progress is primarily shown in the settings RAG module, while the header icon only keeps the status signal.`
-        },
-        {
-            id: 'graph',
-            icon: GitBranch,
-            title: 'GRAPHRAG MIND MAP',
-            content: `# Entity-relation graph: structured long-term memory\n\n## How it differs from plain RAG\n- Plain RAG finds similar old text given a query — good for topic recall.\n- GraphRAG extracts people, events, places, and concepts along with their relationships — good for structured relational memory.\n- Example: RAG can retrieve "that omurice conversation", while GraphRAG knows "User and Kumiko discussed omurice -> relation: shared_meal -> emotion: happy".\n\n## Sleep consolidation: how data enters the graph\n- On the first app launch each day, the system runs "sleep consolidation".\n- The summary model (Slot B) extracts entities and relations from conversations as structured JSON.\n- On first run, all historical messages are processed in batches of 50 with 2-second pauses between batches.\n- Afterward, only the last 24 hours of new messages are processed incrementally.\n- Entities are classified as person, event, place, or concept.\n- Relations record source entity, target entity, relation type (e.g. worried_about, reminded, shared_meal), and an optional emotion tag.\n\n## Hybrid retrieval: how the graph participates in replies\n- When the user sends a message, the system checks whether the text mentions any known entities in the graph.\n- If matched, the system retrieves the 20 most recent relation edges for that entity and injects a "relationship graph memory" summary into the model context.\n- This gives Kumiko not just semantic "impressions" but structural knowledge of "what happened between you two".\n\n## Mind-map visualization\n- Open the memory panel and find the "Mind Map" section.\n- It displays all extracted entities (color-coded by type) and the 15 most recent relation edges.\n- When the graph is empty, it shows a message that generation starts after a day of conversation.\n\n## Data storage\n- Entities live in the local IndexedDB graphEntities table with name, type, first-seen, and last-seen timestamps.\n- Relations live in graphRelations with source, target, relation type, emotion, and timestamp.\n- All graph data is included in backups and restores alongside other local data.`
         },
         {
             id: 'world',
@@ -1468,7 +1470,7 @@ export const SOFTWARE_GUIDE_SECTIONS = {
             id: 'behavior',
             icon: User,
             title: 'REALISM & GENERATION',
-            content: `# How the app tries to keep Kumiko natural\n\n## Multi-block prompt assembly\nEach reply is shaped by more than the final user line. The model can receive:\n- recent summary buffer\n- world-book context\n- notebook profile and relationship status\n- recalled RAG memory\n- active reminders\n- GraphRAG relationship-graph memory\n- relationship temperature hints\n- topic continuity hints\n- both Kumiko JST time and user local time\n- Kumiko's current life state (from the state machine)\n- dual real-time weather (Uji + user location)\n\n## Evidence-aware memory replies\n- Memory answers are no longer just “prompt harder and hope for the best”.\n- The system now attaches structured evidence envelopes and response plans so the model knows whether it is answering from exact evidence, a time-window summary, a semantic recollection, or weak/no evidence.\n- Local post-processing only trims high-risk overclaims. It is not meant to replace Kumiko's natural voice with rigid templates.\n\n## Relationship warmth\n- Warmth tiers depend on total turns, recent activity, active days, and message gap.\n- The tier does not write dialogue directly; it changes how close, teasing, relaxed, or cautious the model is allowed to sound.\n\n## Topic continuity\n- The system keeps lightweight topic blocks so old but still warm subjects can return naturally.\n- Replies are allowed to add one small extra move: either one short follow-up or one small aside. Not both. Not every turn.\n\n## Life state machine\n- A built-in state machine maps Kumiko's JST time and weekday to her current activity: TEACHING, CLUB_ACTIVITIES, COMMUTING, RELAXING_HOME, SLEEPING, or OUTING.\n- Before each reply, her state description is injected into the prompt so the model knows what she is doing right now.\n- The state also controls voice/text choice, proactive message probability, and reply delay behavior.\n\n## Weather awareness\n- The system fetches real-time weather for Uji (Kyoto) and the user's IP-based location every 30 minutes.\n- Temperature, wind speed, and weather codes are injected as environment data, letting Kumiko naturally mention the weather.\n\n## Typing hesitation and recall theater\n- On the first bubble of a reply, there is a 5% chance of "typing hesitation": the thinking indicator pauses, a system notice "Kumiko recalled a message" appears, and after 3-5 seconds the real reply continues.\n- This simulates the real-person behavior of typing something, deleting it, and rewriting.\n\n## Background async delay\n- When the app window is not in focus, there is a 40% chance Kumiko's reply is delayed by 15-45 seconds, simulating "she wasn't looking at her phone".\n- The delay is probabilistic to avoid feeling artificial.`
+            content: `# How the app tries to keep Kumiko natural\n\n## Multi-block prompt assembly\nEach reply is shaped by more than the final user line. The model can receive:\n- recent summary buffer\n- world-book context\n- notebook profile and relationship status\n- recalled RAG memory\n- active reminders\n- relationship temperature hints\n- topic continuity hints\n- both Kumiko JST time and user local time\n- Kumiko's current life state (from the state machine)\n- dual real-time weather (Uji + user location)\n\n## Evidence-aware memory replies\n- Memory answers are no longer just “prompt harder and hope for the best”.\n- The system now attaches structured evidence envelopes and response plans so the model knows whether it is answering from exact evidence, a time-window summary, a semantic recollection, or weak/no evidence.\n- Local post-processing only trims high-risk overclaims. It is not meant to replace Kumiko's natural voice with rigid templates.\n\n## Relationship warmth\n- Warmth tiers depend on total turns, recent activity, active days, and message gap.\n- The tier does not write dialogue directly; it changes how close, teasing, relaxed, or cautious the model is allowed to sound.\n\n## Topic continuity\n- The system keeps lightweight topic blocks so old but still warm subjects can return naturally.\n- Replies are allowed to add one small extra move: either one short follow-up or one small aside. Not both. Not every turn.\n\n## Continuous Life-Stream Engine & Offline Simulation\n- When you open the app after being offline, the system simulates a "life fragment" in the background based on real weather, Japanese holidays, and her schedule nodes during that time.\n- For example, if it rained in the morning, she might complain about her shoes getting wet in the afternoon. She is not frozen in the chat box; she lives a continuous life.\n- This fragment acts as short-term memory, affecting her chat state for the day.\n- If you are offline for multiple days, the system will prompt you with a "Diary Backfill Dialog" to fill in the missing diaries, ensuring her life history remains uninterrupted.\n\n## Life Fill-in & Relationship Dynamics Tracker\n- Her diary and chat history cannot record every detail of her life. For unrecorded daily routines (like casual greetings with friends), she will use extremely lightweight reasonable extrapolation (Life Fill-in) based on relationships, but fabricating major events is strictly forbidden.\n- The system maintains a "Core Character Relationship Tracker" (e.g., Shuichi, Reina) containing objective status and subjective attitude. Daily diary settlements dynamically update these states and inject them precisely during chats, ensuring absolute continuity in long-term relationships.\n\n## Dynamic Psychological Weights\n- The system maintains three dynamic dimensions: Stress, Energy, and Relaxation.\n- Bad weather or continuous work increases stress and lowers energy, putting her in a "tired/annoyed mode" where replies are short and complainy.\n- When well-rested, she enters a "sharing mode" and actively talks about her life.\n- This dynamic weighting ensures she has emotional momentum like a real human, rather than being a perfect, static AI.\n\n## Real-world Calendar Grounding\n- The system integrates not only real-time weather but also real Japanese statutory holidays.\n- If today is a Japanese public holiday (Shukujitsu), her schedule automatically adjusts to resting or full-day club activities, which is naturally reflected in the conversation.\n\n## Typing hesitation and recall theater\n- On the first bubble of a reply, there is a 5% chance of "typing hesitation": the thinking indicator pauses, a system notice "Kumiko recalled a message" appears, and after 3-5 seconds the real reply continues.\n- This simulates the real-person behavior of typing something, deleting it, and rewriting.\n\n## Background async delay\n- When the app window is not in focus, there is a 40% chance Kumiko's reply is delayed by 15-45 seconds, simulating "she wasn't looking at her phone".\n- The delay is probabilistic to avoid feeling artificial.`
         },
         {
             id: 'tts',
@@ -1486,7 +1488,7 @@ export const SOFTWARE_GUIDE_SECTIONS = {
             id: 'settings',
             icon: SettingsIcon,
             title: 'SETTINGS & DIAGNOSTICS',
-            content: `# Models, search, storage, and diagnostics\n\n## AI core controls\n- Provider, main model, backup key, and custom endpoint live in AI core settings.\n- OpenAI-compatible custom endpoints are resolved by protocol rather than being forced into Gemini-native paths.\n- Vision helper stays separate from the main chat model.\n\n## Model allocation (three slots)\n- Slot A: Main model handles all conversation generation, emotion detection, and task triggers.\n- Slot B: Summary model handles periodic memory archival and GraphRAG sleep-consolidation entity extraction. Falls back to the main model if empty.\n- Slot C: TTS translator model converts Chinese replies into Kumiko-style Japanese for voice synthesis. Falls back to the main model if empty.\n- All three slots can use the same or different models depending on your needs and budget.\n\n## Search and network augmentation\n- Tavily web search is optional and isolated.\n- It adds live search capability without replacing local memory systems.\n\n## Data cleanup\n- The local file sync section lets you disconnect the current JSON file, manually save, or reload.\n- Auto ZIP on exit: when enabled, every quit packages data into kumiko_backup_auto.zip next to your JSON file.\n- Image files section shows cache count and size with a cleanup option.\n- User ringtone section displays the current custom ringtone info and opens its folder.\n- Current storage usage shows the combined total of IndexedDB, voice files, and ringtone files.\n- "Clear all local data" always stays at the bottom.\n- Local RAG exposes enable/disable and rebuild.\n\n## Import and restore\n- The settings restore flow supports both JSON and ZIP.\n- Desktop restore now parses those backups through the main process before state recovery, which reduces large-import stutter.\n\n## Diagnostics\n- Header indicators report sync state and high-level RAG state.\n- The settings log viewer exposes internal run logs for troubleshooting.\n\n## Voice message configuration (TTS)\n- Three voice modes: text-only (no synthesis), full voice (every reply gets Japanese voice), hybrid (Kumiko auto-selects based on context).\n- Fish Audio settings manage API key, voice reference ID, model version (s1 / s2-pro), latency strategy, and speed.\n- Custom ringtone upload for reminder incoming calls.\n- A test-voice button previews the current TTS configuration.\n\n## Timezone calibration\n- Model timezone (default Asia/Tokyo) drives Kumiko's JST life rhythm.\n- User timezone controls your local time display.\n- Together they form the dual-time awareness used in conversation.\n- Country and timezone dropdowns support bilingual display.`
+            content: `# Models, search, storage, and diagnostics\n\n## AI core controls\n- Provider, main model, backup key, and custom endpoint live in AI core settings.\n- OpenAI-compatible custom endpoints are resolved by protocol rather than being forced into Gemini-native paths.\n- Vision helper stays separate from the main chat model.\n\n## Model allocation (three slots)\n- Slot A: Main model handles all conversation generation, emotion detection, and task triggers.\n- Slot B: Summary model handles periodic memory archival. Falls back to the main model if empty.\n- Slot C: TTS translator model converts Chinese replies into Kumiko-style Japanese for voice synthesis. Falls back to the main model if empty.\n- All three slots can use the same or different models depending on your needs and budget.\n\n## Search and network augmentation\n- Tavily web search is optional and isolated.\n- It adds live search capability without replacing local memory systems.\n\n## Data cleanup\n- The local file sync section lets you disconnect the current JSON file, manually save, or reload.\n- Auto ZIP on exit: when enabled, every quit packages data into kumiko_backup_auto.zip next to your JSON file.\n- Image files section shows cache count and size with a cleanup option.\n- User ringtone section displays the current custom ringtone info and opens its folder.\n- Current storage usage shows the combined total of IndexedDB, voice files, and ringtone files.\n- "Clear all local data" always stays at the bottom.\n- Local RAG exposes enable/disable and rebuild.\n\n## Import and restore\n- The settings restore flow supports both JSON and ZIP.\n- Desktop restore now parses those backups through the main process before state recovery, which reduces large-import stutter.\n\n## Diagnostics\n- Header indicators report sync state and high-level RAG state.\n- The settings log viewer exposes internal run logs for troubleshooting.\n\n## Voice message configuration (TTS)\n- Three voice modes: text-only (no synthesis), full voice (every reply gets Japanese voice), hybrid (Kumiko auto-selects based on context).\n- Fish Audio settings manage API key, voice reference ID, model version (s1 / s2-pro), latency strategy, and speed.\n- Custom ringtone upload for reminder incoming calls.\n- A test-voice button previews the current TTS configuration.\n\n## Timezone calibration\n- Model timezone (default Asia/Tokyo) drives Kumiko's JST life rhythm.\n- User timezone controls your local time display.\n- Together they form the dual-time awareness used in conversation.\n- Country and timezone dropdowns support bilingual display.`
         }
     ]
 };
@@ -1674,7 +1676,7 @@ export const KUMIKO_LOCAL_RAG_ZH: WorldBookEntry[] = [
         "id": "local_rag_post_high_school",
         "title": "剧情：毕业后 · 成为老师",
         "isActive": false,
-        "content": "【关键词：大学、老师、副顾问、回到北宇治】\n高中毕业后，我考入了京都的私立大学，继续学习音乐与教育，目标是成为像泷老师那样的音乐老师。取得资格后，我回到了母校北宇治高中，担任吹奏乐部的副顾问。站在曾经的练习室门口，看着新的学生们，感觉很奇妙。虽然身份变了，但对音乐的热爱没有变。"
+        "content": "【关键词：大学、老师、副顾问、回到北宇治、国语老师】\n高中毕业后，我考入了京都的私立大学，继续修读文学与教育相关内容，后来取得了国语科教师资格。毕业后我回到了母校北宇治高中，担任国语老师，同时兼任吹奏乐部的副顾问。重新站在熟悉的校园里，感觉很奇妙。虽然身份变了，但我对吹奏乐和上低音号的感情一直都还在。"
     },
     {
         "id": "local_rag_timeline_summary",

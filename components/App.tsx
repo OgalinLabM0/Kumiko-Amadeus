@@ -1,8 +1,10 @@
 
 import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { SystemToast } from './SystemToast';
 import { AppFlowScreens } from './app/AppFlowScreens';
 import { AppMainView } from './app/AppMainView';
+import { DiaryBackfillDialog as DiaryBackfillDialogLazy } from './DiaryBackfillDialog';
 import { buildAppMainViewProps } from './app/buildAppMainViewProps';
 import { getAppShellStyles } from './app/appShellStyles';
 import { buildBackupData, validateBackupData } from './app/backupData';
@@ -37,7 +39,16 @@ import { saveAs } from 'file-saver';
 import { imageService, compressAndSaveImage, getImageBase64 } from '../services/imageService';
 import { generateEmbedding, getAllVectors, loadRawHistoryMessagesFromMain, saveLocalRagMemory, restoreVectors, searchLocalRagMemory, searchLocalRagMemoryDetailed, startLocalRagRebuild, subscribeLocalRagRebuild, syncRawHistoryMessagesToMain, type LocalRagEntryKind, type LocalRagEvidenceStrength, type LocalRagRebuildEvent } from '../services/localRagService';
 import { evaluateRagMemoryCandidate, hasRecentRagDuplicate } from '../services/ragMemoryFilter';
-import { db, type EpisodeEntity, type MessageEntity } from '../services/db';
+import {
+  db,
+  INITIAL_WORLD_CHARACTER_STATUS,
+  type DailyFragmentEntity,
+  type EpisodeEntity,
+  type KumikoDiaryEntity,
+  type MessageEntity,
+  type PsycheStateEntity,
+  type WorldCharacterStatusMap
+} from '../services/db';
 import { CLOUD_SYNC_AVAILABLE, DEFAULT_BACKUP_CONFIG, normalizeBackupConfig } from '../services/appConfig';
 import { loadTemporalEpisodesForRange, syncTemporalEpisodes } from '../services/temporalEpisodeService';
 import {
@@ -2590,6 +2601,133 @@ const sanitizeDailyReminderRecord = (record: any): DailyReminder | null => {
   };
 };
 
+const sanitizeWorldCharacterStatusRecord = (value: any): WorldCharacterStatusMap => {
+  const fallback = Object.fromEntries(
+    Object.entries(INITIAL_WORLD_CHARACTER_STATUS).map(([characterId, status]) => [
+      characterId,
+      { ...status, aliases: [...status.aliases] },
+    ])
+  ) as WorldCharacterStatusMap;
+  if (!value || typeof value !== 'object') return fallback;
+
+  for (const [characterId, record] of Object.entries(value)) {
+    if (!record || typeof record !== 'object') continue;
+    const current = fallback[characterId] || {
+      aliases: [],
+      current_status: '',
+      last_major_event: '无',
+      current_attitude: '',
+    };
+
+    fallback[characterId] = {
+      aliases: Array.isArray((record as any).aliases)
+        ? (record as any).aliases.filter((alias: unknown): alias is string => typeof alias === 'string' && alias.trim().length > 0)
+        : current.aliases,
+      current_status: typeof (record as any).current_status === 'string' ? (record as any).current_status : current.current_status,
+      last_major_event: typeof (record as any).last_major_event === 'string' ? (record as any).last_major_event : current.last_major_event,
+      current_attitude: typeof (record as any).current_attitude === 'string' ? (record as any).current_attitude : current.current_attitude,
+      mention_frequency_in_diary: typeof (record as any).mention_frequency_in_diary === 'string'
+        ? (record as any).mention_frequency_in_diary
+        : current.mention_frequency_in_diary,
+    };
+  }
+
+  return fallback;
+};
+
+const sanitizeKumikoDiaryRecord = (record: any): KumikoDiaryEntity | null => {
+  if (!record || typeof record.date !== 'string' || typeof record.content !== 'string' || typeof record.summary !== 'string') {
+    return null;
+  }
+
+  return {
+    id: typeof record.id === 'string' ? record.id : crypto.randomUUID(),
+    date: record.date,
+    timestamp: typeof record.timestamp === 'number' ? record.timestamp : Date.now(),
+    content: record.content,
+    summary: record.summary,
+    weather: typeof record.weather === 'string' ? record.weather : undefined,
+    holiday: typeof record.holiday === 'string' ? record.holiday : undefined,
+  };
+};
+
+const sanitizeDailyFragmentRecord = (record: any): DailyFragmentEntity | null => {
+  if (!record || typeof record.date !== 'string' || typeof record.content !== 'string') {
+    return null;
+  }
+
+  return {
+    id: typeof record.id === 'string' ? record.id : crypto.randomUUID(),
+    date: record.date,
+    timestamp: typeof record.timestamp === 'number' ? record.timestamp : Date.now(),
+    content: record.content,
+    triggerReason: typeof record.triggerReason === 'string' ? record.triggerReason : 'restore',
+  };
+};
+
+const sanitizePsycheStateRecord = (record: any): PsycheStateEntity | null => {
+  if (
+    !record
+    || typeof record.stress !== 'number'
+    || typeof record.energy !== 'number'
+    || typeof record.relaxation !== 'number'
+  ) {
+    return null;
+  }
+
+  return {
+    id: typeof record.id === 'string' ? record.id : 'current',
+    stress: record.stress,
+    energy: record.energy,
+    relaxation: record.relaxation,
+    lastUpdated: typeof record.lastUpdated === 'number' ? record.lastUpdated : Date.now(),
+  };
+};
+
+const sanitizeEpisodeRecord = (record: any): EpisodeEntity | null => {
+  if (
+    !record
+    || typeof record.startMessageId !== 'string'
+    || typeof record.endMessageId !== 'string'
+    || !Array.isArray(record.messageIds)
+    || typeof record.startTimestamp !== 'number'
+    || typeof record.endTimestamp !== 'number'
+    || typeof record.messageCount !== 'number'
+    || typeof record.userMessageCount !== 'number'
+    || typeof record.modelMessageCount !== 'number'
+    || typeof record.preview !== 'string'
+    || typeof record.text !== 'string'
+  ) {
+    return null;
+  }
+
+  const roleScope = record.roleScope === 'user' || record.roleScope === 'model' || record.roleScope === 'mixed'
+    ? record.roleScope
+    : 'mixed';
+
+  const allowedBoundaryReasons = new Set(['topic_shift', 'wrap_up', 'long_gap', 'window_cap', 'day_split', 'manual']);
+  const boundaryReason = typeof record.boundaryReason === 'string' && allowedBoundaryReasons.has(record.boundaryReason)
+    ? record.boundaryReason as EpisodeEntity['boundaryReason']
+    : undefined;
+
+  return {
+    id: typeof record.id === 'string' ? record.id : crypto.randomUUID(),
+    startMessageId: record.startMessageId,
+    endMessageId: record.endMessageId,
+    messageIds: record.messageIds.filter((messageId: unknown): messageId is string => typeof messageId === 'string'),
+    startTimestamp: record.startTimestamp,
+    endTimestamp: record.endTimestamp,
+    messageCount: record.messageCount,
+    userMessageCount: record.userMessageCount,
+    modelMessageCount: record.modelMessageCount,
+    roleScope,
+    topicHint: typeof record.topicHint === 'string' ? record.topicHint : undefined,
+    preview: record.preview,
+    text: record.text,
+    boundaryReason,
+  };
+};
+
 const sanitizeMessageAlertRecord = (record: any): MissedMessageAlert | null => {
   if (!record || typeof record.messageId !== 'string' || typeof record.preview !== 'string' || typeof record.timestamp !== 'number' || typeof record.kind !== 'string') {
     return null;
@@ -2634,17 +2772,20 @@ const truncateLogText = (value: string, maxLength: number = DEV_LOG_MAX_MESSAGE_
   return `${value.slice(0, maxLength)}... [${omittedCount} chars truncated]`;
 };
 
-// Weather cache to avoid spamming the main process
-let cachedWeatherStr: string | null = null;
-let lastWeatherFetchTime = 0;
+// Environment cache to avoid spamming the main process
+let cachedEnvironmentStr: string | null = null;
+let lastEnvironmentFetchTime = 0;
 
-const getAmbientWeatherContext = async (): Promise<string> => {
+const getAmbientEnvironmentContext = async (): Promise<string> => {
   if (!isDesktopElectron() || !window.electronAPI) return '';
   
   const now = Date.now();
-  if (cachedWeatherStr && (now - lastWeatherFetchTime < 30 * 60 * 1000)) {
-    return cachedWeatherStr;
+  if (cachedEnvironmentStr && (now - lastEnvironmentFetchTime < 30 * 60 * 1000)) {
+    return cachedEnvironmentStr;
   }
+
+  let envStr = `\n[SYSTEM_ENVIRONMENT_DATA]`;
+  let hasData = false;
 
   try {
     const res = await window.electronAPI.invoke('app:get-weather');
@@ -2652,52 +2793,57 @@ const getAmbientWeatherContext = async (): Promise<string> => {
       const uji = res.uji;
       const user = res.user;
       
-      let weatherStr = `\n[SYSTEM_ENVIRONMENT_DATA]`;
+      const mapWeatherCode = (code: number): string => {
+        if (code === 0) return '晴';
+        if (code === 1 || code === 2 || code === 3) return '多云';
+        if (code >= 45 && code <= 48) return '雾';
+        if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return '雨';
+        if ((code >= 71 && code <= 77) || (code >= 85 && code <= 86)) return '雪';
+        if (code >= 95) return '雷雨';
+        return '未知';
+      };
+
       if (uji) {
-        weatherStr += `\n- 久美子所在地 (日本宇治市) 当前天气: 温度 ${uji.temperature}°C, 风速 ${uji.windspeed}km/h`;
+        const cond = typeof uji.weathercode === 'number' ? mapWeatherCode(uji.weathercode) : '';
+        envStr += `\n- 久美子所在地 (日本宇治市) 当前天气: ${cond ? cond + ', ' : ''}温度 ${uji.temperature}°C, 风速 ${uji.windspeed}km/h`;
+        hasData = true;
       }
       if (user) {
-        weatherStr += `\n- 用户所在地当前天气: 温度 ${user.temperature}°C, 风速 ${user.windspeed}km/h`;
+        const cond = typeof user.weathercode === 'number' ? mapWeatherCode(user.weathercode) : '';
+        envStr += `\n- 用户所在地当前天气: ${cond ? cond + ', ' : ''}温度 ${user.temperature}°C, 风速 ${user.windspeed}km/h`;
+        hasData = true;
       }
-      
-      cachedWeatherStr = weatherStr;
-      lastWeatherFetchTime = now;
-      return weatherStr;
     }
   } catch (e) {
-    console.warn('[Weather] Failed to fetch ambient weather context:', e);
+    console.warn('[Environment] Failed to fetch ambient weather context:', e);
   }
-  return '';
-};
 
-const getGraphRelationContext = async (userText: string): Promise<string> => {
   try {
-    const { db } = await import('../services/db');
-    const entities = await db.graphEntities.toArray();
-    if (entities.length === 0) return '';
+    const holidayRes = await window.electronAPI.invoke('app:get-japan-holidays');
+    if (holidayRes && holidayRes.success && holidayRes.holidays) {
+      // Get current date in JST
+      const jstDate = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
+      const year = jstDate.getFullYear();
+      const month = String(jstDate.getMonth() + 1).padStart(2, '0');
+      const day = String(jstDate.getDate()).padStart(2, '0');
+      const dateString = `${year}-${month}-${day}`;
 
-    const lowerText = userText.toLowerCase();
-    const matchedEntities = entities.filter(e => lowerText.includes(e.name.toLowerCase()));
-    if (matchedEntities.length === 0) return '';
-
-    const matchedNames = new Set(matchedEntities.map(e => e.name));
-    const relations = await db.graphRelations.toArray();
-    const relevantRelations = relations.filter(r =>
-      matchedNames.has(r.fromId) || matchedNames.has(r.toId)
-    ).slice(-20);
-
-    if (relevantRelations.length === 0) return '';
-
-    let ctx = '\n[关系图谱记忆 / Relationship Graph Memory]';
-    for (const r of relevantRelations) {
-      const emotionTag = r.emotion ? ` (${r.emotion})` : '';
-      ctx += `\n- ${r.fromId} --[${r.relationType}${emotionTag}]--> ${r.toId}`;
+      if (holidayRes.holidays[dateString]) {
+        envStr += `\n- 今日特殊历法：日本法定节假日 - ${holidayRes.holidays[dateString]}`;
+        hasData = true;
+      }
     }
-    return ctx;
   } catch (e) {
-    console.warn('[GraphRAG] Failed to fetch relation context:', e);
-    return '';
+    console.warn('[Environment] Failed to fetch holiday context:', e);
   }
+
+  if (hasData) {
+    cachedEnvironmentStr = envStr;
+    lastEnvironmentFetchTime = now;
+    return envStr;
+  }
+  
+  return '';
 };
 
 const summarizeValueForLog = (
@@ -2776,6 +2922,11 @@ const summarizeBackupPayloadForLog = (backup: any) => {
     anchorCount: getArrayLengthForBackupLog(normalizedData?.anchors),
     relativeReminderCount: getArrayLengthForBackupLog(normalizedData?.relativeReminders),
     dailyReminderCount: getArrayLengthForBackupLog(normalizedData?.dailyReminders),
+    diaryCount: getArrayLengthForBackupLog(normalizedData?.kumikoDiary ?? backup?.kumikoDiary),
+    fragmentCount: getArrayLengthForBackupLog(normalizedData?.dailyFragments ?? backup?.dailyFragments),
+    episodeCount: getArrayLengthForBackupLog(normalizedData?.episodes ?? backup?.episodes),
+    hasWorldCharacterStatus: !!(normalizedData?.worldCharacterStatus ?? backup?.worldCharacterStatus),
+    hasPsycheState: !!(normalizedData?.psycheState ?? backup?.psycheState),
   };
 };
 
@@ -3157,7 +3308,13 @@ export const App = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isMessageCenterOpen, setIsMessageCenterOpen] = useState(false);
   const [isTaskPanelOpen, setIsTaskPanelOpen] = useState(false);
-  
+  const [isDiaryOpen, setIsDiaryOpen] = useState(false);
+  const [backfillGapInfo, setBackfillGapInfo] = useState<import('../services/lifeStreamService').DiaryGapInfo | null>(null);
+  const [backfillProgress, setBackfillProgress] = useState<{ current: number; total: number; currentDate: string } | undefined>();
+  const [backfillComplete, setBackfillComplete] = useState(false);
+  const [backfillGeneratedCount, setBackfillGeneratedCount] = useState(0);
+  const pendingSendRef = useRef<(() => void) | null>(null);
+
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   
@@ -3177,6 +3334,27 @@ export const App = () => {
   const [relativeReminders, setRelativeRemindersState] = useState<RelativeReminder[]>([]);
   const [dailyReminders, setDailyRemindersState] = useState<DailyReminder[]>([]);
   const [messageAlerts, setMessageAlerts] = useState<MissedMessageAlert[]>([]);
+  const [worldCharacterStatus, setWorldCharacterStatus] = useState<WorldCharacterStatusMap>(INITIAL_WORLD_CHARACTER_STATUS);
+  const [autoSavedKumikoDiary, setAutoSavedKumikoDiary] = useState<KumikoDiaryEntity[]>([]);
+  const [autoSavedDailyFragments, setAutoSavedDailyFragments] = useState<DailyFragmentEntity[]>([]);
+  const [autoSavedPsycheState, setAutoSavedPsycheState] = useState<PsycheStateEntity | null>(null);
+
+  const liveWorldCharacterStatus = useLiveQuery(
+    async () => sanitizeWorldCharacterStatusRecord(await db.getVal('world_character_status', INITIAL_WORLD_CHARACTER_STATUS)),
+    []
+  );
+  const liveKumikoDiary = useLiveQuery(
+    async () => (await db.kumikoDiary.orderBy('date').toArray()).map(sanitizeKumikoDiaryRecord).filter(Boolean) as KumikoDiaryEntity[],
+    []
+  );
+  const liveDailyFragments = useLiveQuery(
+    async () => (await db.dailyFragments.orderBy('timestamp').toArray()).map(sanitizeDailyFragmentRecord).filter(Boolean) as DailyFragmentEntity[],
+    []
+  );
+  const livePsycheState = useLiveQuery(
+    async () => sanitizePsycheStateRecord(await db.psycheState.get('current')),
+    []
+  );
 
   useEffect(() => {
       if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
@@ -3197,6 +3375,30 @@ export const App = () => {
       if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
       db.setVal(MESSAGE_ALERTS_STORAGE_KEY, messageAlerts.slice(0, 50));
   }, [messageAlerts, isDataLoaded]);
+
+  useEffect(() => {
+    if (liveWorldCharacterStatus) {
+      setWorldCharacterStatus(liveWorldCharacterStatus);
+    }
+  }, [liveWorldCharacterStatus]);
+
+  useEffect(() => {
+    if (liveKumikoDiary) {
+      setAutoSavedKumikoDiary(liveKumikoDiary);
+    }
+  }, [liveKumikoDiary]);
+
+  useEffect(() => {
+    if (liveDailyFragments) {
+      setAutoSavedDailyFragments(liveDailyFragments);
+    }
+  }, [liveDailyFragments]);
+
+  useEffect(() => {
+    if (livePsycheState !== undefined) {
+      setAutoSavedPsycheState(livePsycheState);
+    }
+  }, [livePsycheState]);
   
   const [ragStatus, setRagStatus] = useState<'IDLE' | 'RECALLING' | 'INDEXING' | 'ERROR' | 'OFF'>('OFF');
   const [ragProgressLabel, setRagProgressLabel] = useState<string | null>(null);
@@ -3328,6 +3530,44 @@ export const App = () => {
     }
   }, []);
 
+  const runDiaryBackfill = useCallback(async (dates: string[], afterContext?: string) => {
+    const { batchGenerateDiaries } = await import('../services/lifeStreamService');
+    setBackfillComplete(false);
+    setBackfillGeneratedCount(0);
+    const count = await batchGenerateDiaries(
+      dates,
+      (current, total, currentDate) => setBackfillProgress({ current, total, currentDate }),
+      afterContext
+    );
+    setBackfillProgress(undefined);
+    setBackfillComplete(true);
+    setBackfillGeneratedCount(count);
+  }, []);
+
+  const handleBackfillAll = useCallback(async () => {
+    if (!backfillGapInfo || backfillGapInfo.missingDates.length === 0) return;
+    await runDiaryBackfill(backfillGapInfo.missingDates, backfillGapInfo.contextAfter);
+  }, [backfillGapInfo, runDiaryBackfill]);
+
+  const handleBackfillOne = useCallback(async () => {
+    if (!backfillGapInfo || backfillGapInfo.missingDates.length === 0) return;
+    const sorted = [...backfillGapInfo.missingDates].sort();
+    const lastOne = sorted[sorted.length - 1];
+    await runDiaryBackfill([lastOne], backfillGapInfo.contextAfter);
+  }, [backfillGapInfo, runDiaryBackfill]);
+
+  const handleBackfillDismiss = useCallback(() => {
+    setBackfillGapInfo(null);
+    setBackfillProgress(undefined);
+    setBackfillComplete(false);
+    setBackfillGeneratedCount(0);
+    if (pendingSendRef.current) {
+      const resume = pendingSendRef.current;
+      pendingSendRef.current = null;
+      resume();
+    }
+  }, []);
+
   const handleToggleAutoZip = () => {
     const newValue = !autoZipEnabled;
     setAutoZipEnabled(newValue);
@@ -3340,19 +3580,33 @@ export const App = () => {
     setBackupConfig(normalizeBackupConfig(nextConfig));
   }, []);
 
+  const sanitizeTtsConfig = useCallback((value: unknown): TtsConfig => {
+    const merged = {
+      ...DEFAULT_TTS_CONFIG,
+      ...(value && typeof value === 'object' ? value as Partial<TtsConfig> : {})
+    };
+
+    if (typeof merged.ringtoneFileId !== 'string' || !/^custom\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(merged.ringtoneFileId)) {
+      delete merged.ringtoneFileId;
+    }
+
+    return merged as TtsConfig;
+  }, []);
+
   const [ttsConfig, setTtsConfig] = useState<TtsConfig>(() => {
     try {
       const raw = localStorage.getItem('kumiko_tts_config');
-      if (raw) return { ...DEFAULT_TTS_CONFIG, ...JSON.parse(raw) } as TtsConfig;
+      if (raw) return sanitizeTtsConfig(JSON.parse(raw));
     } catch { /* ignore */ }
     return { ...DEFAULT_TTS_CONFIG };
   });
   const ttsConfigRef = useRef(ttsConfig);
   useEffect(() => { ttsConfigRef.current = ttsConfig; }, [ttsConfig]);
   const handleTtsConfigChange = useCallback((next: TtsConfig) => {
-    setTtsConfig(next);
-    localStorage.setItem('kumiko_tts_config', JSON.stringify(next));
-  }, []);
+    const sanitized = sanitizeTtsConfig(next);
+    setTtsConfig(sanitized);
+    localStorage.setItem('kumiko_tts_config', JSON.stringify(sanitized));
+  }, [sanitizeTtsConfig]);
 
   useEffect(() => {
       if (backupConfig.ragEnabled) {
@@ -3675,6 +3929,10 @@ export const App = () => {
         setRelativeRemindersState((await db.getVal(RELATIVE_REMINDER_STORAGE_KEY, [])).map(sanitizeRelativeReminderRecord).filter(Boolean) as RelativeReminder[]);
         setDailyRemindersState((await db.getVal(DAILY_REMINDER_STORAGE_KEY, [])).map(sanitizeDailyReminderRecord).filter(Boolean) as DailyReminder[]);
         setMessageAlerts((await db.getVal(MESSAGE_ALERTS_STORAGE_KEY, [])).map(sanitizeMessageAlertRecord).filter(Boolean).slice(0, 50) as MissedMessageAlert[]);
+        setWorldCharacterStatus(sanitizeWorldCharacterStatusRecord(await db.getVal('world_character_status', INITIAL_WORLD_CHARACTER_STATUS)));
+        setAutoSavedKumikoDiary((await db.kumikoDiary.orderBy('date').toArray()).map(sanitizeKumikoDiaryRecord).filter(Boolean) as KumikoDiaryEntity[]);
+        setAutoSavedDailyFragments((await db.dailyFragments.orderBy('timestamp').toArray()).map(sanitizeDailyFragmentRecord).filter(Boolean) as DailyFragmentEntity[]);
+        setAutoSavedPsycheState(sanitizePsycheStateRecord(await db.psycheState.get('current')));
         
         const backupCfg = normalizeBackupConfig(await db.getVal('kumiko_backup_config', DEFAULT_BACKUP_CONFIG));
         setBackupConfig(backupCfg);
@@ -3741,9 +3999,31 @@ export const App = () => {
     kumikoNotebook,
     relativeReminders,
     dailyReminders,
+    worldCharacterStatus,
+    kumikoDiary: autoSavedKumikoDiary,
+    dailyFragments: autoSavedDailyFragments,
+    psycheState: autoSavedPsycheState,
     defaultWorldBook: DEFAULT_WORLD_BOOK,
     localizedWorldBook: LOCALIZED_WORLD_BOOK,
-  }), [messages, coreMemory, worldBook, contextLimit, turnCount, summaryArchiveState, currentEmotion, locationConfig, language, anchors, kumikoNotebook, relativeReminders, dailyReminders]);
+  }), [
+    messages,
+    coreMemory,
+    worldBook,
+    contextLimit,
+    turnCount,
+    summaryArchiveState,
+    currentEmotion,
+    locationConfig,
+    language,
+    anchors,
+    kumikoNotebook,
+    relativeReminders,
+    dailyReminders,
+    worldCharacterStatus,
+    autoSavedKumikoDiary,
+    autoSavedDailyFragments,
+    autoSavedPsycheState,
+  ]);
 
   const validateSaveData = useCallback((data: typeof backupData): boolean => (
     validateBackupData(data, language, LOCALIZED_WORLD_BOOK, DEFAULT_WORLD_BOOK)
@@ -3975,6 +4255,11 @@ export const App = () => {
       normalizedSummaryArchiveState,
       root.coreMemory || ""
     );
+    const hasWorldCharacterStatus = root.worldCharacterStatus !== undefined || source.worldCharacterStatus !== undefined;
+    const hasKumikoDiary = root.kumikoDiary !== undefined || source.kumikoDiary !== undefined;
+    const hasDailyFragments = root.dailyFragments !== undefined || source.dailyFragments !== undefined;
+    const hasPsycheState = root.psycheState !== undefined || source.psycheState !== undefined;
+    const hasEpisodes = root.episodes !== undefined || source.episodes !== undefined;
 
     return {
         messages: normalizedBackupMessages.messages,
@@ -3993,7 +4278,28 @@ export const App = () => {
             : [],
         dailyReminders: Array.isArray(root.dailyReminders)
             ? root.dailyReminders.map(sanitizeDailyReminderRecord).filter(Boolean)
-            : []
+            : [],
+        worldCharacterStatus: hasWorldCharacterStatus
+            ? sanitizeWorldCharacterStatusRecord(root.worldCharacterStatus ?? source.worldCharacterStatus)
+            : undefined,
+        kumikoDiary: hasKumikoDiary
+            ? (Array.isArray(root.kumikoDiary) ? root.kumikoDiary : source.kumikoDiary)
+                .map(sanitizeKumikoDiaryRecord)
+                .filter(Boolean)
+            : undefined,
+        dailyFragments: hasDailyFragments
+            ? (Array.isArray(root.dailyFragments) ? root.dailyFragments : source.dailyFragments)
+                .map(sanitizeDailyFragmentRecord)
+                .filter(Boolean)
+            : undefined,
+        psycheState: hasPsycheState
+            ? sanitizePsycheStateRecord(root.psycheState ?? source.psycheState)
+            : undefined,
+        episodes: hasEpisodes
+            ? (Array.isArray(root.episodes) ? root.episodes : source.episodes)
+                .map(sanitizeEpisodeRecord)
+                .filter(Boolean)
+            : undefined,
     };
   }, [language]);
 
@@ -4180,6 +4486,11 @@ export const App = () => {
         'Do NOT add greetings, commentary, explanations, or anything beyond the translation.',
         'Output EXACTLY one block of natural spoken Japanese. Nothing else.',
         '',
+        'ZERO SEMANTIC DRIFT (HIGHEST PRIORITY):',
+        'Your output MUST convey the EXACT same meaning as the input. Do NOT add, remove, embellish, or paraphrase.',
+        'SENTENCE COUNT RULE: Output MUST have the same number of sentences/clauses as the input. One Chinese sentence = one Japanese sentence. Do NOT split or merge.',
+        'If the input is short (e.g. a greeting), the output MUST be equally short. Do NOT expand a 3-word input into a full sentence.',
+        '',
         'CRITICAL — unpronounceable text handling:',
         'The input is meant to be spoken aloud by TTS. Convert ALL text-only expressions into natural spoken Japanese or emotion tags:',
         '- zzz / ZZZ -> [sleepy]すぅ… or ふぁ～…眠い…',
@@ -4187,7 +4498,7 @@ export const App = () => {
         '- ... / …… / 。。。 -> [pause] or convert to natural filler like えっと… / うーん…',
         '- hhhh / 呵呵 -> [chuckling]ふふ',
         '- If the ENTIRE input is just dots/symbols with no real words, produce a short natural utterance matching the emotion (e.g. sleepy -> [sleepy]ん…なに…)',
-        'CRITICAL: You MUST output actual Japanese words (Kanji/Kana). Do NOT output only emotion tags or punctuation. If the input has no words, invent a natural short Japanese phrase matching the emotion.',
+        'CRITICAL: You MUST output actual Japanese words (Kanji/Kana). Do NOT output only emotion tags or punctuation. If the input is ONLY symbols/emoticons with no real words, produce the shortest possible natural Japanese phrase matching the emotion.',
         'NEVER output raw zzz, www, or bare ellipsis sequences in the Japanese text.',
         '',
         'Target voice style: Oumae Kumiko (黄前久美子) from Hibike! Euphonium.',
@@ -4206,6 +4517,7 @@ export const App = () => {
         '   If the original says "remind", translate as "remind". If it says "wake up", translate as "wake up". ZERO semantic drift allowed.',
         '8. GENERAL ACCURACY: Maintain the EXACT meaning and nuance of the original Chinese text. Do not alter the semantics (e.g., "才睡" = "just went to sleep", NOT "还醒着" "still awake").',
         '9. PRONUNCIATION: Write character names using Hiragana/Katakana ONLY to prevent TTS mispronunciation. Example: 黄前久美子 -> おうまえ くみこ, 秀一 -> しゅういち, 丽奈 -> れいな, 明日香 -> あすか.',
+        '10. GREETINGS LOCK (CRITICAL): If the input is a standard greeting like "早上好", "中午好", or "晚上好", you MUST use standard casual greetings (おはよう, こんにちは, こんばんは, ヤッホー). NEVER translate them literally as time states like "朝だよ" or "お昼だよ".',
         '',
         'Fish Audio S2-Pro emotion tags (MANDATORY — the TTS engine REQUIRES these to produce expressive speech):',
         `Current emotion: [${emotion}]. REQUIRED tags: ${tagList}`,
@@ -4217,20 +4529,23 @@ export const App = () => {
         '4. NEVER output a translation with ZERO tags. Even calm speech needs [speaks naturally] or [flat tone] at the start.',
         '',
         'EXAMPLES — follow this style exactly. These reflect Kumiko\'s REAL speech patterns:',
+        'Input: "下午好呀" | Emotion: smiling',
+        'Output: [happy]こんにちは',
+        '',
         'Input: "那我5分钟之后提醒你" | Emotion: neutral',
-        'Output: [speaks naturally]オッケー、じゃあ五分したら声かける',
+        'Output: [speaks naturally]じゃあ五分後にリマインドする',
         '',
         'Input: "你今天练习怎么样" | Emotion: smiling',
-        'Output: [happy]んー……ま、今日は悪くなかったかな。[pause]なんか変な感じ',
+        'Output: [happy]今日の練習、どうだった？',
         '',
         'Input: "我好不甘心啊..." | Emotion: sad',
-        'Output: [sad]悔しい……[sighs]悔しいって……くそ、なんでだろ…',
+        'Output: [sad]悔しい……',
         '',
         'Input: "别说了啦！好烦！" | Emotion: shy',
-        'Output: [shy]もー、やめてよ！[muttering]ほんとに……',
+        'Output: [shy]もー、やめてよ！[muttering]うざい！',
         '',
         'Input: "大人真狡猾" | Emotion: resigned',
-        'Output: [sighs]だから面倒くさくなるんだよね[speaks tiredly]大人ってズルいよな',
+        'Output: [sighs]大人ってズルいよね',
       ].join('\n');
 
       const jaText = await callLLMRaw(systemPrompt, chineseText, config.model_translator || ttsConfigRef.current.model_translator || config.model_main);
@@ -4397,7 +4712,7 @@ export const App = () => {
 
   const performFileSave = async (handle: any, data: any) => {
     try {
-      const backupContent = { timestamp: Date.now(), version: "1.1", data }; // Updated version
+      const backupContent = { timestamp: Date.now(), version: "1.3", data };
       const serializedContent = JSON.stringify(backupContent, null, 2);
 
       if (isDesktopElectron() && typeof handle === 'string') {
@@ -4421,7 +4736,7 @@ export const App = () => {
 
   const performCloudSync = async (url: string, data: any, apiKey?: string, userId?: string) => {
     try {
-      const backupContent = { timestamp: Date.now(), version: "1.1", userId: userId || 'default_user', data }; // Updated version
+      const backupContent = { timestamp: Date.now(), version: "1.3", userId: userId || 'default_user', data };
       const headers: any = { 'Content-Type': 'application/json' };
       if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
       const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(backupContent) });
@@ -4448,12 +4763,40 @@ export const App = () => {
     );
 
     await syncRawHistoryMessages(normalizedMessages, { forceFull: true });
-    await syncTemporalEpisodes(normalizedMessages);
+    if (Array.isArray(normalizedData.episodes)) {
+      await db.episodes.clear();
+      if (normalizedData.episodes.length > 0) {
+        await db.episodes.bulkPut(normalizedData.episodes);
+      }
+    } else {
+      await syncTemporalEpisodes(normalizedMessages);
+    }
     rawHistorySyncedIdsRef.current = new Set(normalizedMessages.map((message: Message) => message.id));
     forceRawHistoryResyncRef.current = false;
     await yieldToMainThread();
 
-    await Promise.all([
+    if (normalizedData.kumikoDiary !== undefined) {
+      await db.kumikoDiary.clear();
+      if (normalizedData.kumikoDiary.length > 0) {
+        await db.kumikoDiary.bulkPut(normalizedData.kumikoDiary);
+      }
+    }
+
+    if (normalizedData.dailyFragments !== undefined) {
+      await db.dailyFragments.clear();
+      if (normalizedData.dailyFragments.length > 0) {
+        await db.dailyFragments.bulkPut(normalizedData.dailyFragments);
+      }
+    }
+
+    if (normalizedData.psycheState !== undefined) {
+      await db.psycheState.clear();
+      if (normalizedData.psycheState) {
+        await db.psycheState.put(normalizedData.psycheState);
+      }
+    }
+
+    const writes: Promise<unknown>[] = [
       db.setVal('kumiko_core_memory', normalizedCoreMemory),
       db.setVal('kumiko_world_book', normalizedData.worldBook),
       db.setVal('kumiko_context_limit', normalizedData.contextLimit),
@@ -4466,7 +4809,13 @@ export const App = () => {
       db.setVal('kumiko_notebook', normalizedData.kumikoNotebook),
       db.setVal(RELATIVE_REMINDER_STORAGE_KEY, normalizedData.relativeReminders || []),
       db.setVal(DAILY_REMINDER_STORAGE_KEY, normalizedData.dailyReminders || []),
-    ]);
+    ];
+
+    if (normalizedData.worldCharacterStatus !== undefined) {
+      writes.push(db.setVal('world_character_status', normalizedData.worldCharacterStatus));
+    }
+
+    await Promise.all(writes);
   }, []);
 
   const restoreBackupData = useCallback(async (backup: any) => {
@@ -4480,6 +4829,13 @@ export const App = () => {
       normalizedData.summaryArchiveState,
       restoredTurnCount
     );
+    const resolvedData = {
+      ...normalizedData,
+      worldCharacterStatus: normalizedData.worldCharacterStatus ?? worldCharacterStatus,
+      kumikoDiary: normalizedData.kumikoDiary ?? autoSavedKumikoDiary,
+      dailyFragments: normalizedData.dailyFragments ?? autoSavedDailyFragments,
+      psycheState: normalizedData.psycheState === undefined ? autoSavedPsycheState : normalizedData.psycheState,
+    };
 
     isBulkRestoreInProgressRef.current = true;
 
@@ -4505,15 +4861,34 @@ export const App = () => {
         setKumikoNotebook(normalizedData.kumikoNotebook);
         setRelativeRemindersState(normalizedData.relativeReminders || []);
         setDailyRemindersState(normalizedData.dailyReminders || []);
+        if (normalizedData.worldCharacterStatus !== undefined) {
+          setWorldCharacterStatus(normalizedData.worldCharacterStatus);
+        }
+        if (normalizedData.kumikoDiary !== undefined) {
+          setAutoSavedKumikoDiary(normalizedData.kumikoDiary);
+        }
+        if (normalizedData.dailyFragments !== undefined) {
+          setAutoSavedDailyFragments(normalizedData.dailyFragments);
+        }
+        if (normalizedData.psycheState !== undefined) {
+          setAutoSavedPsycheState(normalizedData.psycheState);
+        }
       });
 
       await yieldToMainThread(2);
       await persistNormalizedBackupData(normalizedData);
-      return normalizedData;
+      return resolvedData;
     } finally {
       isBulkRestoreInProgressRef.current = false;
     }
-  }, [normalizeBackupData, persistNormalizedBackupData]);
+  }, [
+    normalizeBackupData,
+    persistNormalizedBackupData,
+    worldCharacterStatus,
+    autoSavedKumikoDiary,
+    autoSavedDailyFragments,
+    autoSavedPsycheState,
+  ]);
 
   const restoreParsedBackupPayload = useCallback(async (
     backupJson: any,
@@ -4653,7 +5028,7 @@ export const App = () => {
         if (restoredData) {
           const restoredAt = json.timestamp || Date.now();
           setLastBackupTime(restoredAt);
-          updateBaseline(restoredAt, json.data || json);
+          updateBaseline(restoredAt, restoredData);
           return true;
         }
       }
@@ -4690,7 +5065,7 @@ export const App = () => {
               const json = parsedJson ?? JSON.parse(text);
               const restoredData = await restoreBackupData(json);
               if (restoredData) {
-                  updateBaseline(json.timestamp || Date.now(), json.data || json);
+                  updateBaseline(json.timestamp || Date.now(), restoredData);
                   alert("Data reloaded successfully.");
               }
           }
@@ -5022,6 +5397,51 @@ export const App = () => {
 
       const checkProactiveLifeEvent = async () => {
           if (isTalking || isThinking) return;
+
+          // --- DAILY DIARY SETTLEMENT ---
+          const now = Date.now();
+          const jstDate = new Date(new Date(now).toLocaleString("en-US", { timeZone: "Asia/Tokyo" }));
+          const hourJST = jstDate.getHours();
+          const dateStr = `${jstDate.getFullYear()}-${String(jstDate.getMonth() + 1).padStart(2, '0')}-${String(jstDate.getDate()).padStart(2, '0')}`;
+          const ambientEnvironmentContext = await getAmbientEnvironmentContext();
+          const isHoliday = ambientEnvironmentContext.includes('今日特殊历法：日本法定节假日');
+          
+          if (hourJST >= 23 || hourJST < 3) {
+            const { db } = await import('../services/db');
+            const existingDiary = await db.kumikoDiary.where('date').equals(dateStr).first();
+            if (!existingDiary) {
+              console.log(`[LifeStream] Triggering daily diary settlement for ${dateStr}`);
+              const { generateDailyDiary } = await import('../services/lifeStreamService');
+              const todayMessages = messages.filter(m => {
+                const mDate = new Date(new Date(m.timestamp).toLocaleString("en-US", { timeZone: "Asia/Tokyo" }));
+                return mDate.getFullYear() === jstDate.getFullYear() && 
+                       mDate.getMonth() === jstDate.getMonth() && 
+                       mDate.getDate() === jstDate.getDate();
+              });
+              const diary = await generateDailyDiary(
+                dateStr,
+                todayMessages.map(message => ({
+                  role: message.role,
+                  text: message.text,
+                  timestamp: message.timestamp,
+                })),
+                undefined,
+                ambientEnvironmentContext,
+                isHoliday,
+                false
+              );
+              if (diary) {
+                // Clear today's fragments after settlement
+                await db.dailyFragments.where('date').equals(dateStr).delete();
+                
+                // Embed diary into RAG
+                const { embedDiaryToRAG } = await import('../services/lifeStreamService');
+                await embedDiaryToRAG(diary);
+              }
+            }
+          }
+          // ------------------------------
+
           if (localStorage.getItem('enable_proactive_messaging') === 'false') {
               console.log("[Heartbeat] Proactive messaging disabled by user.");
               return;
@@ -5030,20 +5450,20 @@ export const App = () => {
           const lastMsg = messages[messages.length - 1];
           if (!lastMsg) return;
 
-          const now = Date.now();
-          const gapHours = (now - lastMsg.timestamp) / (1000 * 60 * 60);
+          const currentTime = Date.now();
+          const gapHours = (currentTime - lastMsg.timestamp) / (1000 * 60 * 60);
           
           // COOL DOWN: Require at least 3 hours of silence before proactively messaging
           if (gapHours < 3) return;
 
           // --- STATE MACHINE DRIVEN PROACTIVE ---
           const { getCurrentKumikoState } = await import('../services/kumikoStateMachine');
-          const stateCtx = getCurrentKumikoState(locationConfig.modelTimezone);
+          const stateCtx = getCurrentKumikoState(locationConfig.modelTimezone, isHoliday);
           
           let triggerChance = stateCtx.proactiveProbability;
           let eventDescription = stateCtx.stateDescription;
 
-          const recent7DayMessageCount = messages.filter(msg => now - msg.timestamp <= 7 * 24 * 60 * 60 * 1000).length;
+          const recent7DayMessageCount = messages.filter(msg => currentTime - msg.timestamp <= 7 * 24 * 60 * 60 * 1000).length;
           const relationshipWarmthFactor = recent7DayMessageCount >= 120 ? 1.22 : recent7DayMessageCount >= 50 ? 1.12 : recent7DayMessageCount <= 12 ? 0.88 : 1;
           
           triggerChance = Math.min(0.35, triggerChance * relationshipWarmthFactor);
@@ -5062,27 +5482,9 @@ export const App = () => {
       // Also check shortly after initial load
       const timeoutId = setTimeout(checkProactiveLifeEvent, 15000);
 
-      // Sleep Consolidation: run once per day on app startup
-      const runConsolidation = async () => {
-        try {
-          const { shouldRunConsolidation, runSleepConsolidation } = await import('../services/sleepConsolidation');
-          if (shouldRunConsolidation()) {
-            const config = getCurrentAIConfig();
-            const result = await runSleepConsolidation(config.model_summary);
-            if (result.entitiesAdded > 0 || result.relationsAdded > 0) {
-              console.log(`[SleepConsolidation] Graph updated: +${result.entitiesAdded} entities, +${result.relationsAdded} relations`);
-            }
-          }
-        } catch (e) {
-          console.warn('[SleepConsolidation] Failed:', e);
-        }
-      };
-      const consolidationTimeout = setTimeout(runConsolidation, 30000);
-
       return () => {
           clearInterval(intervalId);
           clearTimeout(timeoutId);
-          clearTimeout(consolidationTimeout);
       };
   }, [messages, flowState, backupConfig.cloudEnabled, backupConfig.endpointUrl, locationConfig, isTalking, isThinking, triggerNativeProactiveMessage]);
 
@@ -5227,7 +5629,7 @@ export const App = () => {
             // Mark sync as performed successfully
             hasPerformedInitialPull.current = true;
             
-            updateBaseline(data.timestamp || Date.now(), dataToNormalize);
+            updateBaseline(data.timestamp || Date.now(), restoredData);
             setIsCloudSynced(true);
             setIsSettingsOpen(false);
 
@@ -5469,13 +5871,29 @@ export const App = () => {
 
   const handleExportBackup = useCallback(async () => {
     try {
-        const vectors = await getAllVectors();
+        const [vectors, kumikoDiaryExport, dailyFragmentsExport, psycheStateExport, episodesExport] = await Promise.all([
+            getAllVectors(),
+            db.kumikoDiary.orderBy('date').toArray(),
+            db.dailyFragments.orderBy('timestamp').toArray(),
+            db.psycheState.get('current'),
+            db.episodes.orderBy('startTimestamp').toArray(),
+        ]);
+        const lightweightBackupData = {
+            ...backupData,
+            kumikoDiary: undefined,
+            dailyFragments: undefined,
+            psycheState: undefined,
+        };
         
         const fullBackup = {
             timestamp: Date.now(),
-            version: "1.2",
-            data: backupData,
-            vectors: vectors
+            version: "1.3",
+            data: lightweightBackupData,
+            vectors,
+            kumikoDiary: kumikoDiaryExport,
+            dailyFragments: dailyFragmentsExport,
+            psycheState: psycheStateExport,
+            episodes: episodesExport,
         };
         const jsonString = JSON.stringify(fullBackup, null, 2);
         
@@ -5527,7 +5945,7 @@ export const App = () => {
         console.error("Failed to export backup", e);
         alert(language === 'zh' ? '备份导出失败。' : 'Failed to export backup.');
     }
-  }, [backupData]);
+  }, [backupData, language]);
 
   const handleImportBackup = useCallback(async (file: File): Promise<boolean> => {
     if (!file) return false;
@@ -5642,7 +6060,7 @@ export const App = () => {
                 console.warn('[LOCAL RAG] Imported backup restored messages without vector snapshots. Rebuild recommended.');
             }
             // After successful import, also update the baseline for auto-save
-            updateBaseline(json.timestamp || Date.now(), json.data || json);
+            updateBaseline(json.timestamp || Date.now(), restoredData);
             if (flowState === 'APP') { // Only alert if in main app
                 alert("Backup restored successfully!");
             }
@@ -6032,6 +6450,29 @@ export const App = () => {
       [...pinnedMessages, ...recentMessages].forEach(m => historyMap.set(m.id, m));
       const historySlice = Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp);
       
+      const ambientEnvironmentContext = await getAmbientEnvironmentContext();
+      const isCurrentHoliday = ambientEnvironmentContext.includes('今日特殊历法：日本法定节假日');
+
+      // --- RETROACTIVE LIFE STREAM GENERATION ---
+      if (allMessages.length > 0 && gapSincePreviousTurnMinutes > 3 * 60) {
+        setIsThinking(true);
+        const { handleRetroactiveGeneration, detectDiaryGaps } = await import('../services/lifeStreamService');
+        await handleRetroactiveGeneration(
+          allMessages[allMessages.length - 1].timestamp,
+          ambientEnvironmentContext,
+          isCurrentHoliday,
+          locationConfig.modelTimezone
+        );
+        setIsThinking(false);
+
+        const gapInfo = await detectDiaryGaps();
+        if (gapInfo.totalMissing > 0) {
+          setBackfillGapInfo(gapInfo);
+          await new Promise<void>(resolve => { pendingSendRef.current = resolve; });
+        }
+      }
+      // ------------------------------------------
+
       // --- DYNAMIC DELAY (BUSY STATE) INTERCEPTOR ---
       const nowJST = new Date(new Date().toLocaleString('en-US', { timeZone: locationConfig.modelTimezone }));
       const hourJST = nowJST.getHours();
@@ -6039,7 +6480,7 @@ export const App = () => {
       const isWorkday = dayJST >= 1 && dayJST <= 5;
       const isWorkingHours = hourJST >= 8 && hourJST <= 16;
       
-      if (isWorkday && isWorkingHours && Math.random() < 0.15) {
+      if (isWorkday && !isCurrentHoliday && isWorkingHours && Math.random() < 0.15) {
         // 15% chance to be busy during work hours
         setIsThinking(true);
         await new Promise(r => setTimeout(r, 2000 + Math.random() * 3000));
@@ -6065,8 +6506,6 @@ export const App = () => {
       }
       // ----------------------------------------------
 
-      const ambientWeatherContext = await getAmbientWeatherContext();
-      
       const currentLooksHistoryLike = isLikelyHistoricalRecallQuery(userTextForRag)
         || isLikelyTemporalHistoryQuery(userTextForRag)
         || isLikelyHistoricalFollowUp(userTextForRag)
@@ -6437,15 +6876,9 @@ export const App = () => {
         ? []
         : (memoryResponsePlanBlock ? [memoryResponsePlanBlock, ...ragContext] : ragContext);
       
-      // Inject ambient weather context into the first available slot if not strict turn
-      if (!strictEvidenceTurn && ambientWeatherContext) {
-        modelRagContext.push(ambientWeatherContext);
-      }
-
-      // Inject GraphRAG relation context if available
-      if (!strictEvidenceTurn) {
-        const graphCtx = await getGraphRelationContext(userTextForRag);
-        if (graphCtx) modelRagContext.push(graphCtx);
+      // Inject ambient environment context into the first available slot if not strict turn
+      if (!strictEvidenceTurn && ambientEnvironmentContext) {
+        modelRagContext.push(ambientEnvironmentContext);
       }
 
       const modelActiveReminders = strictEvidenceTurn ? [] : activeReminders;
@@ -6458,8 +6891,9 @@ export const App = () => {
         : undefined;
 
       // --- STATE MACHINE INJECTION ---
+      const isCurrentHolidayState = ambientEnvironmentContext.includes('今日特殊历法：日本法定节假日');
       const { getCurrentKumikoState } = await import('../services/kumikoStateMachine');
-      const currentStateCtx = getCurrentKumikoState(locationConfig.modelTimezone);
+      const currentStateCtx = getCurrentKumikoState(locationConfig.modelTimezone, isCurrentHolidayState);
       
       const statePrompt = `\n[当前生活状态]
 你现在正处于：${currentStateCtx.stateDescription}。
@@ -6469,6 +6903,36 @@ export const App = () => {
         modelRagContext.push(statePrompt);
       }
       // -------------------------------
+
+      // --- LIFE STREAM & PSYCHE STATE INJECTION ---
+      if (!strictEvidenceTurn) {
+        const { getPsycheState, getPsycheModePrompt } = await import('../services/psycheStateService');
+        const psycheState = await getPsycheState();
+        const psychePrompt = getPsycheModePrompt(psycheState);
+        modelRagContext.push(`\n${psychePrompt}`);
+
+        const { getDailyFragments, getRecentDiaries } = await import('../services/lifeStreamService');
+        const now = Date.now();
+        const jstDate = new Date(new Date(now).toLocaleString("en-US", { timeZone: "Asia/Tokyo" }));
+        const dateStr = `${jstDate.getFullYear()}-${String(jstDate.getMonth() + 1).padStart(2, '0')}-${String(jstDate.getDate()).padStart(2, '0')}`;
+        
+        const recentDiaries = await getRecentDiaries(2);
+        const todayFragments = await getDailyFragments(dateStr);
+        
+        let lifeStreamPrompt = `\n[近期生活轨迹]\n`;
+        if (recentDiaries.length > 0) {
+          lifeStreamPrompt += `前几日日记摘要：\n${recentDiaries.map(d => `- [${d.date}]: ${d.summary}`).join('\n')}\n`;
+        }
+        if (todayFragments.length > 0) {
+          lifeStreamPrompt += `今日离线期间经历的事件切片：\n${todayFragments.map(f => `- [${new Date(f.timestamp).toLocaleTimeString('en-US', {timeZone: 'Asia/Tokyo'})}]: ${f.content}`).join('\n')}\n`;
+        }
+        
+        if (recentDiaries.length > 0 || todayFragments.length > 0) {
+          lifeStreamPrompt += `请在回复中自然地表现出这些记忆的延续感（情绪余波、事件后续等）。`;
+          modelRagContext.push(lifeStreamPrompt);
+        }
+      }
+      // --------------------------------------------
 
       const isVoiceAllowedByState = currentStateCtx.canUseVoice;
       let hybridVoicePrompt = '';
@@ -6637,8 +7101,8 @@ Simulate human behavior: You are relaxing at home now, feel free to use voice mo
                   setIsThinking(false);
                   
                   // Insert recall notice
-                  const recallNotice = language === 'zh' ? '黄前久美子撤回了一条消息' : 'Kumiko recalled a message';
-                  addMessage('system', recallNotice, undefined, undefined, 'recall-' + Date.now());
+                  const recallNotice = language === 'zh' ? '【黄前久美子撤回了一条消息】' : '[Kumiko recalled a message]';
+                  addMessage('model', recallNotice, undefined, undefined, 'recall-' + Date.now());
                   
                   await new Promise(r => setTimeout(r, 3000 + Math.random() * 2000));
                   if (generationIdRef.current !== currentGenId) break;
@@ -7076,6 +7540,8 @@ Simulate human behavior: You are relaxing at home now, feel free to use voice mo
     setIsMessageCenterOpen,
     isTaskPanelOpen,
     setIsTaskPanelOpen,
+    isDiaryOpen,
+    setIsDiaryOpen,
     flushIfDirty,
     coreMemory,
     contextLimit,
@@ -7238,6 +7704,19 @@ Simulate human behavior: You are relaxing at home now, feel free to use voice mo
     {flowState === 'APP' && ( <div className={`absolute inset-0 z-0 amadeus-bg-grid ${isDarkMode ? 'opacity-100' : 'opacity-30'}`}></div> )}
     {flowState === 'APP' && (
       <AppMainView {...appMainViewProps} />
+    )}
+    {backfillGapInfo && backfillGapInfo.totalMissing > 0 && (
+      <DiaryBackfillDialogLazy
+        gapInfo={backfillGapInfo}
+        language={language}
+        isDarkMode={isDarkMode}
+        onConfirmAll={handleBackfillAll}
+        onConfirmOne={handleBackfillOne}
+        onDismiss={handleBackfillDismiss}
+        progress={backfillProgress}
+        isComplete={backfillComplete}
+        generatedCount={backfillGeneratedCount}
+      />
     )}
       <AppFlowScreens
           flowState={flowState}

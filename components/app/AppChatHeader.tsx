@@ -1,5 +1,5 @@
 import React from 'react';
-import { BellRing, BrainCircuit, CheckSquare, Clock3, Maximize, Minimize, Moon, Settings, Sun, Trash2, User } from 'lucide-react';
+import { BellRing, BrainCircuit, CheckSquare, Clock3, Maximize, Minimize, Moon, Settings, Sun, Trash2, User, BookOpen } from 'lucide-react';
 import { ExtendedSyncStatus, RagStatusIndicator, SyncStatusIndicator } from '../SyncStatus';
 import { Language } from '../../types';
 
@@ -22,6 +22,7 @@ interface AppChatHeaderProps {
   onToggleFullscreen: () => void;
   onToggleSelectionMode: () => void;
   onOpenMemory: () => void;
+  onOpenDiary: () => void;
   onToggleTheme: () => void;
   onOpenProfile: () => void;
   onOpenInbox: () => void;
@@ -49,6 +50,7 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
   onToggleFullscreen,
   onToggleSelectionMode,
   onOpenMemory,
+  onOpenDiary,
   onToggleTheme,
   onOpenProfile,
   onOpenInbox,
@@ -117,7 +119,7 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
           <div ref={identityRef} className="flex shrink-0 items-center gap-2.5">
             <div className={`h-2.5 w-2.5 rounded-full shrink-0 ${isTalking ? 'bg-green-500 animate-pulse' : (isDarkMode ? 'bg-yellow-600' : 'bg-[#b8860b]')}`}></div>
             <span
-              className={`shrink-0 whitespace-nowrap font-mono text-[15px] font-bold tracking-[0.16em] ${textColor}`}
+              className={`shrink-0 whitespace-nowrap font-mincho ka-panel-title ${textColor}`}
               title={fullName}
             >
               {fullName}
@@ -134,6 +136,9 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
             <button onClick={onOpenMemory} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '记忆系统' : 'Core Memory Bank'}>
               <BrainCircuit size={17} />
             </button>
+            <button onClick={onOpenDiary} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '久美子的日记' : 'Kumiko\'s Diary'}>
+              <BookOpen size={17} />
+            </button>
             <button onClick={onToggleTheme} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '切换主题' : 'Toggle Theme'}>
               {isDarkMode ? <Sun size={17} /> : <Moon size={17} />}
             </button>
@@ -143,7 +148,7 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
             <button onClick={onOpenInbox} className="relative inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '消息中心' : 'Message Center'}>
               <BellRing size={17} />
               {unreadMessageCount > 0 && (
-                <span className="absolute -top-2 -right-2 min-w-[1rem] h-4 px-1 rounded-full bg-[#c75a1d] text-[10px] leading-4 text-white font-mono text-center">
+                <span className="absolute -top-2 -right-2 min-w-[1rem] h-4 px-1 rounded-full bg-[#c75a1d] ka-micro leading-4 text-white text-center">
                   {unreadMessageCount > 99 ? '99+' : unreadMessageCount}
                 </span>
               )}
@@ -151,7 +156,7 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
             <button onClick={onOpenTasks} className="relative inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '定时任务' : 'Scheduled Tasks'}>
               <Clock3 size={17} />
               {activeTaskCount > 0 && (
-                <span className="absolute -top-2 -right-2 min-w-[1rem] h-4 px-1 rounded-full bg-red-500 text-[10px] leading-4 text-white font-mono text-center">
+                <span className="absolute -top-2 -right-2 min-w-[1rem] h-4 px-1 rounded-full bg-red-500 ka-micro leading-4 text-white text-center">
                   {activeTaskCount > 99 ? '99+' : activeTaskCount}
                 </span>
               )}
@@ -195,7 +200,7 @@ export const AppSelectionBanner: React.FC<AppSelectionBannerProps> = ({
   onCancel
 }) => {
   return (
-    <div className={`h-10 flex items-center justify-center px-6 text-xs font-mono font-bold animate-in slide-in-from-top duration-200 ${isDarkMode ? 'bg-red-900/20 text-red-400' : 'bg-red-100 text-red-600'}`}>
+    <div className={`h-10 flex items-center justify-center px-6 ka-micro font-bold animate-in slide-in-from-top duration-200 ${isDarkMode ? 'bg-red-900/20 text-red-400' : 'bg-red-100 text-red-600'}`}>
       <span>{text}</span>
       <div className="flex gap-4 ml-auto">
         <button onClick={onClear} className="hover:text-red-200 underline">{clearLabel}</button>

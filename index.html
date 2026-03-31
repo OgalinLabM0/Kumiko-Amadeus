@@ -16,10 +16,24 @@
     <title>Kumiko·Amadeus</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;600&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+      @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Cormorant+Garamond:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@500;600;700&display=swap');
       
       :root {
         --app-height: 100%;
+        --font-ui: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Plus Jakarta Sans', sans-serif;
+        --font-reading: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Plus Jakarta Sans', sans-serif;
+        --font-display: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', 'Cormorant Garamond', serif;
+        --font-elegant: 'Cormorant Garamond', 'Plus Jakarta Sans', Georgia, serif;
+        --font-mono: 'IBM Plex Mono', 'Noto Sans SC', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --type-micro: clamp(10px, 0.6rem + 0.05vw, 11px);
+        --type-caption: clamp(11px, 0.66rem + 0.08vw, 12px);
+        --type-label: clamp(11px, 0.66rem + 0.08vw, 12px);
+        --type-body: clamp(13px, 0.84rem + 0.1vw, 15px);
+        --type-title: clamp(15px, 0.92rem + 0.16vw, 18px);
+        --tracking-ui: 0.01em;
+        --tracking-label: 0.14em;
+        --tracking-kicker: 0.18em;
+        --leading-copy: 1.72;
       }
 
       html {
@@ -41,11 +55,241 @@
         width: 100%;
         margin: 0;
         padding: 0;
-        font-family: 'Exo 2', 'Noto Sans SC', sans-serif;
+        font-family: var(--font-ui);
+        font-size: var(--type-body);
+        line-height: 1.58;
+        letter-spacing: var(--tracking-ui);
         background-color: #000; /* Dark background to match app */
         color: #e0e0e0;
         overflow: hidden; /* Prevent body scroll, handle in app */
         -webkit-tap-highlight-color: transparent;
+        text-rendering: optimizeLegibility;
+      }
+
+      button, input, textarea, select {
+        font: inherit;
+      }
+
+      .font-mono {
+        font-family: var(--font-mono) !important;
+        letter-spacing: 0.035em;
+      }
+
+      .font-mincho {
+        font-family: var(--font-display) !important;
+      }
+
+      .font-elegant {
+        font-family: var(--font-elegant) !important;
+      }
+
+      .ka-panel-title {
+        font-family: var(--font-display);
+        font-size: clamp(14px, 0.88rem + 0.12vw, 16px);
+        font-weight: 700;
+        line-height: 1.2;
+        letter-spacing: 0.016em;
+      }
+
+      .ka-overlay-title {
+        font-family: var(--font-display);
+        font-size: clamp(12px, 0.78rem + 0.08vw, 14px);
+        font-weight: 700;
+        line-height: 1.18;
+        letter-spacing: 0.01em;
+      }
+
+      .ka-floating-title {
+        font-family: var(--font-display);
+        font-size: clamp(11px, 0.74rem + 0.06vw, 13px);
+        font-weight: 700;
+        line-height: 1.18;
+        letter-spacing: 0.008em;
+      }
+
+      .ka-section-title {
+        font-family: var(--font-reading);
+        font-size: clamp(14px, 0.84rem + 0.12vw, 16px);
+        font-weight: 700;
+        line-height: 1.3;
+        letter-spacing: 0.01em;
+      }
+
+      .ka-section-desc {
+        font-family: var(--font-reading);
+        font-size: var(--type-caption);
+        line-height: 1.58;
+        letter-spacing: 0.01em;
+      }
+
+      .ka-kicker {
+        font-family: var(--font-ui);
+        font-size: var(--type-micro);
+        font-weight: 600;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .ka-label {
+        font-family: var(--font-ui);
+        font-size: var(--type-label);
+        font-weight: 700;
+        letter-spacing: 0.03em;
+      }
+
+      .ka-value {
+        font-family: var(--font-reading);
+        font-size: clamp(12px, 0.78rem + 0.08vw, 14px);
+        line-height: 1.48;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+      }
+
+      .ka-setting-item-title {
+        font-family: var(--font-reading);
+        font-size: clamp(12px, 0.76rem + 0.08vw, 13px);
+        line-height: 1.42;
+        font-weight: 650;
+        letter-spacing: 0.008em;
+      }
+
+      .ka-copy {
+        font-family: var(--font-reading);
+        font-size: var(--type-body);
+        line-height: var(--leading-copy);
+        letter-spacing: 0.01em;
+      }
+
+      .ka-copy-sm {
+        font-family: var(--font-reading);
+        font-size: var(--type-caption);
+        line-height: 1.58;
+        letter-spacing: 0.01em;
+      }
+
+      .ka-chat-copy {
+        font-family: var(--font-reading);
+        font-size: var(--type-body);
+        line-height: 1.78;
+        font-weight: 500;
+        letter-spacing: 0.006em;
+      }
+
+      .ka-input-copy {
+        font-family: var(--font-reading);
+        font-size: clamp(13px, 0.82rem + 0.08vw, 14px);
+        line-height: 1.45;
+        letter-spacing: 0.01em;
+      }
+
+      .ka-micro {
+        font-family: var(--font-ui);
+        font-size: var(--type-micro);
+        line-height: 1.45;
+        letter-spacing: 0.05em;
+      }
+
+      .ka-settings-shell {
+        font-family: var(--font-ui);
+      }
+
+      .ka-settings-shell .ka-section-title {
+        font-family: var(--font-reading);
+        font-size: clamp(13px, 0.8rem + 0.06vw, 15px);
+        font-weight: 700;
+        line-height: 1.28;
+        letter-spacing: 0.012em;
+      }
+
+      .ka-settings-shell .ka-section-desc {
+        font-family: var(--font-reading);
+        font-size: clamp(11px, 0.72rem + 0.04vw, 12px);
+        line-height: 1.56;
+        letter-spacing: 0.01em;
+      }
+
+      .ka-settings-shell .ka-setting-item-title {
+        font-family: var(--font-reading);
+        font-size: clamp(11px, 0.72rem + 0.04vw, 12px);
+        line-height: 1.42;
+        font-weight: 650;
+        letter-spacing: 0.008em;
+      }
+
+      .ka-settings-shell .ka-label {
+        font-size: clamp(11px, 0.7rem + 0.04vw, 12px);
+        letter-spacing: 0.035em;
+      }
+
+      .ka-settings-shell .ka-copy {
+        font-size: clamp(13px, 0.81rem + 0.05vw, 14px);
+        line-height: 1.64;
+      }
+
+      .ka-settings-shell .ka-copy-sm,
+      .ka-settings-shell .ka-input-copy {
+        font-size: clamp(11px, 0.72rem + 0.04vw, 12px);
+        line-height: 1.58;
+      }
+
+      .ka-settings-shell input,
+      .ka-settings-shell textarea,
+      .ka-settings-shell select,
+      .ka-settings-shell button {
+        font-family: var(--font-ui);
+      }
+
+      .ka-settings-shell .ka-settings-kicker {
+        font-family: var(--font-ui);
+        font-size: clamp(10px, 0.66rem + 0.04vw, 11px);
+        font-weight: 700;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .ka-settings-shell .ka-settings-panel-title {
+        font-family: var(--font-display);
+        font-size: clamp(16px, 1rem + 0.28vw, 21px);
+        font-weight: 700;
+        line-height: 1.16;
+        letter-spacing: 0.018em;
+      }
+
+      .ka-settings-shell .ka-settings-nav-label {
+        font-family: var(--font-reading);
+        font-size: clamp(11px, 0.72rem + 0.04vw, 13px);
+        font-weight: 650;
+        line-height: 1.35;
+        letter-spacing: 0.008em;
+      }
+
+      .ka-settings-shell .ka-settings-nav-desc {
+        font-family: var(--font-reading);
+        font-size: clamp(10px, 0.68rem + 0.04vw, 11px);
+        line-height: 1.45;
+        letter-spacing: 0.008em;
+      }
+
+      .ka-soft-h-scroll {
+        scrollbar-width: thin;
+        scrollbar-color: #d2b26a transparent;
+      }
+
+      .ka-soft-h-scroll::-webkit-scrollbar {
+        height: 5px;
+      }
+
+      .ka-soft-h-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      .ka-soft-h-scroll::-webkit-scrollbar-thumb {
+        background: linear-gradient(90deg, rgba(214, 187, 124, 0.72), rgba(193, 151, 55, 0.88));
+        border-radius: 999px;
+      }
+
+      .ka-soft-h-scroll::-webkit-scrollbar-thumb:hover {
+        background: linear-gradient(90deg, rgba(208, 179, 112, 0.82), rgba(183, 139, 40, 0.96));
       }
       
       #root {

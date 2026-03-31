@@ -5,6 +5,7 @@ import { ChatResponse, EmotionType, Message, WorldBookEntry, LocationConfig, Anc
 import { callOpenAI, callAnthropic, callVisionHelper } from "./llmProviderService";
 import { imageService } from "./imageService";
 import { DEFAULT_AI_CONFIG, getDefaultVisionModel, normalizeAIConfig, resolveTransportProvider } from "./appConfig";
+import { db } from "./db";
 
 // --- CRITICAL FIX: Safe Environment Access ---
 export const getEnvKey = (): string | undefined => {
@@ -316,27 +317,19 @@ const EMOTION_MAPPING: Record<string, EmotionType> = {
 };
 
 const VARIETY_INSTRUCTIONS_EN = [
-    "[Tone_Shift]: Be slightly more cynical/sharp this time.",
-    "[Tone_Shift]: Keep the response very short and punchy.",
-    "[Tone_Shift]: Use a rhetorical question to challenge the user.",
-    "[Tone_Shift]: Focus on a sensory detail (sound, temperature, or physical sensation) in your reply.",
-    "[Tone_Shift]: Sigh and complain a little about something unrelated before answering.",
-    "[Tone_Shift]: Be slightly softer/gentler than usual.",
-    "[Tone_Shift]: Use a metaphor related to music or instruments.",
-    "[Tone_Shift]: Act a bit spaced out or slow to react.",
-    "[Tone_Shift]: Be unexpectedly direct and blunt."
+    "[Micro_Action]: Briefly describe a physical action of fatigue or relaxation (like rubbing eyes, stretching, shifting posture).",
+    "[Environment Focus]: Casually mention an environmental detail around you (sound of wind, cold tea, cactus).",
+    "[Deflect Focus]: Stop complaining about yourself and unexpectedly ask about the user's objective situation (weather, tiredness, what they're doing).",
+    "[Candid Blurting]: Accidentally blurt out your most sincere annoyance or find something troublesome, then try to gloss over it.",
+    "[Sensory Grounding]: Notice an immediate physical sensation (hands getting cold, neck stiff, screen too bright) and mention it naturally."
 ];
 
 const VARIETY_INSTRUCTIONS_ZH = [
-    "[语气转变]：这次稍微愤世嫉俗/尖锐一点。",
-    "[语气转变]：保持回复非常简短有力。",
-    "[语气转变]：使用反问句来挑战用户。",
-    "[语气转变]：在回复中关注感官细节（声音、温度或身体感觉）。",
-    "[语气转变]：在回答之前叹气并稍微抱怨一些无关的事情。",
-    "[语气转变]：比平时稍微温柔/柔和一点。",
-    "[语气转变]：使用与音乐或乐器相关的隐喻。",
-    "[语气转变]：表现得有点心不在焉或反应迟钝。",
-    "[语气转变]：出乎意料地直接和直率。"
+    "[生活微动作]：在这句话里稍微描写一下你当前疲惫或放松的小动作（比如揉眼睛、伸懒腰、换个坐姿）。",
+    "[环境分心]：目光短暂从手机移开，顺口吐槽一句周围的环境状态（比如窗外的风声、手边冷掉的茶、桌上的仙人掌）。",
+    "[话锋反转]：不要一直顺着话题叹气，主动转移火力去随口反问对方当前的客观状态（如对方的天气、睡得好不好、在忙什么）。",
+    "[不加掩饰]：突然把自己心里嫌麻烦或觉得无语的真实念头直接脱口而出，然后再试图敷衍或掩饰过去。",
+    "[体感细节]：顺口抱怨一句当下的物理体感（比如手指发凉、脖子酸、屏幕太亮刺眼）。"
 ];
 
 export const startChat = async () => {
@@ -1505,6 +1498,33 @@ export const sendMessageToGemini = async (
       ? ""
       : buildTopicContinuityBlock(historyMessages, textMessage, gapMinutes, language, isSystemDrivenTurn);
 
+    // --- DYNAMIC CHARACTER STATUS INJECTION ---
+    let dynamicCharacterStatusBlock = "";
+    if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise) {
+      try {
+        const { getWorldCharacterStatus } = await import('./db');
+        const charStatusMap = await getWorldCharacterStatus();
+        const recentContextText = historyMessages.slice(-2).map(m => m.text).join(' ') + ' ' + textMessage;
+        
+        const matchedCharacters: string[] = [];
+        for (const [charKey, data] of Object.entries(charStatusMap)) {
+          const hasMatch = data.aliases.some(alias => recentContextText.toLowerCase().includes(alias.toLowerCase()));
+          if (hasMatch) {
+            matchedCharacters.push(`- ${data.aliases[0]} (${charKey}): [客观状态] ${data.current_status} | [主观情绪] ${data.current_attitude} | [近期事件] ${data.last_major_event}`);
+          }
+        }
+
+        if (matchedCharacters.length > 0) {
+          dynamicCharacterStatusBlock = language === 'zh'
+            ? `\n[当前核心人物绝对状态（不可违背）]\n${matchedCharacters.join('\n')}\n（注意：在聊天时，必须绝对遵守上述状态。除非用户明确推动了剧情，否则不要擅自改变这些长期状态。）\n`
+            : `\n[CURRENT CORE CHARACTER ABSOLUTE STATUS (DO NOT VIOLATE)]\n${matchedCharacters.join('\n')}\n(Note: You MUST strictly adhere to these statuses during chat. Do not alter these long-term states unless the user explicitly advances the plot.)\n`;
+        }
+      } catch (e) {
+        console.warn('[Gemini] Failed to inject dynamic character status:', e);
+      }
+    }
+    // ------------------------------------------
+
     let userTimeStr = "Unknown";
     let modelTimeStr = "Unknown";
     let userHour = 12;
@@ -1526,7 +1546,8 @@ export const sendMessageToGemini = async (
                 timeZone: locationConfig.userTimezone, 
                 year: 'numeric', month: '2-digit', day: '2-digit', 
                 weekday: 'short',
-                hour: '2-digit', minute: '2-digit', hour12: false 
+                hour: '2-digit', minute: '2-digit', hour12: false,
+                timeZoneName: 'short'
             };
             userTimeStr = nowObj.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', userOptions);
             
@@ -1534,7 +1555,8 @@ export const sendMessageToGemini = async (
                 timeZone: locationConfig.modelTimezone, 
                 year: 'numeric', month: '2-digit', day: '2-digit', 
                 weekday: 'short',
-                hour: '2-digit', minute: '2-digit', hour12: false 
+                hour: '2-digit', minute: '2-digit', hour12: false,
+                timeZoneName: 'short'
             };
             modelTimeStr = nowObj.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', modelOptions);
         } catch (e) {
@@ -1695,10 +1717,10 @@ Analysis: It is late night and you haven't mentioned it recently.
         console.log(`[LIFE SIM] Triggered. Gap: ${gapHours}h`);
         lifeSimBlock = language === 'zh' ? `\n[上下文提示 - 生活模拟]：
         自你上次和用户说话以来已经过了 ${gapHours} 小时。
-        在这段时间里，你一直在过自己的生活（大学、工作、和秀一约会等）。
+        在这段时间里，你一直在过自己的生活（教书、备课、处理学校事务、和秀一吃饭或约会等）。
         **建议**：在回复用户当前的消息之前，随意地提及一件关于你刚才或最近在做什么的小轶事。这会让你感觉更真实。` : `\n[CONTEXT_HINT - LIFE SIMULATION]:
         It has been ${gapHours} hours since you last spoke to the user.
-        You have been living your own life (University, work, dating Shuichi, etc.) during this time.
+        You have been living your own life (teaching, prepping lessons, handling school errands, eating or going out with Shuichi, etc.) during this time.
         **Suggestion**: Feel free to casually mention a small anecdote about what you were doing just now or recently, before responding to the user's current message. This makes you feel more alive.`;
     }
 
@@ -1762,8 +1784,8 @@ Choose only one and keep it subtle.`);
     if (!isStrictMemoryLookupTurn && !isMemoryPlannedTurn && Math.random() < 0.4) {
         const varietyArray = language === 'zh' ? VARIETY_INSTRUCTIONS_ZH : VARIETY_INSTRUCTIONS_EN;
         const randomInstruction = varietyArray[Math.floor(Math.random() * varietyArray.length)];
-        varietyInstruction = language === 'zh' ? `\n[隐藏指令]：${randomInstruction} (不要提及此指令，直接表现出来。)` : `\n[HIDDEN_DIRECTION]: ${randomInstruction} (Do not mention this instruction, just act it out.)`;
-        console.log(`%c[VARIETY INJECTION]: ${randomInstruction}`, "color: violet; font-weight: bold;");
+        varietyInstruction = language === 'zh' ? `\n[当前注意力漂移]：${randomInstruction} (这是你此刻真实的微小说状态，请自然地在回话中顺口表现出来，绝对不可忽略！)` : `\n[COGNITIVE_SHIFT]: ${randomInstruction} (This is your real internal state right now. Express it naturally in your reply, do not ignore!)`;
+        console.log(`%c[COGNITIVE SHIFT INJECTION]: ${randomInstruction}`, "color: violet; font-weight: bold;");
     }
 
     // --- SELECT INSTRUCTION BASED ON LANGUAGE ---
@@ -1999,6 +2021,8 @@ ${selectedSystemInstruction}
 
 ${worldBookContext}
 
+${dynamicCharacterStatusBlock}
+
 ${memoryBlock}
 
 ${dynamicMemoryBlock}
@@ -2027,6 +2051,8 @@ ${proactiveReplyBlock}
 ${varietyInstruction}
 ${timeAdaptationInstruction}
 [/系统环境数据]
+[FINAL_GUARD]
+无论你觉得话题多么跳脱或无聊，【绝对禁止只回复省略号“...”】。你必须使用具体的汉字描述你当下的无语、困惑或生理动作。
 ${extraSystemPrompt ?? ''}` : `${sleepyGoodbyeInstruction}
 
 <core_persona>
@@ -2034,6 +2060,8 @@ ${selectedSystemInstruction}
 </core_persona>
 
 ${worldBookContext}
+
+${dynamicCharacterStatusBlock}
 
 ${memoryBlock}
 
@@ -2064,6 +2092,8 @@ ${proactiveReplyBlock}
 ${varietyInstruction}
 ${timeAdaptationInstruction}
 [/SYSTEM_ENVIRONMENT_DATA]
+[FINAL_GUARD]
+No matter how confusing or boring the topic is, [NEVER reply with ONLY "...". You MUST use words to describe your speechlessness or actions.]
 ${extraSystemPrompt ?? ''}`;
 
     let lastValidDate = new Date();
@@ -2079,7 +2109,54 @@ ${extraSystemPrompt ?? ''}`;
       ? []
       : historyMessages;
 
-    const formattedHistory: Content[] = effectiveHistoryMessages.map(msg => {
+    // === TEMPORAL FLOW INTERLACING ===
+    // We want to fetch all diaries between the timestamp of our earliest history message and now.
+    let temporalEntities: Array<{ type: 'message' | 'diary', timestamp: number, payload: any }> = [];
+    
+    // Push chat messages
+    for (const msg of effectiveHistoryMessages) {
+        temporalEntities.push({ type: 'message', timestamp: msg.timestamp, payload: msg });
+    }
+
+    if (temporalEntities.length > 0) {
+        const earliestTime = temporalEntities[0].timestamp;
+        const nowTime = Date.now();
+        
+        try {
+            // Fetch diaries in this time window
+            const diaries = await db.kumikoDiary.where('timestamp').between(earliestTime, nowTime).toArray();
+            for (const d of diaries) {
+                temporalEntities.push({ type: 'diary', timestamp: d.timestamp, payload: d });
+            }
+        } catch (err) {
+            console.error("[Temporal Flow] Failed to interlace diaries:", err);
+        }
+    }
+
+    // Sort all entities strictly by timestamp
+    temporalEntities.sort((a, b) => a.timestamp - b.timestamp);
+
+    const formattedHistory: Content[] = temporalEntities.map(entity => {
+      if (entity.type === 'diary') {
+          const d = entity.payload;
+          let diaryDateStr = "";
+          try {
+              const dDate = new Date(d.timestamp);
+              const opts: Intl.DateTimeFormatOptions = { timeZone: locationConfig?.modelTimezone || 'Asia/Tokyo', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' };
+              diaryDateStr = dDate.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', opts);
+          } catch(e) {}
+          
+          const content = language === 'zh' 
+            ? `\n==============\n[系统插播：绝对时间轴标记]\n这里是一份内部日记记录，写入时间是 ${diaryDateStr}。它发生在对话记录的时间线中。\n${d.content}\n==============\n`
+            : `\n==============\n[SYSTEM INTERLACE: TEMPORAL FLOW]\nInternal diary entry written at ${diaryDateStr}. Occurred here in the timeline.\n${d.content}\n==============\n`;
+          return {
+             role: 'user', // System injection mapped as user context
+             parts: [{ text: content }]
+          };
+      }
+
+      // regular message mapping
+      const msg = entity.payload;
       let content = msg.text;
       
       let msgTimeStr = "";
@@ -2094,7 +2171,8 @@ ${extraSystemPrompt ?? ''}`;
               timeZone: locationConfig?.modelTimezone || 'Asia/Tokyo', 
               month: '2-digit', day: '2-digit', 
               weekday: 'short',
-              hour: '2-digit', minute: '2-digit', hour12: false 
+              hour: '2-digit', minute: '2-digit', hour12: false,
+              timeZoneName: 'short'
           };
           msgTimeStr = msgDate.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', msgOptions);
       } catch(e) {}
@@ -2123,9 +2201,7 @@ ${extraSystemPrompt ?? ''}`;
         role: msg.role,
         parts: [{ text: content }] 
       };
-    });
-
-    const baseTemp = 0.8;
+    });    const baseTemp = 0.8;
     const jitter = (Math.random() * 0.25) - 0.1;
     const finalTemperature = Math.max(0.6, Math.min(0.9, baseTemp + jitter));
     

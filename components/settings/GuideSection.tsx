@@ -32,8 +32,8 @@ export const GuideSection: React.FC<GuideSectionProps> = ({
             <Book size={20} />
           </div>
           <div className="text-left">
-            <h3 className={`font-bold text-sm ${isDarkMode ? 'text-yellow-100' : 'text-gray-900'}`}>{t.guideTitle}</h3>
-            {!isOpen && <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.guideDesc}</p>}
+            <h3 className={`ka-section-title ${isDarkMode ? 'text-yellow-100' : 'text-gray-900'}`}>{t.guideTitle}</h3>
+            {!isOpen && <p className={`ka-section-desc ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.guideDesc}</p>}
           </div>
         </div>
         {isOpen ? <ChevronUp size={16} className="opacity-50" /> : <ChevronDown size={16} className="opacity-50" />}
@@ -41,10 +41,10 @@ export const GuideSection: React.FC<GuideSectionProps> = ({
 
       {isOpen && (
         <div className="p-4 pt-0 animate-in slide-in-from-top-2">
-          <p className={`text-xs mb-3 font-mono ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.guideDesc}</p>
+          <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.guideDesc}</p>
           <button
             onClick={onOpenGuide}
-            className={`w-full py-3 rounded border border-dashed flex items-center justify-center gap-2 font-mono font-bold text-xs transition-all ${
+            className={`w-full py-3 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${
               isDarkMode
                 ? 'border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10'
                 : 'border-[#b8860b]/50 text-[#b8860b] hover:bg-[#b8860b]/10'

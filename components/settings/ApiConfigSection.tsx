@@ -87,23 +87,23 @@ export const ApiConfigSection: React.FC<ApiConfigSectionProps> = ({
   onValidateAll
 }) => {
   return (
-    <div className={`flex flex-col rounded-lg border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
-      <button onClick={onToggle} className="flex items-center justify-between p-4 w-full">
+    <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
+      <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full min-h-[3.5rem]">
         <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-full ${isDarkMode ? 'bg-teal-900/30 text-teal-400' : 'bg-teal-100 text-teal-700'}`}>
-            <ShieldCheck size={20} />
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border shrink-0 ${isDarkMode ? 'border-teal-500/20 bg-teal-900/20 text-teal-300' : 'border-teal-200 bg-teal-50/90 text-teal-700'}`}>
+            <ShieldCheck size={18} />
           </div>
           <div className="text-left">
-            <h3 className={`font-bold text-sm ${isDarkMode ? 'text-yellow-100' : 'text-gray-900'}`}>{t_local.apiTitle}</h3>
-            {!isOpen && <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t_local.apiDesc}</p>}
+            <h3 className={`ka-section-title ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{t_local.apiTitle}</h3>
+            {!isOpen && <p className={`ka-section-desc ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t_local.apiDesc}</p>}
           </div>
         </div>
-        {isOpen ? <ChevronUp size={16} className="opacity-50" /> : <ChevronDown size={16} className="opacity-50" />}
+        {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
       {isOpen && (
-        <div className="p-4 pt-0 animate-in slide-in-from-top-2 space-y-4">
-          <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t_local.apiDesc}</p>
+        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 space-y-4">
+          <p className={`ka-section-desc ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t_local.apiDesc}</p>
           <ApiSecuritySection
             isOpen={isSecurityOpen}
             onToggle={onToggleSecurity}

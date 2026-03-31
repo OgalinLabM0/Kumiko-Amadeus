@@ -50,10 +50,8 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
   }, []);
 
   const styles = `
-    @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600;700&family=Noto+Serif+JP:wght@400;700;900&family=Noto+Serif+SC:wght@400;700;900&family=Shippori+Mincho&display=swap');
-
-    .font-elegant { font-family: 'Cormorant Garamond', serif; }
-    .font-mincho { font-family: 'Shippori Mincho', 'Noto Serif JP', 'Noto Serif SC', 'PingFang SC', 'Hiragino Sans GB', 'STSong', 'Microsoft YaHei', serif; }
+    .font-elegant { font-family: var(--font-elegant); }
+    .font-mincho { font-family: var(--font-display); }
 
     /* Background: Subtle Sheet Music Lines */
     .sheet-music-bg {
@@ -183,7 +181,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
   };
 
   return (
-    <div className={`fixed top-0 left-0 w-full z-[100] bg-[#f9f7f2] text-[#785A42] font-mincho overflow-hidden flex flex-col items-center justify-center transition-all duration-1000 safe-area-padding`} style={{ height: 'var(--app-height)' }}>
+    <div className={`fixed top-0 left-0 w-full z-[100] bg-[#f9f7f2] text-[#785A42] overflow-hidden flex flex-col items-center justify-center transition-all duration-1000 safe-area-padding`} style={{ height: 'var(--app-height)' }}>
       <style>{styles}</style>
 
       {/* --- CONTENT WRAPPER FOR FADE OUT --- */}
@@ -225,14 +223,14 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
            <div className={`px-2 py-1 rounded-full border border-[#785A42]/30 flex gap-2 bg-white/50 backdrop-blur-sm shadow-sm transition-opacity duration-500`}>
               <button 
                 onClick={() => onLanguageChange('zh')}
-                className={`text-xs font-bold font-mincho px-2 py-0.5 rounded transition-all ${language === 'zh' ? 'bg-[#785A42] text-[#f9f7f2]' : 'text-[#785A42]/60 hover:text-[#785A42]'}`}
+                className={`ka-micro font-semibold px-2 py-0.5 rounded transition-all ${language === 'zh' ? 'bg-[#785A42] text-[#f9f7f2]' : 'text-[#785A42]/60 hover:text-[#785A42]'}`}
               >
                 中
               </button>
               <div className="w-px h-auto bg-[#785A42]/20"></div>
               <button 
                 onClick={() => onLanguageChange('en')}
-                className={`text-xs font-bold font-elegant px-2 py-0.5 rounded transition-all ${language === 'en' ? 'bg-[#785A42] text-[#f9f7f2]' : 'text-[#785A42]/60 hover:text-[#785A42]'}`}
+                className={`ka-micro font-semibold font-elegant px-2 py-0.5 rounded transition-all ${language === 'en' ? 'bg-[#785A42] text-[#f9f7f2]' : 'text-[#785A42]/60 hover:text-[#785A42]'}`}
               >
                 EN
               </button>
@@ -323,35 +321,36 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
           <div className="text-center mb-[3vh] md:mb-[4vh] relative z-10 flex flex-col items-center">
              <div className="flex items-center gap-3 mb-[1vh] opacity-80">
                 <span className="h-px w-8 bg-[#785A42]"></span>
-                <span className="text-[1.2vh] min-text-xs font-elegant tracking-[0.2em] text-[#785A42] font-bold">SOUND! EUPHONIUM</span>
+                <span className="ka-kicker font-elegant tracking-[0.2em] text-[#785A42] font-semibold">SOUND! EUPHONIUM</span>
                 <span className="h-px w-8 bg-[#785A42]"></span>
              </div>
 
              <h1 
-               className="text-[6vh] md:text-[8vh] leading-none font-elegant font-bold tracking-widest text-[#785A42] ink-text drop-shadow-sm" 
+               className="text-[4.2vh] md:text-[5.4vh] leading-none font-elegant font-bold tracking-[0.1em] text-[#785A42] ink-text drop-shadow-sm" 
                data-text="AMADEUS"
              >
                AMADEUS
              </h1>
              
              <div className="mt-[1.5vh] flex flex-col items-center gap-1">
-                <span className="text-[2.5vh] md:text-[3vh] leading-none font-mincho font-bold tracking-[0.5em] text-[#785A42]">
+                <span className="text-[1.72vh] md:text-[2vh] leading-none font-mincho font-semibold tracking-[0.04em] text-[#785A42]">
                   {language === 'zh' ? '黄前 久美子' : 'Oumae Kumiko'}
                 </span>
-                <span className="text-[1.2vh] min-text-[10px] font-mono tracking-widest text-[#785A42] opacity-60 uppercase mt-[0.5vh]">
+                <span className="ka-micro font-mono tracking-[0.14em] text-[#785A42] opacity-60 uppercase mt-[0.5vh]">
                   Kitauji High School Concert Band
                 </span>
              </div>
           </div>
 
           {/* INFO CARD */}
-          <div className="w-full max-w-3xl grid grid-cols-1 md:grid-cols-2 gap-[2vh] md:gap-[3vh] mb-[3vh] md:mb-[4vh] px-6">
-            <div className="hidden md:block bg-white/60 border border-[#785A42]/20 p-[1.5vh] h-[12vh] min-h-[80px] overflow-y-auto log-scroll shadow-sm rounded-sm relative">
+          <div className="w-full max-w-3xl grid grid-cols-1 md:grid-cols-2 gap-[3.8vh] md:gap-[4.8vh] mb-[3.4vh] md:mb-[4.4vh] px-6">
+            <div className="hidden md:block bg-[rgba(255,255,255,0.72)] border border-[#785A42]/18 p-[1.55vh] h-[12vh] min-h-[80px] overflow-y-auto log-scroll shadow-sm rounded-sm relative backdrop-blur-[3px]">
                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-16 h-4 bg-[#c5a059]/30 -mt-2 rotate-1"></div>
-               <div className="text-[1.2vh] min-text-[10px] font-mono text-[#785A42]/50 mb-[1vh] border-b border-[#785A42]/10 pb-1">SYSTEM LOG</div>
+               <div className="mb-[0.9vh] border-b border-[#785A42]/10 pb-1 text-[0.72rem] tracking-[0.15em] text-[#785A42]/52 font-elegant font-normal uppercase">System Log</div>
                {bootLog.map((log, i) => (
-                 <div key={i} className="text-[#785A42] text-[1.3vh] min-text-xs font-mincho mb-[0.5vh] flex items-center gap-2">
-                   <span className="text-[#785A42] opacity-60">♪</span> {log}
+                 <div key={i} className={`text-[#785A42]/92 mb-[0.42vh] flex items-center gap-2 ${language === 'en' ? 'text-[0.72rem] leading-[1.46] tracking-[0.012em]' : 'text-[0.77rem] leading-[1.48] tracking-[0.012em]'}`}>
+                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#c5a059]/70 shadow-[0_0_0_1px_rgba(120,90,66,0.08)]"></span>
+                   <span className={`truncate whitespace-nowrap ${/[\u3400-\u9fff]/.test(log) ? 'font-mincho font-medium' : 'font-elegant font-normal not-italic tracking-[0.012em] text-[#785A42]/86'}`}>{log}</span>
                  </div>
                ))}
             </div>
@@ -363,10 +362,10 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
                     <AlertTriangle size={14} />
                  </div>
                  <div>
-                    <h3 className="font-bold font-mincho text-[1.6vh] min-text-sm text-[#785A42] mb-[0.5vh] tracking-wide">
+                    <h3 className="font-semibold font-mincho ka-section-title text-[#785A42] mb-[0.5vh] tracking-[0.03em]">
                       {t.introWarningTitle}
                     </h3>
-                    <p className="text-[1.3vh] min-text-[11px] text-[#785A42]/80 leading-relaxed font-mincho text-justify">
+                    <p className={`text-[#785A42]/80 text-justify ${language === 'en' ? 'text-[0.7rem] leading-snug' : 'ka-copy-sm leading-relaxed'}`}>
                       {t.introWarning}
                     </p>
                  </div>
@@ -378,7 +377,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
           <div className="relative z-20 mt-auto md:mt-0 mb-[2vh] md:mb-[4vh]">
             <button
               onClick={handleConnect}
-              className="group relative px-10 py-3 md:px-[4vh] md:py-[2vh] overflow-hidden bg-[#785A42] text-[#f9f7f2] font-elegant font-bold tracking-[0.2em] text-[1.5vh] min-text-sm uppercase transition-all duration-300 shadow-[0_4px_15px_rgba(96,65,43,0.3)] hover:shadow-[0_6px_20px_rgba(96,65,43,0.5)] rounded-sm"
+              className="group relative px-10 py-3 md:px-[4vh] md:py-[2vh] overflow-hidden bg-[#785A42] text-[#f9f7f2] ka-label font-semibold transition-all duration-300 shadow-[0_4px_15px_rgba(96,65,43,0.3)] hover:shadow-[0_6px_20px_rgba(96,65,43,0.5)] rounded-sm"
             >
               <div className="absolute inset-0 bg-[#8c6045] translate-y-[100%] group-hover:translate-y-0 transition-transform duration-300 ease-in-out"></div>
               <div className="absolute top-1 left-0 w-full h-[1px] bg-[#f9f7f2] opacity-20"></div>
@@ -386,13 +385,13 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
 
               <div className="flex items-center gap-3 relative z-10 group-hover:scale-105 transition-transform">
                  <Wind className={`w-4 h-4 transition-transform duration-500 ${isFadingOut ? 'translate-x-10 opacity-0' : ''}`} />
-                 <span className="font-mincho">{t.introConnect}</span>
+                 <span>{t.introConnect}</span>
               </div>
             </button>
           </div>
 
           {/* Footer */}
-          <div className="absolute bottom-3 text-[9px] text-[#785A42]/40 tracking-[0.2em] font-mono flex items-center gap-2">
+          <div className="absolute bottom-3 ka-micro text-[#785A42]/40 tracking-[0.2em] font-mono flex items-center gap-2">
              <span>北宇治高校吹奏楽部</span>
              <span className="w-1 h-1 bg-[#c5a059] rounded-full"></span>
              <span>AMADEUS PROJECT</span>

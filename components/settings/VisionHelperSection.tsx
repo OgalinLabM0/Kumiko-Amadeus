@@ -38,10 +38,10 @@ export const VisionHelperSection: React.FC<VisionHelperSectionProps> = ({
   return (
     <div className={innerCardClass}>
       <button onClick={onToggle} className="w-full flex items-center justify-between mb-2">
-        <h4 className={`text-xs font-bold flex items-center gap-2 ${isDarkMode ? 'text-teal-400' : 'text-teal-600'}`}>
+        <h4 className={`ka-label flex items-center gap-2 ${isDarkMode ? 'text-teal-400' : 'text-teal-600'}`}>
           <Eye size={12} /> {language === 'zh' ? '视觉辅助模型 (VISION HELPER)' : 'VISION HELPER'}
         </h4>
-        <span className="text-[10px] opacity-50">{isOpen ? '▼' : '▲'}</span>
+        <span className="ka-micro opacity-50">{isOpen ? '▼' : '▲'}</span>
       </button>
 
       {isOpen && (
@@ -51,13 +51,13 @@ export const VisionHelperSection: React.FC<VisionHelperSectionProps> = ({
               <div className={`w-3 h-3 border rounded-sm flex items-center justify-center transition-colors ${localAiConfig.useVisionHelper ? 'bg-teal-500 border-teal-500' : (isDarkMode ? 'border-gray-500' : 'border-gray-400')}`}>
                 {localAiConfig.useVisionHelper && <Check size={10} className="text-white" />}
               </div>
-              <span className="text-[10px] font-mono">{language === 'zh' ? '启用视觉辅助' : 'Enable Vision Helper'}</span>
+              <span className="ka-micro font-mono">{language === 'zh' ? '启用视觉辅助' : 'Enable Vision Helper'}</span>
             </div>
           </div>
 
           {localAiConfig.useVisionHelper && (
             <div className="space-y-3 pt-2 border-t border-gray-500/10">
-              <p className={`text-[10px] font-mono mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              <p className={`ka-micro font-mono mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                 {language === 'zh' ? '当主模型无视觉能力时，用于解析图片并转述给主模型。' : 'Used to parse images and describe them to the main model if it lacks vision capabilities.'}
               </p>
 
@@ -97,7 +97,7 @@ export const VisionHelperSection: React.FC<VisionHelperSectionProps> = ({
                     <div className={`w-3 h-3 border rounded-sm flex items-center justify-center transition-colors ${(localAiConfig.useVisionCustomEndpoint ?? localAiConfig.useCustomEndpoint) ? 'bg-teal-500 border-teal-500' : (isDarkMode ? 'border-gray-500' : 'border-gray-400')}`}>
                       {(localAiConfig.useVisionCustomEndpoint ?? localAiConfig.useCustomEndpoint) && <Check size={10} className="text-white" />}
                     </div>
-                    <span className="text-[10px] font-mono">{t_local.useCustomEndpoint}</span>
+                    <span className="ka-micro font-mono">{t_local.useCustomEndpoint}</span>
                   </div>
                 </div>
 
@@ -112,7 +112,7 @@ export const VisionHelperSection: React.FC<VisionHelperSectionProps> = ({
                     />
                   </div>
                 ) : (
-                  <div className={`text-[10px] font-mono italic p-2 rounded ${isDarkMode ? 'bg-black/30 text-gray-400' : 'bg-gray-200 text-gray-600'}`}>
+                  <div className={`ka-micro font-mono italic p-2 rounded ${isDarkMode ? 'bg-black/30 text-gray-400' : 'bg-gray-200 text-gray-600'}`}>
                     {t_local.useCustomEndpointDesc}
                   </div>
                 )}

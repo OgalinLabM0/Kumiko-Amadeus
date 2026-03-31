@@ -10,11 +10,13 @@ import { AppMessageList } from './AppMessageList';
 import { AppUpdateModal, CloudRestoreModal, DeleteConfirmationModal, DoubleClearAllModal, ClearAllModal, SyncConflictModal, SyncErrorModal } from './AppModals';
 import { MessageCenterPanel } from './MessageCenterPanel';
 import { TaskPanel } from './TaskPanel';
+import { DiaryPanel } from '../DiaryPanel';
 
 interface AppMainViewProps {
   memoryPanelProps: React.ComponentProps<typeof MemoryPanel>;
   profilePanelProps: React.ComponentProps<typeof ProfilePanel>;
   settingsPanelProps: React.ComponentProps<typeof SettingsPanel>;
+  diaryPanelProps: React.ComponentProps<typeof DiaryPanel> | null;
   deleteConfirmationModalProps: React.ComponentProps<typeof DeleteConfirmationModal>;
   clearAllModalProps: React.ComponentProps<typeof ClearAllModal>;
   doubleClearAllModalProps: React.ComponentProps<typeof DoubleClearAllModal>;
@@ -39,6 +41,7 @@ export const AppMainView: React.FC<AppMainViewProps> = ({
   memoryPanelProps,
   profilePanelProps,
   settingsPanelProps,
+  diaryPanelProps,
   deleteConfirmationModalProps,
   clearAllModalProps,
   doubleClearAllModalProps,
@@ -63,6 +66,7 @@ export const AppMainView: React.FC<AppMainViewProps> = ({
       <MemoryPanel {...memoryPanelProps} />
       <ProfilePanel {...profilePanelProps} />
       <SettingsPanel {...settingsPanelProps} />
+      {diaryPanelProps && <DiaryPanel {...diaryPanelProps} />}
       <DeleteConfirmationModal {...deleteConfirmationModalProps} />
       <ClearAllModal {...clearAllModalProps} />
       <DoubleClearAllModal {...doubleClearAllModalProps} />

@@ -134,10 +134,10 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
         <div className="flex items-center gap-2">
           <CalendarClock size={18} className={titleClass} />
           <div>
-            <div className={`font-mono font-bold tracking-wider ${titleClass}`}>
+            <div className={`font-mincho text-[clamp(12px,0.78rem+0.05vw,13px)] font-semibold tracking-[0.008em] leading-[1.18] ${titleClass}`}>
               {language === 'zh' ? '久美子的约定簿' : "Kumiko's Promise Book"}
             </div>
-            <div className={`text-[10px] font-mono uppercase tracking-[0.18em] ${labelClass}`}>
+            <div className={`ka-kicker ${labelClass}`}>
               {language === 'zh' ? 'AMADEUS SCHEDULE LEDGER' : 'AMADEUS SCHEDULE LEDGER'}
             </div>
           </div>
@@ -155,44 +155,44 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
       <div className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-thin">
         <div className="grid grid-cols-3 gap-2">
           <div className={`rounded border p-3 ${cardClass}`}>
-            <div className={`text-[10px] font-mono font-bold uppercase tracking-[0.18em] ${labelClass}`}>
+            <div className={`ka-kicker ${labelClass}`}>
               {language === 'zh' ? '生效中' : 'Active'}
             </div>
-            <div className={`mt-1 text-lg font-semibold ${textClass}`}>{totalTasks}</div>
+            <div className={`mt-1 ka-value ${textClass}`}>{totalTasks}</div>
           </div>
           <div className={`rounded border p-3 ${cardClass}`}>
-            <div className={`text-[10px] font-mono font-bold uppercase tracking-[0.18em] ${labelClass}`}>
+            <div className={`ka-kicker ${labelClass}`}>
               {language === 'zh' ? '一次性' : 'One-time'}
             </div>
-            <div className={`mt-1 text-lg font-semibold ${textClass}`}>{relativeReminders.length}</div>
+            <div className={`mt-1 ka-value ${textClass}`}>{relativeReminders.length}</div>
           </div>
           <div className={`rounded border p-3 ${cardClass}`}>
-            <div className={`text-[10px] font-mono font-bold uppercase tracking-[0.18em] ${labelClass}`}>
+            <div className={`ka-kicker ${labelClass}`}>
               {language === 'zh' ? '循环' : 'Recurring'}
             </div>
-            <div className={`mt-1 text-lg font-semibold ${textClass}`}>{dailyReminders.length}</div>
+            <div className={`mt-1 ka-value ${textClass}`}>{dailyReminders.length}</div>
           </div>
         </div>
 
         {nextOneTime && (
           <div className={`rounded border p-3 ${cardClass}`}>
-            <div className={`text-[10px] font-mono font-bold uppercase tracking-[0.18em] ${labelClass}`}>
+            <div className={`ka-kicker ${labelClass}`}>
               {language === 'zh' ? '下一个到点' : 'Next due'}
             </div>
-            <div className={`mt-1 text-sm font-medium line-clamp-1 ${textClass}`}>{nextOneTime.event}</div>
-            <div className={`mt-1 text-xs ${textClass} opacity-70`}>
+            <div className={`mt-1 ka-copy line-clamp-1 ${textClass}`}>{nextOneTime.event}</div>
+            <div className={`mt-1 ka-copy-sm ${textClass} opacity-70`}>
               {formatCountdown(nextOneTime.dueAt, language)}
             </div>
           </div>
         )}
 
         {totalTasks === 0 && (
-          <div className={`rounded border p-4 text-sm ${cardClass}`}>
-            <div className="flex items-center gap-2 font-semibold">
+          <div className={`rounded border p-4 ${cardClass}`}>
+            <div className="flex items-center gap-2 ka-setting-item-title">
               <Clock3 size={16} className={titleClass} />
               {language === 'zh' ? '当前没有生效中的任务' : 'No active tasks'}
             </div>
-            <p className={`mt-2 text-xs leading-6 ${textClass} opacity-70`}>
+            <p className={`mt-2 ka-copy-sm ${textClass} opacity-70`}>
               {language === 'zh'
                 ? '你对她说“3小时后喊我”或者“每天8点20提醒我”，这里就会开始记录。'
                 : 'Tell her “remind me in 3 hours” or “every day at 8:20”, and she will keep the promise here.'}
@@ -202,7 +202,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
 
         {relativeReminders.length > 0 && (
           <section className="space-y-3">
-            <div className={`text-[10px] font-mono font-bold uppercase tracking-[0.22em] ${labelClass}`}>
+            <div className={`ka-kicker ${labelClass}`}>
               {language === 'zh' ? '一次性提醒' : 'One-time reminders'}
             </div>
             {relativeReminders
@@ -214,9 +214,9 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
                         <Clock3 size={14} className={titleClass} />
-                        <span className={`font-medium break-words ${textClass}`}>{reminder.event}</span>
+                        <span className={`ka-copy break-words ${textClass}`}>{reminder.event}</span>
                       </div>
-                      <div className={`mt-2 text-xs leading-5 ${textClass} opacity-70`}>
+                      <div className={`mt-2 ka-copy-sm ${textClass} opacity-70`}>
                         {formatCountdown(reminder.dueAt, language)}
                       </div>
                     </div>
@@ -235,7 +235,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
 
         {dailyReminders.length > 0 && (
           <section className="space-y-3">
-            <div className={`text-[10px] font-mono font-bold uppercase tracking-[0.22em] ${labelClass}`}>
+            <div className={`ka-kicker ${labelClass}`}>
               {language === 'zh' ? '循环任务' : 'Recurring tasks'}
             </div>
             {dailyReminders
@@ -245,16 +245,16 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
                 <div key={reminder.id} className={`rounded border p-3 transition-colors ${cardClass}`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2 font-medium break-words">
+                      <div className="flex items-center gap-2 break-words">
                         <Repeat size={14} className={reminder.paused ? labelClass : titleClass} />
-                        <span className={textClass}>{reminder.event}</span>
+                        <span className={`ka-copy ${textClass}`}>{reminder.event}</span>
                         {reminder.paused && (
-                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${pillClass}`}>
+                          <span className={`px-1.5 py-0.5 rounded ka-micro border ${pillClass}`}>
                             {language === 'zh' ? '暂停中' : 'Paused'}
                           </span>
                         )}
                       </div>
-                      <div className={`mt-2 text-xs leading-6 ${textClass} opacity-70`}>
+                      <div className={`mt-2 ka-copy-sm ${textClass} opacity-70`}>
                         <div>{formatDailyTime(reminder.hour, reminder.minute)} JST</div>
                         <div>{formatNextDailyLabel(reminder.hour, reminder.minute, reminder.paused, reminder.timeZone, language)}</div>
                       </div>
@@ -282,7 +282,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
         )}
       </div>
 
-      <div className={`px-4 py-2 border-t flex items-center justify-between text-[10px] font-mono ${footerClass}`}>
+      <div className={`px-4 py-2 border-t flex items-center justify-between ka-micro ${footerClass}`}>
         <span className={isDarkMode ? 'text-yellow-100/65' : 'text-gray-500'}>
           {language === 'zh' ? `生效任务 ${totalTasks}` : `${totalTasks} active tasks`}
         </span>

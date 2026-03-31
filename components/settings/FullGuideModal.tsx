@@ -148,7 +148,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
         return (
           <h1
             key={idx}
-            className={`mb-6 mt-2 border-b pb-3 text-[1.75rem] font-bold tracking-[0.04em] ${
+            className={`mb-6 mt-2 border-b pb-3 font-mincho text-[1.72rem] md:text-[1.92rem] font-bold tracking-[0.02em] ${
               isDarkMode ? 'border-yellow-900/50 text-yellow-100' : 'border-[#b8860b]/20 text-[#6f4e19]'
             }`}
           >
@@ -161,7 +161,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
         return (
           <h2
             key={idx}
-            className={`mb-3 mt-7 text-sm font-bold uppercase tracking-[0.22em] ${
+            className={`mb-3 mt-7 text-[0.88rem] md:text-[0.94rem] font-semibold tracking-[0.16em] uppercase ${
               isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]'
             }`}
           >
@@ -174,7 +174,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
         return (
           <h3
             key={idx}
-            className={`mb-2 mt-4 text-sm font-bold tracking-[0.08em] ${
+            className={`mb-2 mt-4 font-mincho text-[1.05rem] md:text-[1.12rem] font-semibold tracking-[0.02em] ${
               isDarkMode ? 'text-yellow-300' : 'text-[#8a6520]'
             }`}
           >
@@ -191,7 +191,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
         return (
           <div
             key={idx}
-            className={`mb-4 rounded-lg border px-4 py-3 text-sm leading-6 ${
+            className={`mb-4 rounded-lg border px-4 py-3 text-[15.5px] leading-7 md:text-[16px] ${
               isDarkMode
                 ? 'border-yellow-900/35 bg-yellow-900/10 text-yellow-100/85'
                 : 'border-[#d9c7a4] bg-[#fff8ea] text-[#6f5524]'
@@ -206,7 +206,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
         return (
           <div key={idx} className="mb-2 ml-2 flex items-start gap-2">
             <div className={`mt-2 h-1 w-1 flex-shrink-0 rounded-full ${isDarkMode ? 'bg-yellow-600' : 'bg-[#b8860b]'}`}></div>
-            <p className="leading-relaxed opacity-90">{renderInlineContent(trimmed.slice(2))}</p>
+            <p className="text-[15.5px] leading-8 opacity-90 md:text-[16px]">{renderInlineContent(trimmed.slice(2))}</p>
           </div>
         );
       }
@@ -217,7 +217,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
             <span className={`font-mono text-sm font-bold ${isDarkMode ? 'text-yellow-600' : 'text-[#b8860b]'}`}>
               {trimmed.split('.')[0]}.
             </span>
-            <p className="leading-relaxed opacity-90">{renderInlineContent(trimmed.replace(/^\d+\. /, ''))}</p>
+            <p className="text-[15.5px] leading-8 opacity-90 md:text-[16px]">{renderInlineContent(trimmed.replace(/^\d+\. /, ''))}</p>
           </div>
         );
       }
@@ -227,7 +227,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
       }
 
       return (
-        <p key={idx} className="mb-2 leading-relaxed opacity-90">
+        <p key={idx} className="mb-3 text-[16px] leading-8 opacity-90 md:text-[16.5px]">
           {renderInlineContent(line)}
         </p>
       );
@@ -254,10 +254,10 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
               <Info size={20} />
             </div>
             <div className="min-w-0">
-              <div className={`font-mono font-bold tracking-[0.18em] text-sm uppercase ${titleClass}`}>
+              <div className={`ka-kicker ${titleClass}`}>
                 {language === 'zh' ? '全知全能之书' : 'Omniscient Book'}
               </div>
-              <p className={`mt-1 text-xs leading-5 ${mutedClass}`}>
+              <p className={`mt-1 ka-copy-sm ${mutedClass}`}>
                 {language === 'zh'
                   ? '功能结构、数据链路、回复逻辑与桌面行为的完整系统档案。'
                   : 'Full archive for features, data flow, reply logic, and desktop behavior.'}
@@ -280,10 +280,10 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
           >
             <div className={`p-4 border-b ${isDarkMode ? 'border-yellow-900/25' : 'border-gray-200'}`}>
               <div className={`rounded-lg border p-4 ${panelMutedClass}`}>
-                <div className={`text-[10px] font-mono font-bold uppercase tracking-[0.22em] ${titleClass}`}>
+                <div className={`ka-kicker ${titleClass}`}>
                   {language === 'zh' ? 'AMADEUS 档案索引' : 'AMADEUS INDEX'}
                 </div>
-                <p className={`mt-2 text-xs leading-5 ${mutedClass}`}>
+                <p className={`mt-2 text-[14px] leading-7 md:text-[14.5px] ${mutedClass}`}>
                   {language === 'zh'
                     ? '这里写的是软件真正如何运转，而不是宣传页摘要。每一章都对应当前桌面版的一条实际链路。'
                     : 'This archive documents how the desktop build actually works, not just what it claims to do.'}
@@ -314,8 +314,8 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                       <Icon size={14} />
                     </div>
                     <div className="min-w-0">
-                      <div className="text-[10px] font-mono opacity-55">{String(index + 1).padStart(2, '0')}</div>
-                      <div className="text-xs font-bold font-mono uppercase tracking-wide leading-5">{section.title}</div>
+                      <div className="ka-micro opacity-55">{String(index + 1).padStart(2, '0')}</div>
+                      <div className="text-[14.5px] leading-6 font-semibold md:text-[15px]">{section.title}</div>
                     </div>
                   </button>
                 );
@@ -323,7 +323,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
             </div>
 
             <div
-              className={`px-4 py-2 border-t flex items-center justify-between text-[10px] font-mono ${
+              className={`px-4 py-2 border-t flex items-center justify-between ka-micro ${
                 isDarkMode ? 'border-yellow-900/25 text-gray-500' : 'border-gray-200 text-[#8a7557]'
               }`}
             >
@@ -339,10 +339,10 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                   <ActiveIcon size={18} />
                 </div>
                 <div className="min-w-0">
-                  <div className={`text-[10px] font-mono uppercase tracking-[0.22em] ${isDarkMode ? 'text-gray-500' : 'text-[#9a7d50]'}`}>
+                  <div className={`ka-kicker ${isDarkMode ? 'text-gray-500' : 'text-[#9a7d50]'}`}>
                     {language === 'zh' ? `章节 ${activeIndex + 1} / ${sections.length}` : `Section ${activeIndex + 1} / ${sections.length}`}
                   </div>
-                  <h3 className={`text-lg font-bold tracking-[0.08em] ${isDarkMode ? 'text-yellow-100' : 'text-[#6f4e19]'}`}>
+                  <h3 className={`font-mincho ka-overlay-title font-semibold tracking-[0.02em] ${isDarkMode ? 'text-yellow-100' : 'text-[#6f4e19]'}`}>
                     {activeData.title}
                   </h3>
                 </div>
@@ -356,16 +356,16 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
               <div className={`mx-auto max-w-4xl rounded-lg border overflow-hidden ${panelClass}`}>
                 <div className={`px-5 py-3 border-b flex items-center justify-between gap-3 ${isDarkMode ? 'border-yellow-900/20 bg-black/25' : 'border-yellow-500/12 bg-yellow-50/60'}`}>
                   <div className="min-w-0">
-                    <div className={`text-[10px] font-mono uppercase tracking-[0.22em] ${titleClass}`}>
+                    <div className={`ka-kicker ${titleClass}`}>
                       {language === 'zh' ? '系统设计说明' : 'SYSTEM DESIGN DOSSIER'}
                     </div>
-                    <p className={`mt-1 text-xs leading-5 ${mutedClass}`}>
+                    <p className={`mt-1 text-[14px] leading-7 md:text-[14.5px] ${mutedClass}`}>
                       {language === 'zh'
                         ? '以下内容描述的是软件当前实际执行的结构、条件、数据流与行为规则。'
                         : 'The sections below describe the current live structure, conditions, data flow, and behavior rules.'}
                     </p>
                   </div>
-                  <div className={`hidden md:flex items-center gap-2 rounded-full px-3 py-1 text-[10px] font-mono border ${isDarkMode ? 'border-yellow-700/30 text-yellow-500 bg-yellow-900/10' : 'border-yellow-300 text-[#8f6b12] bg-white'}`}>
+                  <div className={`hidden md:flex items-center gap-2 rounded-full px-3 py-1 ka-micro border ${isDarkMode ? 'border-yellow-700/30 text-yellow-500 bg-yellow-900/10' : 'border-yellow-300 text-[#8f6b12] bg-white'}`}>
                     <ActiveIcon size={12} />
                     <span>AMADEUS</span>
                   </div>
@@ -379,7 +379,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
             </div>
 
             <div
-              className={`px-5 md:px-6 py-2 border-t flex items-center justify-between text-[10px] font-mono ${
+              className={`px-5 md:px-6 py-2 border-t flex items-center justify-between ka-micro ${
                 isDarkMode ? 'border-yellow-900/25 bg-black/20 text-gray-500' : 'border-gray-200 bg-gray-50 text-[#8d7654]'
               }`}
             >

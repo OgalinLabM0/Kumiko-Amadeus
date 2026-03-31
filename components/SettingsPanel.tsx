@@ -1,12 +1,13 @@
 
-import React, { useState, useEffect, useRef } from 'react';
-import { X, Save, RotateCcw, Settings, Edit2, Eye, EyeOff, Cloud, HardDrive, Upload, Download, RefreshCw, Check, Globe, ChevronUp, ChevronDown, MapPin, Clock, FileJson, AlertTriangle, Link as LinkIcon, UserCircle, Key, Menu, Brain, Paperclip, CheckSquare, Zap, Send, Database, Image, Watch, AlertCircle, Lock, Activity, ShieldCheck, Power, CheckCircle } from 'lucide-react';
+import React, { startTransition, useState, useEffect, useRef, useMemo, useLayoutEffect, useCallback } from 'react';
+import { X, Save, RotateCcw, Settings, Edit2, Eye, EyeOff, Cloud, HardDrive, Upload, Download, RefreshCw, Check, Globe, ChevronUp, ChevronDown, MapPin, Clock, FileJson, AlertTriangle, Link as LinkIcon, UserCircle, Key, Menu, Brain, Paperclip, CheckSquare, Zap, Send, Database, Image, Watch, AlertCircle, Lock, Activity, ShieldCheck, Power, CheckCircle, Volume2, Maximize2, Minimize2, BookOpen } from 'lucide-react';
 import { Language, LocationConfig, BackupConfig, AIConfig } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
 import { getCurrentAIConfig, validateAIConnection, validateModels, validateSearchCapability } from '../services/geminiService';
-import { clearAllLocalRagMemory } from '../services/localRagService';
+import { clearAllLocalRagMemory, syncRawHistoryMessagesToMain } from '../services/localRagService';
 import { CLOUD_SYNC_AVAILABLE, getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel } from '../services/appConfig';
 import { db } from '../services/db';
+import { deleteRingtoneFile, deleteVoiceFile, isVoiceServiceAvailable, listVoiceFiles } from '../services/voiceFileService';
 import { DataManagementSection } from './settings/DataManagementSection';
 import { AccountSection } from './settings/AccountSection';
 import { ApiConfigSection } from './settings/ApiConfigSection';
@@ -75,6 +76,19 @@ interface SettingsPanelProps {
   onDisconnectLocalFile?: () => void;
 }
 
+type SettingsSectionId =
+  | 'api'
+  | 'tts'
+  | 'search'
+  | 'general'
+  | 'location'
+  | 'backup'
+  | 'data'
+  | 'update'
+  | 'account'
+  | 'guide'
+  | 'logs';
+
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ 
   isOpen, 
   onClose, 
@@ -117,21 +131,25 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const t_local = LOCAL_CONFIG_TRANSLATIONS[language];
   const isDesktopElectron = typeof window !== 'undefined' && 'electronAPI' in window;
   
-  const [isGeneralOpen, setIsGeneralOpen] = useState(false);
-  const [isAccountOpen, setIsAccountOpen] = useState(false);
-  const [isLocationOpen, setIsLocationOpen] = useState(false);
-  const [isBackupOpen, setIsBackupOpen] = useState(false);
-  const [isGuideOpen, setIsGuideOpen] = useState(false); 
-  const [isUpdateOpen, setIsUpdateOpen] = useState(false);
-  const [isApiConfigOpen, setIsApiConfigOpen] = useState(false);
+  const [isGeneralOpen, setIsGeneralOpen] = useState(true);
+  const [isAccountOpen, setIsAccountOpen] = useState(true);
+  const [isLocationOpen, setIsLocationOpen] = useState(true);
+  const [isBackupOpen, setIsBackupOpen] = useState(true);
+  const [isGuideOpen, setIsGuideOpen] = useState(true); 
+  const [isUpdateOpen, setIsUpdateOpen] = useState(true);
+  const [isApiConfigOpen, setIsApiConfigOpen] = useState(true);
   const [isSecurityOpen, setIsSecurityOpen] = useState(false);
   const [isAllocationOpen, setIsAllocationOpen] = useState(false);
   const [isVisionOpen, setIsVisionOpen] = useState(false);
   const [isRagOpen, setIsRagOpen] = useState(false);
-  const [isInternetSearchOpen, setIsInternetSearchOpen] = useState(false);
-  const [isTtsOpen, setIsTtsOpen] = useState(false);
-  const [isDataManagementOpen, setIsDataManagementOpen] = useState(false);
+  const [isInternetSearchOpen, setIsInternetSearchOpen] = useState(true);
+  const [isTtsOpen, setIsTtsOpen] = useState(true);
+  const [isDataManagementOpen, setIsDataManagementOpen] = useState(true);
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
+  const [isExpandedView, setIsExpandedView] = useState(true);
+  const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
+  const [activeSectionId, setActiveSectionId] = useState<SettingsSectionId>('api');
+  const activeSectionIdRef = useRef<SettingsSectionId>('api');
   const { dialogConfig, setDialogConfig, showDialog, closeDialog } = useSettingsDialog();
   const {
     enableProactive,
@@ -181,6 +199,26 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [isSearchValidating, setIsSearchValidating] = useState(false);
 
   const logContainerRef = useRef<HTMLDivElement>(null);
+  const contentScrollRef = useRef<HTMLDivElement>(null);
+  const topNavScrollRef = useRef<HTMLDivElement>(null);
+  const topNavIndicatorTrackRef = useRef<HTMLDivElement>(null);
+  const topNavIndicatorThumbRef = useRef<HTMLDivElement>(null);
+  const topNavIndicatorMetricsRef = useRef({ widthPercent: 0, offsetPercent: 0 });
+  const topNavIndicatorRafRef = useRef<number | null>(null);
+  const topNavIndicatorDragOffsetRef = useRef(0);
+  const contentScrollSyncRafRef = useRef<number | null>(null);
+  const activeSectionSyncStampRef = useRef(0);
+  const previousCompactLayoutRef = useRef<boolean | null>(null);
+  const topNavButtonRefs = useRef<Partial<Record<SettingsSectionId, HTMLButtonElement | null>>>({});
+  const sideNavButtonRefs = useRef<Partial<Record<SettingsSectionId, HTMLButtonElement | null>>>({});
+  const [isTopNavIndicatorVisible, setIsTopNavIndicatorVisible] = useState(false);
+  const [isTopNavIndicatorHovered, setIsTopNavIndicatorHovered] = useState(false);
+  const [isTopNavIndicatorDragging, setIsTopNavIndicatorDragging] = useState(false);
+  const [topNavFadeState, setTopNavFadeState] = useState({ left: false, right: false });
+
+  useEffect(() => {
+    activeSectionIdRef.current = activeSectionId;
+  }, [activeSectionId]);
 
   // New states for model validation
   const [isModelValidating, setIsModelValidating] = useState(false);
@@ -209,11 +247,60 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
 
+  const applySectionLayoutDefaults = useCallback((compactLayout: boolean) => {
+    setIsApiConfigOpen(!compactLayout);
+    setIsTtsOpen(!compactLayout);
+    setIsInternetSearchOpen(!compactLayout);
+    setIsGeneralOpen(!compactLayout);
+    setIsLocationOpen(!compactLayout);
+    setIsBackupOpen(!compactLayout);
+    setIsDataManagementOpen(!compactLayout);
+    setIsUpdateOpen(!compactLayout);
+    setIsAccountOpen(!compactLayout);
+    setIsGuideOpen(!compactLayout);
+    setIsLogViewerOpen(false);
+  }, []);
+
+  const isCompactSettingsLayout = useMemo(() => !isExpandedView || viewportWidth < 1024, [isExpandedView, viewportWidth]);
+
   useEffect(() => {
     if (isOpen) {
         setLocalAiConfig(getCurrentAIConfig());
+        setIsExpandedView(true);
+        setActiveSectionId('api');
+        previousCompactLayoutRef.current = null;
     }
   }, [isOpen]); 
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const updateViewportWidth = () => {
+      setViewportWidth(window.innerWidth);
+    };
+
+    updateViewportWidth();
+    window.addEventListener('resize', updateViewportWidth);
+    return () => window.removeEventListener('resize', updateViewportWidth);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const previousCompactLayout = previousCompactLayoutRef.current;
+    const shouldResetSections =
+      previousCompactLayout === null || previousCompactLayout !== isCompactSettingsLayout;
+
+    if (shouldResetSections) {
+      applySectionLayoutDefaults(isCompactSettingsLayout);
+    }
+
+    previousCompactLayoutRef.current = isCompactSettingsLayout;
+  }, [applySectionLayoutDefaults, isCompactSettingsLayout, isOpen]);
+
+  const handleToggleExpandedView = useCallback(() => {
+    setIsExpandedView(prev => !prev);
+  }, []);
   
   useEffect(() => {
     if (isLogViewerOpen && logContainerRef.current) {
@@ -234,6 +321,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       onLocationChange({ ...locationConfig, [key]: value });
     }
   };
+
+  useEffect(() => {
+    if (!isOpen || !onLocationChange || !locationConfig) return;
+
+    if (
+      locationConfig.modelCountry !== 'Japan' ||
+      locationConfig.modelTimezone !== 'Asia/Tokyo'
+    ) {
+      onLocationChange({
+        ...locationConfig,
+        modelCountry: 'Japan',
+        modelTimezone: 'Asia/Tokyo',
+      });
+    }
+  }, [isOpen, locationConfig, onLocationChange]);
 
   const handleTestApiConnection = async () => {
       setIsValidating(true);
@@ -412,13 +514,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const handleClearAllData = async () => {
       showDialog({
           title: language === 'zh' ? "警告" : "WARNING",
-          message: language === 'zh' ? "这将删除所有本地数据（消息、图片、设置）。此操作无法撤销。您绝对确定吗？" : "This will delete ALL local data (messages, images, settings). This action cannot be undone. Are you absolutely sure?",
+          message: language === 'zh'
+              ? "这将删除所有本地数据（消息、日记、切片、提醒、图片、语音、铃声、设置）。此操作无法撤销。您绝对确定吗？"
+              : "This will delete ALL local data (messages, diaries, fragments, reminders, images, voice files, ringtone, and settings). This action cannot be undone. Are you absolutely sure?",
           type: 'confirm',
           confirmText: language === 'zh' ? "是的，删除所有内容" : "Yes, delete everything",
           onConfirm: () => {
               showDialog({
                   title: language === 'zh' ? "三重确认" : "TRIPLE CONFIRMATION",
-                  message: language === 'zh' ? "您真的确定要清空所有内容吗？" : "Are you REALLY sure you want to wipe everything?",
+                  message: language === 'zh'
+                      ? "您真的确定要清空所有本地内容吗？包括日记、语音和所有设置。"
+                      : "Are you REALLY sure you want to wipe all local content, including diaries, voice files, and settings?",
                   type: 'confirm',
                   confirmText: language === 'zh' ? "是的，我确定" : "Yes, I am sure",
                   onConfirm: () => {
@@ -431,13 +537,33 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                           onConfirm: async (input) => {
                               if (input && input.toLowerCase() === 'yes') {
                                   try {
-                                      await clearAllLocalRagMemory();
+                                      if (isVoiceServiceAvailable()) {
+                                          const voiceFiles = await listVoiceFiles();
+                                          await Promise.all(voiceFiles.map(file => deleteVoiceFile(file.id)));
+                                          await deleteRingtoneFile();
+                                      }
+
+                                      await Promise.all([
+                                          clearAllLocalRagMemory(),
+                                          syncRawHistoryMessagesToMain([], { replaceAll: true })
+                                      ]);
+
                                       await Promise.all([
                                           db.messages.clear(),
                                           db.images.clear(),
                                           db.vectors.clear(),
-                                          db.keyval.clear()
+                                          db.keyval.clear(),
+                                          db.episodes.clear(),
+                                          db.dailyFragments.clear(),
+                                          db.kumikoDiary.clear(),
+                                          db.psycheState.clear()
                                       ]);
+
+                                      if ('caches' in window) {
+                                          const cacheKeys = await caches.keys();
+                                          await Promise.all(cacheKeys.map(cacheKey => caches.delete(cacheKey)));
+                                      }
+
                                       localStorage.clear();
                                       sessionStorage.clear();
                                       showDialog({
@@ -598,252 +724,905 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       setSearchStatusType('neutral');
   };
 
+  const navItems = useMemo(() => {
+    const items = [
+      { id: 'api', label: t_local.apiTitle, desc: t_local.apiDesc, icon: ShieldCheck, active: activeSectionId === 'api', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      ttsConfig && onTtsConfigChange ? { id: 'tts', label: t.ttsSection, desc: t.ttsSectionDesc, icon: Volume2, active: activeSectionId === 'tts', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' } : null,
+      { id: 'search', label: t.internetSearchConfig, desc: t.internetSearchDesc, icon: Globe, active: activeSectionId === 'search', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'general', label: t.generalSettings, desc: t.generalDesc, icon: Settings, active: activeSectionId === 'general', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'location', label: t.locationTitle, desc: t.locationDesc, icon: MapPin, active: activeSectionId === 'location', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'backup', label: t.backupTitle, desc: t.backupDesc, icon: HardDrive, active: activeSectionId === 'backup', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'data', label: t.dataManagementTitle, desc: t.dataManagementDesc, icon: Database, active: activeSectionId === 'data', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'update', label: t.updateSection, desc: t.updateSectionDesc, icon: Zap, active: activeSectionId === 'update', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'account', label: t.accountSettings, desc: t.accountDesc, icon: UserCircle, active: activeSectionId === 'account', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'guide', label: t.guideTitle, desc: t.guideDesc, icon: BookOpen, active: activeSectionId === 'guide', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'logs', label: t_local.logTitle, desc: t_local.logDesc, icon: Activity, active: activeSectionId === 'logs', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+    ].filter(Boolean) as Array<{ id: SettingsSectionId; label: string; desc?: string; icon: React.ComponentType<any>; active: boolean; accent: string }>;
+    return items;
+  }, [
+    t_local.apiTitle, t_local.apiDesc, t_local.logTitle, t_local.logDesc,
+    t.ttsSection, t.ttsSectionDesc, t.internetSearchConfig, t.internetSearchDesc, t.generalSettings, t.generalDesc,
+    t.locationTitle, t.locationDesc, t.backupTitle, t.backupDesc, t.dataManagementTitle, t.dataManagementDesc,
+    t.updateSection, t.updateSectionDesc, t.accountSettings, t.accountDesc, t.guideTitle, t.guideDesc,
+    ttsConfig, onTtsConfigChange, activeSectionId, isDarkMode
+  ]);
+
+  const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#9c7425]';
+  const sectionBorder = isDarkMode
+    ? 'border-[#4a3728]/65 bg-[linear-gradient(180deg,rgba(33,25,19,0.9),rgba(18,14,11,0.94))] shadow-[0_18px_40px_rgba(0,0,0,0.24)]'
+    : 'border-[#e6ddd0]/90 bg-[rgba(255,255,255,0.82)] shadow-[0_8px_18px_rgba(44,33,22,0.025)]';
+  const inputClass = `w-full rounded-[1rem] border px-3.5 py-2.5 outline-none ka-input-copy transition-all ${isDarkMode ? 'bg-[#17120d]/92 border-[#54402d] text-white placeholder:text-gray-500 focus:border-yellow-500/80 focus:shadow-[0_0_0_3px_rgba(234,179,8,0.08)]' : 'bg-white border-[#e4dacd] text-[#3f2f22] placeholder:text-[#b8a38c] focus:border-[#c59142] focus:shadow-[0_0_0_3px_rgba(197,145,66,0.08)]'}`;
+  const labelClass = `ka-copy-sm font-semibold mb-1 block ${isDarkMode ? 'text-[#d7c7b5]' : 'text-[#8a6b4e]'}`;
+  const innerCardClass = `p-4 rounded-[1.05rem] border ${isDarkMode ? 'bg-[linear-gradient(180deg,rgba(24,18,13,0.84),rgba(16,12,10,0.78))] border-[#443324]' : 'bg-[rgba(255,255,255,0.9)] border-[#ebe1d3]'} shadow-[inset_0_1px_0_rgba(255,255,255,0.24)]`;
+  const shellClass = isExpandedView
+    ? 'w-[min(98vw,90rem)] h-[min(95dvh,60rem)] rounded-[1.85rem]'
+    : 'w-[min(92vw,60rem)] h-[min(88dvh,50rem)] rounded-[1.5rem]';
+  const shellSurfaceClass = isDarkMode
+    ? 'border-[#4d3824]/70 bg-[linear-gradient(180deg,rgba(20,15,11,0.95),rgba(13,10,7,0.98))] shadow-[0_26px_70px_rgba(0,0,0,0.42)]'
+    : 'border-[#ded5c8]/90 bg-[rgba(255,255,255,0.95)] shadow-[0_24px_52px_rgba(42,31,20,0.08)]';
+  const shellDividerClass = isDarkMode ? 'border-[#4d3824]/60' : 'border-[#ebe2d7]';
+  const railClass = isDarkMode
+    ? 'bg-[linear-gradient(180deg,rgba(36,27,19,0.74),rgba(16,12,9,0.8))]'
+    : 'bg-[rgba(255,255,255,0.62)]';
+  const bodyClass = isDarkMode
+    ? 'bg-[linear-gradient(180deg,rgba(18,15,12,0.8),rgba(12,10,8,0.9))]'
+    : 'bg-[rgba(255,255,255,0.76)]';
+  const navButtonBaseClass = isDarkMode
+    ? 'border-transparent bg-transparent text-[#efe3d6] hover:bg-white/[0.04] hover:border-[#5b4630]'
+    : 'border-transparent bg-transparent text-[#6d5f4d] hover:bg-black/[0.025] hover:border-[#ece2d4]';
+  const navButtonActiveClass = isDarkMode
+    ? 'border-[#aa8454] bg-white/[0.06] text-[#f5ddbd] shadow-[0_10px_22px_rgba(0,0,0,0.2)]'
+    : 'border-[#e2cfaa] bg-[#fffaf1] text-[#7d5b12] shadow-[0_2px_10px_rgba(52,40,22,0.035)]';
+  const utilityButtonClass = isDarkMode
+    ? 'border-[#58422d]/60 bg-white/[0.03] text-[#eadccf] hover:bg-white/[0.06]'
+    : 'border-[#e4dbcf] bg-[rgba(255,255,255,0.9)] text-[#6d5d49] hover:bg-[#faf8f4]';
+  const shouldRenderSection = (_sectionId: SettingsSectionId) => true;
+
+  const scrollToSection = (sectionId: SettingsSectionId, behavior: ScrollBehavior = 'smooth') => {
+    document.getElementById(`settings-section-${sectionId}`)?.scrollIntoView({ behavior, block: 'start' });
+  };
+
+  const toggleSectionState = (sectionId: SettingsSectionId) => {
+    switch (sectionId) {
+      case 'api':
+        setIsApiConfigOpen(prev => !prev);
+        break;
+      case 'tts':
+        setIsTtsOpen(prev => !prev);
+        break;
+      case 'search':
+        setIsInternetSearchOpen(prev => !prev);
+        break;
+      case 'general':
+        setIsGeneralOpen(prev => !prev);
+        break;
+      case 'location':
+        setIsLocationOpen(prev => !prev);
+        break;
+      case 'backup':
+        setIsBackupOpen(prev => !prev);
+        break;
+      case 'data':
+        setIsDataManagementOpen(prev => !prev);
+        break;
+      case 'update':
+        setIsUpdateOpen(prev => !prev);
+        break;
+      case 'account':
+        setIsAccountOpen(prev => !prev);
+        break;
+      case 'guide':
+        setIsGuideOpen(prev => !prev);
+        break;
+      case 'logs':
+        setIsLogViewerOpen(prev => !prev);
+        break;
+    }
+  };
+
+  const ensureSectionOpen = (sectionId: SettingsSectionId) => {
+    switch (sectionId) {
+      case 'api':
+        setIsApiConfigOpen(true);
+        break;
+      case 'tts':
+        setIsTtsOpen(true);
+        break;
+      case 'search':
+        setIsInternetSearchOpen(true);
+        break;
+      case 'general':
+        setIsGeneralOpen(true);
+        break;
+      case 'location':
+        setIsLocationOpen(true);
+        break;
+      case 'backup':
+        setIsBackupOpen(true);
+        break;
+      case 'data':
+        setIsDataManagementOpen(true);
+        break;
+      case 'update':
+        setIsUpdateOpen(true);
+        break;
+      case 'account':
+        setIsAccountOpen(true);
+        break;
+      case 'guide':
+        setIsGuideOpen(true);
+        break;
+      case 'logs':
+        setIsLogViewerOpen(true);
+        break;
+    }
+  };
+
+  const focusSection = (sectionId: SettingsSectionId) => {
+    activeSectionIdRef.current = sectionId;
+    setActiveSectionId(sectionId);
+    ensureSectionOpen(sectionId);
+    window.setTimeout(() => {
+      scrollToSection(sectionId);
+    }, 80);
+  };
+
+  const handleSectionToggle = (sectionId: SettingsSectionId, isCurrentlyOpen: boolean) => {
+    if (!isCurrentlyOpen) {
+      activeSectionIdRef.current = sectionId;
+      setActiveSectionId(sectionId);
+    }
+    toggleSectionState(sectionId);
+  };
+
+  const applyTopNavIndicatorMetrics = (widthPercent: number, offsetPercent: number) => {
+    topNavIndicatorMetricsRef.current = { widthPercent, offsetPercent };
+    const thumb = topNavIndicatorThumbRef.current;
+    if (!thumb) return;
+    thumb.style.width = `${widthPercent}%`;
+    thumb.style.left = `${offsetPercent}%`;
+  };
+
+  const updateTopNavIndicator = () => {
+    const container = topNavScrollRef.current;
+    if (!container || container.clientWidth <= 0) {
+      setIsTopNavIndicatorVisible(false);
+      setTopNavFadeState({ left: false, right: false });
+      return;
+    }
+
+    const { scrollWidth, clientWidth, scrollLeft } = container;
+    if (scrollWidth <= clientWidth + 4) {
+      setIsTopNavIndicatorVisible(false);
+      setTopNavFadeState({ left: false, right: false });
+      return;
+    }
+
+    const widthPercent = Math.max((clientWidth / scrollWidth) * 100, 14);
+    const maxOffset = 100 - widthPercent;
+    const offsetPercent = maxOffset <= 0 ? 0 : (scrollLeft / (scrollWidth - clientWidth)) * maxOffset;
+    setIsTopNavIndicatorVisible(true);
+    setTopNavFadeState({
+      left: scrollLeft > 6,
+      right: scrollLeft < scrollWidth - clientWidth - 6,
+    });
+    applyTopNavIndicatorMetrics(widthPercent, offsetPercent);
+  };
+
+  const scheduleTopNavIndicatorUpdate = () => {
+    if (topNavIndicatorRafRef.current !== null) return;
+    topNavIndicatorRafRef.current = window.requestAnimationFrame(() => {
+      topNavIndicatorRafRef.current = null;
+      updateTopNavIndicator();
+    });
+  };
+
+  const syncTopNavScrollFromPointer = (clientX: number) => {
+    const track = topNavIndicatorTrackRef.current;
+    const container = topNavScrollRef.current;
+    if (!track || !container) return;
+
+    const trackRect = track.getBoundingClientRect();
+    const thumbWidthPx = (topNavIndicatorMetricsRef.current.widthPercent / 100) * trackRect.width;
+    const maxThumbLeft = Math.max(trackRect.width - thumbWidthPx, 0);
+    const pointerX = clientX - trackRect.left;
+    const desiredLeft = Math.min(
+      Math.max(pointerX - topNavIndicatorDragOffsetRef.current, 0),
+      maxThumbLeft
+    );
+    const scrollRatio = maxThumbLeft <= 0 ? 0 : desiredLeft / maxThumbLeft;
+    container.scrollLeft = scrollRatio * Math.max(container.scrollWidth - container.clientWidth, 0);
+  };
+
+  const handleTopNavIndicatorPointerDown = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!isTopNavIndicatorVisible) return;
+
+    const track = topNavIndicatorTrackRef.current;
+    if (!track) return;
+
+    const trackRect = track.getBoundingClientRect();
+    const thumbWidthPx = (topNavIndicatorMetricsRef.current.widthPercent / 100) * trackRect.width;
+    const currentLeftPx = (topNavIndicatorMetricsRef.current.offsetPercent / 100) * trackRect.width;
+    const pointerX = event.clientX - trackRect.left;
+    const isInsideThumb = pointerX >= currentLeftPx && pointerX <= currentLeftPx + thumbWidthPx;
+
+    topNavIndicatorDragOffsetRef.current = isInsideThumb
+      ? pointerX - currentLeftPx
+      : thumbWidthPx / 2;
+
+    setIsTopNavIndicatorDragging(true);
+    setIsTopNavIndicatorHovered(true);
+    syncTopNavScrollFromPointer(event.clientX);
+    event.preventDefault();
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    topNavButtonRefs.current[activeSectionId]?.scrollIntoView({ behavior: 'auto', inline: 'center', block: 'nearest' });
+    sideNavButtonRefs.current[activeSectionId]?.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'nearest' });
+  }, [activeSectionId, isOpen]);
+
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    const container = topNavScrollRef.current;
+    scheduleTopNavIndicatorUpdate();
+    const immediateRaf = window.requestAnimationFrame(() => scheduleTopNavIndicatorUpdate());
+    const lateTimeout = window.setTimeout(() => scheduleTopNavIndicatorUpdate(), 140);
+    if (!container) {
+      return () => {
+        window.cancelAnimationFrame(immediateRaf);
+        window.clearTimeout(lateTimeout);
+      };
+    }
+
+    const resizeObserver = typeof ResizeObserver !== 'undefined'
+      ? new ResizeObserver(() => scheduleTopNavIndicatorUpdate())
+      : null;
+    resizeObserver?.observe(container);
+    if (container.parentElement) {
+      resizeObserver?.observe(container.parentElement);
+    }
+
+    container.addEventListener('scroll', scheduleTopNavIndicatorUpdate, { passive: true });
+    window.addEventListener('resize', scheduleTopNavIndicatorUpdate);
+    return () => {
+      window.cancelAnimationFrame(immediateRaf);
+      window.clearTimeout(lateTimeout);
+      resizeObserver?.disconnect();
+      container.removeEventListener('scroll', scheduleTopNavIndicatorUpdate);
+      window.removeEventListener('resize', scheduleTopNavIndicatorUpdate);
+      if (topNavIndicatorRafRef.current !== null) {
+        window.cancelAnimationFrame(topNavIndicatorRafRef.current);
+        topNavIndicatorRafRef.current = null;
+      }
+    };
+  }, [isOpen, isExpandedView, activeSectionId, navItems.length]);
+
+  useEffect(() => {
+    if (!isTopNavIndicatorDragging) return;
+
+    const handleMouseMove = (event: MouseEvent) => {
+      syncTopNavScrollFromPointer(event.clientX);
+    };
+
+    const handleMouseUp = () => {
+      setIsTopNavIndicatorDragging(false);
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isTopNavIndicatorDragging, isTopNavIndicatorVisible]);
+
+  useEffect(() => {
+    const container = contentScrollRef.current;
+    if (!container || !isOpen) return;
+
+    const computeActiveSectionFromScroll = () => {
+      const firstId = navItems[0]?.id;
+      const lastId = navItems[navItems.length - 1]?.id;
+      if (!firstId || !lastId) return;
+      const currentActiveSectionId = activeSectionIdRef.current;
+
+      if (container.scrollTop <= 12) {
+        if (currentActiveSectionId !== firstId) {
+          activeSectionSyncStampRef.current = performance.now();
+          activeSectionIdRef.current = firstId;
+          startTransition(() => setActiveSectionId(firstId));
+        }
+        return;
+      }
+
+      if (container.scrollTop + container.clientHeight >= container.scrollHeight - 12) {
+        if (currentActiveSectionId !== lastId) {
+          activeSectionSyncStampRef.current = performance.now();
+          activeSectionIdRef.current = lastId;
+          startTransition(() => setActiveSectionId(lastId));
+        }
+        return;
+      }
+
+      const containerRect = container.getBoundingClientRect();
+      const anchorTop = containerRect.top + 72;
+      let bestId = currentActiveSectionId;
+      let bestScore = Number.POSITIVE_INFINITY;
+
+      navItems.forEach(({ id }) => {
+        const sectionEl = document.getElementById(`settings-section-${id}`);
+        if (!sectionEl) return;
+
+        const rect = sectionEl.getBoundingClientRect();
+        if (rect.bottom < containerRect.top + 24 || rect.top > containerRect.bottom - 24) {
+          return;
+        }
+
+        const score = Math.abs(rect.top - anchorTop);
+        if (score < bestScore) {
+          bestScore = score;
+          bestId = id;
+        }
+      });
+
+      if (bestId !== currentActiveSectionId) {
+        const now = performance.now();
+        if (now - activeSectionSyncStampRef.current < 96) {
+          return;
+        }
+        activeSectionSyncStampRef.current = now;
+        activeSectionIdRef.current = bestId;
+        startTransition(() => setActiveSectionId(bestId));
+      }
+    };
+
+    const scheduleActiveSectionSync = () => {
+      if (contentScrollSyncRafRef.current !== null) return;
+      contentScrollSyncRafRef.current = window.requestAnimationFrame(() => {
+        contentScrollSyncRafRef.current = null;
+        computeActiveSectionFromScroll();
+      });
+    };
+
+    computeActiveSectionFromScroll();
+    container.addEventListener('scroll', scheduleActiveSectionSync, { passive: true });
+    window.addEventListener('resize', scheduleActiveSectionSync);
+    return () => {
+      container.removeEventListener('scroll', scheduleActiveSectionSync);
+      window.removeEventListener('resize', scheduleActiveSectionSync);
+      if (contentScrollSyncRafRef.current !== null) {
+        window.cancelAnimationFrame(contentScrollSyncRafRef.current);
+        contentScrollSyncRafRef.current = null;
+      }
+    };
+  }, [isOpen, navItems]);
+
+  const sectionsMarkup = useMemo(() => (
+    <>
+      {shouldRenderSection('api') && (
+      <div id="settings-section-api" >
+        <ApiConfigSection
+          isOpen={isApiConfigOpen}
+          onToggle={() => handleSectionToggle('api', isApiConfigOpen)}
+          isDarkMode={isDarkMode}
+          language={language}
+          t_local={t_local}
+          sectionBorder={sectionBorder}
+          innerCardClass={innerCardClass}
+          inputClass={inputClass}
+          labelClass={labelClass}
+          localAiConfig={localAiConfig}
+          backupConfig={backupConfig}
+          ragStatus={ragStatus}
+          ragProgressLabel={ragProgressLabel}
+          modelValidationResult={modelValidationResult}
+          isSecurityOpen={isSecurityOpen}
+          isAllocationOpen={isAllocationOpen}
+          isVisionOpen={isVisionOpen}
+          isRagOpen={isRagOpen}
+          validationStatus={validationStatus}
+          validationStatusType={validationStatusType}
+          searchStatus={searchStatus}
+          searchStatusType={searchStatusType}
+          isValidating={isValidating}
+          isModelValidating={isModelValidating}
+          isSearchValidating={isSearchValidating}
+          onToggleSecurity={() => setIsSecurityOpen(!isSecurityOpen)}
+          onToggleAllocation={() => setIsAllocationOpen(!isAllocationOpen)}
+          onToggleVision={() => setIsVisionOpen(!isVisionOpen)}
+          onToggleRag={() => setIsRagOpen(!isRagOpen)}
+          onUpdateAiConfig={updateAiConfig}
+          onToggleRagEnabled={() => toggleBackup('ragEnabled')}
+          onRequestRebuildRag={onRebuildRag ? handleRequestRebuildRag : undefined}
+          onSave={handleSaveApiConfig}
+          onValidateAll={handleValidateAll}
+        />
+      </div>
+      )}
+
+      {ttsConfig && onTtsConfigChange && shouldRenderSection('tts') && (
+        <div id="settings-section-tts" >
+          <TtsConfigSection
+            isOpen={isTtsOpen}
+            onToggle={() => handleSectionToggle('tts', isTtsOpen)}
+            isDarkMode={isDarkMode}
+            language={language}
+            sectionBorder={sectionBorder}
+            inputClass={inputClass}
+            labelClass={labelClass}
+            innerCardClass={innerCardClass}
+            ttsConfig={ttsConfig}
+            onTtsConfigChange={onTtsConfigChange}
+          />
+        </div>
+      )}
+
+      {shouldRenderSection('search') && (
+      <div id="settings-section-search" >
+        <InternetSearchSection
+          isOpen={isInternetSearchOpen}
+          onToggle={() => handleSectionToggle('search', isInternetSearchOpen)}
+          isDarkMode={isDarkMode}
+          sectionBorder={sectionBorder}
+          innerCardClass={innerCardClass}
+          inputClass={inputClass}
+          t={t}
+          tavilyApiKey={tavilyApiKey}
+          enableInternetSearch={enableInternetSearch}
+          tavilyUsage={tavilyUsage}
+          searchStatus={searchStatus}
+          searchStatusType={searchStatusType}
+          onSaveConfig={handleSaveTavilyConfig}
+          onRefreshUsage={fetchTavilyUsage}
+          onTestSearch={handleTestTavilySearch}
+        />
+      </div>
+      )}
+
+      {shouldRenderSection('general') && (
+      <div id="settings-section-general" >
+        <GeneralSection
+          isOpen={isGeneralOpen}
+          onToggle={() => handleSectionToggle('general', isGeneralOpen)}
+          isDarkMode={isDarkMode}
+          sectionBorder={sectionBorder}
+          innerCardClass={innerCardClass}
+          title={t.generalSettings}
+          desc={t.generalDesc}
+          languageLabel={t.language}
+          language={language}
+          onLanguageChange={onLanguageChange}
+          proactiveTitle={language === 'zh' ? '后台活动与推送唤醒' : 'Background Proactive Push'}
+          proactiveDesc={language === 'zh' ? '允许接收 AI 主动发起的定时关怀与系统原生通知 (消耗 Token)' : 'Receive AI proactive scheduled messages via native notifications (Consumes tokens)'}
+          enableProactive={enableProactive}
+          onToggleProactive={handleToggleProactive}
+          showWebPushFallback={isPushSupported && !isDesktopElectron}
+          webPushTitle={language === 'zh' ? 'Web 浏览器推送订阅' : 'Web Push Subscription'}
+          pushButtonLabel={isSubscribing ? 'Wait...' : pushSubscription ? 'Enabled' : 'Enable'}
+          isPushActionDisabled={!!pushSubscription || isSubscribing}
+          onSubscribePush={handleSubscribePush}
+          isSubscribing={isSubscribing}
+        />
+      </div>
+      )}
+
+      {shouldRenderSection('location') && (
+      <div id="settings-section-location" >
+        <LocationSection
+          isOpen={isLocationOpen}
+          onToggle={() => handleSectionToggle('location', isLocationOpen)}
+          isDarkMode={isDarkMode}
+          language={language}
+          sectionBorder={sectionBorder}
+          innerCardClass={innerCardClass}
+          inputClass={inputClass}
+          labelClass={labelClass}
+          t={t}
+          locationConfig={locationConfig}
+          countries={COUNTRIES}
+          timezones={TIMEZONES}
+          modelPreviewTime={modelPreviewTime}
+          previewTime={previewTime}
+          onLocationUpdate={handleLocationUpdate}
+        />
+      </div>
+      )}
+
+      {shouldRenderSection('backup') && (
+      <div id="settings-section-backup" >
+        <BackupSection
+          isOpen={isBackupOpen}
+          onToggle={() => handleSectionToggle('backup', isBackupOpen)}
+          isDarkMode={isDarkMode}
+          t={t}
+          sectionBorder={sectionBorder}
+          cloudSyncAvailable={CLOUD_SYNC_AVAILABLE}
+          backupConfig={backupConfig}
+          connectedFileName={connectedFileName}
+          lastBackupTime={lastBackupTime}
+          isInIframe={isInIframe}
+          isConnected={isConnected}
+          isConnecting={isConnecting}
+          connectionError={connectionError}
+          isCloudSynced={isCloudSynced}
+          formatLastBackup={formatLastBackup}
+          onToggleLocalBackup={() => toggleBackup('localEnabled')}
+          onToggleCloudBackup={() => toggleBackup('cloudEnabled')}
+          onSelectLocalFile={onSelectLocalFile}
+          onOpenLocalFile={onOpenLocalFile}
+          onManualLocalSave={onManualLocalSave}
+          onManualLocalLoad={onManualLocalLoad}
+          onUpdateCloudConfig={updateCloudConfig}
+          onTestConnection={testConnection}
+          onDisconnect={handleDisconnect}
+          onCloudPush={onCloudPush}
+          onCloudRestore={onCloudRestore}
+          onExportBackup={onExportBackup}
+          onOpenImportDialog={() => {
+            fileInputRef.current?.click();
+          }}
+          autoZipEnabled={autoZipEnabled}
+          onToggleAutoZip={onToggleAutoZip}
+          onDisconnectLocalFile={onDisconnectLocalFile}
+        />
+      </div>
+      )}
+
+      {shouldRenderSection('data') && (
+      <div id="settings-section-data" >
+        <DataManagementSection
+          isOpen={isDataManagementOpen}
+          onToggle={() => handleSectionToggle('data', isDataManagementOpen)}
+          isDarkMode={isDarkMode}
+          language={language}
+          t={t}
+          sectionBorder={sectionBorder}
+          storageUsage={storageUsage}
+          formatBytes={formatBytes}
+          isDesktopElectron={isDesktopElectron}
+          dataDirectoryInfo={dataDirectoryInfo}
+          formatDataDirectoryError={formatDataDirectoryError}
+          onMoveDataDirectory={handleMoveDataDirectory}
+          onResetDataDirectory={handleResetDataDirectory}
+          onQuitAppCompletely={handleQuitAppCompletely}
+          onClearOldImages={handleClearOldImages}
+          onClearAllData={handleClearAllData}
+        />
+      </div>
+      )}
+
+      {shouldRenderSection('update') && (
+      <div id="settings-section-update" >
+        <AppUpdateSection
+          isOpen={isUpdateOpen}
+          onToggle={() => handleSectionToggle('update', isUpdateOpen)}
+          isDarkMode={isDarkMode}
+          language={language}
+          sectionBorder={sectionBorder}
+          updateState={appUpdateState}
+          onCheckForUpdates={onCheckForUpdates}
+          onDownloadUpdate={onDownloadUpdate}
+          onInstallUpdate={onInstallUpdate}
+        />
+      </div>
+      )}
+
+      {shouldRenderSection('account') && (
+      <div id="settings-section-account" >
+        <AccountSection
+          isOpen={isAccountOpen}
+          onToggle={() => handleSectionToggle('account', isAccountOpen)}
+          isDarkMode={isDarkMode}
+          sectionBorder={sectionBorder}
+          innerCardClass={innerCardClass}
+          inputClass={inputClass}
+          labelClass={labelClass}
+          title={t.accountSettings}
+          desc={t.accountDesc}
+          changeUserPass={t.changeUserPass}
+          usernameLabel={t.username}
+          passwordLabel={t.passwordLabel}
+          saveLabel={t.save}
+          cancelLabel={t.cancel}
+          editLabel={t.edit}
+          authUsername={authUsername}
+          authPassword={authPassword}
+          isEditing={isEditingAccount}
+          onUsernameChange={setAuthUsername}
+          onPasswordChange={setAuthPassword}
+          onSave={handleSaveAccount}
+          onStartEdit={startEditingAccount}
+          onCancelEdit={cancelEditingAccount}
+        />
+      </div>
+      )}
+
+      {shouldRenderSection('guide') && (
+      <div id="settings-section-guide" >
+        <GuideSection
+          isOpen={isGuideOpen}
+          onToggle={() => handleSectionToggle('guide', isGuideOpen)}
+          onOpenGuide={() => setShowFullGuide(true)}
+          isDarkMode={isDarkMode}
+          t={t}
+          sectionBorder={sectionBorder}
+        />
+      </div>
+      )}
+
+      {shouldRenderSection('logs') && (
+      <div id="settings-section-logs" >
+        <LogViewerSection
+          isOpen={isLogViewerOpen}
+          onToggle={() => handleSectionToggle('logs', isLogViewerOpen)}
+          onClear={onClearDevLogs}
+          isDarkMode={isDarkMode}
+          t={t_local}
+          sectionBorder={sectionBorder}
+          devLogs={devLogs}
+          logContainerRef={logContainerRef}
+        />
+      </div>
+      )}
+    </>
+  ), [
+    appUpdateState,
+    autoZipEnabled,
+    backupConfig,
+    connectedFileName,
+    connectionError,
+    dataDirectoryInfo,
+    devLogs,
+    enableInternetSearch,
+    enableProactive,
+    fileInputRef,
+    formatDataDirectoryError,
+    formatLastBackup,
+    isAccountOpen,
+    isApiConfigOpen,
+    isBackupOpen,
+    isCloudSynced,
+    isConnected,
+    isConnecting,
+    isDarkMode,
+    isDataManagementOpen,
+    isGeneralOpen,
+    isGuideOpen,
+    isInIframe,
+    isInternetSearchOpen,
+    isLocationOpen,
+    isLogViewerOpen,
+    isModelValidating,
+    isPushSupported,
+    isSearchValidating,
+    isSecurityOpen,
+    isSubscribing,
+    isTtsOpen,
+    isUpdateOpen,
+    isValidating,
+    language,
+    labelClass,
+    lastBackupTime,
+    localAiConfig,
+    locationConfig,
+    modelPreviewTime,
+    modelValidationResult,
+    onBackupConfigChange,
+    onCheckForUpdates,
+    onClearDevLogs,
+    onCloudPush,
+    onCloudRestore,
+    onDisconnectLocalFile,
+    onDownloadUpdate,
+    onExportBackup,
+    onImportBackup,
+    onInstallUpdate,
+    onLanguageChange,
+    onLocationChange,
+    onManualLocalLoad,
+    onManualLocalSave,
+    onOpenLocalFile,
+    onRebuildRag,
+    onSelectLocalFile,
+    onToggleAutoZip,
+    onTtsConfigChange,
+    previewTime,
+    pushSubscription,
+    ragProgressLabel,
+    ragStatus,
+    searchStatus,
+    searchStatusType,
+    storageUsage,
+    t,
+    t_local,
+    tavilyApiKey,
+    tavilyUsage,
+    ttsConfig,
+    validationStatus,
+    validationStatusType
+  ]);
+
   if (!isOpen) return null;
 
-  const bgClass = isDarkMode ? 'bg-black/95 border-yellow-900/50' : 'bg-white/95 border-yellow-500/30';
-  const textClass = isDarkMode ? 'text-yellow-100' : 'text-gray-800';
-  const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]';
-  const sectionBorder = isDarkMode ? 'border-yellow-900/30 bg-yellow-900/5' : 'border-gray-200 bg-gray-50';
-  const inputClass = `w-full p-2 rounded border outline-none font-mono text-base md:text-sm ${isDarkMode ? 'bg-[#1a1a1a] border-gray-700 text-white focus:border-yellow-500' : 'bg-white border-gray-300 text-black focus:border-blue-500'}`;
-  const labelClass = `text-xs font-mono font-bold uppercase mb-1 block ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`;
-  const innerCardClass = `p-3 rounded border ${isDarkMode ? 'bg-black/30 border-white/10' : 'bg-white border-gray-200'}`;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.6) 30%, rgba(0,0,0,0) 100%)' }}>
-      <div className={`w-full max-w-md max-h-[90dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden animate-[breathe_0.3s_ease-out] relative ${bgClass}`}>
-        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-600 to-transparent opacity-50"></div>
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-yellow-900/30' : 'border-gray-200'}`}>
-          <div className="flex items-center gap-3">
-            <Settings size={20} className={titleClass} />
-            <span className={`font-mono font-bold tracking-wider text-lg ${titleClass}`}>{t.settingsTitle}</span>
+    <div
+      className="absolute inset-0 z-50 flex items-center justify-center p-3 md:p-5 safe-area-padding-modal animate-in fade-in duration-300 backdrop-blur-[8px]"
+      style={{
+        background: isDarkMode
+          ? 'radial-gradient(circle at center, rgba(12,9,7,0.78), rgba(8,6,5,0.92) 72%)'
+          : 'radial-gradient(circle at center, rgba(255,255,255,0.42), rgba(238,234,228,0.68) 74%, rgba(226,220,211,0.62) 100%)'
+      }}
+    >
+      <div className={`ka-settings-shell relative flex overflow-hidden border ${shellClass} ${shellSurfaceClass}`}>
+        <div className={`absolute top-0 left-0 h-px w-full pointer-events-none ${isDarkMode ? 'bg-gradient-to-r from-transparent via-yellow-700/45 to-transparent' : 'bg-gradient-to-r from-transparent via-[#d8b56f]/42 to-transparent'}`} />
+        <div className={`absolute inset-0 pointer-events-none ${isDarkMode ? 'bg-[linear-gradient(135deg,rgba(188,149,91,0.03),transparent_40%,rgba(188,149,91,0.02)_72%,transparent)]' : 'bg-[linear-gradient(180deg,rgba(255,255,255,0.22),rgba(255,255,255,0.02)_26%,transparent_52%)]'}`} />
+        {!isExpandedView && (
+          <div className="absolute left-1/2 top-3 z-20 -translate-x-1/2 pointer-events-none">
+            <div className="h-1 w-12 rounded-full bg-[#ddd5ca] shadow-[inset_0_1px_0_rgba(255,255,255,0.78)]" />
           </div>
-          <button onClick={onClose} className={`p-1.5 rounded-full hover:bg-red-500/10 hover:text-red-500 transition-colors ${textClass}`}><X size={20} /></button>
+        )}
+
+        <aside className={`${isExpandedView && !isCompactSettingsLayout ? 'flex' : 'hidden'} w-[15.5rem] shrink-0 flex-col border-r ${shellDividerClass} ${railClass}`}>
+          <div className="px-5 pt-5 pb-4 border-b border-inherit">
+            <div className="flex items-start gap-3">
+              <div className={`mt-0.5 flex h-9 w-9 items-center justify-center rounded-full border ${isDarkMode ? 'border-[#6b5132] bg-[#2a1f16] text-yellow-300' : 'border-[#e5dac9] bg-[#fffdfa] text-[#b07b1e]'}`}>
+                <Settings size={16} />
+              </div>
+              <div className="min-w-0">
+                <div className={`ka-panel-title ${titleClass}`}>{t.settingsTitle}</div>
+                <div className={`mt-1 ka-kicker ${isDarkMode ? 'text-[#a88960]' : 'text-[#b7955b]'}`}>{t.systemConfig}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1.5 scrollbar-thin">
+            {navItems.map(({ id, label, desc, icon: Icon, active, accent }) => (
+              <button
+                key={id}
+                ref={(el) => { sideNavButtonRefs.current[id] = el; }}
+                onClick={() => focusSection(id)}
+                className={`w-full min-w-[8rem] rounded-[1rem] border px-3.5 py-3 text-left transition-all duration-200 ${active ? navButtonActiveClass : navButtonBaseClass}`}
+              >
+                <div className="flex items-start gap-3">
+                  <div className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full border ${active ? (isDarkMode ? 'border-[#aa8454]/70 bg-[#332618]' : 'border-[#e7dbc8] bg-[#fffaf2]') : (isDarkMode ? 'border-[#5a4430]/50 bg-transparent' : 'border-[#ece1d0] bg-[#fffefd]')}`}>
+                    <Icon size={16} className={active ? accent : (isDarkMode ? 'text-[#cbb293]' : 'text-[#8b6b48]')} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className={`ka-setting-item-title ${isDarkMode ? 'text-[#f0e4d7]' : 'text-[#60462c]'}`}>{label}</div>
+                    {desc && (
+                      <div className={`mt-1 ka-copy-sm ${isDarkMode ? 'text-[#ae9880]' : active ? 'text-[#8b724c]' : 'text-[#a08b6f]'}`}>
+                        {desc}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </button>
+            ))}
+          </div>
+
+          <div className={`px-3 py-3 border-t ${shellDividerClass}`}>
+            <button
+              onClick={handleToggleExpandedView}
+              className={`w-full rounded-full border px-3 py-2.5 ka-copy-sm font-semibold flex items-center justify-center gap-2 transition-all ${utilityButtonClass}`}
+            >
+              {isExpandedView ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              {isExpandedView
+                ? (language === 'zh' ? '收为小弹窗' : 'Back To Popup')
+                : (language === 'zh' ? '切换全屏' : 'Expand Workspace')}
+            </button>
+          </div>
+        </aside>
+
+        <div className={`relative z-10 flex min-w-0 flex-1 flex-col ${bodyClass}`}>
+          <div className={`flex ${isExpandedView ? 'h-16' : 'h-[4.6rem] pt-3'} shrink-0 items-center justify-between border-b px-4 md:px-6 ${shellDividerClass}`}>
+            <div className="flex min-w-0 items-center gap-3">
+              <div className={`flex h-9 w-9 items-center justify-center rounded-full border lg:hidden ${isDarkMode ? 'border-[#6b5132] bg-[#2a1f16] text-yellow-300' : 'border-[#e5dac9] bg-[#fffdfa] text-[#b07b1e]'}`}>
+                <Settings size={16} />
+              </div>
+              <div className="min-w-0">
+                <div className={`ka-panel-title ${titleClass}`}>{t.settingsTitle}</div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleToggleExpandedView}
+                className={`rounded-full border p-2 transition-all ${utilityButtonClass}`}
+                title={isExpandedView ? (language === 'zh' ? '收为小弹窗' : 'Back To Popup') : (language === 'zh' ? '切换全屏' : 'Expand Workspace')}
+              >
+                {isExpandedView ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+              </button>
+              <button
+                onClick={onClose}
+                className={`rounded-full border p-2 transition-all ${utilityButtonClass} hover:text-red-500 hover:border-red-300`}
+              >
+                <X size={18} />
+              </button>
+            </div>
+          </div>
+
+          <div className={`${isExpandedView && !isCompactSettingsLayout ? 'hidden' : ''} border-b ${shellDividerClass}`}>
+            <div className="relative">
+              <div
+                className={`pointer-events-none absolute bottom-2 left-0 top-0 z-10 w-10 transition-all duration-300 ${
+                  topNavFadeState.left ? 'opacity-100' : 'opacity-0'
+                } ${isDarkMode ? 'bg-gradient-to-r from-[rgba(24,18,13,0.92)] via-[rgba(24,18,13,0.72)] to-transparent' : 'bg-gradient-to-r from-[rgba(255,255,255,0.98)] via-[rgba(255,255,255,0.9)] to-transparent'}`}
+              />
+              <div
+                className={`pointer-events-none absolute bottom-2 right-0 top-0 z-10 w-10 transition-all duration-300 ${
+                  topNavFadeState.right ? 'opacity-100' : 'opacity-0'
+                } ${isDarkMode ? 'bg-gradient-to-l from-[rgba(24,18,13,0.92)] via-[rgba(24,18,13,0.72)] to-transparent' : 'bg-gradient-to-l from-[rgba(255,255,255,0.98)] via-[rgba(255,255,255,0.9)] to-transparent'}`}
+              />
+              <div ref={topNavScrollRef} className="flex gap-2 overflow-x-auto no-scrollbar px-4 pt-3 pb-2">
+              {navItems.map(({ id, label, icon: Icon, active, accent }) => (
+                <button
+                  key={id}
+                  ref={(el) => { topNavButtonRefs.current[id] = el; }}
+                  onClick={() => focusSection(id)}
+                  className={`shrink-0 rounded-full border px-3 py-2 ka-copy-sm font-semibold flex items-center gap-2 transition-all min-w-[4rem] justify-center ${active ? navButtonActiveClass : navButtonBaseClass}`}
+                >
+                  <Icon size={14} className={active ? accent : (isDarkMode ? 'text-[#cbb293]' : 'text-[#8b6b48]')} />
+                  <span>{label}</span>
+                </button>
+              ))}
+              </div>
+            </div>
+            {isTopNavIndicatorVisible && (
+              <div className="px-4 pb-2">
+                <div
+                  ref={topNavIndicatorTrackRef}
+                  onMouseDown={handleTopNavIndicatorPointerDown}
+                  onMouseEnter={() => setIsTopNavIndicatorHovered(true)}
+                  onMouseLeave={() => {
+                    if (!isTopNavIndicatorDragging) {
+                      setIsTopNavIndicatorHovered(false);
+                    }
+                  }}
+                  className={`group relative h-3 select-none touch-none ${isTopNavIndicatorDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+                >
+                  <div
+                    className={`absolute inset-x-0 top-1/2 -translate-y-1/2 rounded-full transition-all duration-300 ease-out ${isDarkMode ? 'bg-white/8' : 'bg-[#e7e1d7]'} ${isTopNavIndicatorHovered || isTopNavIndicatorDragging ? 'h-[4px]' : 'h-[2px]'}`}
+                  />
+                  <div
+                    ref={topNavIndicatorThumbRef}
+                    className={`absolute top-1/2 -translate-y-1/2 rounded-full transition-all duration-300 ease-out ${isDarkMode ? 'bg-yellow-600/70' : 'bg-[linear-gradient(90deg,#d8bb7b,#bc9450)]'} ${
+                      isTopNavIndicatorDragging
+                        ? 'h-[5px] shadow-[0_0_0_1px_rgba(255,255,255,0.14),0_4px_12px_rgba(169,124,25,0.22)]'
+                        : isTopNavIndicatorHovered
+                          ? 'h-[4px] shadow-[0_0_0_1px_rgba(255,255,255,0.14),0_2px_8px_rgba(169,124,25,0.14)]'
+                          : 'h-[2px]'
+                    }`}
+                    style={{ width: '0%', left: '0%' }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div ref={contentScrollRef} className="flex-1 overflow-y-auto touch-scroll scrollbar-thin">
+            <div className={`mx-auto w-full ${isExpandedView ? 'max-w-[54rem]' : 'max-w-[46rem]'} px-4 py-5 md:px-6 md:py-6 flex flex-col gap-4`}>
+              {sectionsMarkup}
+            </div>
+          </div>
+
+          <div className={`lg:hidden shrink-0 border-t px-4 py-3 ${shellDividerClass}`}>
+            <button
+              onClick={handleToggleExpandedView}
+              className={`w-full rounded-full border px-3 py-2.5 ka-copy-sm font-semibold flex items-center justify-center gap-2 transition-all ${utilityButtonClass}`}
+            >
+              {isExpandedView ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              {isExpandedView
+                ? (language === 'zh' ? '收为小弹窗' : 'Back To Popup')
+                : (language === 'zh' ? '切换全屏' : 'Expand Workspace')}
+            </button>
+          </div>
         </div>
-        
-        <div className="flex-1 p-6 flex flex-col gap-4 overflow-y-auto scrollbar-thin touch-scroll">
-          
-          {/* ... (Other sections unchanged) ... */}
-          <GeneralSection
-            isOpen={isGeneralOpen}
-            onToggle={() => setIsGeneralOpen(!isGeneralOpen)}
-            isDarkMode={isDarkMode}
-            sectionBorder={sectionBorder}
-            title={t.generalSettings}
-            desc={t.generalDesc}
-            languageLabel={t.language}
-            language={language}
-            onLanguageChange={onLanguageChange}
-            proactiveTitle={language === 'zh' ? '后台活动与推送唤醒' : 'Background Proactive Push'}
-            proactiveDesc={language === 'zh' ? '允许接收 AI 主动发起的定时关怀与系统原生通知 (消耗 Token)' : 'Receive AI proactive scheduled messages via native notifications (Consumes tokens)'}
-            enableProactive={enableProactive}
-            onToggleProactive={handleToggleProactive}
-            showWebPushFallback={isPushSupported && !isDesktopElectron}
-            webPushTitle={language === 'zh' ? 'Web 浏览器推送订阅' : 'Web Push Subscription'}
-            pushButtonLabel={isSubscribing ? 'Wait...' : pushSubscription ? 'Enabled' : 'Enable'}
-            isPushActionDisabled={!!pushSubscription || isSubscribing}
-            onSubscribePush={handleSubscribePush}
-            isSubscribing={isSubscribing}
-          />
-          <AccountSection
-            isOpen={isAccountOpen}
-            onToggle={() => setIsAccountOpen(!isAccountOpen)}
-            isDarkMode={isDarkMode}
-            sectionBorder={sectionBorder}
-            inputClass={inputClass}
-            labelClass={labelClass}
-            title={t.accountSettings}
-            desc={t.accountDesc}
-            changeUserPass={t.changeUserPass}
-            usernameLabel={t.username}
-            passwordLabel={t.passwordLabel}
-            saveLabel={t.save}
-            cancelLabel={t.cancel}
-            editLabel={t.edit}
-            authUsername={authUsername}
-            authPassword={authPassword}
-            isEditing={isEditingAccount}
-            onUsernameChange={setAuthUsername}
-            onPasswordChange={setAuthPassword}
-            onSave={handleSaveAccount}
-            onStartEdit={startEditingAccount}
-            onCancelEdit={cancelEditingAccount}
-          />
-          <LocationSection
-            isOpen={isLocationOpen}
-            onToggle={() => setIsLocationOpen(!isLocationOpen)}
-            isDarkMode={isDarkMode}
-            language={language}
-            sectionBorder={sectionBorder}
-            innerCardClass={innerCardClass}
-            inputClass={inputClass}
-            labelClass={labelClass}
-            t={t}
-            locationConfig={locationConfig}
-            countries={COUNTRIES}
-            timezones={TIMEZONES}
-            modelPreviewTime={modelPreviewTime}
-            previewTime={previewTime}
-            onLocationUpdate={handleLocationUpdate}
-          />
-          <BackupSection
-            isOpen={isBackupOpen}
-            onToggle={() => setIsBackupOpen(!isBackupOpen)}
-            isDarkMode={isDarkMode}
-            t={t}
-            sectionBorder={sectionBorder}
-            cloudSyncAvailable={CLOUD_SYNC_AVAILABLE}
-            backupConfig={backupConfig}
-            connectedFileName={connectedFileName}
-            lastBackupTime={lastBackupTime}
-            isInIframe={isInIframe}
-            isConnected={isConnected}
-            isConnecting={isConnecting}
-            connectionError={connectionError}
-            isCloudSynced={isCloudSynced}
-            formatLastBackup={formatLastBackup}
-            onToggleLocalBackup={() => toggleBackup('localEnabled')}
-            onToggleCloudBackup={() => toggleBackup('cloudEnabled')}
-            onSelectLocalFile={onSelectLocalFile}
-            onOpenLocalFile={onOpenLocalFile}
-            onManualLocalSave={onManualLocalSave}
-            onManualLocalLoad={onManualLocalLoad}
-            onUpdateCloudConfig={updateCloudConfig}
-            onTestConnection={testConnection}
-            onDisconnect={handleDisconnect}
-            onCloudPush={onCloudPush}
-            onCloudRestore={onCloudRestore}
-            onExportBackup={onExportBackup}
-            onOpenImportDialog={() => {
-              fileInputRef.current?.click();
-            }}
-            autoZipEnabled={autoZipEnabled}
-            onToggleAutoZip={onToggleAutoZip}
-            onDisconnectLocalFile={onDisconnectLocalFile}
-          />
-          <GuideSection
-            isOpen={isGuideOpen}
-            onToggle={() => setIsGuideOpen(!isGuideOpen)}
-            onOpenGuide={() => setShowFullGuide(true)}
-            isDarkMode={isDarkMode}
-            t={t}
-            sectionBorder={sectionBorder}
-          />
-          <AppUpdateSection
-            isOpen={isUpdateOpen}
-            onToggle={() => setIsUpdateOpen(!isUpdateOpen)}
-            isDarkMode={isDarkMode}
-            language={language}
-            sectionBorder={sectionBorder}
-            updateState={appUpdateState}
-            onCheckForUpdates={onCheckForUpdates}
-            onDownloadUpdate={onDownloadUpdate}
-            onInstallUpdate={onInstallUpdate}
-          />
-
-          <DataManagementSection
-            isOpen={isDataManagementOpen}
-            onToggle={() => setIsDataManagementOpen(!isDataManagementOpen)}
-            isDarkMode={isDarkMode}
-            language={language}
-            t={t}
-            sectionBorder={sectionBorder}
-            storageUsage={storageUsage}
-            formatBytes={formatBytes}
-            isDesktopElectron={isDesktopElectron}
-            dataDirectoryInfo={dataDirectoryInfo}
-            formatDataDirectoryError={formatDataDirectoryError}
-            onMoveDataDirectory={handleMoveDataDirectory}
-            onResetDataDirectory={handleResetDataDirectory}
-            onQuitAppCompletely={handleQuitAppCompletely}
-            onClearOldImages={handleClearOldImages}
-            onClearAllData={handleClearAllData}
-          />
-
-          <ApiConfigSection
-            isOpen={isApiConfigOpen}
-            onToggle={() => setIsApiConfigOpen(!isApiConfigOpen)}
-            isDarkMode={isDarkMode}
-            language={language}
-            t_local={t_local}
-            sectionBorder={sectionBorder}
-            innerCardClass={innerCardClass}
-            inputClass={inputClass}
-            labelClass={labelClass}
-            localAiConfig={localAiConfig}
-            backupConfig={backupConfig}
-            ragStatus={ragStatus}
-            ragProgressLabel={ragProgressLabel}
-            modelValidationResult={modelValidationResult}
-            isSecurityOpen={isSecurityOpen}
-            isAllocationOpen={isAllocationOpen}
-            isVisionOpen={isVisionOpen}
-            isRagOpen={isRagOpen}
-            validationStatus={validationStatus}
-            validationStatusType={validationStatusType}
-            searchStatus={searchStatus}
-            searchStatusType={searchStatusType}
-            isValidating={isValidating}
-            isModelValidating={isModelValidating}
-            isSearchValidating={isSearchValidating}
-            onToggleSecurity={() => setIsSecurityOpen(!isSecurityOpen)}
-            onToggleAllocation={() => setIsAllocationOpen(!isAllocationOpen)}
-            onToggleVision={() => setIsVisionOpen(!isVisionOpen)}
-            onToggleRag={() => setIsRagOpen(!isRagOpen)}
-            onUpdateAiConfig={updateAiConfig}
-            onToggleRagEnabled={() => toggleBackup('ragEnabled')}
-            onRequestRebuildRag={onRebuildRag ? handleRequestRebuildRag : undefined}
-            onSave={handleSaveApiConfig}
-            onValidateAll={handleValidateAll}
-          />
-
-          {ttsConfig && onTtsConfigChange && (
-            <TtsConfigSection
-              isOpen={isTtsOpen}
-              onToggle={() => setIsTtsOpen(!isTtsOpen)}
-              isDarkMode={isDarkMode}
-              language={language}
-              sectionBorder={sectionBorder}
-              inputClass={inputClass}
-              labelClass={labelClass}
-              innerCardClass={innerCardClass}
-              ttsConfig={ttsConfig}
-              onTtsConfigChange={onTtsConfigChange}
-            />
-          )}
-
-          <InternetSearchSection
-            isOpen={isInternetSearchOpen}
-            onToggle={() => setIsInternetSearchOpen(!isInternetSearchOpen)}
-            isDarkMode={isDarkMode}
-            sectionBorder={sectionBorder}
-            innerCardClass={innerCardClass}
-            inputClass={inputClass}
-            t={t}
-            tavilyApiKey={tavilyApiKey}
-            enableInternetSearch={enableInternetSearch}
-            tavilyUsage={tavilyUsage}
-            searchStatus={searchStatus}
-            searchStatusType={searchStatusType}
-            onSaveConfig={handleSaveTavilyConfig}
-            onRefreshUsage={fetchTavilyUsage}
-            onTestSearch={handleTestTavilySearch}
-          />
-
-          <LogViewerSection
-            isOpen={isLogViewerOpen}
-            onToggle={() => setIsLogViewerOpen(!isLogViewerOpen)}
-            onClear={onClearDevLogs}
-            isDarkMode={isDarkMode}
-            t={t_local}
-            sectionBorder={sectionBorder}
-            devLogs={devLogs}
-            logContainerRef={logContainerRef}
-          />
-
-        </div>
-        <input type="file" ref={fileInputRef} className="hidden" accept=".json,.zip" onChange={handleFileChange} />
-        <div className={`p-3 bg-opacity-30 flex justify-end ${isDarkMode ? 'bg-black' : 'bg-gray-50'}`}><span className={`text-[10px] font-mono ${isDarkMode ? 'text-yellow-900/50' : 'text-gray-400'}`}>{t.systemConfig}</span></div>
       </div>
+
+      <input type="file" ref={fileInputRef} className="hidden" accept=".json,.zip" onChange={handleFileChange} />
+
       <FullGuideModal isOpen={showFullGuide} onClose={() => setShowFullGuide(false)} language={language} isDarkMode={isDarkMode} />
       <CustomDialog 
         isOpen={dialogConfig.isOpen}

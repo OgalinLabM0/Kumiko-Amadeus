@@ -3,7 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { ChatBubble } from '../ChatBubble';
 import { Language, Message } from '../../types';
 
-const OVERSCAN_PX = 900;
+const OVERSCAN_PX = 420;
 const MIN_ESTIMATED_HEIGHT = 84;
 const MAX_ESTIMATED_HEIGHT = 460;
 
@@ -103,9 +103,10 @@ const VirtualizedMessageRow: React.FC<VirtualizedMessageRowProps> = ({
       ref={rowRef}
       style={{
         position: 'absolute',
-        top,
         left: 0,
         right: 0,
+        transform: `translate3d(0, ${top}px, 0)`,
+        willChange: 'transform',
       }}
     >
       {children}
@@ -137,6 +138,8 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sizeCacheRef = useRef<Map<string, number>>(new Map());
+  const scrollRafRef = useRef<number | null>(null);
+  const pendingScrollTopRef = useRef(0);
   const [viewportHeight, setViewportHeight] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [layoutVersion, setLayoutVersion] = useState(0);
@@ -199,7 +202,22 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
   }, []);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
-    setScrollTop(event.currentTarget.scrollTop);
+    pendingScrollTopRef.current = event.currentTarget.scrollTop;
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = window.requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      setScrollTop((current) => (
+        current === pendingScrollTopRef.current ? current : pendingScrollTopRef.current
+      ));
+    });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (scrollRafRef.current !== null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+      }
+    };
   }, []);
 
   const handleMeasured = useCallback((index: number, id: string, height: number) => {

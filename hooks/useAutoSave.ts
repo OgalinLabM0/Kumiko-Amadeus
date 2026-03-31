@@ -96,7 +96,7 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
       // COMPREHENSIVE PAYLOAD: Ensure all memory systems are included
       const payload = {
         timestamp,
-        version: "1.1", // Bump version to indicate robust schema
+        version: "1.3",
         data: currentData // This contains messages, worldBook, coreMemory, anchors, notebook etc.
       };
       

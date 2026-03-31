@@ -181,7 +181,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                         }}
                         className={`
                           flex items-center gap-1 px-2 py-1 rounded-full 
-                          text-[10px] font-bold transition-all duration-300 
+                          ka-micro font-bold transition-all duration-300 
                           hover:scale-105 shadow-sm
                           animate-in fade-in slide-in-from-right-2
                           ${isDarkMode ? 'bg-red-900/40 text-red-400 hover:bg-red-900/80' : 'bg-red-100 text-red-600 hover:bg-red-200'}
@@ -211,7 +211,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                 )}
 
                 {/* Status Line - UPDATED COLOR FOR DARK MODE (gray-500 -> gray-300) */}
-                <div className={`flex flex-col items-end text-[10px] font-mono leading-tight ${isDarkMode ? 'text-gray-300' : 'text-gray-400'}`}>
+                <div className={`flex flex-col items-end ka-micro leading-tight ${isDarkMode ? 'text-gray-300' : 'text-gray-400'}`}>
                    <span className={isPending ? (isDarkMode ? 'text-yellow-500/80' : 'text-yellow-700/80') : ''}>
                       {isPending ? t.unread : (message.isRead ? t.read : t.unread)}
                    </span>
@@ -237,7 +237,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                     ) : (
                         <div className="flex flex-col items-center justify-center py-4 text-gray-500">
                             <ImageOff size={24} />
-                            <span className="text-[10px] mt-1 font-mono">Image Load Failed</span>
+                            <span className="ka-micro mt-1">Image Load Failed</span>
                         </div>
                     )}
                   </div>
@@ -254,7 +254,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                 >
                   {/* QUOTE RENDER */}
                   {message.quote && (
-                    <div className={`mb-2 p-2 rounded text-xs border-l-2 ${isDarkMode ? 'border-yellow-600/50' : 'border-yellow-500/50'} ${quoteBgClass}`}>
+                    <div className={`mb-2 p-2 rounded ka-copy-sm border-l-2 ${isDarkMode ? 'border-yellow-600/50' : 'border-yellow-500/50'} ${quoteBgClass}`}>
                        <div className="flex items-center gap-1 opacity-70 mb-0.5">
                           <Quote size={10} />
                           <span className="font-bold">{message.quote.role === 'model' ? 'Kumiko' : 'You'}</span>
@@ -263,7 +263,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                     </div>
                   )}
 
-                  <p className="text-base leading-relaxed font-medium whitespace-pre-wrap break-words">
+                  <p className="ka-chat-copy whitespace-pre-wrap break-words">
                     {renderTextWithLinks(displayContent)}
                   </p>
                 </div>
@@ -299,7 +299,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                 >
                   {/* QUOTE RENDER */}
                   {message.quote && (
-                    <div className={`mb-2 p-2 rounded text-xs border-l-2 ${isDarkMode ? 'border-gray-500/50' : 'border-gray-400/50'} ${quoteBgClass}`}>
+                    <div className={`mb-2 p-2 rounded ka-copy-sm border-l-2 ${isDarkMode ? 'border-gray-500/50' : 'border-gray-400/50'} ${quoteBgClass}`}>
                        <div className="flex items-center gap-1 opacity-70 mb-0.5">
                           <Quote size={10} />
                           <span className="font-bold">
@@ -310,7 +310,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                     </div>
                   )}
 
-                  <p className="text-base leading-relaxed font-medium whitespace-pre-wrap break-words">
+                  <p className="ka-chat-copy whitespace-pre-wrap break-words">
                     {renderTextWithLinks(displayContent)}
                   </p>
                 </div>
@@ -318,7 +318,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
              )}
 
              {/* Right Meta Column - UPDATED COLOR FOR DARK MODE (gray-500 -> gray-300) */}
-             <div className={`flex flex-col justify-end items-start gap-1 pb-1 min-w-[40px] text-[10px] font-mono opacity-50 ${isDarkMode ? 'text-gray-300' : 'text-gray-400'}`}>
+             <div className={`flex flex-col justify-end items-start gap-1 pb-1 min-w-[40px] ka-micro opacity-50 ${isDarkMode ? 'text-gray-300' : 'text-gray-400'}`}>
                 {!isSelectionMode && (
                     <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 mb-1">
                         <button

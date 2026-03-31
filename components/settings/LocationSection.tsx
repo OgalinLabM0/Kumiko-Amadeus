@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, ChevronUp, Clock, Globe, MapPin, Settings, Watch } from 'lucide-react';
+import { ChevronDown, ChevronUp, Clock, Globe, Lock, MapPin, Watch } from 'lucide-react';
 import { LocationConfig, Language } from '../../types';
 
 interface BilingualOption {
@@ -12,7 +12,10 @@ interface LocationSectionTranslations {
   locationTitle: string;
   locationDesc: string;
   modelLocation: string;
+  modelLocationDesc?: string;
+  modelTimezoneLocked?: string;
   userLocation: string;
+  userLocationDesc?: string;
   country: string;
   timezone: string;
   timezoneHelp?: string;
@@ -54,53 +57,69 @@ export const LocationSection: React.FC<LocationSectionProps> = ({
   onLocationUpdate
 }) => {
   const l = (opt: BilingualOption) => language === 'zh' ? opt.zh : opt.en;
+  const japanLabel = language === 'zh' ? '日本' : 'Japan';
+  const tokyoLabel = language === 'zh' ? '亚洲/东京（日本、韩国）' : 'Asia/Tokyo (Japan, Korea)';
   return (
-    <div className={`flex flex-col rounded-lg border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
-      <button onClick={onToggle} className="flex items-center justify-between p-4 w-full">
+    <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
+      <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
         <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-full ${isDarkMode ? 'bg-orange-900/30 text-orange-400' : 'bg-orange-100 text-orange-700'}`}>
-            <MapPin size={20} />
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-orange-500/20 bg-orange-900/20 text-orange-300' : 'border-orange-200 bg-orange-50/90 text-orange-700'}`}>
+            <MapPin size={18} />
           </div>
           <div className="text-left">
-            <h3 className={`font-bold text-sm ${isDarkMode ? 'text-yellow-100' : 'text-gray-900'}`}>{t.locationTitle}</h3>
-            {!isOpen && <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.locationDesc}</p>}
+            <h3 className={`ka-section-title ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{t.locationTitle}</h3>
+            {!isOpen && <p className={`ka-section-desc ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.locationDesc}</p>}
           </div>
         </div>
-        {isOpen ? <ChevronUp size={16} className="opacity-50" /> : <ChevronDown size={16} className="opacity-50" />}
+        {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
       {isOpen && locationConfig && (
-        <div className="p-4 pt-0 animate-in slide-in-from-top-2 flex flex-col gap-4 max-h-[350px] overflow-y-auto overflow-x-hidden scrollbar-thin">
+        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 flex flex-col gap-4 overflow-visible">
           <div className={innerCardClass}>
-            <p className={`text-xs mb-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.locationDesc}</p>
+            <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.locationDesc}</p>
             <div className="mb-4">
-              <h4 className={`text-xs font-bold mb-2 flex items-center gap-2 ${isDarkMode ? 'text-orange-400' : 'text-orange-600'}`}>
-                <Settings size={12} /> {t.modelLocation}
+              <h4 className={`ka-setting-item-title mb-2 flex items-center gap-2 ${isDarkMode ? 'text-orange-400' : 'text-orange-600'}`}>
+                <Watch size={12} /> {t.modelLocation}
               </h4>
+              {t.modelLocationDesc && (
+                <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#c8b49d]' : 'text-[#866a4b]'}`}>{t.modelLocationDesc}</p>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-2">
                 <div>
                   <label className={labelClass}>{t.country}</label>
-                  <select value={locationConfig.modelCountry} onChange={(e) => onLocationUpdate('modelCountry', e.target.value)} className={inputClass}>
-                    {countries.map((c) => <option key={c.value} value={c.value}>{l(c)}</option>)}
-                  </select>
+                  <div className={`${inputClass} flex items-center justify-between opacity-80 cursor-not-allowed`}>
+                    <span>{japanLabel}</span>
+                    <Lock size={14} className={isDarkMode ? 'text-orange-300/70' : 'text-orange-700/70'} />
+                  </div>
                 </div>
                 <div>
                   <label className={labelClass}>{t.timezone}</label>
-                  <select value={locationConfig.modelTimezone} onChange={(e) => onLocationUpdate('modelTimezone', e.target.value)} className={inputClass}>
-                    {timezones.map((tz) => <option key={tz.value} value={tz.value}>{l(tz)}</option>)}
-                  </select>
+                  <div className={`${inputClass} flex items-center justify-between opacity-80 cursor-not-allowed`}>
+                    <span>{tokyoLabel}</span>
+                    <Lock size={14} className={isDarkMode ? 'text-orange-300/70' : 'text-orange-700/70'} />
+                  </div>
                 </div>
               </div>
-              <div className={`flex items-center gap-2 p-2 rounded text-[11px] font-mono font-bold border transition-colors ${isDarkMode ? 'bg-black/40 border-orange-500/30 text-orange-400' : 'bg-orange-50 border-orange-300 text-orange-700'}`}>
+              <div className={`flex items-center gap-2 p-2 rounded ka-copy-sm font-mono font-semibold border transition-colors ${isDarkMode ? 'bg-black/40 border-orange-500/30 text-orange-400' : 'bg-orange-50 border-orange-300 text-orange-700'}`}>
                 <Watch size={14} className="animate-pulse" />
                 <span>{modelPreviewTime || 'Calculating...'}</span>
               </div>
+              {t.modelTimezoneLocked && (
+                <div className={`mt-2 flex items-start gap-2 rounded-xl border px-3 py-2 ka-copy-sm ${isDarkMode ? 'border-orange-500/20 bg-orange-500/10 text-orange-200/85' : 'border-orange-200 bg-orange-50/70 text-orange-700'}`}>
+                  <Lock size={12} className="mt-0.5 flex-shrink-0" />
+                  <p>{t.modelTimezoneLocked}</p>
+                </div>
+              )}
             </div>
             <div className={`w-full h-px mb-4 ${isDarkMode ? 'bg-white/10' : 'bg-gray-200'}`}></div>
             <div>
-              <h4 className={`text-xs font-bold mb-2 flex items-center gap-2 ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+              <h4 className={`ka-setting-item-title mb-2 flex items-center gap-2 ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
                 <Globe size={12} /> {t.userLocation}
               </h4>
+              {t.userLocationDesc && (
+                <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#c8b49d]' : 'text-[#866a4b]'}`}>{t.userLocationDesc}</p>
+              )}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-2">
                 <div>
                   <label className={labelClass}>{t.country}</label>
@@ -115,13 +134,13 @@ export const LocationSection: React.FC<LocationSectionProps> = ({
                   </select>
                 </div>
               </div>
-              <div className={`flex items-center gap-2 p-2 rounded text-[11px] font-mono font-bold border transition-colors ${isDarkMode ? 'bg-black/40 border-green-500/30 text-green-400' : 'bg-green-50 border-green-300 text-green-700'}`}>
+              <div className={`flex items-center gap-2 p-2 rounded ka-copy-sm font-mono font-semibold border transition-colors ${isDarkMode ? 'bg-black/40 border-green-500/30 text-green-400' : 'bg-green-50 border-green-300 text-green-700'}`}>
                 <Watch size={14} className="animate-pulse" />
                 <span>{previewTime || 'Calculating...'}</span>
               </div>
             </div>
           </div>
-          <div className="flex items-start gap-2 p-2 rounded bg-orange-500/10 border border-orange-500/20 text-orange-500 text-[10px] font-mono mt-1">
+          <div className="flex items-start gap-2 p-2 rounded bg-orange-500/10 border border-orange-500/20 text-orange-500 ka-copy-sm mt-1">
             <Clock size={12} className="mt-0.5 flex-shrink-0" />
             <p>{t.timezoneHelp || 'Timezones follow IANA standard.'}</p>
           </div>

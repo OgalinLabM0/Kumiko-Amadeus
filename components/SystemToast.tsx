@@ -31,7 +31,7 @@ export const SystemToast: React.FC<SystemToastProps> = ({ message, onClose, isDa
           <div
             className={`
               flex items-center gap-2 px-4 py-2 rounded-full border shadow-lg backdrop-blur-md
-              font-mono text-xs font-bold
+              ka-copy-sm font-semibold
               ${isDarkMode
                 ? 'bg-black/80 border-yellow-500/50 text-yellow-500 shadow-yellow-900/20'
                 : 'bg-white/90 border-yellow-600/50 text-yellow-700 shadow-yellow-600/10'

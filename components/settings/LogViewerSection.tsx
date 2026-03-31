@@ -38,29 +38,29 @@ export const LogViewerSection: React.FC<LogViewerSectionProps> = ({
   const hiddenLogCount = Math.max(0, devLogs.length - visibleLogs.length);
 
   return (
-    <div className={`flex flex-col rounded-lg border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
-      <button onClick={onToggle} className="flex items-center justify-between p-4 w-full">
+    <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
+      <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
         <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-full ${isDarkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-200 text-gray-700'}`}>
-            <Terminal size={20} />
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-white/10 bg-white/[0.04] text-gray-300' : 'border-[#d8d6d2] bg-[#f5f3ef] text-gray-700'}`}>
+            <Terminal size={18} />
           </div>
           <div className="text-left">
-            <h3 className={`font-bold text-sm ${isDarkMode ? 'text-yellow-100' : 'text-gray-900'}`}>{t.logTitle}</h3>
-            {!isOpen && <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.logDesc}</p>}
+            <h3 className={`ka-section-title ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{t.logTitle}</h3>
+            {!isOpen && <p className={`ka-section-desc ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.logDesc}</p>}
           </div>
         </div>
-        {isOpen ? <ChevronUp size={16} className="opacity-50" /> : <ChevronDown size={16} className="opacity-50" />}
+        {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
       {isOpen && (
-        <div className="p-4 pt-0 animate-in slide-in-from-top-2 space-y-2">
-          <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.logDesc}</p>
+        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 space-y-2">
+          <p className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.logDesc}</p>
           {hiddenLogCount > 0 && (
-            <p className={`text-[10px] ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+            <p className={`ka-copy-sm ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
               Showing the latest {visibleLogs.length} logs. {hiddenLogCount} older entries are hidden to keep the viewer responsive.
             </p>
           )}
-          <div ref={logContainerRef} className={`h-48 p-2 rounded border overflow-y-auto overflow-x-hidden scrollbar-thin text-[10px] font-mono whitespace-pre-wrap break-all ${isDarkMode ? 'bg-black/50 border-gray-700' : 'bg-white border-gray-300'}`}>
+          <div ref={logContainerRef} className={`h-48 p-2 rounded border overflow-y-auto overflow-x-hidden scrollbar-thin text-[11px] font-mono whitespace-pre-wrap break-all ${isDarkMode ? 'bg-black/50 border-gray-700' : 'bg-white border-gray-300'}`}>
             {visibleLogs.map((log, i) => {
               let colorClass = isDarkMode ? 'text-gray-400' : 'text-gray-600';
               if (log.level === 'warn') colorClass = 'text-yellow-500';
@@ -74,7 +74,7 @@ export const LogViewerSection: React.FC<LogViewerSectionProps> = ({
               );
             })}
           </div>
-          <button onClick={onClear} className={`w-full py-1.5 rounded text-xs font-bold border ${isDarkMode ? 'border-gray-700 text-gray-400 hover:bg-gray-800' : 'border-gray-300 text-gray-600 hover:bg-gray-200'}`}>
+          <button onClick={onClear} className={`w-full py-1.5 rounded ka-label border ${isDarkMode ? 'border-gray-700 text-gray-400 hover:bg-gray-800' : 'border-gray-300 text-gray-600 hover:bg-gray-200'}`}>
             {t.clearLog}
           </button>
         </div>

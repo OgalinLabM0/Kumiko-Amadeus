@@ -7,32 +7,32 @@ export interface StateContext {
   proactiveProbability: number;
 }
 
-export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo'): StateContext => {
+export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo', isHoliday: boolean = false): StateContext => {
   const nowJST = new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
   const hour = nowJST.getHours();
   const day = nowJST.getDay(); // 0 = Sunday, 1-5 = Weekday, 6 = Saturday
 
-  const isWeekend = day === 0 || day === 6;
+  const isWeekendOrHoliday = day === 0 || day === 6 || isHoliday;
 
-  if (isWeekend) {
+  if (isWeekendOrHoliday) {
     if (hour >= 0 && hour < 8) {
       return {
         currentState: 'SLEEPING',
-        stateDescription: '正在睡觉 (周末早晨)',
+        stateDescription: isHoliday ? '正在睡觉 (节假日早晨)' : '正在睡觉 (周末早晨)',
         canUseVoice: false,
         proactiveProbability: 0.01
       };
     } else if (hour >= 8 && hour < 18) {
       return {
         currentState: 'OUTING',
-        stateDescription: '周末休息/外出中',
+        stateDescription: isHoliday ? '节假日休息/外出中' : '周末休息/外出中',
         canUseVoice: true,
         proactiveProbability: 0.3
       };
     } else {
       return {
         currentState: 'RELAXING_HOME',
-        stateDescription: '在家休息 (周末晚上)',
+        stateDescription: isHoliday ? '在家休息 (节假日晚上)' : '在家休息 (周末晚上)',
         canUseVoice: true,
         proactiveProbability: 0.4
       };
@@ -57,14 +57,14 @@ export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo'): StateCon
   } else if (hour >= 8 && hour < 16) {
     return {
       currentState: 'TEACHING',
-      stateDescription: '在学校上课/备课',
+      stateDescription: '在学校上国语课/备课',
       canUseVoice: false,
       proactiveProbability: 0.05
     };
   } else if (hour >= 16 && hour < 19) {
     return {
       currentState: 'CLUB_ACTIVITIES',
-      stateDescription: '吹奏乐部指导中',
+      stateDescription: '放学后留校处理副顾问事务/校务',
       canUseVoice: false, // Too noisy/busy for voice
       proactiveProbability: 0.15
     };
@@ -78,7 +78,7 @@ export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo'): StateCon
   } else {
     return {
       currentState: 'RELAXING_HOME',
-      stateDescription: '在家休息/批改作业',
+      stateDescription: '在家休息/备课或批改作文',
       canUseVoice: true,
       proactiveProbability: 0.35
     };

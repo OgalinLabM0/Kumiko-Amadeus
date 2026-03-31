@@ -62,23 +62,42 @@ export interface KeyValEntity {
   value: any;
 }
 
-export interface GraphEntity {
-  id: string;
-  name: string;
-  type: 'person' | 'event' | 'place' | 'concept';
-  firstSeen: number;
-  lastSeen: number;
-  metadata?: Record<string, any>;
+export interface CharacterStatus {
+  aliases: string[];
+  current_status: string;
+  last_major_event: string;
+  current_attitude: string;
+  mention_frequency_in_diary?: string;
 }
 
-export interface GraphRelation {
+export interface WorldCharacterStatusMap {
+  [characterId: string]: CharacterStatus;
+}
+
+export interface DailyFragmentEntity {
   id: string;
-  fromId: string;
-  toId: string;
-  relationType: string;
-  emotion?: string;
+  date: string; // YYYY-MM-DD
   timestamp: number;
-  evidence?: string;
+  content: string;
+  triggerReason: string; // e.g., 'intra_day_gap', 'state_change'
+}
+
+export interface KumikoDiaryEntity {
+  id: string;
+  date: string; // YYYY-MM-DD
+  timestamp: number;
+  content: string;
+  summary: string;
+  weather?: string;
+  holiday?: string;
+}
+
+export interface PsycheStateEntity {
+  id: string; // usually 'current'
+  stress: number; // 0-100
+  energy: number; // 0-100
+  relaxation: number; // 0-100
+  lastUpdated: number;
 }
 
 export class AppDatabase extends Dexie {
@@ -87,8 +106,9 @@ export class AppDatabase extends Dexie {
   vectors!: Table<VectorEntity, string>;
   episodes!: Table<EpisodeEntity, string>;
   keyval!: Table<KeyValEntity, string>;
-  graphEntities!: Table<GraphEntity, string>;
-  graphRelations!: Table<GraphRelation, string>;
+  dailyFragments!: Table<DailyFragmentEntity, string>;
+  kumikoDiary!: Table<KumikoDiaryEntity, string>;
+  psycheState!: Table<PsycheStateEntity, string>;
 
   constructor() {
     super('KumikoDB');
@@ -146,6 +166,46 @@ export class AppDatabase extends Dexie {
     }).upgrade(() => {
       // GraphRAG: entity-relation graph for structured memory.
     });
+
+    this.version(7).stores({
+      messages: 'id, timestamp, role, isPinned',
+      images: 'id, timestamp',
+      vectors: 'id, timestamp, tier, source, canonicalKey, *tags',
+      episodes: 'id, startTimestamp, endTimestamp, startMessageId, endMessageId, roleScope',
+      keyval: 'key',
+      graphEntities: 'id, name, type, firstSeen, lastSeen',
+      graphRelations: 'id, fromId, toId, relationType, timestamp, [fromId+toId+relationType]'
+    }).upgrade(async tx => {
+      await tx.table('graphEntities').toCollection().modify((entity: any) => {
+        entity.name = (entity.name || '').trim().toLowerCase();
+      });
+      await tx.table('graphRelations').toCollection().modify((relation: any) => {
+        relation.fromId = (relation.fromId || '').trim().toLowerCase();
+        relation.toId = (relation.toId || '').trim().toLowerCase();
+        relation.relationType = (relation.relationType || '').trim().toLowerCase().replace(/\s+/g, '_');
+      });
+    });
+
+    this.version(8).stores({
+      messages: 'id, timestamp, role, isPinned',
+      images: 'id, timestamp',
+      vectors: 'id, timestamp, tier, source, canonicalKey, *tags',
+      episodes: 'id, startTimestamp, endTimestamp, startMessageId, endMessageId, roleScope',
+      keyval: 'key',
+      graphEntities: null,
+      graphRelations: null,
+    });
+
+    this.version(9).stores({
+      messages: 'id, timestamp, role, isPinned',
+      images: 'id, timestamp',
+      vectors: 'id, timestamp, tier, source, canonicalKey, *tags',
+      episodes: 'id, startTimestamp, endTimestamp, startMessageId, endMessageId, roleScope',
+      keyval: 'key',
+      dailyFragments: 'id, date, timestamp',
+      kumikoDiary: 'id, date, timestamp',
+      psycheState: 'id'
+    });
   }
 
   async getVal<T>(key: string, defaultValue: T): Promise<T> {
@@ -159,3 +219,42 @@ export class AppDatabase extends Dexie {
 }
 
 export const db = new AppDatabase();
+
+export const INITIAL_WORLD_CHARACTER_STATUS: WorldCharacterStatusMap = {
+  shuichi: {
+    aliases: ["秀一", "冢本", "男朋友", "shuichi"],
+    current_status: "恋爱中，是住得很近、见面很方便的本地上班族。平时下班后经常一起吃饭或顺路约会，周末也常去对方家里，但具体工作内容不必写死。",
+    last_major_event: "前两天刚一起吃过晚饭",
+    current_attitude: "平稳的日常状态，偶尔会吐槽他不够细腻，但心里很依赖他。",
+    mention_frequency_in_diary: "high"
+  },
+  reina: {
+    aliases: ["丽奈", "高坂", "reina"],
+    current_status: "在美国进修，有时差，只能偶尔打视频电话。",
+    last_major_event: "上周视频聊了两个小时",
+    current_attitude: "非常想念，但不想打扰她练习，提起她时会带着自豪和些许寂寞。"
+  },
+  kanade: {
+    aliases: ["小奏", "久石奏", "kanade"],
+    current_status: "大学在读，偶尔会在 LINE 上联系。",
+    last_major_event: "无",
+    current_attitude: "觉得她还是个爱捉弄人的可爱后辈。"
+  }
+};
+
+export const getWorldCharacterStatus = async (): Promise<WorldCharacterStatusMap> => {
+  return await db.getVal<WorldCharacterStatusMap>('world_character_status', INITIAL_WORLD_CHARACTER_STATUS);
+};
+
+export const updateWorldCharacterStatus = async (updates: Partial<WorldCharacterStatusMap>): Promise<void> => {
+  const current = await getWorldCharacterStatus();
+  const merged = { ...current };
+  for (const [key, val] of Object.entries(updates)) {
+    if (merged[key]) {
+      merged[key] = { ...merged[key], ...val };
+    } else {
+      merged[key] = val as CharacterStatus;
+    }
+  }
+  await db.setVal('world_character_status', merged);
+};

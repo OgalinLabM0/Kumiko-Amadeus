@@ -40,7 +40,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
     birthday: language === 'zh' ? '8月21日 (狮子座)' : 'August 21 (Leo)',
     height: '162 cm',
     instrument: language === 'zh' ? '上低音号 (Euphonium)' : 'Euphonium',
-    identity: language === 'zh' ? '北宇治高中 吹奏乐部原部长' : 'Former President of Kitauji High School Concert Band',
+    identity: language === 'zh'
+      ? '北宇治高中国语老师 / 吹奏部副顾问'
+      : 'Japanese-language teacher / Assistant concert band advisor',
     likes: language === 'zh' ? '蛋料理、玉米浓汤、意大利面' : 'Egg dishes, Corn soup, Italian pasta'
   };
 
@@ -50,8 +52,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
         <Icon size={18} />
       </div>
       <div>
-        <p className={`text-xs font-mono font-bold uppercase tracking-wider ${labelClass}`}>{label}</p>
-        <p className={`text-sm md:text-base font-medium ${textClass}`}>{value}</p>
+        <p className={`ka-label ${labelClass}`}>{label}</p>
+        <p className={`ka-value ${textClass}`}>{value}</p>
       </div>
     </div>
   );
@@ -67,7 +69,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
         <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-yellow-900/30' : 'border-gray-200'}`}>
           <div className="flex items-center gap-3">
             <User size={20} className={titleClass} />
-            <span className={`font-mono font-bold tracking-wider text-lg ${titleClass}`}>{t.profileTitle}</span>
+            <span className={`font-mincho ka-overlay-title ${titleClass}`}>{t.profileTitle}</span>
           </div>
           <button 
             onClick={onClose}
@@ -81,14 +83,14 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
         <div className="flex-1 p-6 flex flex-col gap-3 overflow-y-auto scrollbar-thin">
           <div className="flex items-end justify-between mb-2">
             <div>
-              <h2 className={`text-2xl font-bold ${titleClass}`}>
+              <h2 className={`font-mincho text-[clamp(1.45rem,1.34rem+0.65vw,1.9rem)] font-bold tracking-[0.02em] ${titleClass}`}>
                 {profileData.name}
               </h2>
-              <p className={`font-mono text-sm opacity-70 ${textClass}`}>
+              <p className={`ka-copy-sm opacity-70 ${textClass}`}>
                 {profileData.school}
               </p>
             </div>
-            <div className={`px-2 py-0.5 rounded text-xs font-mono border ${isDarkMode ? 'border-yellow-600/50 text-yellow-500' : 'border-yellow-600/30 text-yellow-700'}`}>
+            <div className={`px-2 py-0.5 rounded ka-micro border ${isDarkMode ? 'border-yellow-600/50 text-yellow-500' : 'border-yellow-600/30 text-yellow-700'}`}>
               {t.statusActive}
             </div>
           </div>
@@ -98,29 +100,29 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
           <div className="md:hidden mb-2 pt-2 border-t border-dashed border-gray-500/20 animate-in slide-in-from-bottom-2">
               <div className={`flex items-center gap-2 mb-2 ${isDarkMode ? 'text-yellow-500' : 'text-yellow-700'}`}>
                   <Activity size={14} />
-                  <h3 className="text-xs font-mono font-bold uppercase tracking-widest">
+                  <h3 className="ka-label">
                       {language === 'zh' ? '神经连结状态 (实时)' : 'NEURAL LINK STATUS'}
                   </h3>
               </div>
               <div className={`grid grid-cols-2 gap-2 p-3 rounded border ${isDarkMode ? 'bg-black/40 border-yellow-900/50' : 'bg-white border-yellow-400/50'}`}>
                   <div className="flex flex-col gap-1">
-                      <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>SYS-ID</span>
+                      <span className={`ka-micro font-bold uppercase ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>SYS-ID</span>
                       <div className="flex items-center gap-1">
                           <Cpu size={12} className={titleClass} />
-                          <span className={`text-sm font-mono font-bold ${titleClass}`}>7759-KUMIKO-V3</span>
+                          <span className={`ka-value font-mono ${titleClass}`}>7759-KUMIKO-V3</span>
                       </div>
                   </div>
                   <div className="flex flex-col gap-1">
-                      <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.emotionLabel}</span>
-                      <span className={`text-sm font-mono font-bold ${textClass}`}>{currentEmotion.toUpperCase()}</span>
+                      <span className={`ka-micro font-bold uppercase ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.emotionLabel}</span>
+                      <span className={`ka-value font-mono ${textClass}`}>{currentEmotion.toUpperCase()}</span>
                   </div>
                   <div className="flex flex-col gap-1">
-                      <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.turnsLabel}</span>
-                      <span className={`text-sm font-mono font-bold ${textClass}`}>{turnCount}</span>
+                      <span className={`ka-micro font-bold uppercase ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.turnsLabel}</span>
+                      <span className={`ka-value font-mono ${textClass}`}>{turnCount}</span>
                   </div>
                   <div className="flex flex-col gap-1">
-                      <span className={`text-[10px] font-mono font-bold uppercase tracking-wider ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.nextSyncLabel}</span>
-                      <span className={`text-sm font-mono font-bold text-yellow-600`}>{summaryProgressText}</span>
+                      <span className={`ka-micro font-bold uppercase ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.nextSyncLabel}</span>
+                      <span className="ka-value font-mono text-yellow-600">{summaryProgressText}</span>
                   </div>
               </div>
           </div>
@@ -132,14 +134,14 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
           <InfoRow icon={User} label={t.profileOccupation} value={profileData.identity} />
           <InfoRow icon={Heart} label={t.profileLikes} value={profileData.likes} />
 
-          <div className={`mt-2 p-3 rounded text-sm italic opacity-80 ${isDarkMode ? 'bg-black/30 text-yellow-200/70' : 'bg-gray-100 text-gray-600'}`}>
+          <div className={`mt-2 p-3 rounded ka-copy-sm italic opacity-80 ${isDarkMode ? 'bg-black/30 text-yellow-200/70' : 'bg-gray-100 text-gray-600'}`}>
             "{t.profileQuote}"
           </div>
         </div>
 
         {/* Footer */}
         <div className={`p-3 bg-opacity-30 flex justify-end ${isDarkMode ? 'bg-black' : 'bg-gray-50'}`}>
-           <span className={`text-[10px] font-mono ${isDarkMode ? 'text-yellow-900/50' : 'text-gray-400'}`}>AMADEUS DATABASE // VER 3.04</span>
+           <span className={`ka-micro ${isDarkMode ? 'text-yellow-900/50' : 'text-gray-400'}`}>AMADEUS DATABASE // VER 3.04</span>
         </div>
       </div>
     </div>

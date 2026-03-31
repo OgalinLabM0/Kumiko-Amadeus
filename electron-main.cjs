@@ -91,6 +91,7 @@ function resolvePreferredDefaultUserDataPath() {
 }
 
 const defaultUserDataPath = resolvePreferredDefaultUserDataPath();
+const RINGTONE_AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac']);
 
 function readRegistryValue(valueName) {
   try {
@@ -946,6 +947,44 @@ if (!singleInstanceLock) {
     }
   });
 
+  ipcMain.handle('app:get-japan-holidays', async () => {
+    try {
+      const cachePath = path.join(app.getPath('userData'), 'holidays-cache.json');
+      let cachedData = null;
+      
+      try {
+        if (fs.existsSync(cachePath)) {
+          const stat = fs.statSync(cachePath);
+          const now = new Date().getTime();
+          // Cache for 24 hours
+          if (now - stat.mtimeMs < 24 * 60 * 60 * 1000) {
+            cachedData = JSON.parse(fs.readFileSync(cachePath, 'utf-8'));
+          }
+        }
+      } catch (e) {
+        console.warn('[Holidays] Failed to read cache:', e);
+      }
+
+      if (cachedData) {
+        return { success: true, holidays: cachedData };
+      }
+
+      const response = await fetch('https://holidays-jp.github.io/api/v1/date.json');
+      const data = await response.json();
+      
+      try {
+        fs.writeFileSync(cachePath, JSON.stringify(data), 'utf-8');
+      } catch (e) {
+        console.warn('[Holidays] Failed to write cache:', e);
+      }
+
+      return { success: true, holidays: data };
+    } catch (e) {
+      console.error('[Holidays] Failed to fetch holiday data:', e);
+      return { success: false, error: e.message };
+    }
+  });
+
   ipcMain.handle('app:get-data-directory-info', () => getDataDirectoryInfo());
 
   ipcMain.handle('app:set-background-throttling', (_event, payload = {}) => {
@@ -973,6 +1012,23 @@ if (!singleInstanceLock) {
       return { success: true };
     }
     return { success: false };
+  });
+
+  ipcMain.handle('app:open-external', async (_event, payload = {}) => {
+    try {
+      const url = typeof payload.url === 'string' ? payload.url.trim() : '';
+      if (!/^https?:\/\//i.test(url)) {
+        return { success: false, error: 'A valid http(s) URL is required.' };
+      }
+      await shell.openExternal(url);
+      return { success: true };
+    } catch (error) {
+      console.error('[APP] Failed to open external url:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error)
+      };
+    }
   });
 
   ipcMain.handle('app:pick-data-directory', async () => {
@@ -1017,6 +1073,22 @@ if (!singleInstanceLock) {
     const dir = path.join(app.getPath('userData'), 'ringtone');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     return dir;
+  }
+
+  function listCustomRingtoneFiles(dir) {
+    if (!fs.existsSync(dir)) return [];
+    return fs.readdirSync(dir).filter((fileName) => {
+      if (!fileName.startsWith('custom.')) return false;
+      const hasValidAudioExtension = RINGTONE_AUDIO_EXTENSIONS.has(path.extname(fileName).toLowerCase());
+      if (!hasValidAudioExtension) {
+        try {
+          fs.unlinkSync(path.join(dir, fileName));
+        } catch {
+          // Ignore stale invalid ringtone files that cannot be removed right now.
+        }
+      }
+      return hasValidAudioExtension;
+    });
   }
 
   ipcMain.handle('voice:save', (_event, payload = {}) => {
@@ -1095,10 +1167,14 @@ if (!singleInstanceLock) {
     try {
       const { buffer, ext } = payload;
       if (!buffer || !ext) return { success: false, error: 'Missing params' };
+      const normalizedExt = `.${String(ext).replace(/^\./, '').toLowerCase()}`;
+      if (!RINGTONE_AUDIO_EXTENSIONS.has(normalizedExt)) {
+        return { success: false, error: 'Unsupported ringtone format' };
+      }
       const dir = getRingtoneDir();
-      const existing = fs.readdirSync(dir).filter(f => f.startsWith('custom.'));
+      const existing = listCustomRingtoneFiles(dir);
       for (const f of existing) fs.unlinkSync(path.join(dir, f));
-      const filePath = path.join(dir, `custom.${ext}`);
+      const filePath = path.join(dir, `custom${normalizedExt}`);
       fs.writeFileSync(filePath, Buffer.from(buffer));
       return { success: true, filePath };
     } catch (e) {
@@ -1109,7 +1185,7 @@ if (!singleInstanceLock) {
   ipcMain.handle('ringtone:load', () => {
     try {
       const dir = getRingtoneDir();
-      const entries = fs.readdirSync(dir).filter(f => f.startsWith('custom.'));
+      const entries = listCustomRingtoneFiles(dir);
       if (entries.length === 0) return { success: false };
       const filePath = path.join(dir, entries[0]);
       const buffer = fs.readFileSync(filePath);
@@ -1122,7 +1198,7 @@ if (!singleInstanceLock) {
   ipcMain.handle('ringtone:delete', () => {
     try {
       const dir = getRingtoneDir();
-      const entries = fs.readdirSync(dir).filter(f => f.startsWith('custom.'));
+      const entries = listCustomRingtoneFiles(dir);
       for (const f of entries) fs.unlinkSync(path.join(dir, f));
       return { success: true };
     } catch (e) {
@@ -1134,7 +1210,7 @@ if (!singleInstanceLock) {
     try {
       const dir = getRingtoneDir();
       if (!fs.existsSync(dir)) return { exists: false, fileName: null, size: 0 };
-      const entries = fs.readdirSync(dir).filter(f => f.startsWith('custom.'));
+      const entries = listCustomRingtoneFiles(dir);
       if (entries.length === 0) return { exists: false, fileName: null, size: 0 };
       const file = entries[0];
       const size = fs.statSync(path.join(dir, file)).size;
@@ -1147,6 +1223,7 @@ if (!singleInstanceLock) {
   ipcMain.handle('ringtone:open-folder', () => {
     try {
       const dir = getRingtoneDir();
+      listCustomRingtoneFiles(dir);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       shell.openPath(dir);
       return { success: true };

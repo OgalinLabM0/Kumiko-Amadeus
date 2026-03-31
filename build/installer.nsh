@@ -124,6 +124,9 @@ FunctionEnd
 !macro customUnInstallCheckCurrentUser
 !macroend
 
+!macro customRemoveFiles
+!macroend
+
 !macro customInstall
   SetDetailsPrint none
   ${if} $installMode == "all"
@@ -144,9 +147,12 @@ FunctionEnd
 
 !macro customUnInit
   DetailPrint "Stopping running Kumiko·Amadeus processes before uninstall..."
-  ExecWait '"$SYSDIR\taskkill.exe" /IM "Kumiko AI.exe" /F /T'
-  ExecWait '"$SYSDIR\taskkill.exe" /IM "Kumiko-Amadeus.exe" /F /T'
-  ExecWait '"$SYSDIR\taskkill.exe" /IM "Kumiko·Amadeus.exe" /F /T'
+  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM "Kumiko AI.exe" /F /T'
+  Pop $0
+  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM "Kumiko-Amadeus.exe" /F /T'
+  Pop $0
+  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM "Kumiko·Amadeus.exe" /F /T'
+  Pop $0
   Sleep 1200
 !macroend
 

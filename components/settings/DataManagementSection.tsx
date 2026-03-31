@@ -104,23 +104,23 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
   };
 
   return (
-    <div className={`flex flex-col rounded-lg border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
-      <button onClick={onToggle} className="flex items-center justify-between p-4 w-full">
+    <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
+      <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
         <div className="flex items-center gap-3">
-          <div className={`p-2 rounded-full ${isDarkMode ? 'bg-red-900/30 text-red-500' : 'bg-red-100 text-red-600'}`}>
-            <Database size={20} />
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-red-500/20 bg-red-900/20 text-red-300' : 'border-red-200 bg-red-50/90 text-red-700'}`}>
+            <Database size={18} />
           </div>
           <div className="text-left">
-            <h3 className={`font-bold text-sm ${isDarkMode ? 'text-yellow-100' : 'text-gray-900'}`}>{t.dataManagementTitle}</h3>
-            {!isOpen && <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.dataManagementDesc}</p>}
+            <h3 className={`ka-section-title ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{t.dataManagementTitle}</h3>
+            {!isOpen && <p className={`ka-section-desc ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.dataManagementDesc}</p>}
           </div>
         </div>
-        {isOpen ? <ChevronUp size={16} className="opacity-50" /> : <ChevronDown size={16} className="opacity-50" />}
+        {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
       {isOpen && (
-        <div className="p-4 pt-0 animate-in slide-in-from-top-2 space-y-4">
-          <p className={`text-xs mb-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.dataManagementManageLocal}</p>
+        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 space-y-4">
+          <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.dataManagementManageLocal}</p>
 
           {storageUsage && (() => {
             const totalUsage = (storageUsage.usage || 0) + (voiceStorage?.totalBytes || 0) + (ringtoneInfo?.size || 0);
@@ -128,11 +128,11 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
             <div className={`p-3 rounded-lg mb-3 flex items-center justify-between ${isDarkMode ? 'bg-gray-800/50 border border-gray-700' : 'bg-gray-100 border border-gray-200'}`}>
               <div className="flex items-center gap-2">
                 <Database size={16} className={isDarkMode ? 'text-gray-400' : 'text-gray-500'} />
-                <span className={`text-xs font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                <span className={`ka-copy-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                   {language === 'zh' ? '当前占用空间' : 'Current Storage Usage'}
                 </span>
               </div>
-              <span className={`text-xs font-mono font-bold ${isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]'}`}>
+              <span className={`ka-label ${isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]'}`}>
                 {formatBytes(totalUsage)}
               </span>
             </div>
@@ -144,19 +144,19 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <Volume2 size={16} className={isDarkMode ? 'text-purple-400' : 'text-purple-500'} />
-                  <span className={`text-xs font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  <span className={`ka-copy-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                     {voiceT.info}
                   </span>
                 </div>
-                <span className={`text-xs font-mono font-bold ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}>
+                <span className={`ka-label ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}>
                   {voiceStorage.count} {language === 'zh' ? '个文件' : 'files'} · {formatBytes(voiceStorage.totalBytes)}
                 </span>
               </div>
-              <p className={`text-[10px] mb-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+              <p className={`ka-copy-sm mb-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                 {voiceT.desc}
               </p>
               <button onClick={() => openVoiceFolder()}
-                className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 font-mono font-bold text-[11px] transition-all ${isDarkMode ? 'border-purple-500/50 text-purple-400 hover:bg-purple-500/10' : 'border-purple-600/50 text-purple-600 hover:bg-purple-600/10'}`}>
+                className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-purple-500/50 text-purple-400 hover:bg-purple-500/10' : 'border-purple-600/50 text-purple-600 hover:bg-purple-600/10'}`}>
                 <FolderOpen size={13} /> {voiceT.open}
               </button>
             </div>
@@ -167,19 +167,19 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <Image size={16} className={isDarkMode ? 'text-sky-400' : 'text-sky-500'} />
-                  <span className={`text-xs font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  <span className={`ka-copy-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                     {imageT.info}
                   </span>
                 </div>
-                <span className={`text-xs font-mono font-bold ${isDarkMode ? 'text-sky-400' : 'text-sky-600'}`}>
+                <span className={`ka-label ${isDarkMode ? 'text-sky-400' : 'text-sky-600'}`}>
                   {imageStorage.count} {language === 'zh' ? '张' : 'images'} · {formatBytes(imageStorage.totalBytes)}
                 </span>
               </div>
-              <p className={`text-[10px] mb-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+              <p className={`ka-copy-sm mb-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                 {imageT.desc}
               </p>
               <button onClick={onClearOldImages}
-                className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 font-mono font-bold text-[11px] transition-all ${isDarkMode ? 'border-orange-500/50 text-orange-400 hover:bg-orange-500/10' : 'border-orange-600/50 text-orange-600 hover:bg-orange-600/10'}`}>
+                className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-orange-500/50 text-orange-400 hover:bg-orange-500/10' : 'border-orange-600/50 text-orange-600 hover:bg-orange-600/10'}`}>
                 <Trash2 size={13} /> {imageT.clean}
               </button>
             </div>
@@ -190,23 +190,23 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
                   <Music size={16} className={isDarkMode ? 'text-amber-400' : 'text-amber-500'} />
-                  <span className={`text-xs font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  <span className={`ka-copy-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                     {ringtoneT.info}
                   </span>
                 </div>
                 {ringtoneInfo.exists ? (
-                  <span className={`text-xs font-mono font-bold ${isDarkMode ? 'text-amber-400' : 'text-amber-600'}`}>
+                  <span className={`ka-label ${isDarkMode ? 'text-amber-400' : 'text-amber-600'}`}>
                     {ringtoneT.uploaded} · {ringtoneInfo.fileName} · {formatBytes(ringtoneInfo.size)}
                   </span>
                 ) : (
-                  <span className={`text-[10px] ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>{ringtoneT.none}</span>
+                  <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>{ringtoneT.none}</span>
                 )}
               </div>
-              <p className={`text-[10px] mb-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+              <p className={`ka-copy-sm mb-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                 {ringtoneT.desc}
               </p>
               <button onClick={handleOpenRingtoneFolder}
-                className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 font-mono font-bold text-[11px] transition-all ${isDarkMode ? 'border-amber-500/50 text-amber-400 hover:bg-amber-500/10' : 'border-amber-600/50 text-amber-600 hover:bg-amber-600/10'}`}>
+                className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-amber-500/50 text-amber-400 hover:bg-amber-500/10' : 'border-amber-600/50 text-amber-600 hover:bg-amber-600/10'}`}>
                 <FolderOpen size={13} /> {ringtoneT.open}
               </button>
             </div>
@@ -217,54 +217,54 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <HardDrive size={16} className={isDarkMode ? 'text-gray-400' : 'text-gray-500'} />
-                  <span className={`text-xs font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  <span className={`ka-copy-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                     {t.dataManagementDataDirTitle}
                   </span>
                 </div>
                 {dataDirectoryInfo.isCustom && (
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${isDarkMode ? 'bg-yellow-500/10 text-yellow-400' : 'bg-yellow-100 text-yellow-700'}`}>
+                  <span className={`px-2 py-0.5 rounded-full ka-micro ${isDarkMode ? 'bg-yellow-500/10 text-yellow-400' : 'bg-yellow-100 text-yellow-700'}`}>
                     {t.dataManagementDataDirCustom}
                   </span>
                 )}
               </div>
 
-              <p className={`text-[10px] leading-relaxed ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              <p className={`ka-copy-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                 {t.dataManagementDataDirDesc}
               </p>
 
               <div className="space-y-2">
                 <div>
-                  <div className={`text-[10px] font-bold uppercase ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                  <div className={`ka-kicker ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                     {t.dataManagementDataDirCurrent}
                   </div>
-                  <div className={`text-[10px] font-mono break-all ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                  <div className={`ka-copy-sm font-mono break-all ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                     {dataDirectoryInfo.currentPath}
                   </div>
                 </div>
 
                 <div>
-                  <div className={`text-[10px] font-bold uppercase ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                  <div className={`ka-kicker ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                     {t.dataManagementDataDirDefault}
                   </div>
-                  <div className={`text-[10px] font-mono break-all ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  <div className={`ka-copy-sm font-mono break-all ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                     {dataDirectoryInfo.defaultPath}
                   </div>
                 </div>
               </div>
 
               {dataDirectoryInfo.migrationError && (
-                <div className={`text-[10px] p-2 rounded border ${isDarkMode ? 'border-red-500/30 bg-red-500/5 text-red-300' : 'border-red-200 bg-red-50 text-red-700'}`}>
+                <div className={`ka-copy-sm p-2 rounded border ${isDarkMode ? 'border-red-500/30 bg-red-500/5 text-red-300' : 'border-red-200 bg-red-50 text-red-700'}`}>
                   <span className="font-bold">{t.dataManagementDataDirError}:</span> {formatDataDirectoryError(dataDirectoryInfo.migrationError)}
                 </div>
               )}
 
               <div className="flex flex-col gap-2">
-                <button onClick={onMoveDataDirectory} className={`w-full py-3 rounded border border-dashed flex items-center justify-center gap-2 font-mono font-bold text-xs transition-all ${isDarkMode ? 'border-sky-500/50 text-sky-400 hover:bg-sky-500/10' : 'border-sky-700/40 text-sky-700 hover:bg-sky-700/10'}`}>
+                <button onClick={onMoveDataDirectory} className={`w-full py-3 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-sky-500/50 text-sky-400 hover:bg-sky-500/10' : 'border-sky-700/40 text-sky-700 hover:bg-sky-700/10'}`}>
                   <HardDrive size={14} /> {t.dataManagementDataDirMove}
                 </button>
 
                 {dataDirectoryInfo.isCustom && (
-                  <button onClick={onResetDataDirectory} className={`w-full py-3 rounded border border-dashed flex items-center justify-center gap-2 font-mono font-bold text-xs transition-all ${isDarkMode ? 'border-blue-500/50 text-blue-400 hover:bg-blue-500/10' : 'border-blue-700/40 text-blue-700 hover:bg-blue-700/10'}`}>
+                  <button onClick={onResetDataDirectory} className={`w-full py-3 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-blue-500/50 text-blue-400 hover:bg-blue-500/10' : 'border-blue-700/40 text-blue-700 hover:bg-blue-700/10'}`}>
                     <RotateCcw size={14} /> {t.dataManagementDataDirReset}
                   </button>
                 )}
@@ -273,14 +273,14 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
           )}
 
           <div className="flex flex-col gap-2">
-            <div className={`text-[10px] px-1 mb-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+            <div className={`ka-copy-sm px-1 mb-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
               {t.dataManagementQuitAppDesc}
             </div>
-            <button onClick={onQuitAppCompletely} className={`w-full py-3 rounded border border-dashed flex items-center justify-center gap-2 font-mono font-bold text-xs transition-all ${isDarkMode ? 'border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10' : 'border-yellow-700/50 text-yellow-700 hover:bg-yellow-700/10'}`}>
+            <button onClick={onQuitAppCompletely} className={`w-full py-3 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-yellow-500/50 text-yellow-500 hover:bg-yellow-500/10' : 'border-yellow-700/50 text-yellow-700 hover:bg-yellow-700/10'}`}>
               <Power size={14} /> {t.dataManagementQuitApp}
             </button>
 
-            <button onClick={onClearAllData} className={`w-full py-3 rounded border border-dashed flex items-center justify-center gap-2 font-mono font-bold text-xs transition-all ${isDarkMode ? 'border-red-500/50 text-red-500 hover:bg-red-500/10' : 'border-red-600/50 text-red-600 hover:bg-red-600/10'}`}>
+            <button onClick={onClearAllData} className={`w-full py-3 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-red-500/50 text-red-500 hover:bg-red-500/10' : 'border-red-600/50 text-red-600 hover:bg-red-600/10'}`}>
               <Trash2 size={14} /> {t.dataManagementClearAll}
             </button>
           </div>

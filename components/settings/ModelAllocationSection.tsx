@@ -37,10 +37,10 @@ export const ModelAllocationSection: React.FC<ModelAllocationSectionProps> = ({
   return (
     <div className={innerCardClass}>
       <button onClick={onToggle} className="w-full flex items-center justify-between mb-2">
-        <h4 className={`text-xs font-bold flex items-center gap-2 ${isDarkMode ? 'text-teal-400' : 'text-teal-600'}`}>
+        <h4 className={`ka-label flex items-center gap-2 ${isDarkMode ? 'text-teal-400' : 'text-teal-600'}`}>
           <Brain size={12} /> {t_local.allocation}
         </h4>
-        <span className="text-[10px] opacity-50">{isOpen ? '▼' : '▲'}</span>
+        <span className="ka-micro opacity-50">{isOpen ? '▼' : '▲'}</span>
       </button>
 
       {isOpen && (
