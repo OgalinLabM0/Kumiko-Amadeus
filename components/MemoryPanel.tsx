@@ -410,14 +410,14 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
     },
     notebook: {
       note: language === 'zh' ? '用户画像 / 关系动态' : 'User Profile / Bonds',
-      shell: isDarkMode ? 'border-[#5e4a3a]/55 bg-[#1f1a16]' : 'border-[#e5ddd3] bg-[#fcfaf7]',
-      header: isDarkMode ? 'border-b border-[#5e4a3a] bg-[#2a1f17] hover:bg-[#32281f] text-[#f0d0a0]' : 'border-b border-[#eee6dc] bg-[#fcfbf8] hover:bg-[#f8f4ee] text-[#8d6b40]',
-      chip: isDarkMode ? 'border-[#8a5a42]/50 bg-[#302018] text-[#f0d0a0]' : 'border-[#e0d3c1] bg-[#fcfaf6] text-[#9c7343]',
+      shell: isDarkMode ? 'border-[#6b5030]/55 bg-[#1f1a17]' : 'border-[#e5ddd3] bg-[#fcfaf7]',
+      header: isDarkMode ? 'border-b border-[#6b5030] bg-[#2a2017] hover:bg-[#32281f] text-[#f5c878]' : 'border-b border-[#eee6dc] bg-[#fcfbf8] hover:bg-[#f8f4ee] text-[#8d6b40]',
+      chip: isDarkMode ? 'border-[#8a6a42]/50 bg-[#302818] text-[#f5c878]' : 'border-[#e0d3c1] bg-[#fcfaf6] text-[#9c7343]',
       chipShape: 'rounded-[1.25rem] rounded-bl-[0.75rem]',
-      badge: isDarkMode ? 'bg-[#d4856a]/25 text-[#f0d0a0]' : 'bg-[#f0ebe3] text-[#8a7254]',
-      accentStrip: isDarkMode ? 'bg-[#d4856a]' : 'bg-[linear-gradient(180deg,#e8a088,#d4705c)]',
+      badge: isDarkMode ? 'bg-[#e8a040]/25 text-[#f5c878]' : 'bg-[#f5e9d1] text-[#8d6b40]',
+      accentStrip: isDarkMode ? 'bg-[#e8a040]' : 'bg-[linear-gradient(180deg,#f5c878,#e8a040)]',
       ornamentLabel: language === 'zh' ? '档案' : 'PROFILE',
-      ornamentClass: isDarkMode ? 'rounded-[0.85rem] rounded-bl-[0.3rem] border border-[#6d563e]/70 bg-[#2a2117] text-[#f0d0a0]' : 'rounded-[0.85rem] rounded-bl-[0.3rem] border border-[#e2d6c6] bg-[#fbf7f1] text-[#926b3e]'
+      ornamentClass: isDarkMode ? 'rounded-[0.85rem] rounded-bl-[0.3rem] border border-[#6b5030]/70 bg-[#2a2017] text-[#f5c878]' : 'rounded-[0.85rem] rounded-bl-[0.3rem] border border-[#e2d6c6] bg-[#fbf7f1] text-[#926b3e]'
     },
     anchors: {
       note: language === 'zh' ? '关键片段 / 情感锚点' : 'Scenes / Emotional Anchors',
@@ -436,7 +436,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
       header: isDarkMode ? 'border-b border-[#3d554e] bg-[#1f2b28] hover:bg-[#263430] text-[#5eb8a0]' : 'border-b border-[#c8e4dc] bg-[#f0faf6] hover:bg-[#e8f4ef] text-[#3d8e7a]',
       chip: isDarkMode ? 'border-[#4a8a7a]/50 bg-[#243030] text-[#5eb8a0]' : 'border-[#a8d4c8] bg-[#f0fff8] text-[#3d8e7a]',
       chipShape: 'rounded-[0.95rem]',
-      badge: isDarkMode ? 'bg-[#4da89a]/25 text-[#5eb8a0]' : 'bg-[#f4ead9] text-[#a06d26]',
+      badge: isDarkMode ? 'bg-[#4da89a]/25 text-[#5eb8a0]' : 'bg-[#d4ede8] text-[#3d8e7a]',
       accentStrip: isDarkMode ? 'bg-[#4da89a]' : 'bg-[linear-gradient(180deg,#5ec4aa,#3d9e8a)]',
       ornamentLabel: language === 'zh' ? '窗口' : 'LEDGER',
       ornamentClass: isDarkMode ? 'rounded-[0.5rem] border border-[#4a8a7a]/70 bg-[#1a2a25] text-[#5eb8a0]' : 'rounded-[0.5rem] border border-[#a8d4c8] bg-[#f0fff8] text-[#3d8e7a]'
@@ -447,7 +447,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
       header: isDarkMode ? 'border-b border-[#5e4a5e] bg-[#2a1f2a] hover:bg-[#322630] text-[#b898c8]' : 'border-b border-[#e8d8e8] bg-[#faf3fb] hover:bg-[#f5eef6] text-[#8a5fb5]',
       chip: isDarkMode ? 'border-[#7a5a8a]/50 bg-[#302030] text-[#b898c8]' : 'border-[#d4c0e8] bg-[#f8f4ff] text-[#7a5fb5]',
       chipShape: 'rounded-[1.15rem] rounded-br-[0.5rem]',
-      badge: isDarkMode ? 'bg-[#9a7ab5]/25 text-[#b898c8]' : 'bg-[#f4ead9] text-[#9d7230]',
+      badge: isDarkMode ? 'bg-[#9a7ab5]/25 text-[#b898c8]' : 'bg-[#e8d8f0] text-[#7a5fb5]',
       accentStrip: isDarkMode ? 'bg-[#9a7ab5]' : 'bg-[linear-gradient(180deg,#b08ecc,#8a5fb5)]',
       ornamentLabel: language === 'zh' ? '馆藏' : 'ARCHIVE',
       ornamentClass: isDarkMode ? 'rounded-full border border-dashed border-[#7a5a8a]/70 bg-[#251a28] text-[#b898c8]' : 'rounded-full border border-dashed border-[#d4c0e8] bg-[#f8f4ff] text-[#7a5fb5]'
