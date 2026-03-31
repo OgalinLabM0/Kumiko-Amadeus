@@ -244,7 +244,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
       style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.62) 30%, rgba(0,0,0,0) 100%)' }}
     >
       <div
-        className={`relative w-full max-w-6xl h-full max-h-[92dvh] rounded-lg border shadow-2xl overflow-hidden flex flex-col animate-[breathe_0.3s_ease-out] ${bgClass}`}
+        className={`relative w-full max-w-7xl h-full max-h-[92dvh] rounded-lg border shadow-2xl overflow-hidden flex flex-col animate-[breathe_0.3s_ease-out] ${bgClass}`}
       >
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-600 to-transparent opacity-50"></div>
 
@@ -254,7 +254,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
               <Info size={20} />
             </div>
             <div className="min-w-0">
-              <div className={`ka-kicker ${titleClass}`}>
+              <div className={`text-xl sm:text-2xl md:text-3xl font-bold ${titleClass}`}>
                 {language === 'zh' ? '全知全能之书' : 'Omniscient Book'}
               </div>
               <p className={`mt-1 ka-copy-sm ${mutedClass}`}>
@@ -274,7 +274,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
 
         <div className="flex-1 min-h-0 flex flex-col md:flex-row">
           <div
-            className={`w-full md:w-80 flex flex-col border-b md:border-b-0 md:border-r min-h-0 ${
+            className={`w-full md:w-64 lg:w-72 flex flex-col border-b md:border-b-0 md:border-r min-h-0 ${
               isDarkMode ? 'bg-black/28 border-yellow-900/30' : 'bg-white/50 border-gray-200'
             }`}
           >
@@ -342,7 +342,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                   <div className={`ka-kicker ${isDarkMode ? 'text-gray-500' : 'text-[#9a7d50]'}`}>
                     {language === 'zh' ? `章节 ${activeIndex + 1} / ${sections.length}` : `Section ${activeIndex + 1} / ${sections.length}`}
                   </div>
-                  <h3 className={`font-mincho ka-overlay-title font-semibold tracking-[0.02em] ${isDarkMode ? 'text-yellow-100' : 'text-[#6f4e19]'}`}>
+                  <h3 className={`font-mincho text-base sm:text-lg md:text-xl font-semibold tracking-[0.02em] ${isDarkMode ? 'text-yellow-100' : 'text-[#6f4e19]'}`}>
                     {activeData.title}
                   </h3>
                 </div>
@@ -351,7 +351,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
 
             <div
               ref={articleScrollRef}
-              className="flex-1 overflow-y-auto p-4 md:p-6 scrollbar-thin"
+              className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:p-8 scrollbar-thin"
             >
               <div className={`mx-auto max-w-4xl rounded-lg border overflow-hidden ${panelClass}`}>
                 <div className={`px-5 py-3 border-b flex items-center justify-between gap-3 ${isDarkMode ? 'border-yellow-900/20 bg-black/25' : 'border-yellow-500/12 bg-yellow-50/60'}`}>
@@ -371,7 +371,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                   </div>
                 </div>
 
-                <div className={`p-5 md:p-7 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
+                <div className={`p-4 md:p-6 lg:p-8 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
                   {renderedContent}
                   <div className="h-16"></div>
                 </div>
