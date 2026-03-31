@@ -8,14 +8,14 @@ import { saveRingtoneFile, loadRingtoneFile, deleteRingtoneFile, isVoiceServiceA
 const VALID_RINGTONE_FILE_RE = /^custom\.(mp3|wav|ogg|m4a|aac|flac)$/i;
 
 const BUILT_IN_RINGTONES = [
-  { id: '02.mp3', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '115-man Kilo no Film - Kumiko Oumae' },
-  { id: '01.mp3', nameZh: '小小恋歌 - 秀久合唱', nameEn: 'Chiisana Koi no Uta - Shuichi & Kumiko' },
-  { id: '03.mp3', nameZh: '天空的碎片 - 黄前久美子', nameEn: 'Sora no Kakera - Kumiko Oumae' },
-  { id: '04.mp3', nameZh: 'ヘミソフィア - 黄前久美子', nameEn: 'Hemisphere - Kumiko Oumae' },
-  { id: '05.mp3', nameZh: 'アンインストール - 黄前久美子', nameEn: 'Uninstall - Kumiko Oumae' },
-  { id: '06.mp3', nameZh: 'DREAM SOLISTER - 黄前久美子', nameEn: 'DREAM SOLISTER - Kumiko Oumae' },
-  { id: '07.mp3', nameZh: 'サウンドスケープ - 黄前久美子', nameEn: 'Soundscape - Kumiko Oumae' },
-  { id: '08.mp3', nameZh: 'ReCoda - 黄前久美子', nameEn: 'ReCoda - Kumiko Oumae' },
+  { id: '01.mp3', displayNum: '01', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '115-man Kilo no Film - Kumiko Oumae' },
+  { id: '02.mp3', displayNum: '02', nameZh: '小小恋歌 - 秀久合唱', nameEn: 'Chiisana Koi no Uta - Shuichi & Kumiko' },
+  { id: '03.mp3', displayNum: '03', nameZh: '天空的碎片 - 黄前久美子', nameEn: 'Sora no Kakera - Kumiko Oumae' },
+  { id: '04.mp3', displayNum: '04', nameZh: 'ヘミソフィア - 黄前久美子', nameEn: 'Hemisphere - Kumiko Oumae' },
+  { id: '05.mp3', displayNum: '05', nameZh: 'アンインストール - 黄前久美子', nameEn: 'Uninstall - Kumiko Oumae' },
+  { id: '06.mp3', displayNum: '06', nameZh: 'DREAM SOLISTER - 黄前久美子', nameEn: 'DREAM SOLISTER - Kumiko Oumae' },
+  { id: '07.mp3', displayNum: '07', nameZh: 'サウンドスケープ - 黄前久美子', nameEn: 'Soundscape - Kumiko Oumae' },
+  { id: '08.mp3', displayNum: '08', nameZh: 'ReCoda - 黄前久美子', nameEn: 'ReCoda - Kumiko Oumae' },
 ];
 
 interface TtsConfigSectionProps {
@@ -50,6 +50,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   const [ringtoneFileName, setRingtoneFileName] = useState<string | null>(null);
   const [isRingtonePlaying, setIsRingtonePlaying] = useState(false);
   const [previewingRingtoneId, setPreviewingRingtoneId] = useState<string | null>(null);
+  const [ringtoneDurations, setRingtoneDurations] = useState<Record<string, string>>({});
   const ringtoneInputRef = useRef<HTMLInputElement>(null);
   const ringtoneAudioRef = useRef<HTMLAudioElement | null>(null);
   const ringtoneUrlRef = useRef<string | null>(null);
@@ -200,6 +201,12 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     ringtoneUrlRef.current = url;
     const audio = new Audio(url);
     ringtoneAudioRef.current = audio;
+    audio.onloadedmetadata = () => {
+      const duration = audio.duration;
+      const mins = Math.floor(duration / 60);
+      const secs = Math.floor(duration % 60);
+      setRingtoneDurations(prev => ({ ...prev, [ringtoneId]: `${mins}:${secs.toString().padStart(2, '0')}` }));
+    };
     audio.onended = () => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); };
     audio.onerror = () => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); };
     setPreviewingRingtoneId(ringtoneId);
@@ -342,6 +349,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
               {BUILT_IN_RINGTONES.map(ringtone => {
                 const isSelected = ttsConfig.ringtoneFileId === ringtone.id;
+                const isDefault = ringtone.id === '01.mp3';
                 const isPreviewing = previewingRingtoneId === ringtone.id && isRingtonePlaying;
                 return (
                   <div key={ringtone.id} className="relative group">
@@ -349,33 +357,45 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                       onClick={() => update({ ringtoneFileId: ringtone.id })}
                       className={`w-full p-2 rounded-lg border transition-all text-left ${
                         isSelected
-                          ? (isDarkMode ? 'bg-amber-500/15 border-amber-500/40' : 'bg-amber-50 border-amber-300')
+                          ? (isDarkMode ? 'bg-amber-500/20 border-amber-500/50 shadow-[0_0_8px_rgba(212,168,82,0.3)]' : 'bg-amber-50 border-amber-400 shadow-[0_0_6px_rgba(212,168,82,0.2)]')
                           : (isDarkMode ? 'bg-[#1a1510] border-[#3d3020] hover:border-[#5d4830]' : 'bg-white border-gray-200 hover:border-gray-300')
                       }`}
                     >
-                      <div className={`text-xs font-semibold truncate ${isSelected ? (isDarkMode ? 'text-amber-300' : 'text-amber-700') : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>
-                        {ringtone.id.replace('.mp3', '')}
+                      <div className="flex items-center justify-between mb-1">
+                        <div className={`text-sm font-bold ${isSelected ? (isDarkMode ? 'text-amber-300' : 'text-amber-700') : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>
+                          {ringtone.displayNum}
+                        </div>
+                        {isDefault && !isSelected && (
+                          <span className={`text-[8px] px-1 py-0.5 rounded ${isDarkMode ? 'bg-gray-700 text-gray-400' : 'bg-gray-100 text-gray-500'}`}>
+                            DEFAULT
+                          </span>
+                        )}
+                        {isSelected && (
+                          <span className={`text-[8px] px-1 py-0.5 rounded ${isDarkMode ? 'bg-amber-500/30 text-amber-300' : 'bg-amber-200 text-amber-700'}`}>
+                            {language === 'zh' ? '使用中' : 'ACTIVE'}
+                          </span>
+                        )}
                       </div>
-                      <div className={`text-[10px] truncate mt-0.5 ${isSelected ? (isDarkMode ? 'text-amber-400/80' : 'text-amber-600') : (isDarkMode ? 'text-gray-500' : 'text-gray-500')}`}>
+                      <div className={`text-[10px] truncate ${isSelected ? (isDarkMode ? 'text-amber-400/90' : 'text-amber-600') : (isDarkMode ? 'text-gray-500' : 'text-gray-500')}`}>
                         {language === 'zh' ? ringtone.nameZh : ringtone.nameEn}
                       </div>
+                      {ringtoneDurations[ringtone.id] && (
+                        <div className={`text-[9px] mt-0.5 ${isSelected ? (isDarkMode ? 'text-amber-500/70' : 'text-amber-500') : (isDarkMode ? 'text-gray-600' : 'text-gray-400')}`}>
+                          {ringtoneDurations[ringtone.id]}
+                        </div>
+                      )}
                     </button>
                     <button
                       onClick={() => handleBuiltInRingtonePreview(ringtone.id)}
-                      className={`absolute top-1 right-1 p-1 rounded-full transition-all opacity-0 group-hover:opacity-100 ${
+                      className={`absolute top-1 right-1 p-1.5 rounded-full transition-all opacity-0 group-hover:opacity-100 ${
                         isPreviewing
-                          ? 'bg-amber-500 text-white'
-                          : (isDarkMode ? 'bg-black/50 text-white hover:bg-amber-500' : 'bg-black/30 text-white hover:bg-amber-500')
+                          ? 'bg-red-500 text-white'
+                          : (isDarkMode ? 'bg-black/60 text-white hover:bg-amber-500' : 'bg-black/40 text-white hover:bg-amber-500')
                       }`}
                       title={isPreviewing ? (language === 'zh' ? '停止' : 'Stop') : (language === 'zh' ? '试听' : 'Preview')}
                     >
                       {isPreviewing ? <Square size={10} /> : <Play size={10} />}
                     </button>
-                    {isSelected && (
-                      <div className="absolute -top-1 -right-1 w-3 h-3 bg-amber-500 rounded-full flex items-center justify-center">
-                        <span className="text-[8px] text-black font-bold">✓</span>
-                      </div>
-                    )}
                   </div>
                 );
               })}
