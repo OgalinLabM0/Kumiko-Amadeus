@@ -8,14 +8,14 @@ import { saveRingtoneFile, loadRingtoneFile, deleteRingtoneFile, isVoiceServiceA
 const VALID_RINGTONE_FILE_RE = /^custom\.(mp3|wav|ogg|m4a|aac|flac)$/i;
 
 const BUILT_IN_RINGTONES = [
-  { id: '01.mp3', nameZh: '小小恋歌 - 秀久合唱', nameEn: 'Koibito - Shuukyuu Gasshou' },
-  { id: '02.mp3', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '1.15M km Film - Kumiko' },
-  { id: '03.mp3', nameZh: '天空的碎片 - 黄前久美子', nameEn: 'Sky Fragments - Kumiko' },
-  { id: '04.mp3', nameZh: 'ヘミソフィア - 黄前久美子', nameEn: 'Hemisphere - Kumiko' },
-  { id: '05.mp3', nameZh: 'アンインストール - 黄前久美子', nameEn: 'Uninstall - Kumiko' },
-  { id: '06.mp3', nameZh: 'DREAM SOLISTER - 黄前久美子', nameEn: 'DREAM SOLISTER - Kumiko' },
-  { id: '07.mp3', nameZh: 'サウンドスケープ - 黄前久美子', nameEn: 'Soundscape - Kumiko' },
-  { id: '08.mp3', nameZh: 'ReCoda - 黄前久美子', nameEn: 'ReCoda - Kumiko' },
+  { id: '02.mp3', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '115-man Kilo no Film - Kumiko Oumae' },
+  { id: '01.mp3', nameZh: '小小恋歌 - 秀久合唱', nameEn: 'Chiisana Koi no Uta - Shuichi & Kumiko' },
+  { id: '03.mp3', nameZh: '天空的碎片 - 黄前久美子', nameEn: 'Sora no Kakera - Kumiko Oumae' },
+  { id: '04.mp3', nameZh: 'ヘミソフィア - 黄前久美子', nameEn: 'Hemisphere - Kumiko Oumae' },
+  { id: '05.mp3', nameZh: 'アンインストール - 黄前久美子', nameEn: 'Uninstall - Kumiko Oumae' },
+  { id: '06.mp3', nameZh: 'DREAM SOLISTER - 黄前久美子', nameEn: 'DREAM SOLISTER - Kumiko Oumae' },
+  { id: '07.mp3', nameZh: 'サウンドスケープ - 黄前久美子', nameEn: 'Soundscape - Kumiko Oumae' },
+  { id: '08.mp3', nameZh: 'ReCoda - 黄前久美子', nameEn: 'ReCoda - Kumiko Oumae' },
 ];
 
 interface TtsConfigSectionProps {
