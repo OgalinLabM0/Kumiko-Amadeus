@@ -767,7 +767,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                   </div>
                   <div className="min-w-0 text-left">
                     <div className="truncate">{t.contextWindowWithEditor}</div>
-                    <div className={`ka-micro font-medium tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#baa585]' : 'text-[#a58251]'}`}>{memorySectionMeta.history.note}</div>
+                    <div className={`ka-micro font-medium tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#baa585]' : 'text-[#3d8e7a]'}`}>{memorySectionMeta.history.note}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -940,7 +940,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                   </div>
                   <div className="min-w-0 text-left">
                     <div className="truncate">{t.officialLore}</div>
-                    <div className={`ka-micro font-medium tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#baa585]' : 'text-[#a58251]'}`}>{memorySectionMeta.official.note}</div>
+                    <div className={`ka-micro font-medium tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#baa585]' : 'text-[#7a5fb5]'}`}>{memorySectionMeta.official.note}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
