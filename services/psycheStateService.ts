@@ -1,5 +1,5 @@
 import { db, PsycheStateEntity } from './db';
-import { getCurrentKumikoState } from './kumikoStateMachine';
+import { getCurrentKumikoState, getDetailedScheduleSlot } from './kumikoStateMachine';
 
 export const DEFAULT_PSYCHE_STATE: PsycheStateEntity = {
   id: 'current',
@@ -28,22 +28,33 @@ export const updatePsycheState = async (
   let { stress, energy, relaxation } = state;
 
   const currentCtx = getCurrentKumikoState(timezone, isHoliday);
+  const scheduleSlot = getDetailedScheduleSlot(timezone, isHoliday);
   
-  // 1. Energy dynamics
-  // Energy naturally depletes during the day, restores during sleep
+  // 1. Energy dynamics (schedule-aware)
   if (currentCtx.currentState === 'SLEEPING') {
-    energy += hoursPassed * 15; // Restore 15 per hour of sleep
+    energy += hoursPassed * 15;
   } else if (currentCtx.currentState === 'RELAXING_HOME' || currentCtx.currentState === 'OUTING') {
-    energy -= hoursPassed * 2; // Slow depletion
+    energy -= hoursPassed * 2;
+  } else if (scheduleSlot.slotType === 'teaching') {
+    energy -= hoursPassed * 6;
+  } else if (scheduleSlot.slotType === 'lunch') {
+    energy += hoursPassed * 3;
+  } else if (scheduleSlot.slotType === 'free') {
+    energy -= hoursPassed * 3;
   } else {
-    energy -= hoursPassed * 5; // Fast depletion during work/commute
+    energy -= hoursPassed * 5;
   }
 
-  // 2. Stress dynamics
-  // Stress increases during work, especially club activities, decreases at home/sleep
+  // 2. Stress dynamics (schedule-aware)
   if (currentCtx.currentState === 'CLUB_ACTIVITIES') {
     stress += hoursPassed * 8;
-  } else if (currentCtx.currentState === 'TEACHING' || currentCtx.currentState === 'COMMUTING') {
+  } else if (scheduleSlot.slotType === 'teaching') {
+    stress += hoursPassed * 5;
+  } else if (scheduleSlot.slotType === 'free') {
+    stress += hoursPassed * 3;
+  } else if (scheduleSlot.slotType === 'lunch') {
+    stress -= hoursPassed * 2;
+  } else if (currentCtx.currentState === 'COMMUTING') {
     stress += hoursPassed * 4;
   } else if (currentCtx.currentState === 'SLEEPING') {
     stress -= hoursPassed * 10;
@@ -53,15 +64,20 @@ export const updatePsycheState = async (
 
   // Weather impact on stress
   if (weatherStr.includes('雨') || weatherStr.includes('雪') || weatherStr.includes('Rain') || weatherStr.includes('Snow')) {
-    stress += hoursPassed * 3; // Bad weather increases stress
+    stress += hoursPassed * 3;
   }
 
-  // 3. Relaxation dynamics
-  // Relaxation tends to drift towards a baseline (e.g. 50), but increases when chatting or at home
+  // 3. Relaxation dynamics (schedule-aware)
   if (currentCtx.currentState === 'RELAXING_HOME') {
     relaxation += hoursPassed * 3;
-  } else if (currentCtx.currentState === 'TEACHING' || currentCtx.currentState === 'CLUB_ACTIVITIES') {
-    relaxation -= hoursPassed * 5; // More guarded at work
+  } else if (scheduleSlot.slotType === 'teaching') {
+    relaxation -= hoursPassed * 6;
+  } else if (scheduleSlot.slotType === 'lunch') {
+    relaxation += hoursPassed * 2;
+  } else if (scheduleSlot.slotType === 'free') {
+    relaxation -= hoursPassed * 3;
+  } else if (currentCtx.currentState === 'CLUB_ACTIVITIES') {
+    relaxation -= hoursPassed * 5;
   }
 
   // Clamp values between 0 and 100

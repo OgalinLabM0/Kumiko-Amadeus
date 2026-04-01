@@ -1,7 +1,7 @@
 import { db, DailyFragmentEntity, KumikoDiaryEntity, getWorldCharacterStatus, updateWorldCharacterStatus, WorldCharacterStatusMap } from './db';
 import { callLLMRaw, getCurrentAIConfig } from './geminiService';
 import { verifyAgainstHistory } from './diaryValidatorService';
-import { getCurrentKumikoState, getSchoolTermContext } from './kumikoStateMachine';
+import { getCurrentKumikoState, getSchoolTermContext, getDetailedScheduleSlot, getDayScheduleSummary } from './kumikoStateMachine';
 import { updatePsycheState } from './psycheStateService';
 
 type DiaryChatMessage = {
@@ -641,6 +641,9 @@ export const buildDailyContext = (
   const isRestDay = Boolean(isHoliday) || isWeekend;
   const dayTypeText = isHoliday ? '日本法定节假日' : isWeekend ? '周末' : '普通工作日';
   const weekdayFocus = pickWeekdayFocus(dateStr, continuityContext?.recentFocuses || []);
+
+  const detailedSchedule = getDayScheduleSummary(dateStr);
+
   const scheduleLines = isRestDay
     ? [
         '- 早上：起床较晚，在家慢慢开始一天',
@@ -648,12 +651,21 @@ export const buildDailyContext = (
         '- 傍晚：从外面回来，或者准备晚上在家待着',
         '- 晚上：在家收尾；有时和秀一一起简单吃点，有时会出门找地方吃饭',
       ]
-    : [
-        '- 早上：起床、洗漱、吃点东西，然后通勤去学校',
-        weekdayFocus.schoolLine,
-        '- 放学后：通常留校处理杂务、会议或副顾问事务，不是每天都会深入吹奏部',
-        '- 晚上：回家休息；经常会和秀一一起吃饭，可能在家随便吃，也可能顺路出门',
-      ];
+    : detailedSchedule
+      ? [
+          '- 早上：~6:30起床，洗漱吃早餐，~7:40到校',
+          '',
+          '【今日详细课表】',
+          detailedSchedule,
+          '',
+          '- 晚上：~18:30-19:30回家；经常会和秀一一起吃饭，可能在家随便吃，也可能顺路出门',
+        ]
+      : [
+          '- 早上：起床、洗漱、吃点东西，然后通勤去学校',
+          weekdayFocus.schoolLine,
+          '- 放学后：通常留校处理杂务、会议或副顾问事务，不是每天都会深入吹奏部',
+          '- 晚上：回家休息；经常会和秀一一起吃饭，可能在家随便吃，也可能顺路出门',
+        ];
 
   return [
     '【今天的身份与大致框架】',
@@ -664,7 +676,7 @@ export const buildDailyContext = (
     !isRestDay ? `- 今日镜头重点：${weekdayFocus.label}` : '',
     `天气：${getWeatherContextText(weatherStr)}`,
     '',
-    '具体几点起床、早餐吃什么、路上的见闻、课堂、办公室、批改作文、回家之后的小事，都由你根据天气、心情和生活切片自由发挥，但不能违背上述客观框架。只有当天确实合理时，才少量提到吹奏部，而且更适合写成副顾问事务或和上低音号相关的小片段。',
+    '具体几点起床、早餐吃什么、路上的见闻、课堂、办公室、批改作文、回家之后的小事，都由你根据天气、心情和生活切片自由发挥，但不能违背上述课表框架。只有当天确实合理时，才少量提到吹奏部，而且更适合写成副顾问事务。如果课表中有具体教材内容，你可以在日记中提及课堂的某个细节（学生反应、讲到哪里了等），但不要长篇复述课文。',
     !isRestDay ? weekdayFocus.detailHint : '',
     '',
     buildChatAnchorBlock(chatMessages),
@@ -694,6 +706,7 @@ export const generateLifeFragment = async (
   try {
     const config = getCurrentAIConfig();
     const stateCtx = getCurrentKumikoState(timezone, isHoliday);
+    const scheduleSlot = getDetailedScheduleSlot(timezone, isHoliday);
     const continuityContext = await buildDiaryContinuityContext(dateStr);
     
     // Update psyche state based on time passed
@@ -713,7 +726,7 @@ export const generateLifeFragment = async (
 
 【客观变量】
 - 离线时间：约 ${Math.round(hoursPassed)} 小时
-- 当前状态：${stateCtx.stateDescription}
+- 当前详细状态：${scheduleSlot.description || stateCtx.stateDescription}
 - 天气/节假日：${weatherStr}
 - 学校阶段：${schoolTermContext}
 - 当前心理状态：压力 ${Math.round(psycheState.stress)}/100, 精力 ${Math.round(psycheState.energy)}/100, 松弛度 ${Math.round(psycheState.relaxation)}/100

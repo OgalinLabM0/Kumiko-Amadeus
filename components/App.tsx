@@ -6542,35 +6542,54 @@ export const App = () => {
       }
       // ------------------------------------------
 
-      // --- DYNAMIC DELAY (BUSY STATE) INTERCEPTOR ---
-      const nowJST = new Date(new Date().toLocaleString('en-US', { timeZone: locationConfig.modelTimezone }));
-      const hourJST = nowJST.getHours();
-      const dayJST = nowJST.getDay();
-      const isWorkday = dayJST >= 1 && dayJST <= 5;
-      const isWorkingHours = hourJST >= 8 && hourJST <= 16;
-      
-      if (isWorkday && !isCurrentHoliday && isWorkingHours && Math.random() < 0.15) {
-        // 15% chance to be busy during work hours
+      // --- DYNAMIC DELAY (BUSY STATE) INTERCEPTOR (schedule-aware) ---
+      const { getDetailedScheduleSlot } = await import('../services/kumikoStateMachine');
+      const scheduleSlot = getDetailedScheduleSlot(locationConfig.modelTimezone, isCurrentHoliday);
+
+      if (scheduleSlot.interceptChance > 0 && Math.random() < scheduleSlot.interceptChance) {
         setIsThinking(true);
         await new Promise(r => setTimeout(r, 2000 + Math.random() * 3000));
         setIsThinking(false);
-        
-        const busyReplies = [
-          "啊，现在在开会，等下说！",
-          "等下，学生找我",
-          "抱歉，现在有点忙，晚点回你",
-          "在上课，稍等！"
-        ];
-        const reply = busyReplies[Math.floor(Math.random() * busyReplies.length)];
-        
+
+        const getBusyReply = (): string => {
+          const isZh = language === 'zh';
+          if (scheduleSlot.slotType === 'teaching') {
+            const pNum = scheduleSlot.periodNumber || 0;
+            const zhReplies = [
+              `在上课呢，第${pNum}节还没下课，等一下`,
+              `${scheduleSlot.classGroup || ''}的课还没完，下课再说`,
+              "现在不方便，课上呢",
+              "等下课再回你，马上",
+            ];
+            const enReplies = [
+              `In class right now, period ${pNum} isn't over yet. Give me a sec`,
+              "Can't talk, I'm teaching. I'll reply after class",
+              "Hold on, still in the middle of a lesson",
+              "Busy with class, brb",
+            ];
+            const pool = isZh ? zhReplies : enReplies;
+            return pool[Math.floor(Math.random() * pool.length)];
+          } else if (scheduleSlot.slotType === 'shr') {
+            return isZh ? '朝会中，马上回你' : "In morning assembly, one sec";
+          } else {
+            const zhReplies = ["社团那边有点事，等下回你", "抱歉，现在有点忙，晚点回你"];
+            const enReplies = ["Busy with club stuff, I'll get back to you", "Sorry, a bit busy right now"];
+            const pool = isZh ? zhReplies : enReplies;
+            return pool[Math.floor(Math.random() * pool.length)];
+          }
+        };
+
+        const reply = getBusyReply();
         const msgId = addMessage('model', reply, undefined, undefined, undefined, undefined, undefined, 'serious');
         showBackgroundMessageNotification(reply, 'reply', msgId);
-        
-        // Schedule a follow-up in 15-30 minutes
+
+        const followUpDelay = scheduleSlot.slotType === 'teaching'
+          ? 10 * 60000 + Math.random() * 20 * 60000
+          : 5 * 60000 + Math.random() * 10 * 60000;
         setTimeout(() => {
-          triggerNativeProactiveMessage(0, "忙完了，继续刚才的话题");
-        }, 15 * 60000 + Math.random() * 15 * 60000);
-        
+          triggerNativeProactiveMessage(0, language === 'zh' ? "忙完了，继续刚才的话题" : "Done with that, where were we?");
+        }, followUpDelay);
+
         return;
       }
       // ----------------------------------------------
@@ -6959,14 +6978,26 @@ export const App = () => {
           : historyLookup.promptBlock)
         : undefined;
 
-      // --- STATE MACHINE INJECTION ---
+      // --- STATE MACHINE INJECTION (schedule-aware) ---
       const isCurrentHolidayState = ambientEnvironmentContext.includes('今日特殊历法：日本法定节假日');
-      const { getCurrentKumikoState } = await import('../services/kumikoStateMachine');
+      const { getCurrentKumikoState, getDetailedScheduleSlot: getScheduleForPrompt } = await import('../services/kumikoStateMachine');
       const currentStateCtx = getCurrentKumikoState(locationConfig.modelTimezone, isCurrentHolidayState);
-      
-      const statePrompt = `\n[当前生活状态]
-你现在正处于：${currentStateCtx.stateDescription}。
-请在回复中自然地体现出这个状态（例如：如果在通勤，回复应该简短；如果在上课，回复可能带有被打断的匆忙感）。不要生硬地报告你的状态，而是通过语气和长度自然流露。`;
+      const scheduleForPrompt = getScheduleForPrompt(locationConfig.modelTimezone, isCurrentHolidayState);
+
+      let stateDetail = currentStateCtx.stateDescription;
+      if (scheduleForPrompt.slotType === 'teaching' && scheduleForPrompt.classGroup) {
+        stateDetail = scheduleForPrompt.description;
+      } else if (scheduleForPrompt.slotType === 'free' && scheduleForPrompt.freeActivity) {
+        stateDetail = scheduleForPrompt.description;
+      }
+
+      const statePrompt = language === 'zh'
+        ? `\n[当前生活状态]
+你现在正处于：${stateDetail}。
+请在回复中自然地体现出这个状态（例如：如果在上课中途偷看手机，回复应该极短且匆忙；如果在空档备课，可以稍微聊几句但带着忙碌感；如果在午休或下班后在家，则可以正常聊天）。不要生硬地报告你的状态，而是通过语气和长度自然流露。`
+        : `\n[Current Life State]
+You are currently: ${stateDetail}.
+Reflect this naturally in your reply (e.g., if you're sneaking a look at your phone during class, keep it extremely brief; if you're on a free period doing prep work, you can chat a bit but still sound busy; if you're at lunch or home after work, chat normally). Don't explicitly announce your state—let it show through tone and length.`;
 
       if (!strictEvidenceTurn) {
         modelRagContext.push(statePrompt);
