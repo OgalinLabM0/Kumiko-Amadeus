@@ -4159,65 +4159,72 @@ export const App = () => {
     }
   }, [flowState]);
 
-  // --- LIVE STATUS UPDATE LOGIC ---
+  // --- LIVE STATUS UPDATE LOGIC (schedule-aware) ---
   useEffect(() => {
-      const updateStatus = () => {
+      const updateStatus = async () => {
           if (flowState !== 'APP') return;
           try {
-              // SAFETY CHECK: Ensure locationConfig and timezone exist
               if (!locationConfig || !locationConfig.modelTimezone) {
                   throw new Error("Invalid Location Config");
               }
 
-              const now = new Date();
-              // WRAP IN TRY-CATCH: toLocaleTimeString can crash if timezone is invalid
-              let hourStr = "12";
-              try {
-                  hourStr = now.toLocaleTimeString('en-GB', { 
-                      timeZone: locationConfig.modelTimezone, 
-                      hour: 'numeric', 
-                      hour12: false, 
-                      hourCycle: 'h23' 
-                  });
-              } catch (tzError) {
-                  console.warn("Timezone calculation failed, fallback to UTC", tzError);
-                  hourStr = now.toLocaleTimeString('en-GB', { 
-                      timeZone: 'UTC', 
-                      hour: 'numeric', 
-                      hour12: false, 
-                      hourCycle: 'h23' 
-                  });
-              }
-
-              const hour = parseInt(hourStr, 10);
-              // Safe Day check
-              let day = 0;
-              try {
-                  day = new Date(now.toLocaleString('en-US', { timeZone: locationConfig.modelTimezone })).getDay();
-              } catch {
-                  day = now.getDay();
-              }
-              
-              const isWeekend = day === 0 || day === 6;
               const isZh = language === 'zh';
+              const { getDetailedScheduleSlot: getSlotForStatus } = await import('../services/kumikoStateMachine');
+              const slot = getSlotForStatus(locationConfig.modelTimezone, false);
 
-              if (hour >= 2 && hour < 6) {
-                  setStatusText(isZh ? "状态：睡眠模式 (勿扰)" : "STATUS: SLEEP MODE (DND)");
-              } else if (!isWeekend && hour >= 8 && hour < 16) {
-                  setStatusText(isZh ? "状态：北宇治高中执勤中" : "STATUS: AT KITAUJI HIGH (WORK)");
-              } else if (!isWeekend && hour >= 16 && hour < 18) {
-                  setStatusText(isZh ? "状态：社团活动指导中" : "STATUS: BAND CLUB COACHING");
-              } else {
-                  setStatusText(isZh ? "状态：在线" : "STATUS: ONLINE");
+              const prefix = isZh ? '状态：' : 'STATUS: ';
+              let text = '';
+              switch (slot.slotType) {
+                  case 'sleeping':
+                      text = prefix + (isZh ? '睡眠模式 (勿扰)' : 'SLEEP MODE (DND)');
+                      break;
+                  case 'commuting':
+                      text = prefix + (isZh ? '通勤中' : 'COMMUTING');
+                      break;
+                  case 'shr':
+                      text = prefix + (isZh ? 'SHR朝会' : 'SHR HOMEROOM');
+                      break;
+                  case 'teaching': {
+                      const cls = slot.classGroup || '';
+                      const sub = slot.subject || '';
+                      const detail = cls ? ` — ${cls} ${sub}` : '';
+                      text = isZh
+                          ? `${prefix}${slot.periodNumber ? `第${slot.periodNumber}校时` : '上课中'}${detail}`
+                          : `${prefix}${slot.periodNumber ? `P${slot.periodNumber} IN CLASS` : 'IN CLASS'}${detail}`;
+                      break;
+                  }
+                  case 'free': {
+                      const act = slot.freeActivity || '';
+                      text = isZh
+                          ? `${prefix}空档${act ? ` — ${act}` : '（办公室）'}`
+                          : `${prefix}FREE${act ? ` — ${act}` : ' (OFFICE)'}`;
+                      break;
+                  }
+                  case 'lunch':
+                      text = prefix + (isZh ? '午休中' : 'LUNCH BREAK');
+                      break;
+                  case 'cleaning':
+                      text = prefix + (isZh ? '归宅SHR/清扫' : 'CLEANUP');
+                      break;
+                  case 'after_school': {
+                      const aa = slot.freeActivity || '';
+                      text = isZh
+                          ? `${prefix}放课后${aa ? ` — ${aa}` : ''}`
+                          : `${prefix}AFTER SCHOOL${aa ? ` — ${aa}` : ''}`;
+                      break;
+                  }
+                  default:
+                      text = prefix + (isZh ? '在线' : 'ONLINE');
               }
+              setStatusText(text);
           } catch(e) {
               console.error("Status Update Failed", e);
               setStatusText(t.signalConnected);
           }
       };
       
-      updateStatus(); // Initial call
-      const timer = setInterval(updateStatus, 60000); // Update every minute
+      updateStatus();
+      const timer = setInterval(updateStatus, 60000);
       return () => clearInterval(timer);
   }, [flowState, locationConfig, language, t.signalConnected]);
 
