@@ -1,8 +1,9 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { ChevronDown, ChevronUp, Upload, Play, Square, Trash2, TestTube, Loader2, Volume2, ExternalLink, RotateCcw } from 'lucide-react';
-import type { TtsConfig, VoiceMode, Language } from '../../types';
+import { ChevronDown, ChevronUp, Upload, Play, Square, Trash2, TestTube, Loader2, Volume2, ExternalLink, RotateCcw, Power, PowerOff, Cpu, Cloud } from 'lucide-react';
+import type { TtsConfig, VoiceMode, Language, TtsBackend } from '../../types';
 import { UI_TRANSLATIONS, DEFAULT_TTS_CONFIG } from '../../constants';
 import { synthesizeSpeech } from '../../services/fishAudioService';
+import { checkGenieHealth, loadGenieCharacter } from '../../services/genieAudioService';
 import {
   saveRingtoneFile,
   loadRingtoneFileWithName,
@@ -66,6 +67,10 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   const ringtoneUrlRef = useRef<string | null>(null);
   const testAudioRef = useRef<HTMLAudioElement | null>(null);
   const testAudioUrlRef = useRef<string | null>(null);
+
+  const [genieStatus, setGenieStatus] = useState<'off' | 'starting' | 'ready' | 'error'>('off');
+  const [genieError, setGenieError] = useState<string | null>(null);
+  const [geniePid, setGeniePid] = useState<number | null>(null);
 
   const update = useCallback((patch: Partial<TtsConfig>) => {
     onTtsConfigChange({ ...ttsConfig, ...patch });
@@ -242,6 +247,65 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       });
     };
   }, [isOpen, ringtoneDurations]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const ipc = (window as any)?.electronAPI;
+    if (!ipc) return;
+    ipc.invoke('genie:status').then((s: any) => {
+      if (s?.running) { setGenieStatus('ready'); setGeniePid(s.pid); }
+    }).catch(() => {});
+    const handler = (_: any, data: any) => {
+      if (!data?.running) { setGenieStatus('off'); setGeniePid(null); }
+    };
+    ipc.on('genie:status-changed', handler);
+    return () => { ipc.removeListener('genie:status-changed', handler); };
+  }, [isOpen]);
+
+  const handleGenieStart = useCallback(async () => {
+    const ipc = (window as any)?.electronAPI;
+    if (!ipc) return;
+    setGenieStatus('starting');
+    setGenieError(null);
+    try {
+      const result = await ipc.invoke('genie:start', {
+        pythonPath: ttsConfig.geniePythonPath || 'python',
+        port: ttsConfig.genieServerPort || 8000,
+      });
+      if (result?.success) {
+        setGeniePid(result.pid || null);
+        const baseUrl = `http://127.0.0.1:${ttsConfig.genieServerPort || 8000}`;
+        if (ttsConfig.genieModelDir) {
+          const loadResult = await loadGenieCharacter(baseUrl, {
+            characterName: ttsConfig.genieCharacterName || 'kumiko',
+            modelDir: ttsConfig.genieModelDir,
+            language: ttsConfig.genieLanguage || 'jp',
+          });
+          if (!loadResult.success) {
+            setGenieStatus('error');
+            setGenieError(loadResult.error || 'Model load failed');
+            return;
+          }
+        }
+        setGenieStatus('ready');
+      } else {
+        setGenieStatus('error');
+        setGenieError(result?.error || 'Unknown error');
+      }
+    } catch (e: any) {
+      setGenieStatus('error');
+      setGenieError(e.message);
+    }
+  }, [ttsConfig]);
+
+  const handleGenieStop = useCallback(async () => {
+    const ipc = (window as any)?.electronAPI;
+    if (!ipc) return;
+    await ipc.invoke('genie:stop');
+    setGenieStatus('off');
+    setGeniePid(null);
+    setGenieError(null);
+  }, []);
 
   const selectedBuiltInRingtone = BUILT_IN_RINGTONES.find(ringtone => ringtone.id === ttsConfig.ringtoneFileId);
   const isCustomRingtoneSelected = !!customRingtoneId && ttsConfig.ringtoneFileId === customRingtoneId;
@@ -476,6 +540,129 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
           </div>
 
           <div>
+            <div className={fieldLabelClass}>{language === 'zh' ? 'TTS 引擎' : 'TTS Engine'}</div>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              {([
+                { value: 'fish' as TtsBackend, label: 'Fish Audio', desc: language === 'zh' ? '云端 · 需 API Key' : 'Cloud · API Key required', icon: Cloud },
+                { value: 'genie' as TtsBackend, label: 'Genie-TTS', desc: language === 'zh' ? '本地 · GPT-SoVITS' : 'Local · GPT-SoVITS', icon: Cpu },
+              ]).map(opt => (
+                <button key={opt.value}
+                  onClick={() => update({ ttsBackend: opt.value })}
+                  className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors text-left ${
+                    (ttsConfig.ttsBackend || 'fish') === opt.value
+                      ? (isDarkMode ? 'bg-[#d4a852] text-[#21150a] shadow-[0_10px_20px_rgba(212,168,82,0.18)]' : 'bg-[#fff5e3] text-[#8a6122] border border-[#e0c58f] shadow-[0_8px_18px_rgba(138,97,34,0.10)]')
+                      : actionChipClass
+                  }`}>
+                  <opt.icon size={16} />
+                  <div>
+                    <div>{opt.label}</div>
+                    <div className={`text-[10px] font-normal ${(ttsConfig.ttsBackend || 'fish') === opt.value ? 'opacity-70' : 'opacity-50'}`}>{opt.desc}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {(ttsConfig.ttsBackend || 'fish') === 'genie' && (
+            <div className={`${innerCardClass} p-4 rounded-[1.15rem] flex flex-col gap-3`}>
+              <div className="flex items-center justify-between">
+                <div className={fieldLabelClass}>{language === 'zh' ? 'Genie-TTS 本地配置' : 'Genie-TTS Local Config'}</div>
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${
+                    genieStatus === 'ready' ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]'
+                    : genieStatus === 'starting' ? 'bg-yellow-400 animate-pulse'
+                    : genieStatus === 'error' ? 'bg-red-400'
+                    : (isDarkMode ? 'bg-gray-600' : 'bg-gray-300')
+                  }`} />
+                  <span className={`text-[10px] font-mono ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                    {genieStatus === 'ready' ? (language === 'zh' ? `就绪 PID:${geniePid}` : `Ready PID:${geniePid}`)
+                     : genieStatus === 'starting' ? (language === 'zh' ? '启动中...' : 'Starting...')
+                     : genieStatus === 'error' ? (language === 'zh' ? '错误' : 'Error')
+                     : (language === 'zh' ? '未启动' : 'Off')}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <label className={fieldLabelClass}>Python {language === 'zh' ? '路径' : 'Path'}</label>
+                <input type="text" value={ttsConfig.geniePythonPath || 'python'}
+                  onChange={e => update({ geniePythonPath: e.target.value })}
+                  className={`${inputClass} w-full mt-1`}
+                  placeholder={language === 'zh' ? '例：python 或 C:\\Python311\\python.exe' : 'e.g. python or C:\\Python311\\python.exe'} />
+                <div className={`${helperClass} mt-0.5`}>{language === 'zh' ? '需已安装 genie-tts (pip install genie-tts)' : 'Requires genie-tts installed (pip install genie-tts)'}</div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className={fieldLabelClass}>{language === 'zh' ? '端口' : 'Port'}</label>
+                  <input type="number" value={ttsConfig.genieServerPort || 8000}
+                    onChange={e => update({ genieServerPort: parseInt(e.target.value) || 8000 })}
+                    className={`${inputClass} w-full mt-1`} />
+                </div>
+                <div>
+                  <label className={fieldLabelClass}>{language === 'zh' ? '角色名' : 'Character'}</label>
+                  <input type="text" value={ttsConfig.genieCharacterName || 'kumiko'}
+                    onChange={e => update({ genieCharacterName: e.target.value })}
+                    className={`${inputClass} w-full mt-1`} />
+                </div>
+              </div>
+
+              <div>
+                <label className={fieldLabelClass}>{language === 'zh' ? 'ONNX 模型目录' : 'ONNX Model Directory'}</label>
+                <input type="text" value={ttsConfig.genieModelDir || ''}
+                  onChange={e => update({ genieModelDir: e.target.value })}
+                  className={`${inputClass} w-full mt-1`}
+                  placeholder={language === 'zh' ? '例：D:\\Models\\kumiko-genie\\model' : 'e.g. D:\\Models\\kumiko-genie\\model'} />
+              </div>
+
+              <div>
+                <label className={fieldLabelClass}>{language === 'zh' ? '参考音频目录' : 'Reference Audio Directory'}</label>
+                <input type="text" value={ttsConfig.genieRefAudioDir || ''}
+                  onChange={e => update({ genieRefAudioDir: e.target.value })}
+                  className={`${inputClass} w-full mt-1`}
+                  placeholder={language === 'zh' ? '例：D:\\Models\\kumiko-genie\\reference' : 'e.g. D:\\Models\\kumiko-genie\\reference'} />
+                <div className={`${helperClass} mt-0.5`}>
+                  {language === 'zh'
+                    ? '需包含情绪 WAV 文件：neutral.wav, happy.wav, gentle.wav, resigned.wav, serious.wav, sad.wav, angry.wav, shy.wav, sleepy.wav, surprised.wav'
+                    : 'Must contain emotion WAV files: neutral.wav, happy.wav, gentle.wav, resigned.wav, serious.wav, sad.wav, angry.wav, shy.wav, sleepy.wav, surprised.wav'}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 mt-1">
+                {genieStatus === 'off' || genieStatus === 'error' ? (
+                  <button onClick={handleGenieStart}
+                    disabled={!ttsConfig.genieModelDir}
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
+                      ttsConfig.genieModelDir
+                        ? 'bg-green-600 hover:bg-green-700 text-white'
+                        : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    }`}>
+                    <Power size={14} />
+                    {language === 'zh' ? '启动 Genie 服务器' : 'Start Genie Server'}
+                  </button>
+                ) : genieStatus === 'starting' ? (
+                  <button disabled className="flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold bg-yellow-600/50 text-yellow-200 cursor-wait">
+                    <Loader2 size={14} className="animate-spin" />
+                    {language === 'zh' ? '启动中...' : 'Starting...'}
+                  </button>
+                ) : (
+                  <button onClick={handleGenieStop}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold bg-red-600 hover:bg-red-700 text-white transition-colors">
+                    <PowerOff size={14} />
+                    {language === 'zh' ? '停止服务器' : 'Stop Server'}
+                  </button>
+                )}
+              </div>
+
+              {genieError && (
+                <div className="ka-micro text-red-400 bg-red-500/10 rounded px-2 py-1.5">{genieError}</div>
+              )}
+            </div>
+          )}
+
+          {(ttsConfig.ttsBackend || 'fish') !== 'genie' && (
+            <>
+          <div>
             <label className={fieldLabelClass}>{t.ttsFishApiKey}</label>
             <input type="password" value={ttsConfig.fishAudioApiKey} onChange={e => update({ fishAudioApiKey: e.target.value })}
               className={`${inputClass} w-full mt-1`} placeholder="sk-..." />
@@ -533,6 +720,8 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               onChange={e => update({ speed: parseFloat(e.target.value) })}
               className="w-full mt-1 accent-[#c79a2f]" />
           </div>
+            </>
+          )}
           <div className={`${innerCardClass} p-4 rounded-[1.15rem]`}>
             <div className="flex items-center justify-between gap-3">
               <div className={fieldLabelClass}>{t.ttsRingtone}</div>
@@ -673,6 +862,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             </div>
           </div>
 
+          {(ttsConfig.ttsBackend || 'fish') !== 'genie' && (
           <button onClick={handleTestVoice} disabled={isTesting || !ttsConfig.fishAudioApiKey}
             className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
               isTesting ? 'opacity-50 cursor-wait' : ''
@@ -683,6 +873,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             {isTesting ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
             {isTesting ? t.ttsTestPlaying : t.ttsTestButton}
           </button>
+          )}
           {testStatus === 'playing' && (
             <div className={`p-3 rounded-lg border animate-in fade-in ${isDarkMode ? 'bg-[#2a2116] border-[#7e6338]/40' : 'bg-[#fff8eb] border-[#ecd4a9]'}`}>
               <div className="flex items-center gap-2 mb-2">

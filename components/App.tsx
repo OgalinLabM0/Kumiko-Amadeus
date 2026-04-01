@@ -4616,18 +4616,52 @@ export const App = () => {
     }
   };
 
+  const translateForGenie = async (chineseText: string, emotion: EmotionType): Promise<string | null> => {
+    try {
+      const config = getCurrentAIConfig();
+      const systemPrompt = [
+        'You are a Chinese-to-Japanese translator. Output EXACTLY one block of natural spoken Japanese.',
+        'Do NOT add greetings, commentary, or anything beyond the translation.',
+        '',
+        'Target voice style: Oumae Kumiko (黄前久美子) — casual Japanese (タメ口), first person 私, endings like ～だよね, ～でしょ, ～じゃん.',
+        'ZERO SEMANTIC DRIFT: Same meaning, same sentence count, same length proportion.',
+        'Do NOT output any bracket tags like [happy] or [pause] — output pure Japanese text only.',
+        'PRONUNCIATION: Character names in Hiragana/Katakana only.',
+        'GREETINGS: 早上好→おはよう, 中午好→こんにちは, 晚上好→こんばんは.',
+        '',
+        `Current emotion context: ${emotion}. Let the emotion influence word choice and tone naturally, but do NOT insert explicit tags.`,
+      ].join('\n');
+      const jaText = await callLLMRaw(systemPrompt, chineseText, config.model_translator || ttsConfigRef.current.model_translator || config.model_main);
+      if (!jaText || jaText.length < 2) return null;
+      return jaText;
+    } catch (err) {
+      console.error('[TTS-Genie] Translation failed:', err);
+      return null;
+    }
+  };
+
   const runVoicePipeline = async (
     messageId: string,
     chineseText: string,
     emotion: EmotionType,
   ): Promise<{ success: boolean; voiceFileId?: string; voiceDuration?: number; japaneseText?: string }> => {
     const cfg = ttsConfigRef.current;
-    if (!cfg.fishAudioApiKey || !isVoiceServiceAvailable()) {
+    const isGenie = cfg.ttsBackend === 'genie';
+
+    if (!isGenie && (!cfg.fishAudioApiKey || !isVoiceServiceAvailable())) {
       console.warn('[TTS] No API key or voice service unavailable');
       return { success: false };
     }
+    if (isGenie && !cfg.genieModelDir) {
+      console.warn('[TTS-Genie] No model directory configured');
+      return { success: false };
+    }
+
     try {
-      let jaText = await translateToJapaneseWithEmotion(chineseText, emotion);
+      let jaText = isGenie
+        ? await translateForGenie(chineseText, emotion)
+        : await translateToJapaneseWithEmotion(chineseText, emotion);
+
       if (!jaText) {
         console.error('[TTS] Translation returned empty result — degrading to text');
         return { success: false };
@@ -4635,14 +4669,23 @@ export const App = () => {
       jaText = jaText
         .replace(/[zZ]{2,}/g, '')
         .replace(/[wW]{3,}/g, '')
+        .replace(/\[.*?\]/g, '')
         .trim();
       if (!jaText || jaText.length < 2) {
         console.error('[TTS] Post-processed translation is empty — degrading to text');
         return { success: false };
       }
-      const emotionTemp = EMOTION_TTS_TEMPERATURE[emotion] ?? 0.6;
-      const cfgWithEmotion = { ...cfg, temperature: emotionTemp };
-      const result = await synthesizeSpeech(jaText, cfgWithEmotion);
+
+      let result;
+      if (isGenie) {
+        const { genieTtsWithEmotion } = await import('../services/genieAudioService');
+        result = await genieTtsWithEmotion(jaText, emotion, cfg);
+      } else {
+        const emotionTemp = EMOTION_TTS_TEMPERATURE[emotion] ?? 0.6;
+        const cfgWithEmotion = { ...cfg, temperature: emotionTemp };
+        result = await synthesizeSpeech(jaText, cfgWithEmotion);
+      }
+
       const saved = await saveVoiceFile(messageId, result.audio);
       if (!saved) {
         console.error('[TTS] Failed to save voice file');
@@ -4651,7 +4694,7 @@ export const App = () => {
       return { success: true, voiceFileId: messageId, voiceDuration: result.durationEstimate, japaneseText: jaText };
     } catch (err) {
       const label = err instanceof TtsError ? `${err.kind} (${err.status})` : String(err);
-      console.error(`[TTS] Fish Audio synthesis failed: ${label}`);
+      console.error(`[TTS] Synthesis failed (${isGenie ? 'Genie' : 'Fish'}): ${label}`);
       return { success: false };
     }
   };
@@ -5328,7 +5371,7 @@ export const App = () => {
           const combinedReminderText = response.textParts.join(' ');
           const currentTtsCfg = ttsConfigRef.current;
 
-          if (currentTtsCfg.voiceMode !== 'text' && currentTtsCfg.fishAudioApiKey && isVoiceServiceAvailable()) {
+          if (currentTtsCfg.voiceMode !== 'text' && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'genie') && isVoiceServiceAvailable()) {
               setIsThinking(false);
 
               const isInForeground = !document.hidden && document.hasFocus();
@@ -7170,7 +7213,7 @@ Simulate human behavior: decide as Kumiko would, not by a rigid template. Voice 
       const isVoiceTurn = currentTtsCfg.voiceMode === 'full'
         || (currentTtsCfg.voiceMode === 'hybrid' && response.voiceMode === true);
 
-      if (isVoiceTurn && currentTtsCfg.fishAudioApiKey && isVoiceServiceAvailable()) {
+      if (isVoiceTurn && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'genie') && isVoiceServiceAvailable()) {
         const combinedText = response.textParts.join(' ');
         setIsThinking(true);
 

@@ -188,8 +188,10 @@ export interface ChatResponse {
 }
 
 export type VoiceMode = 'full' | 'text' | 'hybrid';
+export type TtsBackend = 'fish' | 'genie';
 
 export interface TtsConfig {
+  ttsBackend: TtsBackend;
   voiceMode: VoiceMode;
   fishAudioApiKey: string;
   fishAudioReferenceId: string;
@@ -200,6 +202,12 @@ export interface TtsConfig {
   temperature?: number;
   model_translator?: string;
   ringtoneFileId?: string;
+  geniePythonPath?: string;
+  genieServerPort?: number;
+  genieCharacterName?: string;
+  genieModelDir?: string;
+  genieRefAudioDir?: string;
+  genieLanguage?: string;
 }
 
 export type AppUpdateStatus =

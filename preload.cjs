@@ -49,7 +49,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:update:get-state',
       'app:update:check',
       'app:update:download',
-      'app:update:quit-and-install'
+      'app:update:quit-and-install',
+      'genie:start',
+      'genie:stop',
+      'genie:status'
     ];
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, data);
@@ -75,7 +78,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'rag:rebuild:done',
       'rag:rebuild:error',
       'app:auto-zip-progress',
-      'app:update-status'
+      'app:update-status',
+      'genie:status-changed'
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.on(channel, listener);
@@ -88,7 +92,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'rag:rebuild:done',
       'rag:rebuild:error',
       'app:auto-zip-progress',
-      'app:update-status'
+      'app:update-status',
+      'genie:status-changed'
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.removeListener(channel, listener);

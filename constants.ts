@@ -1356,7 +1356,18 @@ export const EMOTION_TTS_TEMPERATURE: Record<EmotionType, number> = {
     worried_2: 0.7,
 };
 
+export const EMOTION_TO_GENIE_REF: Record<EmotionType, string> = {
+    neutral: 'neutral', smiling: 'happy', happy: 'happy',
+    angry: 'angry', sad: 'sad', shy: 'shy',
+    surprised: 'surprised', resigned: 'resigned',
+    serious: 'serious', gentle: 'gentle', sleepy: 'sleepy',
+    confused: 'neutral', confused_2: 'neutral',
+    disgusted: 'angry', smug: 'happy',
+    worried: 'sad', worried_2: 'sad',
+};
+
 export const DEFAULT_TTS_CONFIG: import('./types').TtsConfig = {
+    ttsBackend: 'fish',
     voiceMode: 'text',
     fishAudioApiKey: '',
     fishAudioReferenceId: '05ad2ce7133042c282cbb8ed26951352',
@@ -1365,6 +1376,10 @@ export const DEFAULT_TTS_CONFIG: import('./types').TtsConfig = {
     latency: 'balanced',
     speed: 1.0,
     ringtoneFileId: '01.mp3',
+    geniePythonPath: 'python',
+    genieServerPort: 8000,
+    genieCharacterName: 'kumiko',
+    genieLanguage: 'jp',
 };
 
 export const SOFTWARE_GUIDE_SECTIONS = {

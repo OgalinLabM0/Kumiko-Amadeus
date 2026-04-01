@@ -1,13 +1,14 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
 const JSZip = require('jszip');
 const { autoUpdater } = require('electron-updater');
 const { initRag, closeRag } = require('./electron-rag.cjs');
 
 let mainWindow;
 let tray = null;
+let genieProcess = null;
 let unreadMessageCount = 0;
 let lastWrittenBackupPath = null;
 const isDev = !app.isPackaged;
@@ -1435,6 +1436,57 @@ function writeRingtoneMetadata(dir, originalName) {
       console.error('Failed to initialize RAG:', e);
     }
 
+    // ── Genie-TTS server management ──────────────────────────────
+    ipcMain.handle('genie:start', async (_event, config) => {
+      if (genieProcess) return { success: false, error: 'Already running' };
+      try {
+        const { pythonPath, port } = config;
+        const script = `import genie_tts as genie\ngenie.start_server(host='127.0.0.1', port=${port || 8000}, workers=1)`;
+        genieProcess = spawn(pythonPath || 'python', ['-u', '-c', script], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        });
+        genieProcess.on('exit', (code) => {
+          genieProcess = null;
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('genie:status-changed', { running: false, code });
+          }
+        });
+        genieProcess.on('error', (err) => {
+          console.error('[GENIE] Process error:', err.message);
+          genieProcess = null;
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('genie:status-changed', { running: false, error: err.message });
+          }
+        });
+        const serverPort = port || 8000;
+        for (let i = 0; i < 60; i++) {
+          await new Promise(r => setTimeout(r, 1000));
+          if (!genieProcess) return { success: false, error: 'Process exited during startup' };
+          try {
+            const res = await fetch(`http://127.0.0.1:${serverPort}/docs`);
+            if (res.ok || res.status === 200) return { success: true, pid: genieProcess.pid };
+          } catch {}
+        }
+        return { success: false, error: 'Server startup timeout (60s)' };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    });
+
+    ipcMain.handle('genie:stop', () => {
+      if (genieProcess) {
+        try { genieProcess.kill(); } catch {}
+        genieProcess = null;
+      }
+      return { success: true };
+    });
+
+    ipcMain.handle('genie:status', () => ({
+      running: genieProcess !== null,
+      pid: genieProcess?.pid || null,
+    }));
+
     app.on('activate', function () {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();
     });
@@ -1527,5 +1579,9 @@ function writeRingtoneMetadata(dir, originalName) {
 
   app.on('will-quit', () => {
     closeRag();
+    if (genieProcess) {
+      try { genieProcess.kill(); } catch {}
+      genieProcess = null;
+    }
   });
 }
