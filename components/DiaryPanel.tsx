@@ -3,6 +3,7 @@ import { db, KumikoDiaryEntity } from '../services/db';
 import { X, ChevronLeft, ChevronRight, ArrowLeft, BookOpen, Calendar, RefreshCw } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { DiaryBackfillDialog, type BackfillProgress } from './DiaryBackfillDialog';
+import { SettingsToggle } from './settings/SettingsToggle';
 import type { DiaryGapInfo } from '../services/lifeStreamService';
 
 type ViewLevel = 'year' | 'month' | 'day';
@@ -21,6 +22,15 @@ const WEEKDAY_LABELS_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MONTH_LABELS_ZH = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 const MONTH_LABELS_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const JST_TIMEZONE = 'Asia/Tokyo';
+const AUTO_DIARY_BACKFILL_STORAGE_KEY = 'kumiko_auto_diary_backfill';
+
+const getAutoDiaryBackfillEnabled = () => {
+  try {
+    return window.localStorage.getItem(AUTO_DIARY_BACKFILL_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+};
 
 const getCurrentJstDate = () => new Date(new Date().toLocaleString('en-US', { timeZone: JST_TIMEZONE }));
 
@@ -60,6 +70,7 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
   const [rewritingDate, setRewritingDate] = useState<string | null>(null);
   const [rewriteFeedback, setRewriteFeedback] = useState<string | null>(null);
   const [rewriteError, setRewriteError] = useState<string | null>(null);
+  const [autoDiaryBackfillEnabled, setAutoDiaryBackfillEnabled] = useState<boolean>(() => getAutoDiaryBackfillEnabled());
 
   const checkGaps = useCallback(async () => {
     const { detectDiaryGaps } = await import('../services/lifeStreamService');
@@ -92,6 +103,14 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
     setRewriteFeedback(null);
     setRewriteError(null);
   }, [selectedDate]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(AUTO_DIARY_BACKFILL_STORAGE_KEY, autoDiaryBackfillEnabled ? 'true' : 'false');
+    } catch {
+      // Ignore storage failures and keep the panel usable.
+    }
+  }, [autoDiaryBackfillEnabled]);
 
   const handleBfAll = useCallback(async () => {
     if (!gapInfo) return;
@@ -258,6 +277,8 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
   const subChromeBgClass = isDarkMode ? 'bg-[#15110c]/84' : 'bg-white/30';
   const cardBgClass = isDarkMode ? 'bg-[#17120e]' : 'bg-white';
   const cardHeaderBgClass = isDarkMode ? 'bg-[#211a14]' : 'bg-[#785A42]/5';
+  const toggleActiveTrackClass = isDarkMode ? 'bg-emerald-500/90' : 'bg-emerald-500';
+  const toggleInactiveTrackClass = isDarkMode ? 'bg-[#3a3128]' : 'bg-[#d8d2c7]';
 
   const handleBack = () => {
     if (viewLevel === 'day') animate(() => setViewLevel('month'));
@@ -532,6 +553,28 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
           <button onClick={onClose} className={`p-2 ${inkSoftClass} ${isDarkMode ? 'hover:text-[#ead8c1] hover:bg-white/5' : 'hover:text-[#785A42] hover:bg-[#785A42]/5'} rounded-full transition-colors`}>
             <X size={20} />
           </button>
+        </div>
+      </div>
+
+      <div className={`flex-none border-b ${borderClass} px-4 py-3 ${subChromeBgClass}`}>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className={`ka-label font-semibold ${inkClass}`}>
+              {language === 'zh' ? '自动后台补齐' : 'Auto diary backfill'}
+            </div>
+            <p className={`mt-1 ka-micro leading-relaxed ${inkMutedClass}`}>
+              {language === 'zh'
+                ? '开启后，每次启动软件并进入聊天界面时，会在后台自动补齐缺失的日记。'
+                : 'When enabled, missing diary entries are filled in automatically in the background whenever the app starts and enters chat view.'}
+            </p>
+          </div>
+          <SettingsToggle
+            checked={autoDiaryBackfillEnabled}
+            onClick={() => setAutoDiaryBackfillEnabled(prev => !prev)}
+            activeTrackClass={toggleActiveTrackClass}
+            inactiveTrackClass={toggleInactiveTrackClass}
+            ariaLabel={language === 'zh' ? '切换自动后台补齐' : 'Toggle auto diary backfill'}
+          />
         </div>
       </div>
 

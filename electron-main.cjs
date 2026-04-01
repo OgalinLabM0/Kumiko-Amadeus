@@ -1069,11 +1069,49 @@ if (!singleInstanceLock) {
     return dir;
   }
 
-  function getRingtoneDir() {
-    const dir = path.join(app.getPath('userData'), 'ringtone');
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    return dir;
+function getRingtoneDir() {
+  const dir = path.join(app.getPath('userData'), 'ringtone');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function getRingtoneMetadataPath(dir) {
+  return path.join(dir, 'custom.meta.json');
+}
+
+function clearRingtoneMetadata(dir) {
+  const metadataPath = getRingtoneMetadataPath(dir);
+  if (fs.existsSync(metadataPath)) {
+    fs.unlinkSync(metadataPath);
   }
+}
+
+function readRingtoneMetadata(dir) {
+  try {
+    const metadataPath = getRingtoneMetadataPath(dir);
+    if (!fs.existsSync(metadataPath)) return null;
+    const raw = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+    if (!raw || typeof raw !== 'object') return null;
+    const originalName = typeof raw.originalName === 'string' ? raw.originalName.trim() : '';
+    return originalName ? { originalName } : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeRingtoneMetadata(dir, originalName) {
+  const normalizedName = typeof originalName === 'string' ? path.basename(originalName.trim()) : '';
+  if (!normalizedName) {
+    clearRingtoneMetadata(dir);
+    return;
+  }
+
+  fs.writeFileSync(
+    getRingtoneMetadataPath(dir),
+    JSON.stringify({ originalName: normalizedName }, null, 2),
+    'utf8'
+  );
+}
 
   function listCustomRingtoneFiles(dir) {
     if (!fs.existsSync(dir)) return [];
@@ -1165,7 +1203,7 @@ if (!singleInstanceLock) {
 
   ipcMain.handle('ringtone:save', (_event, payload = {}) => {
     try {
-      const { buffer, ext } = payload;
+      const { buffer, ext, originalName } = payload;
       if (!buffer || !ext) return { success: false, error: 'Missing params' };
       const normalizedExt = `.${String(ext).replace(/^\./, '').toLowerCase()}`;
       if (!RINGTONE_AUDIO_EXTENSIONS.has(normalizedExt)) {
@@ -1174,8 +1212,10 @@ if (!singleInstanceLock) {
       const dir = getRingtoneDir();
       const existing = listCustomRingtoneFiles(dir);
       for (const f of existing) fs.unlinkSync(path.join(dir, f));
+      clearRingtoneMetadata(dir);
       const filePath = path.join(dir, `custom${normalizedExt}`);
       fs.writeFileSync(filePath, Buffer.from(buffer));
+      writeRingtoneMetadata(dir, originalName);
       return { success: true, filePath };
     } catch (e) {
       return { success: false, error: e.message };
@@ -1189,7 +1229,13 @@ if (!singleInstanceLock) {
       if (entries.length === 0) return { success: false };
       const filePath = path.join(dir, entries[0]);
       const buffer = fs.readFileSync(filePath);
-      return { success: true, buffer, fileName: entries[0] };
+      const metadata = readRingtoneMetadata(dir);
+      return {
+        success: true,
+        buffer,
+        fileName: entries[0],
+        displayName: metadata?.originalName || entries[0],
+      };
     } catch (e) {
       return { success: false, error: e.message };
     }
@@ -1200,6 +1246,7 @@ if (!singleInstanceLock) {
       const dir = getRingtoneDir();
       const entries = listCustomRingtoneFiles(dir);
       for (const f of entries) fs.unlinkSync(path.join(dir, f));
+      clearRingtoneMetadata(dir);
       return { success: true };
     } catch (e) {
       return { success: false, error: e.message };
@@ -1214,7 +1261,13 @@ if (!singleInstanceLock) {
       if (entries.length === 0) return { exists: false, fileName: null, size: 0 };
       const file = entries[0];
       const size = fs.statSync(path.join(dir, file)).size;
-      return { exists: true, fileName: file, size };
+      const metadata = readRingtoneMetadata(dir);
+      return {
+        exists: true,
+        fileName: file,
+        displayName: metadata?.originalName || file,
+        size,
+      };
     } catch (e) {
       return { exists: false, fileName: null, size: 0 };
     }

@@ -3,9 +3,16 @@ import { ChevronDown, ChevronUp, Upload, Play, Square, Trash2, TestTube, Loader2
 import type { TtsConfig, VoiceMode, Language } from '../../types';
 import { UI_TRANSLATIONS, DEFAULT_TTS_CONFIG } from '../../constants';
 import { synthesizeSpeech } from '../../services/fishAudioService';
-import { saveRingtoneFile, loadRingtoneFile, deleteRingtoneFile, isVoiceServiceAvailable } from '../../services/voiceFileService';
-
-const VALID_RINGTONE_FILE_RE = /^custom\.(mp3|wav|ogg|m4a|aac|flac)$/i;
+import {
+  saveRingtoneFile,
+  loadRingtoneFileWithName,
+  deleteRingtoneFile,
+  isVoiceServiceAvailable,
+  isBuiltInRingtoneId,
+  isCustomRingtoneId,
+  getBuiltInRingtoneUrl,
+  getAudioMimeTypeForFileName,
+} from '../../services/voiceFileService';
 
 const BUILT_IN_RINGTONES = [
   { id: '01.mp3', displayNum: '01', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '115-man Kilo no Film - Kumiko Oumae' },
@@ -43,10 +50,12 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   ttsConfig,
   onTtsConfigChange,
 }) => {
+  const CUSTOM_RINGTONE_PREVIEW_ID = '__custom__';
   const t = UI_TRANSLATIONS[language];
   const [isTesting, setIsTesting] = useState(false);
   const [testStatus, setTestStatus] = useState<'idle' | 'playing' | 'error'>('idle');
   const [hasRingtone, setHasRingtone] = useState(false);
+  const [customRingtoneId, setCustomRingtoneId] = useState<string | null>(null);
   const [ringtoneFileName, setRingtoneFileName] = useState<string | null>(null);
   const [isRingtonePlaying, setIsRingtonePlaying] = useState(false);
   const [previewingRingtoneId, setPreviewingRingtoneId] = useState<string | null>(null);
@@ -56,10 +65,55 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   const ringtoneAudioRef = useRef<HTMLAudioElement | null>(null);
   const ringtoneUrlRef = useRef<string | null>(null);
   const testAudioRef = useRef<HTMLAudioElement | null>(null);
+  const testAudioUrlRef = useRef<string | null>(null);
 
   const update = useCallback((patch: Partial<TtsConfig>) => {
     onTtsConfigChange({ ...ttsConfig, ...patch });
   }, [ttsConfig, onTtsConfigChange]);
+
+  const getReadableCustomRingtoneName = useCallback((rawName?: string | null) => {
+    if (!rawName || isCustomRingtoneId(rawName)) {
+      return language === 'zh' ? '自定义铃声' : 'Custom ringtone';
+    }
+    return rawName;
+  }, [language]);
+
+  const stopRingtonePlayback = useCallback(() => {
+    if (ringtoneAudioRef.current) {
+      ringtoneAudioRef.current.pause();
+      ringtoneAudioRef.current.currentTime = 0;
+      ringtoneAudioRef.current.onended = null;
+      ringtoneAudioRef.current.onerror = null;
+      ringtoneAudioRef.current.ontimeupdate = null;
+      ringtoneAudioRef.current.onloadedmetadata = null;
+      ringtoneAudioRef.current.src = '';
+      ringtoneAudioRef.current = null;
+    }
+    if (ringtoneUrlRef.current?.startsWith('blob:')) {
+      URL.revokeObjectURL(ringtoneUrlRef.current);
+    }
+    ringtoneUrlRef.current = null;
+    setIsRingtonePlaying(false);
+    setPreviewingRingtoneId(null);
+    setRingtoneCurrentTime('');
+  }, []);
+
+  const stopTestVoicePlayback = useCallback(() => {
+    if (testAudioRef.current) {
+      testAudioRef.current.pause();
+      testAudioRef.current.currentTime = 0;
+      testAudioRef.current.onended = null;
+      testAudioRef.current.onerror = null;
+      testAudioRef.current.src = '';
+      testAudioRef.current = null;
+    }
+    if (testAudioUrlRef.current) {
+      URL.revokeObjectURL(testAudioUrlRef.current);
+      testAudioUrlRef.current = null;
+    }
+    setTestStatus('idle');
+    setIsTesting(false);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,12 +121,13 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     const syncRingtoneState = async () => {
       const ipc = (window as any)?.electronAPI;
       if (!ipc) {
-        const fallbackName = VALID_RINGTONE_FILE_RE.test(ttsConfig.ringtoneFileId || '')
+        const fallbackCustomId = isCustomRingtoneId(ttsConfig.ringtoneFileId)
           ? ttsConfig.ringtoneFileId || null
           : null;
         if (!cancelled) {
-          setHasRingtone(!!fallbackName);
-          setRingtoneFileName(fallbackName);
+          setHasRingtone(!!fallbackCustomId);
+          setCustomRingtoneId(fallbackCustomId);
+          setRingtoneFileName(fallbackCustomId ? getReadableCustomRingtoneName(fallbackCustomId) : null);
         }
         return;
       }
@@ -82,10 +137,12 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
         if (cancelled) return;
         const exists = result?.exists === true;
         setHasRingtone(exists);
-        setRingtoneFileName(exists ? (result?.fileName || null) : null);
+        setCustomRingtoneId(exists ? (result?.fileName || null) : null);
+        setRingtoneFileName(exists ? getReadableCustomRingtoneName(result?.displayName || result?.fileName || null) : null);
       } catch {
         if (!cancelled) {
           setHasRingtone(false);
+          setCustomRingtoneId(null);
           setRingtoneFileName(null);
         }
       }
@@ -98,7 +155,104 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isOpen, ttsConfig.ringtoneFileId]);
+  }, [getReadableCustomRingtoneName, isOpen, ttsConfig.ringtoneFileId]);
+
+  useEffect(() => {
+    if (!isOpen || !hasRingtone || ringtoneDurations[CUSTOM_RINGTONE_PREVIEW_ID]) return;
+
+    let cancelled = false;
+    let cleanupUrl: string | null = null;
+    const preloadCustomDuration = async () => {
+      const loaded = await loadRingtoneFileWithName();
+      if (!loaded || cancelled) return;
+      const blob = new Blob([loaded.buffer], { type: getAudioMimeTypeForFileName(loaded.fileName) });
+      cleanupUrl = URL.createObjectURL(blob);
+      const audio = new Audio(cleanupUrl);
+      audio.preload = 'metadata';
+      audio.onloadedmetadata = () => {
+        if (cancelled) return;
+        const duration = audio.duration;
+        const mins = Math.floor(duration / 60);
+        const secs = Math.floor(duration % 60);
+        setRingtoneDurations(prev => prev[CUSTOM_RINGTONE_PREVIEW_ID]
+          ? prev
+          : { ...prev, [CUSTOM_RINGTONE_PREVIEW_ID]: `${mins}:${secs.toString().padStart(2, '0')}` });
+      };
+      audio.onerror = () => {
+        if (cleanupUrl?.startsWith('blob:')) URL.revokeObjectURL(cleanupUrl);
+        cleanupUrl = null;
+      };
+      audio.load();
+    };
+
+    preloadCustomDuration();
+
+    return () => {
+      cancelled = true;
+      if (cleanupUrl?.startsWith('blob:')) URL.revokeObjectURL(cleanupUrl);
+    };
+  }, [CUSTOM_RINGTONE_PREVIEW_ID, hasRingtone, isOpen, ringtoneDurations, ringtoneFileName]);
+
+  useEffect(() => {
+    if (isOpen) return;
+    stopRingtonePlayback();
+    stopTestVoicePlayback();
+  }, [isOpen, stopRingtonePlayback, stopTestVoicePlayback]);
+
+  useEffect(() => {
+    return () => {
+      stopRingtonePlayback();
+      stopTestVoicePlayback();
+    };
+  }, [stopRingtonePlayback, stopTestVoicePlayback]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const missingRingtoneIds = BUILT_IN_RINGTONES
+      .map(ringtone => ringtone.id)
+      .filter(ringtoneId => !ringtoneDurations[ringtoneId]);
+    if (missingRingtoneIds.length === 0) return;
+
+    let cancelled = false;
+    const cleanups: HTMLAudioElement[] = [];
+
+    missingRingtoneIds.forEach(ringtoneId => {
+      const url = getBuiltInRingtoneUrl(ringtoneId);
+      if (!url) return;
+      const audio = new Audio(url);
+      audio.preload = 'metadata';
+      audio.onloadedmetadata = () => {
+        if (cancelled) return;
+        const duration = audio.duration;
+        const mins = Math.floor(duration / 60);
+        const secs = Math.floor(duration % 60);
+        setRingtoneDurations(prev => prev[ringtoneId]
+          ? prev
+          : { ...prev, [ringtoneId]: `${mins}:${secs.toString().padStart(2, '0')}` });
+      };
+      cleanups.push(audio);
+      audio.load();
+    });
+
+    return () => {
+      cancelled = true;
+      cleanups.forEach(audio => {
+        audio.onloadedmetadata = null;
+        audio.onerror = null;
+      });
+    };
+  }, [isOpen, ringtoneDurations]);
+
+  const selectedBuiltInRingtone = BUILT_IN_RINGTONES.find(ringtone => ringtone.id === ttsConfig.ringtoneFileId);
+  const isCustomRingtoneSelected = !!customRingtoneId && ttsConfig.ringtoneFileId === customRingtoneId;
+  const genericCustomRingtoneLabel = language === 'zh' ? '自定义铃声' : 'Custom ringtone';
+  const selectedRingtoneLabel = selectedBuiltInRingtone
+    ? `${selectedBuiltInRingtone.displayNum} · ${language === 'zh' ? selectedBuiltInRingtone.nameZh : selectedBuiltInRingtone.nameEn}`
+    : (isCustomRingtoneSelected && ringtoneFileName
+      ? (ringtoneFileName === genericCustomRingtoneLabel
+        ? ringtoneFileName
+        : (language === 'zh' ? `自定义铃声 · ${ringtoneFileName}` : `Custom ringtone · ${ringtoneFileName}`))
+      : null);
 
   const openExternalUrl = useCallback(async (url: string) => {
     const ipc = (window as any)?.electronAPI;
@@ -123,84 +277,111 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       const result = await synthesizeSpeech(testText, ttsConfig);
       const blob = new Blob([result.audio], { type: 'audio/mpeg' });
       const url = URL.createObjectURL(blob);
-      if (testAudioRef.current) { testAudioRef.current.pause(); testAudioRef.current.src = ''; }
+      stopTestVoicePlayback();
+      testAudioUrlRef.current = url;
       const audio = new Audio(url);
       testAudioRef.current = audio;
-      audio.onended = () => { setTestStatus('idle'); setIsTesting(false); URL.revokeObjectURL(url); };
-      audio.onerror = () => { setTestStatus('error'); setIsTesting(false); URL.revokeObjectURL(url); };
+      audio.onended = () => { stopTestVoicePlayback(); };
+      audio.onerror = () => {
+        stopTestVoicePlayback();
+        setTestStatus('error');
+      };
       await audio.play();
       setTestStatus('playing');
     } catch {
       setTestStatus('error');
       setIsTesting(false);
     }
-  }, [isTesting, ttsConfig]);
+  }, [isTesting, stopTestVoicePlayback, ttsConfig]);
 
   const handleRingtoneUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const ext = file.name.split('.').pop()?.toLowerCase() || 'mp3';
     const buf = await file.arrayBuffer();
-    const ok = await saveRingtoneFile(buf, ext);
+    const ok = await saveRingtoneFile(buf, ext, file.name);
     if (ok) {
-      update({ ringtoneFileId: `custom.${ext}` });
+      const customId = `custom.${ext}`;
+      stopRingtonePlayback();
+      update({ ringtoneFileId: customId });
       setHasRingtone(true);
-      setRingtoneFileName(`custom.${ext}`);
+      setCustomRingtoneId(customId);
+      setRingtoneFileName(file.name);
+      setRingtoneDurations(prev => {
+        const next = { ...prev };
+        delete next[CUSTOM_RINGTONE_PREVIEW_ID];
+        return next;
+      });
+      window.dispatchEvent(new CustomEvent('kumiko:ringtone-storage-changed'));
     }
     if (ringtoneInputRef.current) ringtoneInputRef.current.value = '';
-  }, [update]);
+  }, [CUSTOM_RINGTONE_PREVIEW_ID, stopRingtonePlayback, update]);
 
   const handleRingtoneDelete = useCallback(async () => {
+    stopRingtonePlayback();
     await deleteRingtoneFile();
-    update({ ringtoneFileId: undefined });
+    update({ ringtoneFileId: DEFAULT_TTS_CONFIG.ringtoneFileId });
     setHasRingtone(false);
+    setCustomRingtoneId(null);
     setRingtoneFileName(null);
-  }, [update]);
+    setRingtoneDurations(prev => {
+      const next = { ...prev };
+      delete next[CUSTOM_RINGTONE_PREVIEW_ID];
+      return next;
+    });
+    window.dispatchEvent(new CustomEvent('kumiko:ringtone-storage-changed'));
+  }, [CUSTOM_RINGTONE_PREVIEW_ID, stopRingtonePlayback, update]);
 
   const handleResetReferenceId = useCallback(() => {
     update({ fishAudioReferenceId: DEFAULT_TTS_CONFIG.fishAudioReferenceId });
   }, [update]);
 
   const handleRingtonePreview = useCallback(async () => {
-    if (isRingtonePlaying && ringtoneAudioRef.current) {
-      ringtoneAudioRef.current.pause();
-      ringtoneAudioRef.current.currentTime = 0;
-      setIsRingtonePlaying(false);
-      if (ringtoneUrlRef.current) { URL.revokeObjectURL(ringtoneUrlRef.current); ringtoneUrlRef.current = null; }
+    const isCustomPreviewing = previewingRingtoneId === CUSTOM_RINGTONE_PREVIEW_ID && isRingtonePlaying;
+    if (isCustomPreviewing && ringtoneAudioRef.current) {
+      stopRingtonePlayback();
       return;
     }
-    const buf = await loadRingtoneFile();
-    if (!buf) return;
-    const blob = new Blob([buf], { type: 'audio/mpeg' });
+    stopRingtonePlayback();
+    const loaded = await loadRingtoneFileWithName();
+    if (!loaded) return;
+    const blob = new Blob([loaded.buffer], { type: getAudioMimeTypeForFileName(loaded.fileName) });
     const url = URL.createObjectURL(blob);
     ringtoneUrlRef.current = url;
     const audio = new Audio(url);
     ringtoneAudioRef.current = audio;
-    audio.onended = () => { setIsRingtonePlaying(false); URL.revokeObjectURL(url); ringtoneUrlRef.current = null; };
-    audio.onerror = () => { setIsRingtonePlaying(false); URL.revokeObjectURL(url); ringtoneUrlRef.current = null; };
+    audio.onloadedmetadata = () => {
+      const duration = audio.duration || 0;
+      const mins = Math.floor(duration / 60);
+      const secs = Math.floor(duration % 60);
+      setRingtoneDurations(prev => ({ ...prev, [CUSTOM_RINGTONE_PREVIEW_ID]: `${mins}:${secs.toString().padStart(2, '0')}` }));
+    };
+    audio.ontimeupdate = () => {
+      const current = audio.currentTime;
+      const duration = audio.duration || 0;
+      const currentMins = Math.floor(current / 60);
+      const currentSecs = Math.floor(current % 60);
+      const durationMins = Math.floor(duration / 60);
+      const durationSecs = Math.floor(duration % 60);
+      setRingtoneCurrentTime(`${currentMins}:${currentSecs.toString().padStart(2, '0')} / ${durationMins}:${durationSecs.toString().padStart(2, '0')}`);
+    };
+    audio.onended = () => { stopRingtonePlayback(); };
+    audio.onerror = () => { stopRingtonePlayback(); };
     setIsRingtonePlaying(true);
-    audio.play().catch(() => { setIsRingtonePlaying(false); URL.revokeObjectURL(url); ringtoneUrlRef.current = null; });
-  }, [isRingtonePlaying]);
+    setPreviewingRingtoneId(CUSTOM_RINGTONE_PREVIEW_ID);
+    audio.play().catch(() => { stopRingtonePlayback(); });
+  }, [CUSTOM_RINGTONE_PREVIEW_ID, getAudioMimeTypeForFileName, isRingtonePlaying, previewingRingtoneId, stopRingtonePlayback]);
 
   const handleBuiltInRingtonePreview = useCallback(async (ringtoneId: string) => {
     if (previewingRingtoneId === ringtoneId && isRingtonePlaying) {
-      if (ringtoneAudioRef.current) {
-        ringtoneAudioRef.current.pause();
-        ringtoneAudioRef.current.currentTime = 0;
-      }
-      setIsRingtonePlaying(false);
-      setPreviewingRingtoneId(null);
-      setRingtoneCurrentTime('');
-      if (ringtoneUrlRef.current) { URL.revokeObjectURL(ringtoneUrlRef.current); ringtoneUrlRef.current = null; }
+      stopRingtonePlayback();
       return;
     }
-    if (ringtoneAudioRef.current) {
-      ringtoneAudioRef.current.pause();
-      ringtoneAudioRef.current.currentTime = 0;
+    stopRingtonePlayback();
+    const url = getBuiltInRingtoneUrl(ringtoneId);
+    if (!url) {
+      return;
     }
-    if (ringtoneUrlRef.current) { URL.revokeObjectURL(ringtoneUrlRef.current); ringtoneUrlRef.current = null; }
-    const url = `/ringtones/${ringtoneId}`;
-    ringtoneUrlRef.current = url;
     const audio = new Audio(url);
     ringtoneAudioRef.current = audio;
     audio.onloadedmetadata = () => {
@@ -218,12 +399,12 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       const durationSecs = Math.floor(duration % 60);
       setRingtoneCurrentTime(`${currentMins}:${currentSecs.toString().padStart(2, '0')} / ${durationMins}:${durationSecs.toString().padStart(2, '0')}`);
     };
-    audio.onended = () => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); setRingtoneCurrentTime(''); };
-    audio.onerror = () => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); setRingtoneCurrentTime(''); };
+    audio.onended = () => { stopRingtonePlayback(); };
+    audio.onerror = () => { stopRingtonePlayback(); };
     setPreviewingRingtoneId(ringtoneId);
     setIsRingtonePlaying(true);
-    audio.play().catch(() => { setIsRingtonePlaying(false); setPreviewingRingtoneId(null); setRingtoneCurrentTime(''); });
-  }, [previewingRingtoneId, isRingtonePlaying]);
+    audio.play().catch(() => { stopRingtonePlayback(); });
+  }, [previewingRingtoneId, isRingtonePlaying, stopRingtonePlayback]);
 
   const modeOptions: { value: VoiceMode; label: string; desc: string }[] = [
     { value: 'text', label: t.ttsModeText, desc: (t as any).ttsModeTextDesc || '' },
@@ -353,7 +534,14 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               className="w-full mt-1 accent-[#c79a2f]" />
           </div>
           <div className={`${innerCardClass} p-4 rounded-[1.15rem]`}>
-            <div className={fieldLabelClass}>{t.ttsRingtone}</div>
+            <div className="flex items-center justify-between gap-3">
+              <div className={fieldLabelClass}>{t.ttsRingtone}</div>
+              {selectedRingtoneLabel && (
+                <div className={`${helperClass} rounded-full px-2.5 py-1 border ${isDarkMode ? 'border-[#4f3b2a] bg-[#211912]' : 'border-[#eadfce] bg-white/85'}`}>
+                  {language === 'zh' ? `当前来电铃声：${selectedRingtoneLabel}` : `Current ringtone: ${selectedRingtoneLabel}`}
+                </div>
+              )}
+            </div>
             <div className={`${helperClass} mt-0.5 mb-3 leading-relaxed`}>
               {language === 'zh' ? '选择内置铃声或上传自定义铃声' : 'Select built-in ringtones or upload custom ringtone'}
             </div>
@@ -362,23 +550,39 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                 const isSelected = ttsConfig.ringtoneFileId === ringtone.id;
                 const isDefault = ringtone.id === '01.mp3';
                 const isPreviewing = previewingRingtoneId === ringtone.id && isRingtonePlaying;
+                const cardStateClass = isPreviewing
+                  ? (isDarkMode
+                    ? 'bg-sky-500/12 border-sky-400/60 shadow-[0_0_0_1px_rgba(56,189,248,0.18),0_0_12px_rgba(56,189,248,0.12)]'
+                    : 'bg-sky-50 border-sky-400 shadow-[0_0_0_1px_rgba(56,189,248,0.16),0_8px_18px_rgba(56,189,248,0.08)]')
+                  : isSelected
+                    ? (isDarkMode
+                      ? 'bg-amber-500/20 border-amber-500/50 shadow-[0_0_8px_rgba(212,168,82,0.3)]'
+                      : 'bg-amber-50 border-amber-400 shadow-[0_0_6px_rgba(212,168,82,0.2)]')
+                    : (isDarkMode ? 'bg-[#1a1510] border-[#3d3020] hover:border-[#5d4830]' : 'bg-white border-gray-200 hover:border-gray-300');
                 return (
                   <div key={ringtone.id} className="relative group">
                     <button
                       onClick={() => update({ ringtoneFileId: ringtone.id })}
-                      className={`w-full p-2 rounded-lg border transition-all text-left ${
-                        isSelected
-                          ? (isDarkMode ? 'bg-amber-500/20 border-amber-500/50 shadow-[0_0_8px_rgba(212,168,82,0.3)]' : 'bg-amber-50 border-amber-400 shadow-[0_0_6px_rgba(212,168,82,0.2)]')
-                          : (isDarkMode ? 'bg-[#1a1510] border-[#3d3020] hover:border-[#5d4830]' : 'bg-white border-gray-200 hover:border-gray-300')
-                      }`}
+                      className={`w-full p-2 rounded-lg border transition-all text-left ${cardStateClass}`}
                     >
                       <div className="flex items-center justify-between mb-1">
-                        <div className={`text-sm font-bold ${isSelected ? (isDarkMode ? 'text-amber-300' : 'text-amber-700') : (isDarkMode ? 'text-gray-300' : 'text-gray-700')}`}>
+                        <div className={`text-sm font-bold ${
+                          isPreviewing
+                            ? (isDarkMode ? 'text-sky-200' : 'text-sky-700')
+                            : isSelected
+                              ? (isDarkMode ? 'text-amber-300' : 'text-amber-700')
+                              : (isDarkMode ? 'text-gray-300' : 'text-gray-700')
+                        }`}>
                           {ringtone.displayNum}
                         </div>
                         {isDefault && !isSelected && (
                           <span className={`text-[8px] px-1 py-0.5 rounded ${isDarkMode ? 'bg-gray-700 text-gray-400' : 'bg-gray-100 text-gray-500'}`}>
                             DEFAULT
+                          </span>
+                        )}
+                        {isPreviewing && (
+                          <span className={`text-[8px] px-1 py-0.5 rounded ${isDarkMode ? 'bg-sky-500/30 text-sky-200' : 'bg-sky-100 text-sky-700'}`}>
+                            {language === 'zh' ? '播放中' : 'PLAYING'}
                           </span>
                         )}
                         {isSelected && (
@@ -387,12 +591,24 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                           </span>
                         )}
                       </div>
-                      <div className={`text-[10px] truncate ${isSelected ? (isDarkMode ? 'text-amber-400/90' : 'text-amber-600') : (isDarkMode ? 'text-gray-500' : 'text-gray-500')}`}
+                      <div className={`text-[10px] truncate ${
+                        isPreviewing
+                          ? (isDarkMode ? 'text-sky-300/90' : 'text-sky-700')
+                          : isSelected
+                            ? (isDarkMode ? 'text-amber-400/90' : 'text-amber-600')
+                            : (isDarkMode ? 'text-gray-500' : 'text-gray-500')
+                      }`}
                         title={language === 'zh' ? ringtone.nameZh : ringtone.nameEn}>
                         {language === 'zh' ? ringtone.nameZh : ringtone.nameEn}
                       </div>
                       {ringtoneDurations[ringtone.id] && (
-                        <div className={`text-[9px] mt-0.5 ${isSelected ? (isDarkMode ? 'text-amber-500/70' : 'text-amber-500') : (isDarkMode ? 'text-gray-600' : 'text-gray-400')}`}>
+                        <div className={`text-[9px] mt-0.5 ${
+                          isPreviewing
+                            ? (isDarkMode ? 'text-sky-300/80' : 'text-sky-600')
+                            : isSelected
+                              ? (isDarkMode ? 'text-amber-500/70' : 'text-amber-500')
+                              : (isDarkMode ? 'text-gray-600' : 'text-gray-400')
+                        }`}>
                           {isPreviewing && ringtoneCurrentTime ? ringtoneCurrentTime : ringtoneDurations[ringtone.id]}
                         </div>
                       )}
@@ -420,10 +636,26 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               </button>
               {hasRingtone && (
                 <>
+                  {(() => {
+                    const isCustomPreviewing = previewingRingtoneId === CUSTOM_RINGTONE_PREVIEW_ID && isRingtonePlaying;
+                    const customRingtoneTimeLabel = isCustomPreviewing && ringtoneCurrentTime
+                      ? ringtoneCurrentTime
+                      : ringtoneDurations[CUSTOM_RINGTONE_PREVIEW_ID];
+                    return (
+                      <>
+                  {customRingtoneId && !isCustomRingtoneSelected && (
+                    <button
+                      onClick={() => update({ ringtoneFileId: customRingtoneId })}
+                      className={`flex items-center gap-1 px-2.5 py-1.5 rounded ka-copy-sm font-semibold ${actionChipClass}`}
+                    >
+                      <Volume2 size={12} />
+                      {language === 'zh' ? '设为铃声' : 'Use as ringtone'}
+                    </button>
+                  )}
                   <button onClick={handleRingtonePreview}
-                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded ka-copy-sm font-semibold transition-colors ${isRingtonePlaying ? 'text-amber-400 hover:text-amber-300 bg-amber-500/10' : (isDarkMode ? 'text-[#d8ba81] hover:text-[#eed29f]' : 'text-[#a06b22] hover:text-[#8a5b1d]')}`}>
-                    {isRingtonePlaying ? <Square size={12} /> : <Play size={12} />}
-                    {isRingtonePlaying ? (language === 'zh' ? '停止' : 'Stop') : t.ttsRingtonePreview}
+                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded ka-copy-sm font-semibold transition-colors ${isCustomPreviewing ? 'text-sky-500 hover:text-sky-400 bg-sky-500/10' : (isDarkMode ? 'text-[#d8ba81] hover:text-[#eed29f]' : 'text-[#a06b22] hover:text-[#8a5b1d]')}`}>
+                    {isCustomPreviewing ? <Square size={12} /> : <Play size={12} />}
+                    {isCustomPreviewing ? (language === 'zh' ? '停止' : 'Stop') : t.ttsRingtonePreview}
                   </button>
                   <button onClick={handleRingtoneDelete}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded ka-copy-sm font-semibold text-red-400 hover:text-red-300">
@@ -431,7 +663,11 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                   </button>
                   <span className={helperClass}>
                     {language === 'zh' ? `已上传 · ${ringtoneFileName}` : `Uploaded · ${ringtoneFileName}`}
+                    {customRingtoneTimeLabel ? ` · ${customRingtoneTimeLabel}` : ''}
                   </span>
+                      </>
+                    );
+                  })()}
                 </>
               )}
             </div>
@@ -460,8 +696,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                   {language === 'zh' ? '正在播放测试语音...' : 'Playing test voice...'}
                 </span>
                 <button onClick={() => {
-                  if (testAudioRef.current) { testAudioRef.current.onended = null; testAudioRef.current.onerror = null; testAudioRef.current.pause(); testAudioRef.current.src = ''; }
-                  setTestStatus('idle'); setIsTesting(false);
+                  stopTestVoicePlayback();
                 }} className="ml-auto p-1 rounded hover:bg-amber-500/20">
                   <Square size={10} className="text-amber-500" />
                 </button>

@@ -32,7 +32,7 @@ import { Message, AppState, AppUpdateState, EmotionType, WorldBookEntry, Languag
 import { sendMessageToGemini, startChat, summarizeConversation, searchRagMemory, saveRagMemory, uploadImageToBackend, getCurrentAIConfig, analyzeTemporalQueryDetailed, getTemporalSearchRoleFromQuery, rewriteHistoricalRecallQueryDetailed, callLLMRaw, type HistoricalQueryRewrite, type HistoricalSearchStrategy, type TemporalQueryAnalysis, type TemporalQueryDiagnostics } from '../services/geminiService';
 import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK, KUMIKO_LOCAL_RAG_ZH, EMOTION_TO_FISH_AUDIO_TAGS, EMOTION_TTS_TEMPERATURE, DEFAULT_TTS_CONFIG } from '../constants';
 import { synthesizeSpeech, TtsError } from '../services/fishAudioService';
-import { saveVoiceFile, isVoiceServiceAvailable } from '../services/voiceFileService';
+import { saveVoiceFile, isVoiceServiceAvailable, isBuiltInRingtoneId, isCustomRingtoneId } from '../services/voiceFileService';
 import { VoiceCallOverlay } from './VoiceCallOverlay';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -69,6 +69,7 @@ const MESSAGE_ALERTS_STORAGE_KEY = 'kumiko_message_alerts';
 const SUMMARY_ARCHIVE_STATE_STORAGE_KEY = 'kumiko_summary_archive_state';
 const RAG_HISTORY_DIRTY_STORAGE_KEY = 'kumiko_rag_history_dirty';
 const MEMORY_QUERY_SESSION_STORAGE_KEY = 'kumiko_memory_query_session';
+const AUTO_DIARY_BACKFILL_STORAGE_KEY = 'kumiko_auto_diary_backfill';
 const REMINDER_RETRY_DELAY_MS = 30000;
 const SUMMARY_SEMANTIC_CACHE_LIMIT = 48;
 
@@ -3314,6 +3315,7 @@ export const App = () => {
   const [backfillComplete, setBackfillComplete] = useState(false);
   const [backfillGeneratedCount, setBackfillGeneratedCount] = useState(0);
   const pendingSendRef = useRef<(() => void) | null>(null);
+  const autoDiaryBackfillRunningRef = useRef(false);
 
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -3544,6 +3546,38 @@ export const App = () => {
     setBackfillGeneratedCount(count);
   }, []);
 
+  const isAutoDiaryBackfillEnabled = useCallback(() => {
+    try {
+      return window.localStorage.getItem(AUTO_DIARY_BACKFILL_STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const runAutoDiaryBackfill = useCallback(async (
+    precomputedGapInfo?: import('../services/lifeStreamService').DiaryGapInfo | null
+  ) => {
+    if (!isAutoDiaryBackfillEnabled() || autoDiaryBackfillRunningRef.current) return false;
+
+    autoDiaryBackfillRunningRef.current = true;
+    try {
+      const { batchGenerateDiaries, detectDiaryGaps } = await import('../services/lifeStreamService');
+      const gapInfo = precomputedGapInfo && precomputedGapInfo.totalMissing > 0
+        ? precomputedGapInfo
+        : await detectDiaryGaps();
+
+      if (gapInfo.totalMissing <= 0 || gapInfo.missingDates.length === 0) return false;
+
+      await batchGenerateDiaries(gapInfo.missingDates, () => {}, gapInfo.contextAfter);
+      return true;
+    } catch (error) {
+      console.warn('[Diary] Auto background backfill failed:', error);
+      return false;
+    } finally {
+      autoDiaryBackfillRunningRef.current = false;
+    }
+  }, [isAutoDiaryBackfillEnabled]);
+
   const handleBackfillAll = useCallback(async () => {
     if (!backfillGapInfo || backfillGapInfo.missingDates.length === 0) return;
     await runDiaryBackfill(backfillGapInfo.missingDates, backfillGapInfo.contextAfter);
@@ -3568,6 +3602,11 @@ export const App = () => {
     }
   }, []);
 
+  useEffect(() => {
+    if (flowState !== 'APP' || !isDataLoaded) return;
+    void runAutoDiaryBackfill();
+  }, [flowState, isDataLoaded, runAutoDiaryBackfill]);
+
   const handleToggleAutoZip = () => {
     const newValue = !autoZipEnabled;
     setAutoZipEnabled(newValue);
@@ -3586,8 +3625,8 @@ export const App = () => {
       ...(value && typeof value === 'object' ? value as Partial<TtsConfig> : {})
     };
 
-    if (typeof merged.ringtoneFileId !== 'string' || !/^custom\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(merged.ringtoneFileId)) {
-      delete merged.ringtoneFileId;
+    if (!isBuiltInRingtoneId(merged.ringtoneFileId) && !isCustomRingtoneId(merged.ringtoneFileId)) {
+      merged.ringtoneFileId = DEFAULT_TTS_CONFIG.ringtoneFileId;
     }
 
     return merged as TtsConfig;
@@ -5930,7 +5969,12 @@ export const App = () => {
                 const rtResult = await loadRingtoneFileWithName();
                 if (rtResult) {
                     const ringtoneFolder = zip.folder("ringtone");
-                    if (ringtoneFolder) ringtoneFolder.file(rtResult.fileName, rtResult.buffer);
+                    if (ringtoneFolder) {
+                        ringtoneFolder.file(rtResult.fileName, rtResult.buffer);
+                        if (rtResult.displayName && rtResult.displayName !== rtResult.fileName) {
+                            ringtoneFolder.file('custom.meta.json', JSON.stringify({ originalName: rtResult.displayName }, null, 2));
+                        }
+                    }
                 }
             } catch (e) {
                 console.warn('[EXPORT] Failed to include voice files:', e);
@@ -6008,11 +6052,26 @@ export const App = () => {
                     }
                     const ringtoneFolder = zip.folder("ringtone");
                     if (ringtoneFolder) {
-                        const rtKeys = Object.keys(ringtoneFolder.files).filter(n => !ringtoneFolder.files[n].dir);
-                        if (rtKeys.length > 0) {
-                            const buf = await ringtoneFolder.files[rtKeys[0]].async("arraybuffer");
-                            const ext = rtKeys[0].split('.').pop() || 'mp3';
-                            await saveRT(buf, ext);
+                        const rtAudioKey = Object.keys(ringtoneFolder.files).find(n => {
+                            if (ringtoneFolder.files[n].dir) return false;
+                            return /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(n);
+                        });
+                        if (rtAudioKey) {
+                            const buf = await ringtoneFolder.files[rtAudioKey].async("arraybuffer");
+                            const ext = rtAudioKey.split('.').pop() || 'mp3';
+                            let originalName: string | undefined;
+                            const metaFile = ringtoneFolder.file('custom.meta.json');
+                            if (metaFile) {
+                                try {
+                                    const parsedMeta = JSON.parse(await metaFile.async('string'));
+                                    if (typeof parsedMeta?.originalName === 'string' && parsedMeta.originalName.trim()) {
+                                        originalName = parsedMeta.originalName.trim();
+                                    }
+                                } catch {
+                                    // Ignore malformed ringtone metadata in imported backups.
+                                }
+                            }
+                            await saveRT(buf, ext, originalName || rtAudioKey.split('/').pop());
                         }
                     }
                 } catch (e) {
@@ -6467,8 +6526,12 @@ export const App = () => {
 
         const gapInfo = await detectDiaryGaps();
         if (gapInfo.totalMissing > 0) {
-          setBackfillGapInfo(gapInfo);
-          await new Promise<void>(resolve => { pendingSendRef.current = resolve; });
+          if (isAutoDiaryBackfillEnabled()) {
+            void runAutoDiaryBackfill(gapInfo);
+          } else {
+            setBackfillGapInfo(gapInfo);
+            await new Promise<void>(resolve => { pendingSendRef.current = resolve; });
+          }
         }
       }
       // ------------------------------------------
@@ -6934,26 +6997,38 @@ export const App = () => {
       }
       // --------------------------------------------
 
-      const isVoiceAllowedByState = currentStateCtx.canUseVoice;
+      const currentVoicePolicy = currentStateCtx.voicePolicy;
       let hybridVoicePrompt = '';
       
       if (ttsConfigRef.current.voiceMode === 'hybrid') {
-        if (!isVoiceAllowedByState) {
+        if (currentVoicePolicy === 'forbid') {
           hybridVoicePrompt = language === 'zh' 
             ? `[语音模式：受限]
 你当前的状态（${currentStateCtx.stateDescription}）不方便发送语音。请**强制使用文字**回复。在回复末尾加上 [Voice_Mode: false]。`
             : `[Voice Mode: Restricted]
 Your current state (${currentStateCtx.stateDescription}) does not allow voice messages. You MUST reply with text. Append [Voice_Mode: false] to your reply.`;
+        } else if (currentVoicePolicy === 'discourage') {
+          hybridVoicePrompt = language === 'zh'
+            ? `[语音模式：混合（建议文字）]
+你当前的状态（${currentStateCtx.stateDescription}）通常不太方便发语音，所以系统建议本条优先使用文字回复。
+但这只是建议，不是强制。如果以久美子的真实反应来看，你此刻强烈想用声音表达，例如情绪明显、很想安抚对方、忍不住补一句、或者短短一句用语音更自然，你仍然可以选择发语音。
+如果你决定发语音，请尽量自然、简短、像在当前环境下顺手发出的一句；如果觉得会太突兀或不方便，就继续用文字。
+在回复末尾加上 [Voice_Mode: true] 表示语音，或 [Voice_Mode: false] 表示文字。`
+            : `[Voice Mode: Hybrid (Text Recommended)]
+Your current state (${currentStateCtx.stateDescription}) usually makes voice a bit inconvenient, so text is recommended for this reply.
+However, this is only a recommendation, not a hard rule. If, as Kumiko, you genuinely feel a strong urge to use your voice for a short emotional reaction, reassurance, or a line that would sound more natural aloud, you may still choose voice.
+If you choose voice, keep it natural and brief, like something you'd send in the current setting without making it feel forced. Otherwise, stay with text.
+Append [Voice_Mode: true] for voice, or [Voice_Mode: false] for text at the end of your reply.`;
         } else {
           hybridVoicePrompt = language === 'zh'
             ? `[语音模式：混合]
 你可以选择本条回复是否用语音。在回复末尾加上 [Voice_Mode: true] 表示语音，或 [Voice_Mode: false] 表示文字。
 判断依据：短消息/即时反应/情绪强烈/紧急事务 → 语音；长篇解释/包含链接列表/需要阅读的内容 → 文字。
-模拟真人行为：现在你在家休息，如果关系亲近或者想表达情绪，可以多发语音。`
+模拟真人行为：请像久美子自己决定一样自然选择，不必机械地固定全文字或全语音。现在环境允许发语音，如果关系亲近或者想表达情绪，可以更积极地使用语音。`
             : `[Voice Mode: Hybrid]
 You can choose whether to use voice for this reply. Append [Voice_Mode: true] for voice, or [Voice_Mode: false] for text at the end of your reply.
 Criteria: Short messages/instant reactions/strong emotions → voice; Long explanations/lists/reading material → text.
-Simulate human behavior: You are relaxing at home now, feel free to use voice more often if close.`;
+Simulate human behavior: decide as Kumiko would, not by a rigid template. Voice is allowed in the current setting, so feel free to use it more when closeness or emotion calls for it.`;
         }
       }
 
@@ -7321,7 +7396,7 @@ Simulate human behavior: You are relaxing at home now, feel free to use voice mo
          setTimeout(() => addMessage('model', '刚才走神了... 能再说一遍吗？'), 800);
       }
     }
-  }, [coreMemory, worldBook, contextLimit, triggerAutoSummary, locationConfig, backupConfig, checkActiveReminders, saveScheduleEvent, saveRelativeReminder, saveDailyReminder, anchors, kumikoNotebook, turnCount, language, showBackgroundMessageNotification, summaryArchiveState, calculateSummarySemanticSignal, calculateSummaryContinuationSignal, rememberRecentRagDedupeKey]);
+  }, [coreMemory, worldBook, contextLimit, triggerAutoSummary, locationConfig, backupConfig, checkActiveReminders, saveScheduleEvent, saveRelativeReminder, saveDailyReminder, anchors, kumikoNotebook, turnCount, language, showBackgroundMessageNotification, summaryArchiveState, calculateSummarySemanticSignal, calculateSummaryContinuationSignal, rememberRecentRagDedupeKey, isAutoDiaryBackfillEnabled, runAutoDiaryBackfill]);
 
   // ... rest of App.tsx (recall logic, reply logic, UI rendering) is preserved ...
   // [No changes needed in return logic as language prop is already passed down]
@@ -7743,6 +7818,7 @@ Simulate human behavior: You are relaxing at home now, feel free to use voice mo
         <VoiceCallOverlay
           reminderEvent={voiceCallOverlayData.reminderEvent}
           reminderText={voiceCallOverlayData.reminderText}
+          ringtoneFileId={ttsConfig.ringtoneFileId}
           isDarkMode={isDarkMode}
           language={language}
           onAccept={voiceCallOverlayData.onAccept}

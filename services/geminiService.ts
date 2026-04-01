@@ -880,6 +880,115 @@ Current warmth: ${tier}
 Guidance: ${guidance}`;
 };
 
+const collectRecentUserTexts = (historyMessages: Message[], textMessage: string): string[] => {
+  const recentTexts = historyMessages
+    .filter(msg => msg.role === 'user')
+    .slice(-4)
+    .map(msg => msg.text || '');
+
+  if (textMessage.trim()) {
+    recentTexts.push(textMessage);
+  }
+
+  return recentTexts;
+};
+
+const normalizeThoughtEvidenceText = (value: string): string =>
+  value
+    .replace(/\s+/g, '')
+    .replace(/[“”"'`「」『』【】（）()<>《》]/g, '')
+    .toLowerCase();
+
+const getUnsupportedKumikoThoughtLiteralIssue = (
+  rawLog: string,
+  historyMessages: Message[],
+  textMessage: string
+): { reason: string; thoughtText: string } | null => {
+  const thoughtRegex = /(\[Kumiko_Thought\]\s*)([\s\S]*?)(?=\s*\[Emotion|\]\])/i;
+  const match = rawLog.match(thoughtRegex);
+  if (!match) return null;
+
+  const thoughtText = match[2].trim();
+  const recentUserTexts = collectRecentUserTexts(historyMessages, textMessage);
+  const recentCombinedNormalized = normalizeThoughtEvidenceText(recentUserTexts.join(' '));
+
+  const quotedSnippets = Array.from(thoughtText.matchAll(/[“"'「『]([^“”"'「」『』]{1,24})[”"'」』]/g))
+    .map(item => item[1]?.trim())
+    .filter((value): value is string => !!value);
+
+  if (quotedSnippets.length > 0) {
+    const hasUnsupportedQuote = quotedSnippets.some(snippet => {
+      const normalizedSnippet = normalizeThoughtEvidenceText(snippet);
+      return normalizedSnippet.length >= 2 && !recentCombinedNormalized.includes(normalizedSnippet);
+    });
+    if (hasUnsupportedQuote) {
+      return { reason: 'unsupported_literal_quote', thoughtText };
+    }
+  }
+
+  return null;
+};
+
+const rewriteSystemLogWithFactCheck = async (
+  rawLog: string,
+  historyMessages: Message[],
+  textMessage: string,
+  language: Language,
+  modelOverride?: string
+): Promise<string | null> => {
+  const recentUserTexts = collectRecentUserTexts(historyMessages, textMessage)
+    .filter(Boolean)
+    .slice(-5);
+
+  const systemPrompt = language === 'zh'
+    ? `你只负责重写一个 [[System_Log]] 块。
+要求：
+1. 保留原日志里的时间、Gap、Emotion 等事实框架，不要改成别的情境。
+2. 必须加入 [Fact_Check]，只写最近消息里可验证的事实，不许脑补。
+3. [Kumiko_Thought] 可以表达久美子的感受和推测，但绝对不能引用最近消息里并不存在的具体字面内容。
+4. 不要输出任何解释，不要输出回复正文，只输出一个完整的 [[System_Log: ...]] 块。`
+    : `You only rewrite a single [[System_Log]] block.
+Requirements:
+1. Preserve the original time, gap, emotion, and overall situation framing.
+2. You MUST include [Fact_Check] with only verifiable facts from the recent messages.
+3. [Kumiko_Thought] may express feelings and inference, but it MUST NOT quote literal details that do not actually appear in recent messages.
+4. Output exactly one complete [[System_Log: ...]] block and nothing else.`;
+
+  const userPrompt = language === 'zh'
+    ? `最近可验证的用户消息：
+${recentUserTexts.map((text, index) => `${index + 1}. ${text}`).join('\n') || '（没有额外上下文）'}
+
+原始日志：
+${rawLog}
+
+请只重写这个 [[System_Log]]。`
+    : `Recent verifiable user messages:
+${recentUserTexts.map((text, index) => `${index + 1}. ${text}`).join('\n') || '(no extra context)'}
+
+Original log:
+${rawLog}
+
+Rewrite only this [[System_Log]].`;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const rewritten = await callLLMRaw(systemPrompt, userPrompt, modelOverride);
+      if (!rewritten) continue;
+
+      const trimmed = rewritten.trim();
+      const issue = getUnsupportedKumikoThoughtLiteralIssue(trimmed, historyMessages, textMessage);
+      if (!issue) {
+        console.warn('[KUMIKO THOUGHT FACT-CHECK RETRY] Rewrote System_Log to remove unsupported literal-reference detail.');
+        return trimmed;
+      }
+    } catch (error) {
+      console.warn('[KUMIKO THOUGHT FACT-CHECK RETRY] Failed to rewrite System_Log.', error);
+    }
+  }
+
+  return null;
+};
+
 export const sendMessageToGemini = async (
   textMessage: string, 
   coreMemory: string,
@@ -1481,14 +1590,22 @@ export const sendMessageToGemini = async (
         gapMinutes = Math.floor(gapMs / 60000);
         gapHours = Math.floor(gapMinutes / 60);
         const gapDays = Math.floor(gapHours / 24);
+        
+        const hasUserMessage = historyMessages.some(m => m.role === 'user');
 
-        if (gapDays > 7) gapDescription = language === 'zh' ? `巨大间隔：${gapDays} 天。用户消失了很久。` : `HUGE GAP: ${gapDays} days. User disappeared for a long time.`;
-        else if (gapDays >= 1) gapDescription = language === 'zh' ? `跨日间隔：${gapDays} 天。这是新的一天。` : `DAY GAP: ${gapDays} days. This is a new day.`;
-        else if (gapHours >= 6) gapDescription = language === 'zh' ? `长间隔：${gapHours} 小时。如果跨越了夜晚，说明是第二天早上了。` : `LONG GAP: ${gapHours} hours. If it crossed the night, it's the next morning.`;
-        else if (gapMinutes > 120) gapDescription = language === 'zh' ? `较长间隔：${gapHours} 小时 ${gapMinutes % 60} 分钟。用户离开了一段时间。` : `MODERATE-LONG GAP: ${gapHours}h ${gapMinutes % 60}m. User was away for a while.`;
-        else if (gapMinutes > 30) gapDescription = language === 'zh' ? `中间隔：${gapMinutes} 分钟。用户短暂离开后回来了。` : `MEDIUM GAP: ${gapMinutes} mins. User stepped away briefly.`;
-        else if (gapMinutes >= 5) gapDescription = language === 'zh' ? `短间隔：${gapMinutes} 分钟。` : `SHORT GAP: ${gapMinutes} mins.`;
-        else gapDescription = language === 'zh' ? `连续：${gapMinutes} 分钟。即时回复。` : `CONTINUOUS: ${gapMinutes} mins. Instant reply.`;
+        if (!hasUserMessage) {
+            gapDescription = language === 'zh' 
+                ? (gapMinutes >= 5 ? `距离开场白已过 ${gapMinutes} 分钟。这是用户的首次回复。` : `开场后即时回复。这是用户的首次回复。`)
+                : (gapMinutes >= 5 ? `${gapMinutes} mins since greeting. User's first reply.` : `Instant reply to greeting. User's first reply.`);
+        } else {
+            if (gapDays > 7) gapDescription = language === 'zh' ? `巨大间隔：${gapDays} 天。用户消失了很久。` : `HUGE GAP: ${gapDays} days. User disappeared for a long time.`;
+            else if (gapDays >= 1) gapDescription = language === 'zh' ? `跨日间隔：${gapDays} 天。这是新的一天。` : `DAY GAP: ${gapDays} days. This is a new day.`;
+            else if (gapHours >= 6) gapDescription = language === 'zh' ? `长间隔：${gapHours} 小时。如果跨越了夜晚，说明是第二天早上了。` : `LONG GAP: ${gapHours} hours. If it crossed the night, it's the next morning.`;
+            else if (gapMinutes > 120) gapDescription = language === 'zh' ? `较长间隔：${gapHours} 小时 ${gapMinutes % 60} 分钟。用户离开了一段时间。` : `MODERATE-LONG GAP: ${gapHours}h ${gapMinutes % 60}m. User was away for a while.`;
+            else if (gapMinutes > 30) gapDescription = language === 'zh' ? `中间隔：${gapMinutes} 分钟。用户短暂离开后回来了。` : `MEDIUM GAP: ${gapMinutes} mins. User stepped away briefly.`;
+            else if (gapMinutes >= 5) gapDescription = language === 'zh' ? `短间隔：${gapMinutes} 分钟。` : `SHORT GAP: ${gapMinutes} mins.`;
+            else gapDescription = language === 'zh' ? `连续：${gapMinutes} 分钟。即时回复。` : `CONTINUOUS: ${gapMinutes} mins. Instant reply.`;
+        }
     }
 
     const relationshipTemperatureBlock = isStrictMemoryLookupTurn || shouldSuppressAmbientMemoryNoise
@@ -1781,10 +1898,10 @@ Choose only one and keep it subtle.`);
     }
 
     let varietyInstruction = "";
-    if (!isStrictMemoryLookupTurn && !isMemoryPlannedTurn && Math.random() < 0.4) {
+    if (!isStrictMemoryLookupTurn && !isMemoryPlannedTurn && Math.random() < 0.15) {
         const varietyArray = language === 'zh' ? VARIETY_INSTRUCTIONS_ZH : VARIETY_INSTRUCTIONS_EN;
         const randomInstruction = varietyArray[Math.floor(Math.random() * varietyArray.length)];
-        varietyInstruction = language === 'zh' ? `\n[当前注意力漂移]：${randomInstruction} (这是你此刻真实的微小说状态，请自然地在回话中顺口表现出来，绝对不可忽略！)` : `\n[COGNITIVE_SHIFT]: ${randomInstruction} (This is your real internal state right now. Express it naturally in your reply, do not ignore!)`;
+        varietyInstruction = language === 'zh' ? `\n[当前注意力漂移]：${randomInstruction} (这是你此刻的微小说状态选项。如果当前对话氛围合适，请在回话尾部极其自然地顺口带出；如果你们正在紧凑或严肃地讨论某事，请直接忽略此提示，绝不要生硬转折！)` : `\n[COGNITIVE_SHIFT]: ${randomInstruction} (This is an optional internal state. If it fits the current conversation flow, express it very naturally. If the conversation is intense or focused, ignore this hint entirely. Do not force an abrupt transition!)`;
         console.log(`%c[COGNITIVE SHIFT INJECTION]: ${randomInstruction}`, "color: violet; font-weight: bold;");
     }
 
@@ -2251,23 +2368,29 @@ ${extraSystemPrompt ?? ''}`;
     **关键：你必须首先输出 [[System_Log]] 块，然后再输出任何其他文本。**
     
     以此开始：
-    [[System_Log: [User_Time: ${userTimeStr}] [Kumiko_Time: ${modelTimeStr}] [Gap: ${gapDescription}] [Kumiko_Thought] ... [Emotion] ...]]
-    
+    [[System_Log: [User_Time: ${userTimeStr}] [Kumiko_Time: ${modelTimeStr}] [Gap: ${gapDescription}] [Fact_Check] ... [Kumiko_Thought] ... [Emotion] ...]]
+
     强制要求：
     1. 将上面提供的确切时间和间隔值复制到日志中。
-    2. [Kumiko_Thought]：以久美子的第一人称视角（“我”），根据当前时间、对话间隔和对方的话语，写下1-2句真实的内心独白。必须是带有吐槽、嫌麻烦、或者敏锐观察的真实心理活动，绝不能是干巴巴的状态描述。例如：“这家伙...说这种话也太自然了吧。明明只是在当人形闹钟而已啊。”或者“啊，已经过了三天了，他那边还是半夜呢，这么晚找我干嘛……”。
-    3. [Emotion]：从以下选项中选择一个有效的情绪代码：[neutral, smiling, happy, angry, sad, shy, surprised, resigned, serious, gentle, sleepy, confused, confused_2, disgusted, smug, worried, worried_2]。如果情绪复杂，映射到最接近的一个。
+    2. [Fact_Check]：先用 1 句确认最近消息里真正可验证的事实，只能基于最近消息、时间和间隔，不许脑补，不许写感受。
+    3. [Kumiko_Thought]：以久美子的第一人称视角（“我”），根据当前时间、对话间隔和对方的话语，写下1-2句真实的内心独白。必须是带有吐槽、嫌麻烦、或者敏锐观察的真实心理活动，绝不能是干巴巴的状态描述。例如：“这家伙...说这种话也太自然了吧。明明只是在当人形闹钟而已啊。”或者“啊，已经过了三天了，他那边还是半夜呢，这么晚找我干嘛……”。
+    3.1 [Kumiko_Thought] 必须和 [Fact_Check] 一致。
+    3.2 你可以表达推测和感受，但**绝对不要**捏造对方刚刚发过的具体字面内容。除非最近消息里真的出现过，否则不要写“他刚才发了省略号/‘...’/某句原话”这类具体事实。
+    4. [Emotion]：从以下选项中选择一个有效的情绪代码：[neutral, smiling, happy, angry, sad, shy, surprised, resigned, serious, gentle, sleepy, confused, confused_2, disgusted, smug, worried, worried_2]。如果情绪复杂，映射到最接近的一个。
     
     然后关闭括号并开始第 2 层（久美子的回复）。` : `\n\n[SYSTEM TRIGGER]: Initiating Layer 1 Logic Check...
     **CRITICAL: You MUST output the [[System_Log]] block FIRST, before any other text.**
     
     Start with:
-    [[System_Log: [User_Time: ${userTimeStr}] [Kumiko_Time: ${modelTimeStr}] [Gap: ${gapDescription}] [Kumiko_Thought] ... [Emotion] ...]]
-    
+    [[System_Log: [User_Time: ${userTimeStr}] [Kumiko_Time: ${modelTimeStr}] [Gap: ${gapDescription}] [Fact_Check] ... [Kumiko_Thought] ... [Emotion] ...]]
+
     MANDATORY:
     1. COPY the exact Time and Gap values provided above into the log.
-    2. [Kumiko_Thought]: Write 1-2 sentences of Kumiko's inner monologue in the first person ("I"). This MUST be a genuine psychological activity with a slightly cynical, observant, or "troublesome" tone. NEVER write a robotic fact check. For example: "This guy... saying things like that so naturally. I'm just acting as a human alarm clock here..." or "Ah, it's been three days, and it's still middle of the night over there, why is he looking for me so late...".
-    3. [Emotion]: Select ONE valid emotion code from: [neutral, smiling, happy, angry, sad, shy, surprised, resigned, serious, gentle, sleepy, confused, confused_2, disgusted, smug, worried, worried_2]. If complex, map to closest.
+    2. [Fact_Check]: First write one sentence of verifiable facts only, based on recent messages, time, and gap. No feelings, no invention.
+    3. [Kumiko_Thought]: Write 1-2 sentences of Kumiko's inner monologue in the first person ("I"). This MUST be a genuine psychological activity with a slightly cynical, observant, or "troublesome" tone. NEVER write a robotic fact check. For example: "This guy... saying things like that so naturally. I'm just acting as a human alarm clock here..." or "Ah, it's been three days, and it's still middle of the night over there, why is he looking for me so late...".
+    3.1 [Kumiko_Thought] must stay consistent with [Fact_Check].
+    3.2 You may infer feelings, but you MUST NOT fabricate exact literal details of what the user just sent. Unless it truly appears in the recent messages, do not write things like "they just sent an ellipsis / '...' / that exact quoted line".
+    4. [Emotion]: Select ONE valid emotion code from: [neutral, smiling, happy, angry, sad, shy, surprised, resigned, serious, gentle, sleepy, confused, confused_2, disgusted, smug, worried, worried_2]. If complex, map to closest.
     
     Then close brackets and start Layer 2 (Kumiko's Reply).`;
 
@@ -2547,6 +2670,14 @@ ${extraSystemPrompt ?? ''}`;
 
     if (logMatch) {
         rawLog = logMatch[0];
+        const unsupportedThoughtIssue = getUnsupportedKumikoThoughtLiteralIssue(rawLog, historyMessages, textMessage);
+        if (unsupportedThoughtIssue) {
+            console.warn('[KUMIKO THOUGHT FACT-CHECK RETRY] Unsupported literal-reference detail detected, retrying System_Log only.', unsupportedThoughtIssue.reason);
+            const rewrittenLog = await rewriteSystemLogWithFactCheck(rawLog, historyMessages, textMessage, language, currentModel);
+            if (rewrittenLog) {
+                rawLog = rewrittenLog;
+            }
+        }
         console.log(`%c[SYSTEM LAYER LOG]: %c${rawLog}`, "color: #00ff00; font-family: monospace;", "color: #aaa;");
         
         fullText = fullText.replace(logRegex, '').trim();

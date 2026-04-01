@@ -1,12 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Phone, PhoneOff, Loader2, X } from 'lucide-react';
-import { loadRingtoneFile } from '../services/voiceFileService';
+import { resolveRingtoneAudioSource } from '../services/voiceFileService';
 import type { Language } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
 
 interface VoiceCallOverlayProps {
   reminderEvent: string;
   reminderText?: string;
+  ringtoneFileId?: string;
   isDarkMode: boolean;
   language: Language;
   onAccept: () => void;
@@ -20,6 +21,7 @@ interface VoiceCallOverlayProps {
 export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
   reminderEvent,
   reminderText,
+  ringtoneFileId,
   isDarkMode,
   language,
   onAccept,
@@ -31,7 +33,7 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
 }) => {
   const t = UI_TRANSLATIONS[language];
   const ringtoneRef = useRef<HTMLAudioElement | null>(null);
-  const objectUrlRef = useRef<string | null>(null);
+  const ringtoneCleanupRef = useRef<(() => void) | null>(null);
   const acceptedRef = useRef(false);
   const callStartRef = useRef<number>(0);
   const [phase, setPhase] = useState<'ringing' | 'connecting' | 'active' | 'ended'>('ringing');
@@ -62,13 +64,11 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
 
     (async () => {
       try {
-        const buf = await loadRingtoneFile();
+        const source = await resolveRingtoneAudioSource(ringtoneFileId);
         if (cancelled) return;
-        if (buf) {
-          const blob = new Blob([buf], { type: 'audio/mpeg' });
-          const url = URL.createObjectURL(blob);
-          objectUrlRef.current = url;
-          const audio = new Audio(url);
+        if (source) {
+          ringtoneCleanupRef.current = source.cleanup || null;
+          const audio = new Audio(source.src);
           audio.loop = true;
           audio.volume = 0.6;
           ringtoneRef.current = audio;
@@ -84,12 +84,12 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
         ringtoneRef.current.src = '';
         ringtoneRef.current = null;
       }
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current);
-        objectUrlRef.current = null;
+      if (ringtoneCleanupRef.current) {
+        ringtoneCleanupRef.current();
+        ringtoneCleanupRef.current = null;
       }
     };
-  }, [phase]);
+  }, [phase, ringtoneFileId]);
 
   const handleAccept = useCallback(() => {
     if (acceptedRef.current) return;

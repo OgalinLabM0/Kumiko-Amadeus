@@ -208,6 +208,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const topNavIndicatorDragOffsetRef = useRef(0);
   const contentScrollSyncRafRef = useRef<number | null>(null);
   const activeSectionSyncStampRef = useRef(0);
+  const manualSectionFocusRef = useRef<{ id: SettingsSectionId | null; until: number; targetTop: number | null }>({
+    id: null,
+    until: 0,
+    targetTop: null,
+  });
   const previousCompactLayoutRef = useRef<boolean | null>(null);
   const topNavButtonRefs = useRef<Partial<Record<SettingsSectionId, HTMLButtonElement | null>>>({});
   const sideNavButtonRefs = useRef<Partial<Record<SettingsSectionId, HTMLButtonElement | null>>>({});
@@ -779,7 +784,21 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const shouldRenderSection = (_sectionId: SettingsSectionId) => true;
 
   const scrollToSection = (sectionId: SettingsSectionId, behavior: ScrollBehavior = 'smooth') => {
-    document.getElementById(`settings-section-${sectionId}`)?.scrollIntoView({ behavior, block: 'start' });
+    const container = contentScrollRef.current;
+    const sectionEl = document.getElementById(`settings-section-${sectionId}`);
+    if (!container || !sectionEl) {
+      sectionEl?.scrollIntoView({ behavior, block: 'start' });
+      return null;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const sectionRect = sectionEl.getBoundingClientRect();
+    const topPadding = 12;
+    const rawTargetTop = container.scrollTop + (sectionRect.top - containerRect.top) - topPadding;
+    const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const targetTop = Math.min(Math.max(0, rawTargetTop), maxScrollTop);
+    container.scrollTo({ top: targetTop, behavior });
+    return targetTop;
   };
 
   const toggleSectionState = (sectionId: SettingsSectionId) => {
@@ -859,11 +878,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   };
 
   const focusSection = (sectionId: SettingsSectionId) => {
+    const now = performance.now();
+    manualSectionFocusRef.current = { id: sectionId, until: now + 1200, targetTop: null };
+    activeSectionSyncStampRef.current = now;
     activeSectionIdRef.current = sectionId;
     setActiveSectionId(sectionId);
     ensureSectionOpen(sectionId);
     window.setTimeout(() => {
-      scrollToSection(sectionId);
+      const targetTop = scrollToSection(sectionId);
+      manualSectionFocusRef.current = {
+        id: sectionId,
+        until: performance.now() + 1200,
+        targetTop,
+      };
     }, 80);
   };
 
@@ -1028,48 +1055,94 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       const lastId = navItems[navItems.length - 1]?.id;
       if (!firstId || !lastId) return;
       const currentActiveSectionId = activeSectionIdRef.current;
+      const manualFocus = manualSectionFocusRef.current;
+      const now = performance.now();
+
+      const manualTargetPending =
+        manualFocus.id &&
+        manualFocus.targetTop !== null &&
+        Math.abs(container.scrollTop - manualFocus.targetTop) > 20;
+
+      if (manualFocus.id && (now < manualFocus.until || manualTargetPending)) {
+        if (currentActiveSectionId !== manualFocus.id) {
+          activeSectionSyncStampRef.current = now;
+          activeSectionIdRef.current = manualFocus.id;
+          startTransition(() => setActiveSectionId(manualFocus.id as SettingsSectionId));
+        }
+        return;
+      }
+
+      if (manualFocus.id && now >= manualFocus.until) {
+        manualSectionFocusRef.current = { id: null, until: 0, targetTop: null };
+      }
 
       if (container.scrollTop <= 12) {
         if (currentActiveSectionId !== firstId) {
-          activeSectionSyncStampRef.current = performance.now();
+          activeSectionSyncStampRef.current = now;
           activeSectionIdRef.current = firstId;
           startTransition(() => setActiveSectionId(firstId));
         }
         return;
       }
 
-      if (container.scrollTop + container.clientHeight >= container.scrollHeight - 12) {
-        if (currentActiveSectionId !== lastId) {
-          activeSectionSyncStampRef.current = performance.now();
-          activeSectionIdRef.current = lastId;
-          startTransition(() => setActiveSectionId(lastId));
-        }
-        return;
-      }
-
       const containerRect = container.getBoundingClientRect();
-      const anchorTop = containerRect.top + 72;
+      const containerViewportTop = containerRect.top + 12;
+      const containerViewportBottom = containerRect.bottom - 12;
+      const baseActivationLine = containerViewportTop + Math.min(220, Math.max(120, container.clientHeight * 0.38));
+      const isNearBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - 12;
+      const bottomCompensationRange = Math.min(320, Math.max(160, container.clientHeight * 0.55));
+      const bottomCompensationStart = container.scrollHeight - bottomCompensationRange;
+      const bottomProgress = Math.min(
+        1,
+        Math.max(
+          0,
+          (container.scrollTop + container.clientHeight - bottomCompensationStart) / bottomCompensationRange
+        )
+      );
+      const maxActivationLine = containerViewportBottom - 108;
+      const activationLine = baseActivationLine + (maxActivationLine - baseActivationLine) * bottomProgress;
       let bestId = currentActiveSectionId;
-      let bestScore = Number.POSITIVE_INFINITY;
+      let bestPassedTop = Number.NEGATIVE_INFINITY;
+      let bestUpcomingTop = Number.POSITIVE_INFINITY;
+      let hasVisibleSection = false;
 
       navItems.forEach(({ id }) => {
         const sectionEl = document.getElementById(`settings-section-${id}`);
         if (!sectionEl) return;
 
         const rect = sectionEl.getBoundingClientRect();
-        if (rect.bottom < containerRect.top + 24 || rect.top > containerRect.bottom - 24) {
+        const visibleTop = Math.max(rect.top, containerViewportTop);
+        const visibleBottom = Math.min(rect.bottom, containerViewportBottom);
+        const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+        if (visibleHeight <= 0) {
           return;
         }
 
-        const score = Math.abs(rect.top - anchorTop);
-        if (score < bestScore) {
-          bestScore = score;
+        hasVisibleSection = true;
+
+        if (rect.top <= activationLine) {
+          if (rect.top > bestPassedTop) {
+            bestPassedTop = rect.top;
+            bestId = id;
+          }
+          return;
+        }
+
+        if (rect.top < bestUpcomingTop) {
+          bestUpcomingTop = rect.top;
           bestId = id;
         }
       });
 
+      if (bestPassedTop === Number.NEGATIVE_INFINITY && bestUpcomingTop === Number.POSITIVE_INFINITY) {
+        if (isNearBottom) {
+          bestId = lastId;
+        }
+      } else if (!hasVisibleSection && isNearBottom) {
+        bestId = lastId;
+      }
+
       if (bestId !== currentActiveSectionId) {
-        const now = performance.now();
         if (now - activeSectionSyncStampRef.current < 96) {
           return;
         }
@@ -1282,6 +1355,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           sectionBorder={sectionBorder}
           storageUsage={storageUsage}
           formatBytes={formatBytes}
+          refreshStorageEstimate={refreshStorageEstimate}
           isDesktopElectron={isDesktopElectron}
           dataDirectoryInfo={dataDirectoryInfo}
           formatDataDirectoryError={formatDataDirectoryError}

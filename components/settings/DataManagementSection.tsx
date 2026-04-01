@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ChevronDown, ChevronUp, Database, HardDrive, Image, Power, RotateCcw, Trash2, Volume2, FolderOpen, Music, ImageIcon } from 'lucide-react';
 import { Language } from '../../types';
 import { getVoiceStorageInfo, openVoiceFolder, isVoiceServiceAvailable } from '../../services/voiceFileService';
@@ -40,6 +40,7 @@ interface DataManagementSectionProps {
   sectionBorder: string;
   storageUsage: { usage: number; quota: number } | null;
   formatBytes: (bytes: number) => string;
+  refreshStorageEstimate: () => Promise<void>;
   isDesktopElectron: boolean;
   dataDirectoryInfo: DataDirectoryInfo | null;
   formatDataDirectoryError: (error?: string | null) => string;
@@ -59,6 +60,7 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
   sectionBorder,
   storageUsage,
   formatBytes,
+  refreshStorageEstimate,
   isDesktopElectron,
   dataDirectoryInfo,
   formatDataDirectoryError,
@@ -70,8 +72,15 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
 }) => {
   const [voiceStorage, setVoiceStorage] = useState<{ count: number; totalBytes: number } | null>(null);
   const [imageStorage, setImageStorage] = useState<{ count: number; totalBytes: number } | null>(null);
-  const [ringtoneInfo, setRingtoneInfo] = useState<{ exists: boolean; fileName: string | null; size: number } | null>(null);
+  const [ringtoneInfo, setRingtoneInfo] = useState<{ exists: boolean; fileName: string | null; displayName?: string | null; size: number } | null>(null);
   const voiceAvailable = isVoiceServiceAvailable();
+
+  const refreshRingtoneInfo = useCallback(async () => {
+    const ipc = (window as any).electronAPI;
+    if (!ipc) return;
+    const result = await ipc.invoke('ringtone:get-info');
+    setRingtoneInfo(result);
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -82,9 +91,18 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
       const totalBytes = imgs.reduce((sum, img) => sum + (img.base64Data?.length || 0), 0);
       setImageStorage({ count, totalBytes });
     });
-    const ipc = (window as any).electronAPI;
-    if (ipc) ipc.invoke('ringtone:get-info').then((r: any) => setRingtoneInfo(r));
-  }, [isOpen, voiceAvailable]);
+    refreshRingtoneInfo();
+
+    const handleRingtoneStorageChanged = () => {
+      refreshRingtoneInfo();
+      refreshStorageEstimate();
+    };
+
+    window.addEventListener('kumiko:ringtone-storage-changed', handleRingtoneStorageChanged);
+    return () => {
+      window.removeEventListener('kumiko:ringtone-storage-changed', handleRingtoneStorageChanged);
+    };
+  }, [isOpen, refreshRingtoneInfo, refreshStorageEstimate, voiceAvailable]);
 
   const voiceT = language === 'zh'
     ? { info: '语音文件', desc: '删除语音文件不影响消息文字，仅无法再次播放语音。', open: '打开语音文件夹' }
@@ -196,7 +214,7 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
                 </div>
                 {ringtoneInfo.exists ? (
                   <span className={`ka-label ${isDarkMode ? 'text-amber-400' : 'text-amber-600'}`}>
-                    {ringtoneT.uploaded} · {ringtoneInfo.fileName} · {formatBytes(ringtoneInfo.size)}
+                    {ringtoneT.uploaded} · {(ringtoneInfo.displayName || ringtoneInfo.fileName)} · {formatBytes(ringtoneInfo.size)}
                   </span>
                 ) : (
                   <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>{ringtoneT.none}</span>
@@ -205,6 +223,11 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
               <p className={`ka-copy-sm mb-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                 {ringtoneT.desc}
               </p>
+              {ringtoneInfo.exists && ringtoneInfo.displayName && ringtoneInfo.displayName !== ringtoneInfo.fileName && (
+                <div className={`ka-copy-sm mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  {language === 'zh' ? `原文件名：${ringtoneInfo.displayName}` : `Original file name: ${ringtoneInfo.displayName}`}
+                </div>
+              )}
               <button onClick={handleOpenRingtoneFolder}
                 className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-amber-500/50 text-amber-400 hover:bg-amber-500/10' : 'border-amber-600/50 text-amber-600 hover:bg-amber-600/10'}`}>
                 <FolderOpen size={13} /> {ringtoneT.open}

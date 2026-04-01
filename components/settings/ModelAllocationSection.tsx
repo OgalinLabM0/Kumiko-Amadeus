@@ -42,6 +42,11 @@ export const ModelAllocationSection: React.FC<ModelAllocationSectionProps> = ({
         </h4>
         <span className="ka-micro opacity-50">{isOpen ? '▼' : '▲'}</span>
       </button>
+      {t_local.allocation_desc && (
+        <p className={`ka-micro mb-3 leading-relaxed ${isDarkMode ? 'text-[#b9c8c7]' : 'text-[#5d7f7b]'}`}>
+          {t_local.allocation_desc}
+        </p>
+      )}
 
       {isOpen && (
         <div className="space-y-3 animate-in slide-in-from-top-2">
