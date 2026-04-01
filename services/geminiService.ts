@@ -2732,6 +2732,8 @@ ${extraSystemPrompt ?? ''}`;
     fullText = fullText.replace(/\[\[(?!System_Log).*?\]\]/g, ''); 
     // Remove leaked reply-prefix lines that belong to prompt/history formatting, not visible dialog content.
     fullText = fullText.replace(/^\s*>\s*\[(?:回复\s*[^\]]+|Replying to [^\]]+)\].*$/gim, '');
+    fullText = fullText.replace(/^\s*\[语音消息\]\s*/i, '');
+    fullText = fullText.replace(/\s*[（(]翻[译譯][：:][\s\S]*?[)）]\s*$/i, '');
 
     const scheduleGlobalRegex = /\[Schedule_Trigger:\s*(\{[\s\S]*?\})\]/i;
     const sMatch = fullText.match(scheduleGlobalRegex) || (rawLog ? rawLog.match(scheduleGlobalRegex) : null);

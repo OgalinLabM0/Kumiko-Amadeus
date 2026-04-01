@@ -41,6 +41,8 @@ export const updatePsycheState = async (
     energy += hoursPassed * 3;
   } else if (scheduleSlot.slotType === 'free') {
     energy -= hoursPassed * 3;
+  } else if (scheduleSlot.slotType === 'school_prep') {
+    energy -= hoursPassed * 2;
   } else {
     energy -= hoursPassed * 5;
   }
@@ -52,6 +54,8 @@ export const updatePsycheState = async (
     stress += hoursPassed * 5;
   } else if (scheduleSlot.slotType === 'free') {
     stress += hoursPassed * 3;
+  } else if (scheduleSlot.slotType === 'school_prep') {
+    stress += hoursPassed * 2;
   } else if (scheduleSlot.slotType === 'lunch') {
     stress -= hoursPassed * 2;
   } else if (currentCtx.currentState === 'COMMUTING') {
@@ -76,6 +80,8 @@ export const updatePsycheState = async (
     relaxation += hoursPassed * 2;
   } else if (scheduleSlot.slotType === 'free') {
     relaxation -= hoursPassed * 3;
+  } else if (scheduleSlot.slotType === 'school_prep') {
+    relaxation -= hoursPassed * 2;
   } else if (currentCtx.currentState === 'CLUB_ACTIVITIES') {
     relaxation -= hoursPassed * 5;
   }

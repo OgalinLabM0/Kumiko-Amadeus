@@ -4213,6 +4213,13 @@ export const App = () => {
                           : `${prefix}AFTER SCHOOL${aa ? ` — ${aa}` : ''}`;
                       break;
                   }
+                  case 'school_prep': {
+                      const pa = slot.freeActivity || '';
+                      text = isZh
+                          ? `${prefix}学校准备日${pa ? ` — ${pa}` : ''}`
+                          : `${prefix}SCHOOL PREP${pa ? ` — ${pa}` : ''}`;
+                      break;
+                  }
                   default:
                       text = prefix + (isZh ? '在线' : 'ONLINE');
               }
@@ -6995,6 +7002,8 @@ export const App = () => {
       if (scheduleForPrompt.slotType === 'teaching' && scheduleForPrompt.classGroup) {
         stateDetail = scheduleForPrompt.description;
       } else if (scheduleForPrompt.slotType === 'free' && scheduleForPrompt.freeActivity) {
+        stateDetail = scheduleForPrompt.description;
+      } else if (scheduleForPrompt.slotType === 'school_prep') {
         stateDetail = scheduleForPrompt.description;
       }
 

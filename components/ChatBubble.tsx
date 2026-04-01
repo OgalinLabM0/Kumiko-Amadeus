@@ -47,6 +47,17 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
      return null; 
   }
 
+  if (!isUser && (message.id.startsWith('recall-') || /撤回了一条消息|recalled a message/i.test(message.text))) {
+    const cleanText = message.text.replace(/[【】\[\]]/g, '');
+    return (
+      <div className="flex justify-center py-1.5">
+        <span className={`text-[11px] ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+          {cleanText}
+        </span>
+      </div>
+    );
+  }
+
   // Format Time
   const formatTime = (ts: number) => {
     return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });

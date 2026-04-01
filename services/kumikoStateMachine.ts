@@ -15,7 +15,8 @@ export interface StateContext {
 
 export type ScheduleSlotType =
   | 'teaching' | 'free' | 'shr' | 'lunch'
-  | 'cleaning' | 'after_school' | 'commuting' | 'home' | 'sleeping';
+  | 'cleaning' | 'after_school' | 'commuting' | 'home' | 'sleeping'
+  | 'school_prep';
 
 export interface DetailedScheduleSlot {
   slotType: ScheduleSlotType;
@@ -355,6 +356,27 @@ type TeachingStage = typeof TEACHING_STAGES[number];
 // 5. School term helpers
 // ---------------------------------------------------------------------------
 
+type SchoolPrepPhase = 'staff_prep' | 'shigyoushiki' | 'transition' | 'nyuugakushiki' | 'class_prep' | 'term_ceremony';
+
+export const getSchoolPrepPhase = (dateStr: string): { phase: SchoolPrepPhase; description: string } | null => {
+  const parts = dateStr.split('-');
+  if (parts.length < 3) return null;
+  const month = parseInt(parts[1], 10);
+  const day = parseInt(parts[2], 10);
+  const md = month * 100 + day;
+
+  if (md >= 401 && md <= 405) return { phase: 'staff_prep', description: '新学年准备期（職員会議・教室整備・教材配布）' };
+  if (md === 406) return { phase: 'shigyoushiki', description: '始業式（全校開学典禮 — 2·3年級返校、班會）' };
+  if (md === 407) return { phase: 'transition', description: '学年過渡日（編班調整・教室引導）' };
+  if (md === 408) return { phase: 'nyuugakushiki', description: '入学式（新生專用儀式 — 高一入學典禮）' };
+  if (md >= 409 && md <= 410) return { phase: 'class_prep', description: '授業準備（学年引導・座席調整・試運行）' };
+
+  if (md === 901) return { phase: 'term_ceremony', description: '第二学期始業式（全校典禮+班會）' };
+  if (md === 111) return { phase: 'term_ceremony', description: '第三学期始業式（全校典禮+班會）' };
+
+  return null;
+};
+
 export const getSchoolTermContext = (dateStr: string): string => {
   const parts = dateStr.split('-');
   if (parts.length < 3) return '';
@@ -362,16 +384,21 @@ export const getSchoolTermContext = (dateStr: string): string => {
   const day = parseInt(parts[2], 10);
   const md = month * 100 + day;
 
-  if (md >= 401 && md <= 720) {
-    return "第一学期（正常上课期间，4月初有开学典礼/入学典礼）";
+  const prep = getSchoolPrepPhase(dateStr);
+  if (prep) {
+    return `学校准备期（${prep.description}，尚未正式按课表上课）`;
+  }
+
+  if (md >= 411 && md <= 720) {
+    return "第一学期（正常上课期间）";
   } else if (md >= 721 && md <= 831) {
     return "暑假期间（无需日常上课，但可能因社团指导或值班偶尔去学校）";
-  } else if (md >= 901 && md <= 1224) {
+  } else if (md >= 902 && md <= 1224) {
     return "第二学期（正常上课期间，秋季可能有体育大会/学园祭）";
   } else if (md >= 1225 || md <= 110) {
     return "寒假期间（无需日常上课。12月25日是圣诞节，1月1日是日本新年，学校基本放假）";
-  } else if (md >= 111 && md <= 310) {
-    return "第三学期（正常上课期间，学期较短，3月初有期末考试和结业典礼）";
+  } else if (md >= 112 && md <= 310) {
+    return "第三学期（正常上课期间，学期较短，3月初有期末考试和終業式）";
   } else if (md >= 311 && md <= 331) {
     return "春假期间（无需日常上课，学年交替期）";
   }
@@ -388,17 +415,17 @@ const getTermIndex = (dateStr: string): number => {
   const month = parseInt(parts[1], 10);
   const day = parseInt(parts[2], 10);
   const md = month * 100 + day;
-  if (md >= 401 && md <= 720) return 0;
-  if (md >= 901 && md <= 1224) return 1;
-  if (md >= 111 && md <= 310) return 2;
+  if (md >= 411 && md <= 720) return 0;
+  if (md >= 902 && md <= 1224) return 1;
+  if (md >= 112 && md <= 310) return 2;
   return -1;
 };
 
 const getTermStartMd = (termIndex: number): number => {
-  if (termIndex === 0) return 401;
-  if (termIndex === 1) return 901;
-  if (termIndex === 2) return 111;
-  return 401;
+  if (termIndex === 0) return 411;
+  if (termIndex === 1) return 902;
+  if (termIndex === 2) return 112;
+  return 411;
 };
 
 const getWeekOfTerm = (dateStr: string): number => {
@@ -488,7 +515,24 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
   const dateStr = getJSTDateStr(timezone);
 
   const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+  const prepPhase = getSchoolPrepPhase(dateStr);
   const inSession = isSchoolInSession(dateStr);
+
+  if (prepPhase && !isWeekend && !isHoliday) {
+    if (minutesOfDay < 6 * 60) {
+      return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0 };
+    } else if (minutesOfDay < 7 * 60 + 50) {
+      return { slotType: 'commuting', description: '早晨通勤中（7:40左右到校）', canChat: false, interceptChance: 0 };
+    } else if (minutesOfDay < 17 * 60) {
+      return { slotType: 'school_prep', freeActivity: prepPhase.description, description: prepPhase.description, canChat: true, interceptChance: 0.05 };
+    } else if (minutesOfDay < 18 * 60 + 30) {
+      return { slotType: 'commuting', description: '傍晚通勤回家', canChat: false, interceptChance: 0 };
+    } else if (minutesOfDay < 23 * 60) {
+      return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0 };
+    } else {
+      return { slotType: 'sleeping', description: '准备睡觉', canChat: false, interceptChance: 0 };
+    }
+  }
 
   if (isWeekend || isHoliday || !inSession) {
     if (minutesOfDay < 6 * 60) {
@@ -612,9 +656,40 @@ export const getDayScheduleSummary = (dateStr: string, timezone: string = 'Asia/
 
   const dayOfWeek = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2])).getDay();
   const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+  const prepPhase = getSchoolPrepPhase(dateStr);
   const inSession = isSchoolInSession(dateStr);
 
-  if (isWeekend || !inSession) {
+  if (isWeekend) return '';
+
+  if (prepPhase) {
+    const lines: string[] = [
+      `【今日は${prepPhase.description}】`,
+      '- 7:40 出勤',
+      '- 8:30 職員会議 / 学年打ち合わせ',
+    ];
+    if (prepPhase.phase === 'shigyoushiki') {
+      lines.push('- 9:00 始業式（体育館）');
+      lines.push('- 10:00 学級活動（HR）');
+      lines.push('- 11:00 教科書配布・教室準備');
+    } else if (prepPhase.phase === 'nyuugakushiki') {
+      lines.push('- 9:30 入学式準備');
+      lines.push('- 10:00 入学式（体育館）');
+      lines.push('- 11:30 新入生教室案内');
+      lines.push('- 13:00 学年会議');
+    } else if (prepPhase.phase === 'term_ceremony') {
+      lines.push('- 9:00 始業式（体育館）');
+      lines.push('- 10:00 学級活動');
+      lines.push('- 11:00 教科打ち合わせ');
+    } else {
+      lines.push('- 9:00 教室整備・掲示物作成');
+      lines.push('- 10:30 教科打ち合わせ');
+      lines.push('- 13:00 午後の準備作業');
+    }
+    lines.push('- 16:30 退勤準備');
+    return lines.join('\n');
+  }
+
+  if (!inSession) {
     return '';
   }
 
@@ -705,6 +780,8 @@ export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo', isHoliday
       return { currentState: 'TEACHING', stateDescription: slot.description, canUseVoice: false, voicePolicy: 'discourage', proactiveProbability: 0.10 };
     case 'after_school':
       return { currentState: 'CLUB_ACTIVITIES', stateDescription: slot.description, canUseVoice: false, voicePolicy: 'discourage', proactiveProbability: 0.15 };
+    case 'school_prep':
+      return { currentState: 'TEACHING', stateDescription: slot.description, canUseVoice: false, voicePolicy: 'discourage', proactiveProbability: 0.15 };
     case 'home':
       return { currentState: 'RELAXING_HOME', stateDescription: slot.description, canUseVoice: true, voicePolicy: 'allow', proactiveProbability: 0.35 };
     default:

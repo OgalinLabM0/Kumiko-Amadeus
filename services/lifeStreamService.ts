@@ -1,7 +1,7 @@
 import { db, DailyFragmentEntity, KumikoDiaryEntity, getWorldCharacterStatus, updateWorldCharacterStatus, WorldCharacterStatusMap } from './db';
 import { callLLMRaw, getCurrentAIConfig } from './geminiService';
 import { verifyAgainstHistory } from './diaryValidatorService';
-import { getCurrentKumikoState, getSchoolTermContext, getDetailedScheduleSlot, getDayScheduleSummary } from './kumikoStateMachine';
+import { getCurrentKumikoState, getSchoolTermContext, getDetailedScheduleSlot, getDayScheduleSummary, getSchoolPrepPhase } from './kumikoStateMachine';
 import { updatePsycheState } from './psycheStateService';
 
 type DiaryChatMessage = {
@@ -639,33 +639,47 @@ export const buildDailyContext = (
   const weekday = DIARY_WEEKDAY_LABELS[weekdayIndex] || '日';
   const isWeekend = weekdayIndex === 0 || weekdayIndex === 6;
   const isRestDay = Boolean(isHoliday) || isWeekend;
-  const dayTypeText = isHoliday ? '日本法定节假日' : isWeekend ? '周末' : '普通工作日';
+  const prepPhase = getSchoolPrepPhase(dateStr);
+  const dayTypeText = isHoliday ? '日本法定节假日' : isWeekend ? '周末' : prepPhase ? `学校准备日（${prepPhase.description}）` : '普通工作日';
   const weekdayFocus = pickWeekdayFocus(dateStr, continuityContext?.recentFocuses || []);
 
   const detailedSchedule = getDayScheduleSummary(dateStr);
 
-  const scheduleLines = isRestDay
-    ? [
-        '- 早上：起床较晚，在家慢慢开始一天',
-        '- 白天：自由安排，可以外出、休息、处理杂事，也可能和秀一见面或顺路约会',
-        '- 傍晚：从外面回来，或者准备晚上在家待着',
-        '- 晚上：在家收尾；有时和秀一一起简单吃点，有时会出门找地方吃饭',
-      ]
-    : detailedSchedule
-      ? [
-          '- 早上：~6:30起床，洗漱吃早餐，~7:40到校',
-          '',
-          '【今日详细课表】',
-          detailedSchedule,
-          '',
-          '- 晚上：~18:30-19:30回家；经常会和秀一一起吃饭，可能在家随便吃，也可能顺路出门',
-        ]
-      : [
-          '- 早上：起床、洗漱、吃点东西，然后通勤去学校',
-          weekdayFocus.schoolLine,
-          '- 放学后：通常留校处理杂务、会议或副顾问事务，不是每天都会深入吹奏部',
-          '- 晚上：回家休息；经常会和秀一一起吃饭，可能在家随便吃，也可能顺路出门',
-        ];
+  let scheduleLines: string[];
+  if (isRestDay) {
+    scheduleLines = [
+      '- 早上：起床较晚，在家慢慢开始一天',
+      '- 白天：自由安排，可以外出、休息、处理杂事，也可能和秀一见面或顺路约会',
+      '- 傍晚：从外面回来，或者准备晚上在家待着',
+      '- 晚上：在家收尾；有时和秀一一起简单吃点，有时会出门找地方吃饭',
+    ];
+  } else if (prepPhase) {
+    scheduleLines = [
+      '- 早上：~6:30起床，洗漱吃早餐，~7:40到校',
+      '',
+      '【今日日程（非正式授课日）】',
+      detailedSchedule || prepPhase.description,
+      '',
+      '注意：今天没有按课表上课，不要写授课/教学内容。',
+      '- 晚上：~17:00-17:30下班回家；可能和秀一一起吃饭',
+    ];
+  } else if (detailedSchedule) {
+    scheduleLines = [
+      '- 早上：~6:30起床，洗漱吃早餐，~7:40到校',
+      '',
+      '【今日详细课表】',
+      detailedSchedule,
+      '',
+      '- 晚上：~18:30-19:30回家；经常会和秀一一起吃饭，可能在家随便吃，也可能顺路出门',
+    ];
+  } else {
+    scheduleLines = [
+      '- 早上：起床、洗漱、吃点东西，然后通勤去学校',
+      weekdayFocus.schoolLine,
+      '- 放学后：通常留校处理杂务、会议或副顾问事务，不是每天都会深入吹奏部',
+      '- 晚上：回家休息；经常会和秀一一起吃饭，可能在家随便吃，也可能顺路出门',
+    ];
+  }
 
   return [
     '【今天的身份与大致框架】',
@@ -673,11 +687,13 @@ export const buildDailyContext = (
     `今天是${dayTypeText}。`,
     '你的本职是北宇治高中的国语老师，吹奏乐部副顾问只是附加身份，不代表你每天都在带整个社团。',
     ...scheduleLines,
-    !isRestDay ? `- 今日镜头重点：${weekdayFocus.label}` : '',
+    (!isRestDay && !prepPhase) ? `- 今日镜头重点：${weekdayFocus.label}` : '',
     `天气：${getWeatherContextText(weatherStr)}`,
     '',
-    '具体几点起床、早餐吃什么、路上的见闻、课堂、办公室、批改作文、回家之后的小事，都由你根据天气、心情和生活切片自由发挥，但不能违背上述课表框架。只有当天确实合理时，才少量提到吹奏部，而且更适合写成副顾问事务。如果课表中有具体教材内容，你可以在日记中提及课堂的某个细节（学生反应、讲到哪里了等），但不要长篇复述课文。',
-    !isRestDay ? weekdayFocus.detailHint : '',
+    prepPhase
+      ? '今天是准备日，日记内容应围绕会议、准备工作、同事交流等展开，不要写正式授课内容。'
+      : '具体几点起床、早餐吃什么、路上的见闻、课堂、办公室、批改作文、回家之后的小事，都由你根据天气、心情和生活切片自由发挥，但不能违背上述课表框架。只有当天确实合理时，才少量提到吹奏部，而且更适合写成副顾问事务。如果课表中有具体教材内容，你可以在日记中提及课堂的某个细节（学生反应、讲到哪里了等），但不要长篇复述课文。',
+    (!isRestDay && !prepPhase) ? weekdayFocus.detailHint : '',
     '',
     buildChatAnchorBlock(chatMessages),
   ].join('\n');

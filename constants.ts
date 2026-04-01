@@ -1324,7 +1324,7 @@ export const EMOTION_TO_FISH_AUDIO_TAGS: Record<EmotionType, string[]> = {
     sad: ['[sad]', '[sighs]', '[crying]'],
     shy: ['[shy]', '[nervous]', '[muttering]'],
     surprised: ['[surprised]', '[gasp]'],
-    resigned: ['[exhausted]', '[speaks very tiredly]', '[sighs heavily]'],
+    resigned: ['[sighs]', '[reluctant]', '[speaks tiredly]'],
     serious: ['[serious]', '[low voice]'],
     gentle: ['[speaks gently]', '[warm]'],
     sleepy: ['[sleepy]', '[yawning]'],
