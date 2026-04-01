@@ -2821,21 +2821,27 @@ const getAmbientEnvironmentContext = async (): Promise<string> => {
 
   try {
     const holidayRes = await window.electronAPI.invoke('app:get-japan-holidays');
-    if (holidayRes && holidayRes.success && holidayRes.holidays) {
-      // Get current date in JST
-      const jstDate = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
-      const year = jstDate.getFullYear();
-      const month = String(jstDate.getMonth() + 1).padStart(2, '0');
-      const day = String(jstDate.getDate()).padStart(2, '0');
-      const dateString = `${year}-${month}-${day}`;
+    const jstDate = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
+    const year = jstDate.getFullYear();
+    const month = String(jstDate.getMonth() + 1).padStart(2, '0');
+    const day = String(jstDate.getDate()).padStart(2, '0');
+    const dateString = `${year}-${month}-${day}`;
 
+    if (holidayRes && holidayRes.success && holidayRes.holidays) {
       if (holidayRes.holidays[dateString]) {
         envStr += `\n- 今日特殊历法：日本法定节假日 - ${holidayRes.holidays[dateString]}`;
         hasData = true;
       }
     }
+
+    const { getSchoolTermContext } = await import('../services/kumikoStateMachine');
+    const schoolTerm = getSchoolTermContext(dateString);
+    if (schoolTerm) {
+      envStr += `\n- 当前学校阶段：${schoolTerm}`;
+      hasData = true;
+    }
   } catch (e) {
-    console.warn('[Environment] Failed to fetch holiday context:', e);
+    console.warn('[Environment] Failed to fetch holiday/term context:', e);
   }
 
   if (hasData) {

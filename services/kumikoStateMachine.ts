@@ -9,6 +9,30 @@ export interface StateContext {
   proactiveProbability: number;
 }
 
+export const getSchoolTermContext = (dateStr: string): string => {
+  const parts = dateStr.split('-');
+  if (parts.length < 3) return '';
+  const month = parseInt(parts[1], 10);
+  const day = parseInt(parts[2], 10);
+  
+  const md = month * 100 + day;
+  
+  if (md >= 401 && md <= 720) {
+    return "第一学期（正常上课期间，4月初有开学典礼/入学典礼）";
+  } else if (md >= 721 && md <= 831) {
+    return "暑假期间（无需日常上课，但可能因社团指导或值班偶尔去学校）";
+  } else if (md >= 901 && md <= 1224) {
+    return "第二学期（正常上课期间，秋季可能有体育大会/学园祭）";
+  } else if (md >= 1225 || md <= 110) {
+    return "寒假期间（无需日常上课。12月25日是圣诞节，1月1日是日本新年，学校基本放假）";
+  } else if (md >= 111 && md <= 310) {
+    return "第三学期（正常上课期间，学期较短，3月初有期末考试和结业典礼）";
+  } else if (md >= 311 && md <= 331) {
+    return "春假期间（无需日常上课，学年交替期）";
+  }
+  return "";
+};
+
 export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo', isHoliday: boolean = false): StateContext => {
   const nowJST = new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
   const hour = nowJST.getHours();

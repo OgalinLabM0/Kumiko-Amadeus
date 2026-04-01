@@ -1,7 +1,7 @@
 import { db, DailyFragmentEntity, KumikoDiaryEntity, getWorldCharacterStatus, updateWorldCharacterStatus, WorldCharacterStatusMap } from './db';
 import { callLLMRaw, getCurrentAIConfig } from './geminiService';
 import { verifyAgainstHistory } from './diaryValidatorService';
-import { getCurrentKumikoState } from './kumikoStateMachine';
+import { getCurrentKumikoState, getSchoolTermContext } from './kumikoStateMachine';
 import { updatePsycheState } from './psycheStateService';
 
 type DiaryChatMessage = {
@@ -706,6 +706,7 @@ export const generateLifeFragment = async (
     // Get today's existing fragments
     const existingFragments = await getDailyFragments(dateStr);
     const fragmentContext = existingFragments.map(f => `[${new Date(f.timestamp).toLocaleTimeString('en-US', {timeZone: 'Asia/Tokyo'})} 切片]: ${f.content}`).join('\n');
+    const schoolTermContext = getSchoolTermContext(dateStr);
 
     const systemPrompt = `你是一个后台推演引擎。你需要根据客观环境数据，为角色“黄前久美子”推演出一段她刚刚经历的【生活切片】。
 这段切片代表了她在离线期间（没有和用户聊天时）的生活轨迹和内心状态。
@@ -714,6 +715,7 @@ export const generateLifeFragment = async (
 - 离线时间：约 ${Math.round(hoursPassed)} 小时
 - 当前状态：${stateCtx.stateDescription}
 - 天气/节假日：${weatherStr}
+- 学校阶段：${schoolTermContext}
 - 当前心理状态：压力 ${Math.round(psycheState.stress)}/100, 精力 ${Math.round(psycheState.energy)}/100, 松弛度 ${Math.round(psycheState.relaxation)}/100
 
 【历史上下文】
@@ -891,6 +893,7 @@ export const generateDailyDiary = async (
     const charStatusContext = Object.entries(charStatus).map(([key, data]) => {
       return `- ${data.aliases[0]} (${key}): [客观状态] ${data.current_status} | [主观情绪] ${data.current_attitude} | [近期事件] ${data.last_major_event}`;
     }).join('\n');
+    const schoolTermContext = getSchoolTermContext(dateStr);
 
     const systemPrompt = `你现在是黄前久美子。现在是深夜23点，你正在写今天的私人日记。
 
@@ -898,6 +901,7 @@ export const generateDailyDiary = async (
 - 日期：${dateStr}（${weekday}曜日）
 - 天气：${weatherContextText}
 - 是否节假日：${holidayText}
+- 学校阶段：${schoolTermContext}
 - 你的本职：北宇治高中国语老师（兼吹奏乐部副顾问）。你是教国语的，不是音乐老师！
 - 乐器相关设定：你学生时代使用的上低音号是学校财产，毕业时已归还，你现在**没有**自己的私人上低音号。绝对不要在日记里写“在家里吹上低音号”或“擦拭自己的乐器”。作为副顾问，你主要负责社团杂务和学生心理辅导，绝对不要把自己写成指导学生吹奏的音乐老师。
 
