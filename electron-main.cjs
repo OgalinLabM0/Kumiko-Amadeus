@@ -1436,15 +1436,25 @@ function writeRingtoneMetadata(dir, originalName) {
       console.error('Failed to initialize RAG:', e);
     }
 
-    // ── Genie-TTS server management ──────────────────────────────
+    // ── GPT-SoVITS server management ─────────────────────────────
     ipcMain.handle('genie:start', async (_event, config) => {
       if (genieProcess) return { success: false, error: 'Already running' };
       try {
-        const { pythonPath, port } = config;
-        const script = `import genie_tts as genie\ngenie.start_server(host='127.0.0.1', port=${port || 8000}, workers=1)`;
-        genieProcess = spawn(pythonPath || 'python', ['-u', '-c', script], {
-          stdio: ['ignore', 'pipe', 'pipe'],
+        const { sovitsDir, port, gptWeights, vitsWeights } = config;
+        if (!sovitsDir) return { success: false, error: 'GPT-SoVITS directory not configured' };
+        const pythonExe = path.join(sovitsDir, 'runtime', 'python.exe');
+        const apiScript = path.join(sovitsDir, 'api_v2.py');
+        const configYaml = path.join(sovitsDir, 'GPT_SoVITS', 'configs', 'tts_infer.yaml');
+        const serverPort = port || 9880;
+
+        if (!fs.existsSync(pythonExe)) return { success: false, error: 'runtime/python.exe not found in GPT-SoVITS directory' };
+        if (!fs.existsSync(apiScript)) return { success: false, error: 'api_v2.py not found in GPT-SoVITS directory' };
+
+        genieProcess = spawn(pythonExe, ['-u', apiScript, '-a', '127.0.0.1', '-p', String(serverPort), '-c', configYaml], {
+          cwd: sovitsDir,
           windowsHide: true,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: { ...process.env, PATH: path.join(sovitsDir, 'runtime') + ';' + (process.env.PATH || '') },
         });
         genieProcess.on('exit', (code) => {
           genieProcess = null;
@@ -1453,22 +1463,31 @@ function writeRingtoneMetadata(dir, originalName) {
           }
         });
         genieProcess.on('error', (err) => {
-          console.error('[GENIE] Process error:', err.message);
+          console.error('[GPT-SoVITS] Process error:', err.message);
           genieProcess = null;
           if (mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.webContents.send('genie:status-changed', { running: false, error: err.message });
           }
         });
-        const serverPort = port || 8000;
-        for (let i = 0; i < 60; i++) {
+        for (let i = 0; i < 90; i++) {
           await new Promise(r => setTimeout(r, 1000));
           if (!genieProcess) return { success: false, error: 'Process exited during startup' };
           try {
-            const res = await fetch(`http://127.0.0.1:${serverPort}/docs`);
-            if (res.ok || res.status === 200) return { success: true, pid: genieProcess.pid };
+            const res = await fetch(`http://127.0.0.1:${serverPort}/tts`, { method: 'GET', signal: AbortSignal.timeout(2000) });
+            if (res.status === 422 || res.status === 200 || res.status === 405) {
+              // Server is up (422 = missing params on GET, which means it's responding)
+              // Switch models if configured
+              if (gptWeights) {
+                try { await fetch(`http://127.0.0.1:${serverPort}/set_gpt_weights?weights_path=${encodeURIComponent(gptWeights)}`); } catch {}
+              }
+              if (vitsWeights) {
+                try { await fetch(`http://127.0.0.1:${serverPort}/set_sovits_weights?weights_path=${encodeURIComponent(vitsWeights)}`); } catch {}
+              }
+              return { success: true, pid: genieProcess.pid };
+            }
           } catch {}
         }
-        return { success: false, error: 'Server startup timeout (60s)' };
+        return { success: false, error: 'Server startup timeout (90s)' };
       } catch (e) {
         return { success: false, error: e.message };
       }

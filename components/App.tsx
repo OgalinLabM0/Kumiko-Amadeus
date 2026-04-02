@@ -4646,14 +4646,14 @@ export const App = () => {
     emotion: EmotionType,
   ): Promise<{ success: boolean; voiceFileId?: string; voiceDuration?: number; japaneseText?: string }> => {
     const cfg = ttsConfigRef.current;
-    const isGenie = cfg.ttsBackend === 'genie';
+    const isGenie = cfg.ttsBackend === 'sovits';
 
     if (!isGenie && (!cfg.fishAudioApiKey || !isVoiceServiceAvailable())) {
       console.warn('[TTS] No API key or voice service unavailable');
       return { success: false };
     }
-    if (isGenie && !cfg.genieModelDir) {
-      console.warn('[TTS-Genie] No model directory configured');
+    if (isGenie && !cfg.sovitsDir) {
+      console.warn('[TTS-SoVITS] No GPT-SoVITS directory configured');
       return { success: false };
     }
 
@@ -5371,7 +5371,7 @@ export const App = () => {
           const combinedReminderText = response.textParts.join(' ');
           const currentTtsCfg = ttsConfigRef.current;
 
-          if (currentTtsCfg.voiceMode !== 'text' && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'genie') && isVoiceServiceAvailable()) {
+          if (currentTtsCfg.voiceMode !== 'text' && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'sovits') && isVoiceServiceAvailable()) {
               setIsThinking(false);
 
               const isInForeground = !document.hidden && document.hasFocus();
@@ -7213,7 +7213,7 @@ Simulate human behavior: decide as Kumiko would, not by a rigid template. Voice 
       const isVoiceTurn = currentTtsCfg.voiceMode === 'full'
         || (currentTtsCfg.voiceMode === 'hybrid' && response.voiceMode === true);
 
-      if (isVoiceTurn && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'genie') && isVoiceServiceAvailable()) {
+      if (isVoiceTurn && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'sovits') && isVoiceServiceAvailable()) {
         const combinedText = response.textParts.join(' ');
         setIsThinking(true);
 

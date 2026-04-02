@@ -1,9 +1,9 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { ChevronDown, ChevronUp, Upload, Play, Square, Trash2, TestTube, Loader2, Volume2, ExternalLink, RotateCcw, Power, PowerOff, Cpu, Cloud } from 'lucide-react';
+import { ChevronDown, ChevronUp, Upload, Play, Square, Trash2, TestTube, Loader2, Volume2, ExternalLink, RotateCcw, Power, PowerOff, Cpu, Cloud, Settings2 } from 'lucide-react';
 import type { TtsConfig, VoiceMode, Language, TtsBackend } from '../../types';
 import { UI_TRANSLATIONS, DEFAULT_TTS_CONFIG } from '../../constants';
 import { synthesizeSpeech } from '../../services/fishAudioService';
-import { checkGenieHealth, loadGenieCharacter } from '../../services/genieAudioService';
+import { checkGenieHealth } from '../../services/genieAudioService';
 import {
   saveRingtoneFile,
   loadRingtoneFileWithName,
@@ -262,6 +262,8 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     return () => { ipc.removeListener('genie:status-changed', handler); };
   }, [isOpen]);
 
+  const [showAdvancedSovits, setShowAdvancedSovits] = useState(false);
+
   const handleGenieStart = useCallback(async () => {
     const ipc = (window as any)?.electronAPI;
     if (!ipc) return;
@@ -269,24 +271,13 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     setGenieError(null);
     try {
       const result = await ipc.invoke('genie:start', {
-        pythonPath: ttsConfig.geniePythonPath || 'python',
-        port: ttsConfig.genieServerPort || 8000,
+        sovitsDir: ttsConfig.sovitsDir,
+        port: ttsConfig.sovitsPort || 9880,
+        gptWeights: ttsConfig.sovitsGptWeights || '',
+        vitsWeights: ttsConfig.sovitsVitsWeights || '',
       });
       if (result?.success) {
         setGeniePid(result.pid || null);
-        const baseUrl = `http://127.0.0.1:${ttsConfig.genieServerPort || 8000}`;
-        if (ttsConfig.genieModelDir) {
-          const loadResult = await loadGenieCharacter(baseUrl, {
-            characterName: ttsConfig.genieCharacterName || 'kumiko',
-            modelDir: ttsConfig.genieModelDir,
-            language: ttsConfig.genieLanguage || 'jp',
-          });
-          if (!loadResult.success) {
-            setGenieStatus('error');
-            setGenieError(loadResult.error || 'Model load failed');
-            return;
-          }
-        }
         setGenieStatus('ready');
       } else {
         setGenieStatus('error');
@@ -544,7 +535,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             <div className="grid grid-cols-2 gap-2 mt-2">
               {([
                 { value: 'fish' as TtsBackend, label: 'Fish Audio', desc: language === 'zh' ? '云端 · 需 API Key' : 'Cloud · API Key required', icon: Cloud },
-                { value: 'genie' as TtsBackend, label: 'Genie-TTS', desc: language === 'zh' ? '本地 · GPT-SoVITS' : 'Local · GPT-SoVITS', icon: Cpu },
+                { value: 'sovits' as TtsBackend, label: 'GPT-SoVITS', desc: language === 'zh' ? '本地推理' : 'Local inference', icon: Cpu },
               ]).map(opt => (
                 <button key={opt.value}
                   onClick={() => update({ ttsBackend: opt.value })}
@@ -563,25 +554,10 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             </div>
           </div>
 
-          {(ttsConfig.ttsBackend || 'fish') === 'genie' && (
+          {(ttsConfig.ttsBackend || 'fish') === 'sovits' && (
             <div className={`${innerCardClass} p-4 rounded-[1.15rem] flex flex-col gap-3`}>
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className={fieldLabelClass}>{language === 'zh' ? 'Genie-TTS 本地配置' : 'Genie-TTS Local Config'}</div>
-                  <button
-                    type="button"
-                    onClick={() => update({
-                      geniePythonPath: DEFAULT_TTS_CONFIG.geniePythonPath,
-                      genieServerPort: DEFAULT_TTS_CONFIG.genieServerPort,
-                      genieCharacterName: DEFAULT_TTS_CONFIG.genieCharacterName,
-                      genieLanguage: DEFAULT_TTS_CONFIG.genieLanguage,
-                    })}
-                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ka-micro font-semibold transition-colors ${resetButtonClass}`}
-                  >
-                    <RotateCcw size={10} />
-                    {language === 'zh' ? '恢复默认' : 'Reset'}
-                  </button>
-                </div>
+                <div className={fieldLabelClass}>{language === 'zh' ? 'GPT-SoVITS 本地配置' : 'GPT-SoVITS Local Config'}</div>
                 <div className="flex items-center gap-2">
                   <div className={`w-2 h-2 rounded-full ${
                     genieStatus === 'ready' ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]'
@@ -599,70 +575,71 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               </div>
 
               <div>
-                <label className={fieldLabelClass}>Python {language === 'zh' ? '命令 / 路径' : 'Command / Path'}</label>
-                <input type="text" value={ttsConfig.geniePythonPath || 'python'}
-                  onChange={e => update({ geniePythonPath: e.target.value })}
+                <label className={fieldLabelClass}>{language === 'zh' ? 'GPT-SoVITS 安装目录（必填）' : 'GPT-SoVITS Install Directory (required)'}</label>
+                <input type="text" value={ttsConfig.sovitsDir || ''}
+                  onChange={e => update({ sovitsDir: e.target.value })}
                   className={`${inputClass} w-full mt-1`}
-                  placeholder="python" />
+                  placeholder={language === 'zh' ? '例：D:\\AI\\GPT-SoVITS\\GPT-SoVITS-v2pro-20250604' : 'e.g. D:\\AI\\GPT-SoVITS-v2pro'} />
                 <div className={`${helperClass} mt-0.5`}>
-                  {language === 'zh'
-                    ? '默认 python = 系统 PATH 中的 Python 命令。如果在 CMD 输入 python 能运行则无需修改；否则填完整路径如 C:\\Python311\\python.exe'
-                    : 'Default "python" uses system PATH. If "python" works in CMD, no change needed; otherwise provide full path'}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className={fieldLabelClass}>{language === 'zh' ? '端口（默认即可）' : 'Port (default OK)'}</label>
-                  <input type="number" value={ttsConfig.genieServerPort || 8000}
-                    onChange={e => update({ genieServerPort: parseInt(e.target.value) || 8000 })}
-                    className={`${inputClass} w-full mt-1`} />
-                </div>
-                <div>
-                  <label className={fieldLabelClass}>{language === 'zh' ? '角色名（默认即可）' : 'Character (default OK)'}</label>
-                  <input type="text" value={ttsConfig.genieCharacterName || 'kumiko'}
-                    onChange={e => update({ genieCharacterName: e.target.value })}
-                    className={`${inputClass} w-full mt-1`} />
+                  {language === 'zh' ? '需包含 runtime/python.exe 和 api_v2.py' : 'Must contain runtime/python.exe and api_v2.py'}
                 </div>
               </div>
 
               <div>
-                <label className={fieldLabelClass}>{language === 'zh' ? 'ONNX 模型目录（必填）' : 'ONNX Model Directory (required)'}</label>
-                <input type="text" value={ttsConfig.genieModelDir || ''}
-                  onChange={e => update({ genieModelDir: e.target.value })}
+                <label className={fieldLabelClass}>{language === 'zh' ? '端口（默认即可）' : 'Port (default OK)'}</label>
+                <input type="number" value={ttsConfig.sovitsPort || 9880}
+                  onChange={e => update({ sovitsPort: parseInt(e.target.value) || 9880 })}
+                  className={`${inputClass} w-full mt-1`} />
+              </div>
+
+              <div>
+                <label className={fieldLabelClass}>{language === 'zh' ? 'GPT 模型路径 (.ckpt)' : 'GPT Model Path (.ckpt)'}</label>
+                <input type="text" value={ttsConfig.sovitsGptWeights || ''}
+                  onChange={e => update({ sovitsGptWeights: e.target.value })}
                   className={`${inputClass} w-full mt-1`}
-                  placeholder={language === 'zh' ? '例：D:\\Models\\kumiko-genie\\model' : 'e.g. D:\\Models\\kumiko-genie\\model'} />
+                  placeholder={language === 'zh' ? '例：GPT_weights_v2ProPlus/KMK.F.KA-e20.ckpt' : 'e.g. GPT_weights_v2ProPlus/model.ckpt'} />
+                <div className={`${helperClass} mt-0.5`}>
+                  {language === 'zh' ? '可选，填写后启动时自动切换模型。留空则使用 tts_infer.yaml 中的默认模型' : 'Optional. Auto-switches model on start. Leave empty to use tts_infer.yaml default'}
+                </div>
+              </div>
+
+              <div>
+                <label className={fieldLabelClass}>{language === 'zh' ? 'SoVITS 模型路径 (.pth)' : 'SoVITS Model Path (.pth)'}</label>
+                <input type="text" value={ttsConfig.sovitsVitsWeights || ''}
+                  onChange={e => update({ sovitsVitsWeights: e.target.value })}
+                  className={`${inputClass} w-full mt-1`}
+                  placeholder={language === 'zh' ? '例：SoVITS_weights_v2ProPlus/KMK.F.KA_c8_s96.pth' : 'e.g. SoVITS_weights_v2ProPlus/model.pth'} />
               </div>
 
               <div>
                 <label className={fieldLabelClass}>{language === 'zh' ? '参考音频目录（必填）' : 'Reference Audio Directory (required)'}</label>
-                <input type="text" value={ttsConfig.genieRefAudioDir || ''}
-                  onChange={e => update({ genieRefAudioDir: e.target.value })}
+                <input type="text" value={ttsConfig.sovitsRefAudioDir || ''}
+                  onChange={e => update({ sovitsRefAudioDir: e.target.value })}
                   className={`${inputClass} w-full mt-1`}
-                  placeholder={language === 'zh' ? '例：D:\\Models\\kumiko-genie\\reference' : 'e.g. D:\\Models\\kumiko-genie\\reference'} />
+                  placeholder={language === 'zh' ? '例：D:\\Models\\kumiko\\reference' : 'e.g. D:\\Models\\kumiko\\reference'} />
                 <div className={`${helperClass} mt-0.5`}>
                   {language === 'zh'
-                    ? '需包含情绪 WAV 文件：neutral.wav, happy.wav, gentle.wav, resigned.wav, serious.wav, sad.wav, angry.wav, shy.wav, sleepy.wav, surprised.wav'
-                    : 'Must contain emotion WAV files: neutral.wav, happy.wav, gentle.wav, resigned.wav, serious.wav, sad.wav, angry.wav, shy.wav, sleepy.wav, surprised.wav'}
+                    ? '需包含情绪 WAV：neutral.wav, happy.wav, gentle.wav, resigned.wav, serious.wav, sad.wav, angry.wav, shy.wav, sleepy.wav, surprised.wav'
+                    : 'Must contain: neutral.wav, happy.wav, gentle.wav, resigned.wav, serious.wav, sad.wav, angry.wav, shy.wav, sleepy.wav, surprised.wav'}
                 </div>
               </div>
 
               <div className="flex items-center gap-2 mt-1">
                 {genieStatus === 'off' || genieStatus === 'error' ? (
                   <button onClick={handleGenieStart}
-                    disabled={!ttsConfig.genieModelDir}
+                    disabled={!ttsConfig.sovitsDir}
                     className={`flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
-                      ttsConfig.genieModelDir
+                      ttsConfig.sovitsDir
                         ? 'bg-green-600 hover:bg-green-700 text-white'
                         : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
                     }`}>
                     <Power size={14} />
-                    {language === 'zh' ? '启动 Genie 服务器' : 'Start Genie Server'}
+                    {language === 'zh' ? '启动 GPT-SoVITS 服务器' : 'Start GPT-SoVITS Server'}
                   </button>
                 ) : genieStatus === 'starting' ? (
                   <button disabled className="flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold bg-yellow-600/50 text-yellow-200 cursor-wait">
                     <Loader2 size={14} className="animate-spin" />
-                    {language === 'zh' ? '启动中...' : 'Starting...'}
+                    {language === 'zh' ? '启动中（模型加载可能需要30-60秒）...' : 'Starting (model loading may take 30-60s)...'}
                   </button>
                 ) : (
                   <button onClick={handleGenieStop}
@@ -676,10 +653,86 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               {genieError && (
                 <div className="ka-micro text-red-400 bg-red-500/10 rounded px-2 py-1.5">{genieError}</div>
               )}
+
+              <div className="mt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedSovits(!showAdvancedSovits)}
+                  className={`flex items-center gap-1.5 ka-micro font-semibold transition-colors ${isDarkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'}`}
+                >
+                  <Settings2 size={12} />
+                  {language === 'zh' ? '高级推理参数' : 'Advanced Inference Params'}
+                  {showAdvancedSovits ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                </button>
+
+                {showAdvancedSovits && (
+                  <div className="mt-2 flex flex-col gap-3 pl-1">
+                    <div className="flex items-center justify-between">
+                      <span className={`${helperClass}`}>{language === 'zh' ? '不懂就用默认值' : 'Use defaults if unsure'}</span>
+                      <button
+                        type="button"
+                        onClick={() => update({
+                          sovitsTopK: DEFAULT_TTS_CONFIG.sovitsTopK,
+                          sovitsTopP: DEFAULT_TTS_CONFIG.sovitsTopP,
+                          sovitsTemperature: DEFAULT_TTS_CONFIG.sovitsTemperature,
+                          sovitsTextSplitMethod: DEFAULT_TTS_CONFIG.sovitsTextSplitMethod,
+                          sovitsFragmentInterval: DEFAULT_TTS_CONFIG.sovitsFragmentInterval,
+                        })}
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ka-micro font-semibold transition-colors ${resetButtonClass}`}
+                      >
+                        <RotateCcw size={10} />
+                        {language === 'zh' ? '恢复默认' : 'Reset'}
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className={fieldLabelClass}>{language === 'zh' ? '切分方式' : 'Split Method'}</label>
+                        <select value={ttsConfig.sovitsTextSplitMethod || 'cut0'}
+                          onChange={e => update({ sovitsTextSplitMethod: e.target.value })}
+                          className={`${inputClass} w-full mt-1`}>
+                          <option value="cut0">{language === 'zh' ? '不切' : 'No split'}</option>
+                          <option value="cut1">{language === 'zh' ? '凑四句一切' : 'Every 4 sentences'}</option>
+                          <option value="cut2">{language === 'zh' ? '凑50字一切' : 'Every 50 chars'}</option>
+                          <option value="cut3">{language === 'zh' ? '按中文句号切' : 'Chinese period'}</option>
+                          <option value="cut4">{language === 'zh' ? '按英文句号切' : 'English period'}</option>
+                          <option value="cut5">{language === 'zh' ? '按标点符号切' : 'All punctuation'}</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className={fieldLabelClass}>{language === 'zh' ? '句间停顿 (秒)' : 'Fragment Interval (s)'}</label>
+                        <input type="number" step="0.1" min="0" max="2"
+                          value={ttsConfig.sovitsFragmentInterval ?? 0.3}
+                          onChange={e => update({ sovitsFragmentInterval: parseFloat(e.target.value) || 0.3 })}
+                          className={`${inputClass} w-full mt-1`} />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className={fieldLabelClass}>top_k: {ttsConfig.sovitsTopK ?? 15}</label>
+                      <input type="range" min="1" max="50" step="1" value={ttsConfig.sovitsTopK ?? 15}
+                        onChange={e => update({ sovitsTopK: parseInt(e.target.value) })}
+                        className="w-full mt-1 accent-[#c79a2f]" />
+                    </div>
+                    <div>
+                      <label className={fieldLabelClass}>top_p: {(ttsConfig.sovitsTopP ?? 1).toFixed(2)}</label>
+                      <input type="range" min="0" max="1" step="0.05" value={ttsConfig.sovitsTopP ?? 1}
+                        onChange={e => update({ sovitsTopP: parseFloat(e.target.value) })}
+                        className="w-full mt-1 accent-[#c79a2f]" />
+                    </div>
+                    <div>
+                      <label className={fieldLabelClass}>temperature: {(ttsConfig.sovitsTemperature ?? 1).toFixed(2)}</label>
+                      <input type="range" min="0" max="1" step="0.05" value={ttsConfig.sovitsTemperature ?? 1}
+                        onChange={e => update({ sovitsTemperature: parseFloat(e.target.value) })}
+                        className="w-full mt-1 accent-[#c79a2f]" />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
-          {(ttsConfig.ttsBackend || 'fish') !== 'genie' && (
+          {(ttsConfig.ttsBackend || 'fish') !== 'sovits' && (
             <>
           <div>
             <label className={fieldLabelClass}>{t.ttsFishApiKey}</label>
@@ -882,7 +935,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             </div>
           </div>
 
-          {(ttsConfig.ttsBackend || 'fish') !== 'genie' && (
+          {(ttsConfig.ttsBackend || 'fish') !== 'sovits' && (
           <button onClick={handleTestVoice} disabled={isTesting || !ttsConfig.fishAudioApiKey}
             className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
               isTesting ? 'opacity-50 cursor-wait' : ''

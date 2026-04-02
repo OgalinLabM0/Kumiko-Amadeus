@@ -188,7 +188,7 @@ export interface ChatResponse {
 }
 
 export type VoiceMode = 'full' | 'text' | 'hybrid';
-export type TtsBackend = 'fish' | 'genie';
+export type TtsBackend = 'fish' | 'sovits';
 
 export interface TtsConfig {
   ttsBackend: TtsBackend;
@@ -202,12 +202,16 @@ export interface TtsConfig {
   temperature?: number;
   model_translator?: string;
   ringtoneFileId?: string;
-  geniePythonPath?: string;
-  genieServerPort?: number;
-  genieCharacterName?: string;
-  genieModelDir?: string;
-  genieRefAudioDir?: string;
-  genieLanguage?: string;
+  sovitsDir?: string;
+  sovitsPort?: number;
+  sovitsGptWeights?: string;
+  sovitsVitsWeights?: string;
+  sovitsRefAudioDir?: string;
+  sovitsTopK?: number;
+  sovitsTopP?: number;
+  sovitsTemperature?: number;
+  sovitsTextSplitMethod?: string;
+  sovitsFragmentInterval?: number;
 }
 
 export type AppUpdateStatus =

@@ -1356,7 +1356,7 @@ export const EMOTION_TTS_TEMPERATURE: Record<EmotionType, number> = {
     worried_2: 0.7,
 };
 
-export const EMOTION_TO_GENIE_REF: Record<EmotionType, string> = {
+export const EMOTION_TO_SOVITS_REF: Record<EmotionType, string> = {
     neutral: 'neutral', smiling: 'happy', happy: 'happy',
     angry: 'angry', sad: 'sad', shy: 'shy',
     surprised: 'surprised', resigned: 'resigned',
@@ -1376,10 +1376,12 @@ export const DEFAULT_TTS_CONFIG: import('./types').TtsConfig = {
     latency: 'balanced',
     speed: 1.0,
     ringtoneFileId: '01.mp3',
-    geniePythonPath: 'python',
-    genieServerPort: 8000,
-    genieCharacterName: 'kumiko',
-    genieLanguage: 'jp',
+    sovitsPort: 9880,
+    sovitsTopK: 15,
+    sovitsTopP: 1,
+    sovitsTemperature: 1,
+    sovitsTextSplitMethod: 'cut0',
+    sovitsFragmentInterval: 0.3,
 };
 
 export const SOFTWARE_GUIDE_SECTIONS = {

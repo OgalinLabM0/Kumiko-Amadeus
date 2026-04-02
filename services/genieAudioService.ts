@@ -1,80 +1,83 @@
 import type { TtsConfig, EmotionType } from '../types';
 import type { TtsSynthesisResult } from './fishAudioService';
-import { EMOTION_TO_GENIE_REF } from '../constants';
+import { EMOTION_TO_SOVITS_REF } from '../constants';
 
 let lastRefEmotion: string | null = null;
 
 export async function checkGenieHealth(baseUrl: string): Promise<boolean> {
   try {
-    const res = await fetch(`${baseUrl}/docs`, { signal: AbortSignal.timeout(3000) });
-    return res.ok || res.status === 200;
+    const res = await fetch(`${baseUrl}/tts`, { method: 'GET', signal: AbortSignal.timeout(3000) });
+    return res.status === 422 || res.status === 200 || res.status === 405;
   } catch {
     return false;
   }
 }
 
-export async function loadGenieCharacter(baseUrl: string, config: {
+export async function setGptWeights(baseUrl: string, weightsPath: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/set_gpt_weights?weights_path=${encodeURIComponent(weightsPath)}`);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function setSovitsWeights(baseUrl: string, weightsPath: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl}/set_sovits_weights?weights_path=${encodeURIComponent(weightsPath)}`);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function loadGenieCharacter(_baseUrl: string, _config: {
   characterName: string; modelDir: string; language: string;
 }): Promise<{ success: boolean; error?: string }> {
-  try {
-    const res = await fetch(`${baseUrl}/load_character`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        character_name: config.characterName,
-        onnx_model_dir: config.modelDir,
-        language: config.language,
-      }),
-    });
-    if (!res.ok) {
-      const text = await res.text();
-      return { success: false, error: `HTTP ${res.status}: ${text}` };
-    }
-    const data = await res.json();
-    return { success: true, error: data.message };
-  } catch (e: any) {
-    return { success: false, error: e.message };
-  }
+  return { success: true };
 }
 
-export async function setGenieRefAudio(baseUrl: string, config: {
-  characterName: string; audioPath: string; audioText: string; language: string;
-}): Promise<void> {
-  const res = await fetch(`${baseUrl}/set_reference_audio`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      character_name: config.characterName,
-      audio_path: config.audioPath,
-      audio_text: config.audioText,
-      language: config.language,
-    }),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`set_reference_audio failed: HTTP ${res.status} ${text}`);
-  }
-}
-
-export async function synthesizeWithGenie(
-  text: string, baseUrl: string, characterName: string, speed?: number,
+export async function synthesizeWithSovits(
+  text: string,
+  baseUrl: string,
+  refAudioPath: string,
+  promptText: string,
+  options: {
+    speed?: number;
+    topK?: number;
+    topP?: number;
+    temperature?: number;
+    textSplitMethod?: string;
+    fragmentInterval?: number;
+  } = {},
 ): Promise<TtsSynthesisResult> {
   const body: Record<string, unknown> = {
-    character_name: characterName,
     text,
-    split_sentence: true,
+    text_lang: 'ja',
+    ref_audio_path: refAudioPath,
+    prompt_text: promptText,
+    prompt_lang: 'ja',
+    speed_factor: options.speed ?? 1.0,
+    top_k: options.topK ?? 15,
+    top_p: options.topP ?? 1,
+    temperature: options.temperature ?? 1,
+    text_split_method: options.textSplitMethod ?? 'cut0',
+    fragment_interval: options.fragmentInterval ?? 0.3,
+    media_type: 'wav',
+    streaming_mode: false,
+    batch_size: 1,
+    parallel_infer: true,
+    repetition_penalty: 1.35,
   };
-  if (speed !== undefined && speed !== 1.0) {
-    body.speed_factor = speed;
-  }
+
   const res = await fetch(`${baseUrl}/tts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Genie TTS failed: HTTP ${res.status} ${errText}`);
+    const errText = await res.text().catch(() => '');
+    throw new Error(`GPT-SoVITS TTS failed: HTTP ${res.status} ${errText}`);
   }
   const arrayBuffer = await res.arrayBuffer();
   const sampleRate = 32000;
@@ -86,25 +89,20 @@ export async function synthesizeWithGenie(
 export async function genieTtsWithEmotion(
   text: string, emotion: EmotionType, ttsConfig: TtsConfig,
 ): Promise<TtsSynthesisResult> {
-  const baseUrl = `http://127.0.0.1:${ttsConfig.genieServerPort || 8000}`;
-  const characterName = ttsConfig.genieCharacterName || 'kumiko';
-  const refDir = ttsConfig.genieRefAudioDir || '';
-  const language = ttsConfig.genieLanguage || 'jp';
+  const baseUrl = `http://127.0.0.1:${ttsConfig.sovitsPort || 9880}`;
+  const refDir = ttsConfig.sovitsRefAudioDir || '';
+  const refKey = EMOTION_TO_SOVITS_REF[emotion] || 'neutral';
 
-  const refKey = EMOTION_TO_GENIE_REF[emotion] || 'neutral';
+  const separator = refDir.includes('/') ? '/' : '\\';
+  const refAudioPath = refDir ? `${refDir}${separator}${refKey}.wav` : '';
+  const promptText = text.slice(0, 30);
 
-  if (refDir && refKey !== lastRefEmotion) {
-    const separator = refDir.includes('/') ? '/' : '\\';
-    const audioPath = `${refDir}${separator}${refKey}.wav`;
-
-    await setGenieRefAudio(baseUrl, {
-      characterName,
-      audioPath,
-      audioText: text.slice(0, 30),
-      language,
-    });
-    lastRefEmotion = refKey;
-  }
-
-  return synthesizeWithGenie(text, baseUrl, characterName, ttsConfig.speed);
+  return synthesizeWithSovits(text, baseUrl, refAudioPath, promptText, {
+    speed: ttsConfig.speed,
+    topK: ttsConfig.sovitsTopK,
+    topP: ttsConfig.sovitsTopP,
+    temperature: ttsConfig.sovitsTemperature,
+    textSplitMethod: ttsConfig.sovitsTextSplitMethod,
+    fragmentInterval: ttsConfig.sovitsFragmentInterval,
+  });
 }
