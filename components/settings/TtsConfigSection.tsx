@@ -566,7 +566,22 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
           {(ttsConfig.ttsBackend || 'fish') === 'genie' && (
             <div className={`${innerCardClass} p-4 rounded-[1.15rem] flex flex-col gap-3`}>
               <div className="flex items-center justify-between">
-                <div className={fieldLabelClass}>{language === 'zh' ? 'Genie-TTS 本地配置' : 'Genie-TTS Local Config'}</div>
+                <div className="flex items-center gap-2">
+                  <div className={fieldLabelClass}>{language === 'zh' ? 'Genie-TTS 本地配置' : 'Genie-TTS Local Config'}</div>
+                  <button
+                    type="button"
+                    onClick={() => update({
+                      geniePythonPath: DEFAULT_TTS_CONFIG.geniePythonPath,
+                      genieServerPort: DEFAULT_TTS_CONFIG.genieServerPort,
+                      genieCharacterName: DEFAULT_TTS_CONFIG.genieCharacterName,
+                      genieLanguage: DEFAULT_TTS_CONFIG.genieLanguage,
+                    })}
+                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 ka-micro font-semibold transition-colors ${resetButtonClass}`}
+                  >
+                    <RotateCcw size={10} />
+                    {language === 'zh' ? '恢复默认' : 'Reset'}
+                  </button>
+                </div>
                 <div className="flex items-center gap-2">
                   <div className={`w-2 h-2 rounded-full ${
                     genieStatus === 'ready' ? 'bg-green-400 shadow-[0_0_6px_rgba(74,222,128,0.5)]'
@@ -584,23 +599,27 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               </div>
 
               <div>
-                <label className={fieldLabelClass}>Python {language === 'zh' ? '路径' : 'Path'}</label>
+                <label className={fieldLabelClass}>Python {language === 'zh' ? '命令 / 路径' : 'Command / Path'}</label>
                 <input type="text" value={ttsConfig.geniePythonPath || 'python'}
                   onChange={e => update({ geniePythonPath: e.target.value })}
                   className={`${inputClass} w-full mt-1`}
-                  placeholder={language === 'zh' ? '例：python 或 C:\\Python311\\python.exe' : 'e.g. python or C:\\Python311\\python.exe'} />
-                <div className={`${helperClass} mt-0.5`}>{language === 'zh' ? '需已安装 genie-tts (pip install genie-tts)' : 'Requires genie-tts installed (pip install genie-tts)'}</div>
+                  placeholder="python" />
+                <div className={`${helperClass} mt-0.5`}>
+                  {language === 'zh'
+                    ? '默认 python = 系统 PATH 中的 Python。如果 CMD 输入 python 能运行则无需修改；否则填完整路径如 C:\\Python311\\python.exe。需已安装 genie-tts (pip install genie-tts)'
+                    : 'Default "python" uses system PATH. If "python" works in CMD, no change needed. Otherwise provide full path. Requires genie-tts (pip install genie-tts)'}
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className={fieldLabelClass}>{language === 'zh' ? '端口' : 'Port'}</label>
+                  <label className={fieldLabelClass}>{language === 'zh' ? '端口（默认即可）' : 'Port (default OK)'}</label>
                   <input type="number" value={ttsConfig.genieServerPort || 8000}
                     onChange={e => update({ genieServerPort: parseInt(e.target.value) || 8000 })}
                     className={`${inputClass} w-full mt-1`} />
                 </div>
                 <div>
-                  <label className={fieldLabelClass}>{language === 'zh' ? '角色名' : 'Character'}</label>
+                  <label className={fieldLabelClass}>{language === 'zh' ? '角色名（默认即可）' : 'Character (default OK)'}</label>
                   <input type="text" value={ttsConfig.genieCharacterName || 'kumiko'}
                     onChange={e => update({ genieCharacterName: e.target.value })}
                     className={`${inputClass} w-full mt-1`} />
@@ -608,7 +627,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               </div>
 
               <div>
-                <label className={fieldLabelClass}>{language === 'zh' ? 'ONNX 模型目录' : 'ONNX Model Directory'}</label>
+                <label className={fieldLabelClass}>{language === 'zh' ? 'ONNX 模型目录（必填）' : 'ONNX Model Directory (required)'}</label>
                 <input type="text" value={ttsConfig.genieModelDir || ''}
                   onChange={e => update({ genieModelDir: e.target.value })}
                   className={`${inputClass} w-full mt-1`}
@@ -616,7 +635,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               </div>
 
               <div>
-                <label className={fieldLabelClass}>{language === 'zh' ? '参考音频目录' : 'Reference Audio Directory'}</label>
+                <label className={fieldLabelClass}>{language === 'zh' ? '参考音频目录（必填）' : 'Reference Audio Directory (required)'}</label>
                 <input type="text" value={ttsConfig.genieRefAudioDir || ''}
                   onChange={e => update({ genieRefAudioDir: e.target.value })}
                   className={`${inputClass} w-full mt-1`}
