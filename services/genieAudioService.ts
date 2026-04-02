@@ -57,16 +57,20 @@ export async function setGenieRefAudio(baseUrl: string, config: {
 }
 
 export async function synthesizeWithGenie(
-  text: string, baseUrl: string, characterName: string,
+  text: string, baseUrl: string, characterName: string, speed?: number,
 ): Promise<TtsSynthesisResult> {
+  const body: Record<string, unknown> = {
+    character_name: characterName,
+    text,
+    split_sentence: true,
+  };
+  if (speed !== undefined && speed !== 1.0) {
+    body.speed_factor = speed;
+  }
   const res = await fetch(`${baseUrl}/tts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      character_name: characterName,
-      text,
-      split_sentence: true,
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) {
     const errText = await res.text();
@@ -102,5 +106,5 @@ export async function genieTtsWithEmotion(
     lastRefEmotion = refKey;
   }
 
-  return synthesizeWithGenie(text, baseUrl, characterName);
+  return synthesizeWithGenie(text, baseUrl, characterName, ttsConfig.speed);
 }

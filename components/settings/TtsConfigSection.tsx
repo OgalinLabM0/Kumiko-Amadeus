@@ -606,8 +606,8 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                   placeholder="python" />
                 <div className={`${helperClass} mt-0.5`}>
                   {language === 'zh'
-                    ? '默认 python = 系统 PATH 中的 Python。如果 CMD 输入 python 能运行则无需修改；否则填完整路径如 C:\\Python311\\python.exe。需已安装 genie-tts (pip install genie-tts)'
-                    : 'Default "python" uses system PATH. If "python" works in CMD, no change needed. Otherwise provide full path. Requires genie-tts (pip install genie-tts)'}
+                    ? '默认 python = 系统 PATH 中的 Python 命令。如果在 CMD 输入 python 能运行则无需修改；否则填完整路径如 C:\\Python311\\python.exe'
+                    : 'Default "python" uses system PATH. If "python" works in CMD, no change needed; otherwise provide full path'}
                 </div>
               </div>
 
@@ -733,14 +733,15 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             </div>
           </div>
 
+            </>
+          )}
+
           <div>
             <label className={fieldLabelClass}>{t.ttsSpeed}: {ttsConfig.speed.toFixed(1)}x</label>
             <input type="range" min="0.5" max="2.0" step="0.1" value={ttsConfig.speed}
               onChange={e => update({ speed: parseFloat(e.target.value) })}
               className="w-full mt-1 accent-[#c79a2f]" />
           </div>
-            </>
-          )}
           <div className={`${innerCardClass} p-4 rounded-[1.15rem]`}>
             <div className="flex items-center justify-between gap-3">
               <div className={fieldLabelClass}>{t.ttsRingtone}</div>
