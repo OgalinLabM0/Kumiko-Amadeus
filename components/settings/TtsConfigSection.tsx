@@ -298,6 +298,42 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     setGenieError(null);
   }, []);
 
+  const handleTestSovitsVoice = useCallback(async () => {
+    if (isTesting || genieStatus !== 'ready') return;
+    setIsTesting(true);
+    setTestStatus('idle');
+    try {
+      const { synthesizeWithSovits } = await import('../../services/genieAudioService');
+      const baseUrl = `http://127.0.0.1:${ttsConfig.sovitsPort || 9880}`;
+      const refDir = ttsConfig.sovitsRefAudioDir || '';
+      const sep = refDir.includes('/') ? '/' : '\\';
+      const refPath = refDir ? `${refDir}${sep}neutral.wav` : '';
+      const testText = '全国大会を目指す日々は、決して楽な道のりではありません。しかし、仲間と共に努力する喜びが、私たちを強くしてくれました。';
+      const result = await synthesizeWithSovits(testText, baseUrl, refPath, testText.slice(0, 20), {
+        speed: ttsConfig.speed,
+        topK: ttsConfig.sovitsTopK,
+        topP: ttsConfig.sovitsTopP,
+        temperature: ttsConfig.sovitsTemperature,
+        textSplitMethod: ttsConfig.sovitsTextSplitMethod,
+        fragmentInterval: ttsConfig.sovitsFragmentInterval,
+      });
+      const blob = new Blob([result.audio], { type: 'audio/wav' });
+      const url = URL.createObjectURL(blob);
+      stopTestVoicePlayback();
+      testAudioUrlRef.current = url;
+      const audio = new Audio(url);
+      testAudioRef.current = audio;
+      audio.onended = () => { stopTestVoicePlayback(); };
+      audio.onerror = () => { stopTestVoicePlayback(); setTestStatus('error'); };
+      await audio.play();
+      setTestStatus('playing');
+    } catch (e) {
+      console.error('[TTS-SoVITS Test]', e);
+      setTestStatus('error');
+      setIsTesting(false);
+    }
+  }, [isTesting, genieStatus, ttsConfig, stopTestVoicePlayback]);
+
   const selectedBuiltInRingtone = BUILT_IN_RINGTONES.find(ringtone => ringtone.id === ttsConfig.ringtoneFileId);
   const isCustomRingtoneSelected = !!customRingtoneId && ttsConfig.ringtoneFileId === customRingtoneId;
   const genericCustomRingtoneLabel = language === 'zh' ? '自定义铃声' : 'Custom ringtone';
@@ -653,6 +689,18 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               {genieError && (
                 <div className="ka-micro text-red-400 bg-red-500/10 rounded px-2 py-1.5">{genieError}</div>
               )}
+
+              <button onClick={handleTestSovitsVoice}
+                disabled={isTesting || genieStatus !== 'ready' || !ttsConfig.sovitsRefAudioDir}
+                className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
+                  isTesting ? 'opacity-50 cursor-wait' : ''
+                } ${genieStatus === 'ready' && ttsConfig.sovitsRefAudioDir
+                    ? 'bg-[#c79a2f] hover:bg-[#b6881f] text-white'
+                    : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                }`}>
+                {isTesting ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
+                {isTesting ? (language === 'zh' ? '合成中...' : 'Synthesizing...') : (language === 'zh' ? '测试语音' : 'Test Voice')}
+              </button>
 
               <div className="mt-1">
                 <button
