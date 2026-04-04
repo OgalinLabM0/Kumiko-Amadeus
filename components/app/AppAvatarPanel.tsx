@@ -47,13 +47,13 @@ export const AppAvatarPanel: React.FC<AppAvatarPanelProps> = ({
       <div className={overlayClass}></div>
       <div className={`absolute inset-0 ${avatarGradient}`}></div>
 
-      <div className={`absolute top-20 left-4 md:top-10 md:left-10 font-mono text-[10px] md:text-xs z-0 md:z-30 p-2 md:p-0 rounded-lg md:rounded-none transition-all duration-500 pointer-events-none select-none ${statusTextColor}`}>
-        <p className="font-bold opacity-80">{systemName}</p>
-        <p className="opacity-60">{systemId}</p>
+      <div className={`absolute top-20 left-4 md:top-10 md:left-10 md:max-w-[calc(100%-160px)] font-mono text-[10px] md:text-[10px] lg:text-xs z-0 md:z-30 p-2 md:p-0 rounded-lg md:rounded-none transition-all duration-500 pointer-events-none select-none ${statusTextColor}`}>
+        <p className="font-bold opacity-80 truncate">{systemName}</p>
+        <p className="opacity-60 truncate">{systemId}</p>
         <div className="h-px w-8 bg-current my-1 opacity-30"></div>
-        <p>{emotionLabel}: <span className="font-bold">{currentEmotion.toUpperCase()}</span></p>
-        <p>{turnsLabel}: {turnCount} ({nextSyncLabel}: {summaryProgressText})</p>
-        <p className="mt-1 pt-1 border-t border-current border-opacity-30 font-bold md:hidden">{statusText}</p>
+        <p className="truncate">{emotionLabel}: <span className="font-bold">{currentEmotion.toUpperCase()}</span></p>
+        <p className="truncate">{turnsLabel}: {turnCount} ({nextSyncLabel}: {summaryProgressText})</p>
+        <p className="mt-1 pt-1 border-t border-current border-opacity-30 font-bold md:hidden truncate">{statusText}</p>
       </div>
 
       <div className="hidden md:block absolute top-10 right-10 z-30 pointer-events-none">

@@ -660,7 +660,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 mt-1">
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
                 {genieStatus === 'off' || genieStatus === 'error' ? (
                   <button onClick={handleGenieStart}
                     disabled={!ttsConfig.sovitsDir}
@@ -684,23 +684,22 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                     {language === 'zh' ? '停止服务器' : 'Stop Server'}
                   </button>
                 )}
+                <button onClick={handleTestSovitsVoice}
+                  disabled={isTesting || genieStatus !== 'ready' || !ttsConfig.sovitsRefAudioDir}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
+                    isTesting ? 'opacity-50 cursor-wait' : ''
+                  } ${genieStatus === 'ready' && ttsConfig.sovitsRefAudioDir
+                      ? (isDarkMode ? 'bg-[#3a2f1e] hover:bg-[#4a3c28] text-[#d4a852] border border-[#5a4630]' : 'bg-white hover:bg-[#faf5ee] text-[#6f5438] border border-[#e6ddcf]')
+                      : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                  }`}>
+                  {isTesting ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
+                  {isTesting ? (language === 'zh' ? '合成中...' : 'Synthesizing...') : (language === 'zh' ? '测试语音' : 'Test Voice')}
+                </button>
               </div>
 
               {genieError && (
                 <div className="ka-micro text-red-400 bg-red-500/10 rounded px-2 py-1.5">{genieError}</div>
               )}
-
-              <button onClick={handleTestSovitsVoice}
-                disabled={isTesting || genieStatus !== 'ready' || !ttsConfig.sovitsRefAudioDir}
-                className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
-                  isTesting ? 'opacity-50 cursor-wait' : ''
-                } ${genieStatus === 'ready' && ttsConfig.sovitsRefAudioDir
-                    ? 'bg-[#c79a2f] hover:bg-[#b6881f] text-white'
-                    : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                }`}>
-                {isTesting ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
-                {isTesting ? (language === 'zh' ? '合成中...' : 'Synthesizing...') : (language === 'zh' ? '测试语音' : 'Test Voice')}
-              </button>
 
               <div className="mt-1">
                 <button
