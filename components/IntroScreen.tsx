@@ -141,7 +141,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
       "Audio Driver: Euphorium_Resonance.wav",
       "Tuning: Bb Major / A=442Hz",
       "Syncing Emotional Parameters...",
-      language === 'zh' ? "Subject: 黄前久美子 (3年级)" : "Subject: Oumae Kumiko (3rd Year)",
+      language === 'zh' ? "Subject: 黄前久美子" : "Subject: Oumae Kumiko",
       "Status: Waiting for conductor..."
     ];
 
