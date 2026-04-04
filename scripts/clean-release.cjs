@@ -9,6 +9,7 @@ const keepPostbuild = new Set([
   'Kumiko-Amadeus-Setup.exe',
   'Kumiko-Amadeus-Setup.exe.blockmap',
   'latest.yml',
+  'kumiko-assets.zip',
 ]);
 
 function removeEntry(targetPath) {
