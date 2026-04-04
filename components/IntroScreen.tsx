@@ -333,7 +333,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
              </h1>
              
              <div className="mt-[1.5vh] flex flex-col items-center gap-1">
-                <span className="text-[1.72vh] md:text-[2vh] leading-none font-mincho font-semibold tracking-[0.04em] text-[#785A42]">
+                <span className="text-[1.72vh] md:text-[2vh] leading-none font-mincho font-light tracking-[0.08em] text-[#785A42]">
                   {language === 'zh' ? '黄前 久美子' : 'Oumae Kumiko'}
                 </span>
                 <span className="ka-micro font-mono tracking-[0.14em] text-[#785A42] opacity-60 uppercase mt-[0.5vh]">
