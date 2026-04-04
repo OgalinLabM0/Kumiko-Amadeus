@@ -166,7 +166,7 @@ export const getSchoolYear = (dateStr: string): number => {
 };
 
 const getYearlyAssignment = (schoolYear: number): YearlyAssignment => {
-  const teachingYear = schoolYear - 2024;
+  const teachingYear = schoolYear - 2022;
   const yearIndex = (schoolYear - BASE_YEAR) % 3;
 
   if (yearIndex === 0) {
