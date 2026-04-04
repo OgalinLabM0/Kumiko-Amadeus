@@ -22,7 +22,6 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
   apiKey_primary: '',
   apiKey_backup: '',
   activeKey: 'primary',
-  useEnvKey: true,
   model_main: 'gemini-3.1-pro-preview',
   model_summary: 'gemini-2.5-flash',
   model_vision: 'gemini-2.5-flash',

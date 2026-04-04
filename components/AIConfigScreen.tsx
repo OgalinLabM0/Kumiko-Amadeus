@@ -23,8 +23,6 @@ const CONFIG_TRANSLATIONS = {
         provider_grok: "xAI Grok",
         keyLabel: "主 API KEY (PRIMARY)",
         keyLabel_backup: "备用 API KEY (BACKUP)",
-        useEnv: "使用环境变量",
-        useEnvDesc: "使用系统环境变量 (process.env.API_KEY)。",
         useCustomEndpoint: "使用自定义接口",
         useCustomEndpointDesc: "覆盖默认的 API 地址 (如使用代理)。",
         customEndpointPlaceholder: "https://generativelanguage.googleapis.com",
@@ -47,9 +45,8 @@ const CONFIG_TRANSLATIONS = {
         success: "连接测试通过。",
         searchSuccess: "搜索权限已确认。",
         searchFail: "搜索权限未启用或被拒绝。",
-        error_missing: "错误：请提供 API Key 或启用环境变量。",
+        error_missing: "错误：请提供 API Key。",
         error_invalid: "连接测试失败：Key无效、模型名称错误或无法连接服务器。",
-        error_env_missing: "连接测试失败：环境变量 API_KEY 为空或无效。",
         saveSuccess: "配置已保存。",
         validateModels: "验证模型可用性",
         validatingModels: "正在验证模型...",
@@ -74,8 +71,6 @@ const CONFIG_TRANSLATIONS = {
         provider_grok: "xAI Grok",
         keyLabel: "PRIMARY API KEY",
         keyLabel_backup: "BACKUP API KEY",
-        useEnv: "Use Environment Key",
-        useEnvDesc: "Using System Environment Variable (process.env.API_KEY).",
         useCustomEndpoint: "Use Custom Endpoint",
         useCustomEndpointDesc: "Override default API URL (e.g., for proxy).",
         customEndpointPlaceholder: "https://generativelanguage.googleapis.com",
@@ -98,9 +93,8 @@ const CONFIG_TRANSLATIONS = {
         success: "Connection Verified.",
         searchSuccess: "Search Capability Verified.",
         searchFail: "Search Permission Denied.",
-        error_missing: "Error: Please provide an API Key or enable Environment Key.",
+        error_missing: "Error: Please provide an API Key.",
         error_invalid: "Connection Failed: Invalid Key, Model Name, or Network Error.",
-        error_env_missing: "Connection Failed: Env Variable API_KEY is missing or invalid.",
         saveSuccess: "Config Saved.",
         validateModels: "Verify Model Availability",
         validatingModels: "Verifying models...",
@@ -285,12 +279,12 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
       setStatusType('neutral');
       setModelValidationResult({ main: null, summary: null, vision: null }); 
       setSearchStatus('');
-      if (!config.useEnvKey && !config.apiKey_primary) {
+      if (!config.apiKey_primary) {
           setStatus(t.error_missing); setStatusType('error'); setIsValidating(false); return;
       }
       const isValid = await validateAIConnection(config);
       if (!isValid) {
-          setStatus(config.useEnvKey ? t.error_env_missing : t.error_invalid);
+          setStatus(t.error_invalid);
           setStatusType('error'); setIsValidating(false); return;
       }
       setIsModelValidating(true);
@@ -386,25 +380,18 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                             <option value="openrouter">OpenRouter.ai</option>
                         </select>
                     </div>
-                    <div className="flex items-center justify-between">
-                        <label className="ka-kicker text-[#785A42]/70">API KEYS</label>
-                        <ToggleCheck checked={config.useEnvKey} onClick={() => updateConfig('useEnvKey', !config.useEnvKey)} label={t.useEnv} />
-                    </div>
-                    {!config.useEnvKey ? (
-                        <div className="space-y-[clamp(10px,1.4vw,16px)] animate-in slide-in-from-top-1">
-                            <div>
-                               <label className="block ka-label text-[#785A42]/65 mb-[clamp(3px,0.5vw,5px)]">{t.keyLabel}</label>
-                               <input type="password" value={config.apiKey_primary || ''} onChange={(e) => updateConfig('apiKey_primary', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
-                            </div>
-                             <div>
-                               <label className="block ka-label text-[#785A42]/65 mb-[clamp(3px,0.5vw,5px)]">{t.keyLabel_backup}</label>
-                               <input type="password" value={config.apiKey_backup || ''} onChange={(e) => updateConfig('apiKey_backup', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
-                            </div>
-                            <p className="ka-copy-sm text-[#785A42]/55 pl-1">{t.keyLocalDesc}</p>
+                    <label className="ka-kicker text-[#785A42]/70">API KEYS</label>
+                    <div className="space-y-[clamp(10px,1.4vw,16px)]">
+                        <div>
+                           <label className="block ka-label text-[#785A42]/65 mb-[clamp(3px,0.5vw,5px)]">{t.keyLabel}</label>
+                           <input type="password" value={config.apiKey_primary || ''} onChange={(e) => updateConfig('apiKey_primary', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
                         </div>
-                    ) : (
-                        <div className="ka-copy-sm text-[#785A42]/55 italic bg-[#785A42]/5 p-[clamp(8px,1.2vw,12px)] rounded-lg">{t.useEnvDesc}</div>
-                    )}
+                         <div>
+                           <label className="block ka-label text-[#785A42]/65 mb-[clamp(3px,0.5vw,5px)]">{t.keyLabel_backup}</label>
+                           <input type="password" value={config.apiKey_backup || ''} onChange={(e) => updateConfig('apiKey_backup', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
+                        </div>
+                        <p className="ka-copy-sm text-[#785A42]/55 pl-1">{t.keyLocalDesc}</p>
+                    </div>
                     <div className="pt-[clamp(8px,1.2vw,12px)] border-t border-[#785A42]/10">
                         <div className="flex items-center justify-between mb-[clamp(6px,0.8vw,10px)]">
                             <label className="ka-label text-[#785A42]/70 flex items-center gap-[clamp(4px,0.6vw,6px)]"><Globe size={14} /> API ENDPOINT</label>

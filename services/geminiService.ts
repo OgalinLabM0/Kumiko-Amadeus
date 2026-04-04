@@ -7,20 +7,6 @@ import { imageService } from "./imageService";
 import { DEFAULT_AI_CONFIG, getDefaultVisionModel, normalizeAIConfig, resolveTransportProvider } from "./appConfig";
 import { db } from "./db";
 
-// --- CRITICAL FIX: Safe Environment Access ---
-export const getEnvKey = (): string | undefined => {
-    try {
-        // @ts-ignore
-        if (typeof process !== 'undefined' && process.env) {
-            // @ts-ignore
-            return process.env.API_KEY;
-        }
-    } catch (e) {
-        return undefined;
-    }
-    return undefined;
-};
-
 // Helper: Get Current AI Config from LocalStorage or Defaults
 export const getCurrentAIConfig = (): AIConfig => {
     try {
@@ -39,30 +25,16 @@ const getGenAI = (overrideKey?: string): GoogleGenAI => {
   const config = getCurrentAIConfig();
   
   let apiKey = "";
-  const envKey = getEnvKey();
-  
-  // LOGIC TRACE FOR DEBUGGING
   let source = "UNKNOWN";
 
   if (overrideKey) {
       apiKey = overrideKey;
       source = "OVERRIDE";
   } else {
-      if (config.useEnvKey && envKey) {
-          apiKey = envKey.trim();
-          source = "ENV_VAR (Configured)";
-      } else {
-          // Use active key logic
-          const keyToUse = config.activeKey === 'backup' ? config.apiKey_backup : config.apiKey_primary;
-          
-          if (keyToUse && keyToUse.trim() !== "") {
-              apiKey = keyToUse.trim();
-              source = `CUSTOM_${config.activeKey.toUpperCase()}`;
-          } else if (envKey) {
-              // Fallback to Env if custom key is empty to prevent crash
-              apiKey = envKey.trim();
-              source = "ENV_VAR (Fallback: Custom Key Empty)";
-          }
+      const keyToUse = config.activeKey === 'backup' ? config.apiKey_backup : config.apiKey_primary;
+      if (keyToUse && keyToUse.trim() !== "") {
+          apiKey = keyToUse.trim();
+          source = `CUSTOM_${config.activeKey.toUpperCase()}`;
       }
   }
 
@@ -88,23 +60,12 @@ const getGenAI = (overrideKey?: string): GoogleGenAI => {
 export const validateAIConnection = async (config: AIConfig): Promise<boolean> => {
     try {
         let keyToUse = "";
-        const envKey = getEnvKey();
-        
-        if (config.useEnvKey) {
-            if (!envKey || envKey.trim() === "") {
-                console.error("Validation Failed: Environment Variable API_KEY is missing or empty.");
-                return false;
-            }
-            keyToUse = envKey.trim();
-        } else {
-            // Test the currently active key
-            const activeKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
-            if (!activeKey || activeKey.trim() === "") {
-                console.error(`Validation Failed: Active API Key (${config.activeKey}) is missing.`);
-                return false;
-            }
-            keyToUse = activeKey.trim();
+        const activeKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
+        if (!activeKey || activeKey.trim() === "") {
+            console.error(`Validation Failed: Active API Key (${config.activeKey}) is missing.`);
+            return false;
         }
+        keyToUse = activeKey.trim();
 
         const provider = config.provider || 'gemini';
         const transportProvider = resolveTransportProvider(
@@ -157,15 +118,9 @@ export const validateModels = async (config: AIConfig): Promise<{ main: boolean;
     );
     try {
         let keyToUse = "";
-        const envKey = getEnvKey();
-        if (config.useEnvKey) {
-            if (!envKey) throw new Error("Env key selected but not found for model validation");
-            keyToUse = envKey.trim();
-        } else {
-            const activeKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
-            if (!activeKey) throw new Error("Active manual key not found for model validation");
-            keyToUse = activeKey.trim();
-        }
+        const activeKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
+        if (!activeKey) throw new Error("Active API key not found for model validation");
+        keyToUse = activeKey.trim();
         
         if (transportProvider === 'gemini') {
             const options: any = { apiKey: keyToUse };
@@ -194,7 +149,6 @@ export const validateModels = async (config: AIConfig): Promise<{ main: boolean;
                 // But wait, callVisionHelper requires a real image. Let's just do a ping with the vision provider settings.
                 const visionConfig = { ...config, provider: currentProvider, useCustomEndpoint: config.useVisionCustomEndpoint ?? config.useCustomEndpoint, customEndpoint: config.visionCustomEndpoint ?? config.customEndpoint };
                 if (config.visionApiKey) {
-                    visionConfig.useEnvKey = false;
                     visionConfig.apiKey_primary = config.visionApiKey;
                     visionConfig.activeKey = 'primary';
                 }
@@ -206,7 +160,7 @@ export const validateModels = async (config: AIConfig): Promise<{ main: boolean;
                 } else {
                     let visionAi = ai;
                     if (!visionAi || config.visionApiKey || config.useVisionCustomEndpoint || currentTransport !== transportProvider) {
-                        const options: any = { apiKey: config.visionApiKey || (config.useEnvKey ? getEnvKey() : (config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup)) };
+                        const options: any = { apiKey: config.visionApiKey || (config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup) };
                         if ((config.useVisionCustomEndpoint ?? config.useCustomEndpoint) && (config.visionCustomEndpoint ?? config.customEndpoint)) {
                             options.httpOptions = { baseUrl: (config.visionCustomEndpoint ?? config.customEndpoint)!.trim().replace(/\/v1beta\/?$/, '').replace(/\/v1alpha\/?$/, '').replace(/\/v1\/?$/, '').replace(/\/$/, '') };
                         }
@@ -244,16 +198,9 @@ export const validateModels = async (config: AIConfig): Promise<{ main: boolean;
 export const validateSearchCapability = async (config: AIConfig): Promise<{ success: boolean; message?: string }> => {
     try {
         let keyToUse = "";
-        const envKey = getEnvKey();
-        
-        if (config.useEnvKey) {
-            if (!envKey) return { success: false, message: "Env Key Missing" };
-            keyToUse = envKey.trim();
-        } else {
-            const activeKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
-            if (!activeKey) return { success: false, message: "Active Key Missing" };
-            keyToUse = activeKey.trim();
-        }
+        const activeKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
+        if (!activeKey) return { success: false, message: "Active Key Missing" };
+        keyToUse = activeKey.trim();
 
         const transportProvider = resolveTransportProvider(
             config.provider,

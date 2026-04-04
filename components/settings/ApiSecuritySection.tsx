@@ -37,29 +37,16 @@ export const ApiSecuritySection: React.FC<ApiSecuritySectionProps> = ({
 
       {isOpen && (
         <div className="animate-in slide-in-from-top-2">
-          <div className="flex items-center justify-end mb-2">
-            <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => onUpdateAiConfig('useEnvKey', !localAiConfig.useEnvKey)}>
-              <div className={`w-3 h-3 border rounded-sm flex items-center justify-center transition-colors ${localAiConfig.useEnvKey ? 'bg-teal-500 border-teal-500' : (isDarkMode ? 'border-gray-500' : 'border-gray-400')}`}>
-                {localAiConfig.useEnvKey && <Check size={10} className="text-white" />}
-              </div>
-              <span className="ka-micro font-mono">{t_local.useEnv}</span>
+          <div className="space-y-3">
+            <div>
+              <label className={`block ka-label ${isDarkMode ? 'text-gray-400' : 'text-gray-700'}`}>{t_local.keyLabel}</label>
+              <input type="password" value={localAiConfig.apiKey_primary || ''} onChange={(e) => onUpdateAiConfig('apiKey_primary', e.target.value)} placeholder={t_local.keyPlaceHolder} className={inputClass} />
+            </div>
+            <div>
+              <label className={`block ka-label ${isDarkMode ? 'text-gray-400' : 'text-gray-700'}`}>{t_local.keyLabel_backup}</label>
+              <input type="password" value={localAiConfig.apiKey_backup || ''} onChange={(e) => onUpdateAiConfig('apiKey_backup', e.target.value)} placeholder={t_local.keyPlaceHolder} className={inputClass} />
             </div>
           </div>
-
-          {!localAiConfig.useEnvKey ? (
-            <div className="space-y-3">
-              <div>
-                <label className={`block ka-label ${isDarkMode ? 'text-gray-400' : 'text-gray-700'}`}>{t_local.keyLabel}</label>
-                <input type="password" value={localAiConfig.apiKey_primary || ''} onChange={(e) => onUpdateAiConfig('apiKey_primary', e.target.value)} placeholder={t_local.keyPlaceHolder} className={inputClass} />
-              </div>
-              <div>
-                <label className={`block ka-label ${isDarkMode ? 'text-gray-400' : 'text-gray-700'}`}>{t_local.keyLabel_backup}</label>
-                <input type="password" value={localAiConfig.apiKey_backup || ''} onChange={(e) => onUpdateAiConfig('apiKey_backup', e.target.value)} placeholder={t_local.keyPlaceHolder} className={inputClass} />
-              </div>
-            </div>
-          ) : (
-            <div className={`ka-micro font-mono italic p-2 rounded ${isDarkMode ? 'bg-black/30 text-gray-400' : 'bg-gray-200 text-gray-600'}`}>{t_local.useEnvDesc}</div>
-          )}
 
           <div className="mt-4 pt-4 border-t border-gray-500/10">
             <div className="flex items-center justify-between mb-2">

@@ -352,11 +352,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       const isValid = await validateAIConnection(localAiConfig);
       
       if (!isValid) {
-          if (localAiConfig.useEnvKey) {
-              setValidationStatus(t_local.error_env_missing);
-          } else {
-              setValidationStatus(t_local.error_invalid);
-          }
+          setValidationStatus(t_local.error_invalid);
           setValidationStatusType('error');
       } else {
           setValidationStatus(t_local.success);
@@ -402,11 +398,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       const isValid = await validateAIConnection(localAiConfig);
       
       if (!isValid) {
-          if (localAiConfig.useEnvKey) {
-              setValidationStatus(t_local.error_env_missing);
-          } else {
-              setValidationStatus(t_local.error_invalid);
-          }
+          setValidationStatus(t_local.error_invalid);
           setValidationStatusType('error');
           setIsValidating(false);
           return;

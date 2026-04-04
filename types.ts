@@ -62,7 +62,6 @@ export interface AIConfig {
   apiKey_primary: string;
   apiKey_backup: string;
   activeKey: 'primary' | 'backup';
-  useEnvKey: boolean;
   useCustomEndpoint?: boolean;
   customEndpoint?: string;
   model_main: string;      // Slot 1: Conversation (Core)

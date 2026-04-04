@@ -1,6 +1,5 @@
 import { AIConfig, Message, WorldBookEntry, LocationConfig, AnchorEntry, Language } from "../types";
 import { GoogleGenAI } from "@google/genai";
-import { getEnvKey } from "./geminiService";
 import { getDefaultVisionModel, isOpenAICompatibleProvider, resolveTransportProvider } from "./appConfig";
 
 export interface ProviderResponse {
@@ -66,7 +65,7 @@ export const callOpenAI = async (
     tools?: any[],
     toolContext?: { toolCall: any, toolResult: any, originalMessage: any }
 ): Promise<ProviderResponse> => {
-    let apiKey = config.useEnvKey ? getEnvKey() : (config.activeKey === 'backup' ? config.apiKey_backup : config.apiKey_primary);
+    let apiKey = config.activeKey === 'backup' ? config.apiKey_backup : config.apiKey_primary;
     if (!apiKey) throw new Error("API Key 缺失，请检查配置");
 
     let defaultEndpoint = 'https://api.openai.com/v1/chat/completions';
@@ -195,7 +194,7 @@ export const callAnthropic = async (
     tools?: any[],
     toolContext?: { toolCall: any, toolResult: any, originalMessage: any }
 ): Promise<ProviderResponse> => {
-    let apiKey = config.useEnvKey ? getEnvKey() : (config.activeKey === 'backup' ? config.apiKey_backup : config.apiKey_primary);
+    let apiKey = config.activeKey === 'backup' ? config.apiKey_backup : config.apiKey_primary;
     if (!apiKey) throw new Error("API Key 缺失，请检查配置");
 
     let fetchUrl = config.useCustomEndpoint && config.customEndpoint 
@@ -297,11 +296,7 @@ export const callVisionHelper = async (
     
     let apiKey = config.visionApiKey;
     if (!apiKey) {
-        if (config.useEnvKey) {
-            apiKey = getEnvKey() || "";
-        } else {
-            apiKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
-        }
+        apiKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
     }
     
     if (!apiKey) throw new Error("Vision Helper API Key is missing");
