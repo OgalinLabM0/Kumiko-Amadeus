@@ -3,7 +3,7 @@
   "private": true,
   "version": "2.3.74",
   "description": "Kumiko Amadeus desktop companion focused on long-term memory and natural character interaction.",
-  "author": "Codex + User",
+  "author": "Kitauji Fan Project",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
