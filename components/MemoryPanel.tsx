@@ -40,11 +40,11 @@ interface MemoryPanelProps {
 
 // DEFINITION OF CORE MEMORIES THAT SHOULD BE RECOMMENDED
 const CORE_MEMORY_IDS = new Set([
-    'rag_hist_middle_school', // Origin of trauma & motivation
-    'rag_hist_y3_selection',  // Peak character development (Maturity)
-    'rag_char_reina_details', // Essential relationship
-    'rag_char_shuichi_details', // Romantic anchor / emotional grounding
-    'rag_item_hairpin'        // Romance & grounding
+    'rag_item_hairpin',        // Romance core symbol
+    'rag_hist_middle_school',  // Personality origin
+    'rag_char_reina_details',  // Most important relationship
+    'rag_char_shuichi_details', // Romantic partner
+    'rag_char_others'          // Daily companions circle
 ]);
 
 export const MemoryPanel: React.FC<MemoryPanelProps> = ({ 

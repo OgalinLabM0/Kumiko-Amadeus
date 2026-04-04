@@ -66,11 +66,11 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
 }) => {
   const [activeGuideSection, setActiveGuideSection] = useState('intro');
   const articleScrollRef = useRef<HTMLDivElement | null>(null);
-  const bgClass = isDarkMode ? 'bg-[#0f0c08]/98 border-[#3d2e1a]/60' : 'bg-[#faf6f0]/98 border-[#e6ddcf]';
+  const bgClass = isDarkMode ? 'bg-[#0f0c08] border-[#3d2e1a]/60' : 'bg-[#faf6f0] border-[#e6ddcf]';
   const textClass = isDarkMode ? 'text-[#f1e6d7]' : 'text-[#3d2a18]';
   const titleClass = isDarkMode ? 'text-[#d4a852]' : 'text-[#8a6122]';
   const mutedClass = isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]';
-  const panelClass = isDarkMode ? 'bg-[#1a1510]/60 border-[#3d2e1a]/40' : 'bg-white/75 border-[#e6ddcf]';
+  const panelClass = isDarkMode ? 'bg-[#1a1510] border-[#3d2e1a]/40' : 'bg-white border-[#e6ddcf]';
   const panelMutedClass = isDarkMode ? 'bg-[#211912] border-[#4f3b2a]' : 'bg-[#faf5ee] border-[#eadfce]';
 
   useEffect(() => {
@@ -104,7 +104,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
           <code
             key={i}
             className={`mx-0.5 rounded px-1.5 py-0.5 font-mono text-[0.92em] ${
-              isDarkMode ? 'bg-white/8 text-[#d4a852]' : 'bg-[#f5efe4] text-[#7c5710]'
+              isDarkMode ? 'bg-[#1a1510] text-[#d4a852]' : 'bg-[#f5efe4] text-[#7c5710]'
             }`}
           >
             {part.slice(1, -1)}
@@ -120,7 +120,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
             <span
               key={i}
               className={`inline-flex items-center justify-center align-text-bottom mx-1 p-0.5 rounded ${
-                isDarkMode ? 'bg-white/8 text-[#d4a852]' : 'bg-[#f5efe4] text-[#8a6122]'
+                isDarkMode ? 'bg-[#1a1510] text-[#d4a852]' : 'bg-[#f5efe4] text-[#8a6122]'
               }`}
             >
               <IconComponent size={14} />
@@ -275,7 +275,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
         <div className="flex-1 min-h-0 flex flex-col md:flex-row">
           <div
             className={`w-full md:w-64 lg:w-72 flex flex-col border-b md:border-b-0 md:border-r min-h-0 ${
-              isDarkMode ? 'bg-[#0f0c08]/50 border-[#3d2e1a]/50' : 'bg-[#faf6f0]/80 border-[#e6ddcf]'
+              isDarkMode ? 'bg-[#0c0a06] border-[#3d2e1a]/50' : 'bg-[#f5f0e8] border-[#e6ddcf]'
             }`}
           >
             <div className={`p-4 border-b ${isDarkMode ? 'border-[#3d2e1a]/40' : 'border-[#e6ddcf]'}`}>
@@ -333,7 +333,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
           </div>
 
           <div className="relative min-h-0 flex-1 flex flex-col overflow-hidden">
-            <div className={`px-5 md:px-6 py-4 border-b ${isDarkMode ? 'border-[#3d2e1a]/40 bg-[#0f0c08]/30' : 'border-[#e6ddcf] bg-[#faf6f0]/60'}`}>
+            <div className={`px-5 md:px-6 py-4 border-b ${isDarkMode ? 'border-[#3d2e1a]/40 bg-[#0f0c08]' : 'border-[#e6ddcf] bg-[#faf6f0]'}`}>
               <div className="flex items-center gap-3">
                 <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${isDarkMode ? 'bg-[#211912] text-[#d4a852]' : 'bg-[#fff5e3] text-[#8a6122]'}`}>
                   <ActiveIcon size={16} />
@@ -354,7 +354,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
               className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:p-8 scrollbar-thin"
             >
               <div className={`mx-auto max-w-4xl rounded-[1.15rem] border overflow-hidden ${panelClass}`}>
-                <div className={`px-5 py-3 border-b flex items-center justify-between gap-3 ${isDarkMode ? 'border-[#3d2e1a]/30 bg-[#1a1510]/40' : 'border-[#eadfce] bg-[#faf5ee]/80'}`}>
+                <div className={`px-5 py-3 border-b flex items-center justify-between gap-3 ${isDarkMode ? 'border-[#3d2e1a]/30 bg-[#1a1510]' : 'border-[#eadfce] bg-[#faf5ee]'}`}>
                   <div className="min-w-0">
                     <div className={`ka-kicker ${titleClass}`}>
                       {language === 'zh' ? '系统设计说明' : 'SYSTEM DESIGN DOSSIER'}
@@ -365,7 +365,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                         : 'The sections below describe the current live structure, conditions, data flow, and behavior rules.'}
                     </p>
                   </div>
-                  <div className={`hidden md:flex items-center gap-2 rounded-full px-3 py-1 ka-micro border ${isDarkMode ? 'border-[#4f3b2a] text-[#d4a852] bg-[#211912]' : 'border-[#eadfce] text-[#8f6b12] bg-white/85'}`}>
+                  <div className={`hidden md:flex items-center gap-2 rounded-full px-3 py-1 ka-micro border ${isDarkMode ? 'border-[#4f3b2a] text-[#d4a852] bg-[#211912]' : 'border-[#eadfce] text-[#8f6b12] bg-white'}`}>
                     <ActiveIcon size={12} />
                     <span>AMADEUS</span>
                   </div>
@@ -380,7 +380,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
 
             <div
               className={`px-5 md:px-6 py-2 border-t flex items-center justify-between ka-micro ${
-                isDarkMode ? 'border-[#3d2e1a]/40 bg-[#0f0c08]/30 text-[#6b5a45]' : 'border-[#e6ddcf] bg-[#faf6f0]/60 text-[#8d7654]'
+                isDarkMode ? 'border-[#3d2e1a]/40 bg-[#0c0a06] text-[#6b5a45]' : 'border-[#e6ddcf] bg-[#f5f0e8] text-[#8d7654]'
               }`}
             >
               <span>KUMIKO·AMADEUS DESKTOP MANUAL</span>

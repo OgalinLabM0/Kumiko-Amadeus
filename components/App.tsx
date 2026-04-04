@@ -3293,7 +3293,7 @@ export const App = () => {
           
           return [...newOfficialEntries, ...customEntries];
       });
-  }, [language]);
+  }, [language, isDataLoaded]);
 
 
   const [turnCount, setTurnCount] = useState(0);
