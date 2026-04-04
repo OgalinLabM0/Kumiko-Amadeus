@@ -8,10 +8,12 @@
   "main": "electron-main.cjs",
   "scripts": {
     "desktop:dev": "concurrently -k \"npm run dev\" \"wait-on tcp:3000 && electron .\"",
-    "desktop:build": "npm run build:cap && npm run release:clean:prebuild && electron-builder && npm run release:latest-yml && npm run release:clean:postbuild",
+    "desktop:build": "npm run build:cap && npm run release:clean:prebuild && electron-builder && npm run release:latest-yml && npm run release:assets && npm run release:clean:postbuild",
+    "release:assets": "node scripts/package-assets.cjs",
     "dev": "vite",
     "build": "vite build",
     "build:cap": "vite build --base ./",
+    "build:lore": "node scripts/build-lore.cjs",
     "release:latest-yml": "node scripts/generate-latest-yml.cjs",
     "cap:sync": "npm run build:cap && npx cap sync ios",
     "preview": "vite preview",
