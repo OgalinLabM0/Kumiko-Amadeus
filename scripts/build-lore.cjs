@@ -55,6 +55,50 @@ function main() {
 
   fs.writeFileSync(outputPath, encrypted, 'utf8');
   console.log(`Encrypted ${chunks.length} lore chunks to ${outputPath} (${(encrypted.length / 1024).toFixed(1)} KB)`);
+
+  encryptWorldBook();
+}
+
+function encryptWorldBook() {
+  const constantsPath = path.join(__dirname, '..', 'constants.ts');
+  const outputPath = path.join(__dirname, '..', 'assets', 'worldbook.enc');
+
+  if (!fs.existsSync(constantsPath)) {
+    console.log('constants.ts not found. Skipping world book encryption.');
+    return;
+  }
+
+  const source = fs.readFileSync(constantsPath, 'utf8');
+
+  const zhMatch = source.match(
+    /const WORLD_BOOK_ZH:\s*WorldBookEntry\[\]\s*=\s*(\[[\s\S]*?\n\]);/
+  );
+  const enMatch = source.match(
+    /const WORLD_BOOK_EN:\s*WorldBookEntry\[\]\s*=\s*(\[[\s\S]*?\n\]);/
+  );
+
+  if (!zhMatch || !enMatch) {
+    console.log('Could not extract world book arrays. Skipping.');
+    return;
+  }
+
+  try {
+    const zhFn = new Function(`return ${zhMatch[1]}`);
+    const enFn = new Function(`return ${enMatch[1]}`);
+    const data = { zh: zhFn(), en: enFn() };
+    const json = JSON.stringify(data);
+    const encrypted = encrypt(json);
+    const outputDir = path.dirname(outputPath);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+    fs.writeFileSync(outputPath, encrypted, 'utf8');
+    console.log(
+      `Encrypted world book (${data.zh.length} ZH + ${data.en.length} EN) to ${outputPath}`
+    );
+  } catch (e) {
+    console.error('Failed to encrypt world book:', e.message);
+  }
 }
 
 main();

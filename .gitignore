@@ -37,3 +37,15 @@ models/bge-m3-onnx/*.onnx
 ios/App/Pods
 ios/App/build
 ios/**/DerivedData
+
+# Character-specific copyrighted assets (distributed separately via kumiko-assets.zip)
+# See README "Build from Source" section for instructions
+public/images/emotions/*.png
+public/ringtones/*.mp3
+public/images/logo.png
+public/CCA-P2.png
+public/favicon-KA.ico
+assets/worldbook.enc
+assets/lore.enc
+services/loreData.ts
+story-notes.md
