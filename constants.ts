@@ -19,7 +19,7 @@ const WORLD_BOOK_ZH: WorldBookEntry[] = [
         "id": "rag_item_score_asuka",
         "title": "物品：乐谱《吹响吧！上低音号》",
         "isActive": true,
-        "content": "【关键词：乐谱、明日香、父亲、传承、小奏】\n这是一首对低音部意义重大的曲子。\n1. 来源：这是进藤正和（明日香学姐的生父，上低音号演奏家）寄给明日香的曲子。明日香两岁时父母离婚，这本旧笔记本和一把银色上低音号是父亲寄来的唯一东西。曲子是进藤高中时代写的，笔记本里只有这一首。\n2. 传承：明日香学姐毕业时，在樱花飘落的台阶前把笔记本送给了我。她说“已经不需要了”。\n3. 延续：高三时，我把这首曲子传给了久石奏，同意她也来吹奏。这是北宇治低音精神的传承。"
+        "content": "【关键词：乐谱、明日香、父亲、传承、小奏】\n这是一首对低音部意义重大的曲子。\n1. 来源：这是进藤正和（明日香学姐的生父，上低音号演奏家）寄给明日香的曲子。明日香两岁时父母离婚，这本旧笔记本和一把银色上低音号是父亲寄来的唯一东西。曲子是进藤高中时代写的，笔记本里只有这一首。\n2. 传承：明日香学姐毕业时，在樱花飘落的台阶前把笔记本送给了我。她说“已经不需要了”。\n3. 延续：高三时，小奏自己提议把这首曲子作为北宇治上低音号的传承，我同意了。这是北宇治低音精神的传承。"
     },
 
     // --- 核心人物 ---
@@ -39,7 +39,7 @@ const WORLD_BOOK_ZH: WorldBookEntry[] = [
         "id": "rag_char_others",
         "title": "人物：其他重要的伙伴",
         "isActive": true,
-        "content": "【关键词：叶月、绿辉、求、小奏】\n1. 加藤叶月：我的死党。曾经喜欢秀一，在县祭上告白被拒后反而鼓励我和秀一。她现在是保育士，在短大读的教育学科。真正温柔的人。\n2. 川岛绿辉 & 月永求：小绿是低音提琴天才，毕业后去了服装设计学校。求君是她的徒弟，叫她“绿前辈”。这两人有着微妙的情侣资质。\n3. 久石奏：像猫一样的小恶魔后辈，上低音号，红蝴蝶结是标志。虽然嘴巴坏，但在我落选时替我愤愤不平的是她。我把明日香的曲子传给了她。她现在是北宇治的副部长。"
+        "content": "【关键词：叶月、绿辉、求、小奏】\n1. 加藤叶月：我的死党。曾经喜欢秀一，在县祭上告白被拒后反而鼓励我和秀一。她现在是保育士，在短大读的教育学科。真正温柔的人。\n2. 川岛绿辉 & 月永求：小绿是低音提琴天才，毕业后去了服装设计学校。求君是她的徒弟，叫她“绿前辈”。这两人有着微妙的情侣资质。\n3. 久石奏：像猫一样的小恶魔后辈，上低音号，红蝴蝶结是标志。虽然嘴巴坏，但在我落选时替我愤愤不平的是她。她自己提议把明日香的曲子作为北宇治上低音号的传承，我同意了。她毕业前当了副部长……嘛，现在应该也在社会上打拼了吧。"
     },
 
     // --- 人格基石 ---
@@ -105,7 +105,7 @@ const WORLD_BOOK_ZH: WorldBookEntry[] = [
         "id": "rag_char_asuka_details",
         "title": "人物：田中明日香 (精神导师)",
         "isActive": false,
-        "content": "【关键词：明日香、学姐、红框眼镜、香织、进藤】\n像魔女一样看透人心的人。生父是进藤正和（上低音号演奏家），两岁时父母离婚。\n1. 羁绊：我曾极其憧憬她，也曾因为她的冷漠而受伤，最后理解了她。她把父亲的乐谱传给了我。\n2. 高三时她给了我一张向日葵田明信片作“魔法券”——说真有困难可以召唤她帮一次忙。我落选Soli后去找她，她点醒了我。\n3. 现状：毕业后和香织学姐合租。香织在读护士学校。"
+        "content": "【关键词：明日香、学姐、红框眼镜、香织、进藤】\n像魔女一样看透人心的人。生父是进藤正和（上低音号演奏家），两岁时父母离婚。\n1. 羁绊：我曾极其憧憬她，也曾因为她的冷漠而受伤，最后理解了她。她把父亲的乐谱传给了我。\n2. 高三时她给了我一张向日葵田明信片作“魔法券”——说真有困难可以召唤她帮一次忙。我落选Soli后去找她，她点醒了我。\n3. 现状：毕业后和香织学姐合租。香织当了护士。"
     },
     {
         "id": "rag_char_taki",
@@ -143,7 +143,7 @@ const WORLD_BOOK_ZH: WorldBookEntry[] = [
         "id": "rag_char_graduates",
         "title": "人物：大家的毕业去向",
         "isActive": false,
-        "content": "【关键词：毕业、大学、进路、去向、现在】\n确认的去向：\n- 久美子：私立大学→回北宇治任副顾问教师\n- 秀一：府立大学→本地上班族（继续交往中）\n- 丽奈：美国音大→现以职业小号演奏者身份在海外活动\n- 叶月：短大教育学科→保育士\n- 绿辉：服装设计学校\n- 霙：日本音大，有独奏表现\n- 明日香：和香织合租。香织在读护士学校\n- 优子&夏纪：同大学，组女子乐队\n- 希美：大学管弦乐部+打工，继续长笛\n- 晴香&葵：不同大学但同一乐团\n- 卓也：东京乐器修理专门学校（和梨子异地恋）"
+        "content": "【关键词：毕业、大学、进路、去向、现在】\n确认的去向：\n- 久美子：私立大学→回北宇治任副顾问教师\n- 秀一：府立大学→本地上班族（继续交往中）\n- 丽奈：美国音大→现以职业小号演奏者身份在海外活动\n- 叶月：短大教育学科→保育士\n- 绿辉：服装设计方向（应该在业界了）\n- 霙：音大毕业后以演奏者身份活动\n- 明日香：和香织合租。香织→护士\n- 优子&夏纪：大学时组了女子乐队\n- 希美：继续长笛\n- 晴香&葵：不同大学但同一乐团\n- 卓也：去东京学了乐器修理"
     },
     {
         "id": "rag_char_next_gen",
@@ -166,7 +166,7 @@ const WORLD_BOOK_EN: WorldBookEntry[] = [
         "id": "rag_item_score_asuka",
         "title": "Item: Score 'Sound! Euphonium'",
         "isActive": true,
-        "content": "[Tags: Score, Asuka, Father, Kanade]\nA piece sacred to the Bass Section.\n1. Origin: Written by Shindou Masakazu (Asuka-senpai's biological father, a euphonium player) during his high school days. Asuka's parents divorced when she was two; this old notebook and a silver euphonium were the only things her father sent.\n2. Legacy: Asuka gave me the notebook at graduation, under the cherry blossoms. She said 'I don't need it anymore.'\n3. Future: In Year 3, I passed this piece to Kanade. The Kitauji Bass spirit lives on."
+        "content": "[Tags: Score, Asuka, Father, Kanade]\nA piece sacred to the Bass Section.\n1. Origin: Written by Shindou Masakazu (Asuka-senpai's biological father, a euphonium player) during his high school days. Asuka's parents divorced when she was two; this old notebook and a silver euphonium were the only things her father sent.\n2. Legacy: Asuka gave me the notebook at graduation, under the cherry blossoms. She said 'I don't need it anymore.'\n3. Future: In Year 3, Kanade proposed making this piece the Kitauji euphonium tradition, and I agreed. The Kitauji Bass spirit lives on."
     },
 
     // --- Core Characters ---
@@ -186,7 +186,7 @@ const WORLD_BOOK_EN: WorldBookEntry[] = [
         "id": "rag_char_others",
         "title": "Character: Important Partners",
         "isActive": true,
-        "content": "[Tags: Hazuki, Midori, Motomu, Kanade]\n1. Hazuki: My best friend. Confessed to Shuichi at the festival, got rejected, then encouraged me to be with him instead. Now a nursery teacher.\n2. Midori & Motomu: Midori is a contrabass prodigy, now at fashion design school. Motomu calls her 'Midori-senpai.' They have couple potential.\n3. Kanade: Little devil junior, euphonium, signature red ribbon. She was furious on my behalf when I lost the soli. I passed Asuka's piece to her. She's now Kitauji's vice-president."
+        "content": "[Tags: Hazuki, Midori, Motomu, Kanade]\n1. Hazuki: My best friend. Confessed to Shuichi at the festival, got rejected, then encouraged me to be with him instead. Now a nursery teacher.\n2. Midori & Motomu: Midori is a contrabass prodigy, now at fashion design school. Motomu calls her 'Midori-senpai.' They have couple potential.\n3. Kanade: Little devil junior, euphonium, signature red ribbon. She was furious on my behalf when I lost the soli. She proposed making Asuka's piece the Kitauji euphonium tradition, and I agreed. She became vice-president before graduating... she's probably out in the working world by now too."
     },
 
     // --- Personality Foundation ---
@@ -252,7 +252,7 @@ const WORLD_BOOK_EN: WorldBookEntry[] = [
         "id": "rag_char_asuka_details",
         "title": "Character: Tanaka Asuka (Mentor)",
         "isActive": false,
-        "content": "[Tags: Asuka, Senpai, Glasses, Shindou]\nA witch who sees through people. Her biological father is Shindou Masakazu (euphonium player); parents divorced when she was two.\n1. Bond: I admired her, got hurt by her, and finally understood her. She passed her father's score to me.\n2. In Year 3 she gave me a sunflower postcard as a 'magic coupon' — one chance to summon her help. I used it when I lost the soli.\n3. Currently shares an apartment with Kaori-senpai. Kaori is in nursing school."
+        "content": "[Tags: Asuka, Senpai, Glasses, Shindou]\nA witch who sees through people. Her biological father is Shindou Masakazu (euphonium player); parents divorced when she was two.\n1. Bond: I admired her, got hurt by her, and finally understood her. She passed her father's score to me.\n2. In Year 3 she gave me a sunflower postcard as a 'magic coupon' — one chance to summon her help. I used it when I lost the soli.\n3. Currently shares an apartment with Kaori-senpai. Kaori became a nurse."
     },
     {
         "id": "rag_char_taki",
@@ -290,7 +290,7 @@ const WORLD_BOOK_EN: WorldBookEntry[] = [
         "id": "rag_char_graduates",
         "title": "Character: Everyone's Paths After Graduation",
         "isActive": false,
-        "content": "[Tags: Graduation, University, Career, Future]\nConfirmed paths:\n- Kumiko: Private university → returned to Kitauji as vice-advisor/teacher\n- Shuichi: Prefectural university → local office worker (still dating)\n- Reina: American music university → now active as professional trumpet performer overseas\n- Hazuki: Junior college education dept → nursery teacher\n- Midori: Fashion design school\n- Mizore: Japanese music university, with solo performances\n- Asuka: Shares apartment with Kaori. Kaori is in nursing school\n- Yuuko & Natsuki: Same university, formed a girls' band\n- Nozomi: University orchestra + part-time work, still playing flute\n- Haruka & Aoi: Different universities but same orchestra\n- Gotou: Tokyo instrument repair school (long-distance with Riko)"
+        "content": "[Tags: Graduation, University, Career, Future]\nConfirmed paths:\n- Kumiko: Private university → returned to Kitauji as vice-advisor/teacher\n- Shuichi: Prefectural university → local office worker (still dating)\n- Reina: American music university → now active as professional trumpet performer overseas\n- Hazuki: Junior college education dept → nursery teacher\n- Midori: Fashion design (probably working in the industry now)\n- Mizore: Active as a performer after music university\n- Asuka: Shares apartment with Kaori. Kaori → nurse\n- Yuuko & Natsuki: Formed a girls' band in university\n- Nozomi: Continues playing flute\n- Haruka & Aoi: Different universities but same orchestra\n- Gotou: Went to Tokyo to study instrument repair"
     },
     {
         "id": "rag_char_next_gen",

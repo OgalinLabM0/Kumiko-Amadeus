@@ -95,7 +95,7 @@ export async function genieTtsWithEmotion(
 
   const separator = refDir.includes('/') ? '/' : '\\';
   const refAudioPath = refDir ? `${refDir}${separator}${refKey}.wav` : '';
-  const promptText = text.slice(0, 30);
+  const promptText = '';
 
   return synthesizeWithSovits(text, baseUrl, refAudioPath, promptText, {
     speed: ttsConfig.speed,
