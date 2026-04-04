@@ -350,7 +350,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
                {bootLog.map((log, i) => (
                  <div key={i} className={`text-[#785A42]/92 mb-[0.42vh] flex items-center gap-2 ${language === 'en' ? 'text-[0.72rem] leading-[1.46] tracking-[0.012em]' : 'text-[0.77rem] leading-[1.48] tracking-[0.012em]'}`}>
                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#c5a059]/70 shadow-[0_0_0_1px_rgba(120,90,66,0.08)]"></span>
-                   <span className={`truncate whitespace-nowrap ${/[\u3400-\u9fff]/.test(log) ? 'font-mincho font-light tracking-[0.04em]' : 'font-elegant font-normal not-italic tracking-[0.012em] text-[#785A42]/86'}`}>{log}</span>
+                   <span className="truncate whitespace-nowrap font-elegant font-normal not-italic tracking-[0.012em] text-[#785A42]/86">{log}</span>
                  </div>
                ))}
             </div>
