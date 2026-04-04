@@ -20,6 +20,27 @@ const Database = require('better-sqlite3');
 const { Worker } = require('worker_threads');
 const { pathToFileURL } = require('url');
 
+// --- LORE DATA ---
+let loreChunks = [];
+try {
+    const lorePath = path.join(__dirname, 'assets', 'lore.enc');
+    const crypto = require('crypto');
+    if (fs.existsSync(lorePath)) {
+        const ENCRYPTION_KEY = 'kumiko-amadeus-lore-2026-hibike';
+        const encrypted = fs.readFileSync(lorePath, 'utf8');
+        const [ivHex, encryptedHex] = encrypted.split(':');
+        const key = crypto.createHash('sha256').update(ENCRYPTION_KEY).digest();
+        const iv = Buffer.from(ivHex, 'hex');
+        const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
+        let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        loreChunks = JSON.parse(decrypted);
+        console.log(`[RAG] Loaded ${loreChunks.length} lore chunks from encrypted file`);
+    }
+} catch (e) {
+    console.warn('[RAG] Could not load lore.enc, lore data will be empty:', e.message);
+}
+
 // --- CONFIG ---
 const DB_NAME = 'rag_vectors.db';
 const MODEL_DIR_NAME = 'bge-m3-onnx';
@@ -2069,6 +2090,72 @@ async function runRagRebuildJob(job) {
                 skippedExistingCount,
                 extra: `inserted=${storedCount}, merged=${mergedCount}, skipped_existing=${skippedExistingCount}`,
             });
+        }
+
+        // --- PHASE: Official Lore ---
+        if (loreChunks.length > 0) {
+            updateRebuildJobProgress(job, {
+                stage: 'indexing_lore',
+                processed: 0,
+                total: loreChunks.length,
+                extra: `lore_chunks=${loreChunks.length}`,
+            }, true);
+
+            let loreIndexed = 0;
+            for (let i = 0; i < loreChunks.length; i++) {
+                if (i > 0 && i % REBUILD_YIELD_INTERVAL === 0) {
+                    await yieldToEventLoop();
+                }
+
+                const chunk = loreChunks[i];
+                const text = chunk.content;
+                if (!text || text.trim().length < 10) continue;
+
+                try {
+                    const loreId = chunk.id || `lore-${createRagVectorId()}`;
+                    const canonicalKey = createCanonicalKeyFromRawText(text);
+
+                    if (shouldSkipCanonicalDuplicateFromIndex(canonicalRowsByKey, canonicalKey, RAG_TIER_CORE, 'official_lore')) {
+                        updateRebuildJobProgress(job, {
+                            stage: 'indexing_lore',
+                            processed: i + 1,
+                            total: loreChunks.length,
+                            extra: `lore_indexed=${loreIndexed}/${loreChunks.length}`,
+                        });
+                        continue;
+                    }
+
+                    const vector = await generateEmbeddingInWorker(text);
+                    const loreRow = {
+                        id: loreId,
+                        messageId: null,
+                        text,
+                        vector,
+                        timestamp: Date.now(),
+                        tier: RAG_TIER_CORE,
+                        source: 'official_lore',
+                        score: 0,
+                        canonicalKey,
+                        role: 'unknown',
+                    };
+
+                    pendingWrites.set(loreRow.id, loreRow);
+                    upsertCanonicalRowInIndex(canonicalRowsByKey, loreRow);
+                    loreIndexed++;
+                    storedCount++;
+
+                    updateRebuildJobProgress(job, {
+                        stage: 'indexing_lore',
+                        processed: i + 1,
+                        total: loreChunks.length,
+                        storedCount,
+                        extra: `lore_indexed=${loreIndexed}/${loreChunks.length}`,
+                    });
+                } catch (err) {
+                    console.warn(`[RAG] Failed to index lore chunk ${chunk.id}:`, err.message);
+                }
+            }
+            console.log(`[RAG Rebuild] Lore indexing complete: ${loreIndexed}/${loreChunks.length} chunks indexed.`);
         }
 
         updateRebuildJobProgress(job, {

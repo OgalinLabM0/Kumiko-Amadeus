@@ -14,8 +14,8 @@ const getIpcRenderer = () => {
 };
 
 export interface LocalRagMemoryMetadata {
-  tier?: 'core' | 'episodic' | 'background';
-  source?: 'rebuild_message' | 'rebuild_fragment' | 'turn_pair' | 'memory_chunk' | 'episodic_merge';
+  tier?: 'core' | 'episodic' | 'background' | 'lore';
+  source?: 'rebuild_message' | 'rebuild_fragment' | 'turn_pair' | 'memory_chunk' | 'episodic_merge' | 'official_lore' | 'lore';
   score?: number;
   canonicalKey?: string;
   timestamp?: number;
@@ -89,6 +89,37 @@ export type LocalRagRebuildEvent =
   | ({ type: 'error' } & LocalRagRebuildSnapshot & { error?: string });
 
 const LOCAL_RAG_ENTRY_KIND_ORDER: LocalRagEntryKind[] = ['semantic_chunk', 'episode', 'message', 'background', 'mixed'];
+
+/** Hybrid scores from main are RRF-based (~0.02–0.2); IPC may omit score and we use rank order as a proxy. */
+const LORE_RETRIEVAL_SCORE_MULTIPLIER = 0.75;
+const MAX_LORE_RESULTS_PER_SEARCH = 3;
+
+const isLoreRagCandidate = (candidate: { tier?: string; source?: string }) =>
+  candidate.tier === 'lore'
+  || candidate.source === 'official_lore'
+  || candidate.source === 'lore';
+
+const applyLoreRetrievalWeightingAndCap = <
+  T extends { tier?: string; source?: string; score?: number }
+>(
+  results: T[],
+): T[] => {
+  if (results.length === 0) return results;
+  const n = results.length;
+  const scored = results.map((candidate, index) => {
+    const base = Number.isFinite(candidate.score) ? Number(candidate.score) : n - index;
+    const lore = isLoreRagCandidate(candidate);
+    // Apply tier-based weighting for lore results
+    // Lore has medium priority: lower than user's own chat history, higher than old summaries
+    const effectiveScore = lore ? base * LORE_RETRIEVAL_SCORE_MULTIPLIER : base;
+    return { candidate, effectiveScore, lore };
+  });
+  const loreRanked = scored.filter(s => s.lore).sort((a, b) => b.effectiveScore - a.effectiveScore);
+  const nonLore = scored.filter(s => !s.lore);
+  // Cap lore results to prevent overwhelming user memories
+  const cappedLore = loreRanked.slice(0, MAX_LORE_RESULTS_PER_SEARCH);
+  return [...nonLore, ...cappedLore].sort((a, b) => b.effectiveScore - a.effectiveScore).map(s => s.candidate);
+};
 const RAG_REBUILD_STARTED_CHANNEL = 'rag:rebuild:started';
 const RAG_REBUILD_PROGRESS_CHANNEL = 'rag:rebuild:progress';
 const RAG_REBUILD_DONE_CHANNEL = 'rag:rebuild:done';
@@ -765,7 +796,15 @@ export const searchLocalRagMemoryDetailed = async (
     keywords?: string[]
 ): Promise<LocalRagRecallResult> => {
   try {
-    let rawCandidates: { text: string, messageId?: string, source?: string, timestamp?: number, tier?: 'core' | 'episodic' | 'background', role?: string }[] = [];
+    let rawCandidates: {
+      text: string;
+      messageId?: string;
+      source?: string;
+      timestamp?: number;
+      tier?: 'core' | 'episodic' | 'background' | 'lore';
+      role?: string;
+      score?: number;
+    }[] = [];
     
     const ipc = getIpcRenderer();
     if (ipc) {
@@ -831,7 +870,15 @@ export const searchLocalRagMemoryDetailed = async (
             return b.timestamp - a.timestamp;
           })
           .slice(0, topK);
-        rawCandidates = recentVectors.map(v => ({ text: v.text, messageId: v.messageId, source: v.source, timestamp: v.timestamp, role: 'unknown', tier: v.tier }));
+        rawCandidates = recentVectors.map(v => ({
+          text: v.text,
+          messageId: v.messageId,
+          source: v.source,
+          timestamp: v.timestamp,
+          role: 'unknown',
+          tier: v.tier as 'core' | 'episodic' | 'background' | 'lore' | undefined,
+          score: typeof v.score === 'number' ? v.score : undefined,
+        }));
     }
 
     if (rawCandidates.length === 0) {
@@ -868,6 +915,8 @@ export const searchLocalRagMemoryDetailed = async (
             });
         }
     }
+
+    rawCandidates = applyLoreRetrievalWeightingAndCap(rawCandidates);
 
     if (rawCandidates.length === 0) {
       return {
