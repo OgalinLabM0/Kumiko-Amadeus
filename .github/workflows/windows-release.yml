@@ -1,0 +1,142 @@
+# Build Windows NSIS installer for Kumiko-Amadeus on GitHub-hosted runners.
+# Mirrors .github/workflows/linux-appimage.yml in shape: double runner matrix,
+# workflow_dispatch-only, optional publish to the GitHub Release that matches
+# package.json version.
+#
+# - publish=false (default): produces Setup-<arch>.exe + latest*.yml as workflow
+#                            artifact only; a NSIS smoke test extracts the
+#                            installer via 7-Zip and validates key contents.
+# - publish=true           : additionally runs electron-builder --publish always
+#                            so the installer + channel file attach to the
+#                            draft Release matching package.json version.
+#
+# This workflow intentionally does NOT upload kumiko-assets.zip. The Linux x64
+# job in linux-appimage.yml is the single owner of that attachment to avoid a
+# race between four concurrent matrix jobs clobbering the same release asset.
+# Both workflows resolve asset contents from the *same* `latest release` zip
+# via `npm run fetch-assets`, so whichever workflow runs first is irrelevant -
+# the installer contents never depend on this workflow uploading the zip.
+name: Windows Release build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish Setup + latest*.yml to GitHub Release (requires GH_TOKEN secret)"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  # Required when electron-builder --publish always uploads to the GitHub Release
+  # using the built-in GITHUB_TOKEN fallback. Harmless when publish=false.
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x64 builds on the standard windows-latest image. arm64 runs on the
+          # windows-11-arm partner runner (public preview for public repos since
+          # 2025-04, GA for private repos since 2026-01). Both images ship with
+          # MSVC + Python + 7-Zip, which is what hnswlib-node / better-sqlite3
+          # node-gyp compiles and the NSIS smoke test both need.
+          - arch: x64
+            runner: windows-latest
+            cli_arch: x64
+          - arch: arm64
+            runner: windows-11-arm
+            cli_arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Cache bge-m3 ONNX model
+        uses: actions/cache@v5
+        with:
+          path: models/bge-m3-onnx/model_int8.onnx
+          key: bge-m3-model-int8-v1
+
+      - name: Fetch bge-m3 ONNX model
+        run: node scripts/fetch-bge-model.cjs
+
+      - name: Cache electron & electron-builder downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~\AppData\Local\electron\Cache
+            ~\AppData\Local\electron-builder\Cache
+          key: electron-builder-win-${{ matrix.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-builder-win-${{ matrix.arch }}-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Fetch shared assets
+        # Character-specific assets (emotion sprites, ringtones, favicon,
+        # logo, encrypted lore/worldbook) live outside the tracked tree and
+        # must be unpacked from kumiko-assets.zip before Vite / electron-builder
+        # can pick them up. Script is idempotent for local devs who already
+        # have the assets on disk.
+        run: npm run fetch-assets
+
+      - name: Build web bundle
+        run: npm run build:cap
+
+      - name: Clean release directory (prebuild)
+        run: node scripts/clean-release.cjs prebuild
+
+      - name: Build NSIS installer (no publish)
+        if: inputs.publish != true
+        run: npx electron-builder --win --${{ matrix.cli_arch }} --publish never
+
+      - name: Smoke-test NSIS installer contents
+        if: inputs.publish != true
+        # Use 7-Zip (pre-installed on both windows-latest and windows-11-arm) to
+        # unpack the installer exe in two passes and verify that app.asar,
+        # native .node modules and bge-m3 ONNX all made it in.
+        # publish=true skips this check: by the time the build finishes
+        # electron-builder has already uploaded to the Release, so the canonical
+        # flow is publish=false first, publish=true second.
+        run: node scripts/verify-nsis-contents.cjs "release/Kumiko-Amadeus-Setup-${{ matrix.arch }}.exe"
+
+      - name: Build NSIS installer (publish to release)
+        if: inputs.publish == true
+        env:
+          # Prefer a user-provided PAT in GH_TOKEN; fall back to the built-in
+          # GITHUB_TOKEN for same-repo releases. electron-builder reads either.
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --${{ matrix.cli_arch }} --publish always
+
+      - name: Generate latest*.yml (no-publish mode only)
+        if: inputs.publish != true
+        # When publish=true electron-builder already writes and uploads these
+        # channel files; running our local generator would duplicate the effort
+        # and overwrite any sha512 electron-builder chose.
+        run: node scripts/generate-latest-yml.cjs
+
+      - name: Clean release directory (postbuild)
+        run: node scripts/clean-release.cjs postbuild
+
+      - name: Upload NSIS artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: kumiko-amadeus-windows-${{ matrix.arch }}
+          path: |
+            release/Kumiko-Amadeus-Setup-${{ matrix.arch }}.exe
+            release/latest*.yml
+          if-no-files-found: error
+          retention-days: 14
