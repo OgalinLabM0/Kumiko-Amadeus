@@ -26,10 +26,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # appimage_arch is how electron-builder names the AppImage file on
+          # Linux (it follows `uname -m`, so x64 becomes x86_64). `arch` stays
+          # in electron-builder CLI parlance (--x64 / --arm64) and is also
+          # used for cache keys and artifact names that face developers.
           - arch: x64
             runner: ubuntu-24.04
+            appimage_arch: x86_64
           - arch: arm64
             runner: ubuntu-24.04-arm
+            appimage_arch: arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
 
@@ -107,7 +113,7 @@ jobs:
         with:
           name: kumiko-amadeus-linux-${{ matrix.arch }}
           path: |
-            release/Kumiko-Amadeus-${{ matrix.arch }}.AppImage
+            release/Kumiko-Amadeus-${{ matrix.appimage_arch }}.AppImage
             release/latest-linux*.yml
           if-no-files-found: error
           retention-days: 14

@@ -8,11 +8,11 @@ const releaseDir = path.join(projectRoot, 'release');
 
 // electron-updater channel file naming conventions (see electron-userland/electron-builder):
 //   Windows:
-//     x64   -> latest.yml          (historical default, no arch suffix)
-//     arm64 -> latest-arm64.yml
-//   Linux:
-//     x64   -> latest-linux.yml
-//     arm64 -> latest-linux-arm64.yml
+//     x64    -> latest.yml          (historical default, no arch suffix)
+//     arm64  -> latest-arm64.yml
+//   Linux (electron-builder renders ${arch} following uname -m, so x64 -> x86_64):
+//     x86_64 -> latest-linux.yml
+//     arm64  -> latest-linux-arm64.yml
 const PLATFORMS = [
   {
     id: 'win',
@@ -24,9 +24,9 @@ const PLATFORMS = [
   },
   {
     id: 'linux',
-    pattern: /^Kumiko-Amadeus-(x64|arm64)\.AppImage$/,
+    pattern: /^Kumiko-Amadeus-(x86_64|arm64)\.AppImage$/,
     channelFile: {
-      x64: 'latest-linux.yml',
+      x86_64: 'latest-linux.yml',
       arm64: 'latest-linux-arm64.yml',
     },
   },
@@ -107,7 +107,7 @@ function main() {
       .join(', ');
     throw new Error(
       `No Kumiko-Amadeus installer/AppImage artifacts found in ${releaseDir}.\n` +
-        `Expected one of: Kumiko-Amadeus-Setup-<arch>.exe or Kumiko-Amadeus-<arch>.AppImage.\n` +
+        `Expected one of: Kumiko-Amadeus-Setup-{x64|arm64}.exe or Kumiko-Amadeus-{x86_64|arm64}.AppImage.\n` +
         `Found: ${entries || 'none'}`
     );
   }

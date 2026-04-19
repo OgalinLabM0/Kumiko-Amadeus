@@ -15,7 +15,7 @@ const keepPostbuild = new Set([
   'Kumiko-Amadeus-Setup-x64.exe.blockmap',
   'Kumiko-Amadeus-Setup-arm64.exe',
   'Kumiko-Amadeus-Setup-arm64.exe.blockmap',
-  'Kumiko-Amadeus-x64.AppImage',
+  'Kumiko-Amadeus-x86_64.AppImage',
   'Kumiko-Amadeus-arm64.AppImage',
   'latest.yml',
   'latest-arm64.yml',

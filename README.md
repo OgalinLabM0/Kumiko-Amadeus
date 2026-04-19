@@ -26,7 +26,7 @@
 | ------------- | ----------- | ----------------------------------- | ---------------------------------- | ---------------------------- |
 | Windows 10/11 | x64         | `Kumiko-Amadeus-Setup-x64.exe`      | `latest.yml`                       | 已发布 / Released            |
 | Windows 10/11 | ARM64       | `Kumiko-Amadeus-Setup-arm64.exe`    | `latest-arm64.yml`                 | 已发布 / Released            |
-| Linux (glibc) | x64         | `Kumiko-Amadeus-x64.AppImage`       | `latest-linux.yml`                 | 已适配，待发布验证 / Ready    |
+| Linux (glibc) | x86_64      | `Kumiko-Amadeus-x86_64.AppImage`    | `latest-linux.yml`                 | 已适配，待发布验证 / Ready    |
 | Linux (glibc) | ARM64       | `Kumiko-Amadeus-arm64.AppImage`     | `latest-linux-arm64.yml`           | 已适配，待发布验证 / Ready    |
 
 目前 **不提供** 的平台/格式：macOS、Linux deb/rpm/flatpak/snap、musl 发行版（Alpine 等）、Windows 32-bit。如果后续收到稳定的需求可以再开分支适配，但不在当前主线计划里。
@@ -68,16 +68,18 @@
 
 **Linux** — 按 CPU 架构分两份：
 
-- 主流 Intel / AMD x86_64 设备：`Kumiko-Amadeus-x64.AppImage`
-- 国产 / 树莓派 / Jetson 等 aarch64 设备：`Kumiko-Amadeus-arm64.AppImage`
+- 主流 Intel / AMD 64 位设备：`Kumiko-Amadeus-x86_64.AppImage`
+- 树莓派 / Jetson / 各家 64 位 ARM 设备：`Kumiko-Amadeus-arm64.AppImage`
 
-不确定自己是哪种？在终端里跑 `uname -m`，输出 `x86_64` 选 `x64`，输出 `aarch64` 选 `arm64`。
+> 注：Linux 下 **x64 / amd64 / x86_64 是同一架构的不同叫法**（指令集完全相同），Windows 生态习惯叫 `x64`，Linux 生态习惯叫 `x86_64`。Intel/AMD 64 位桌面请认准 `-x86_64.AppImage`。
+
+不确定自己是哪种？在终端里跑 `uname -m`，输出 `x86_64` 选 `-x86_64.AppImage`，输出 `aarch64` 选 `-arm64.AppImage`。
 
 下载到本地后赋予执行权限即可启动：
 
 ```bash
-chmod +x Kumiko-Amadeus-x64.AppImage
-./Kumiko-Amadeus-x64.AppImage
+chmod +x Kumiko-Amadeus-x86_64.AppImage
+./Kumiko-Amadeus-x86_64.AppImage
 
 # 如果系统缺少 FUSE：sudo apt install libfuse2  (Debian / Ubuntu)
 # 或：                sudo dnf install fuse-libs (Fedora / RHEL)
@@ -190,7 +192,7 @@ npm run desktop:build
 
 产物会在 `release/` 下：
 
-- `release/Kumiko-Amadeus-x64.AppImage`
+- `release/Kumiko-Amadeus-x86_64.AppImage`
 - `release/Kumiko-Amadeus-arm64.AppImage`
 - `release/latest-linux.yml`
 - `release/latest-linux-arm64.yml`
@@ -214,7 +216,7 @@ npm run desktop:build
 
 在该次 workflow run 详情页底部 `Artifacts` 区下载：
 
-- `kumiko-amadeus-linux-x64.zip` → 里面是 `Kumiko-Amadeus-x64.AppImage` + `latest-linux.yml`
+- `kumiko-amadeus-linux-x64.zip` → 里面是 `Kumiko-Amadeus-x86_64.AppImage` + `latest-linux.yml`（zip 外层名用 `x64` 跟 Windows/CLI 习惯对齐，AppImage 本体文件名随 Linux 惯例叫 `x86_64`）
 - `kumiko-amadeus-linux-arm64.zip` → 里面是 `Kumiko-Amadeus-arm64.AppImage` + `latest-linux-arm64.yml`
 
 Artifact 默认保留 14 天。
