@@ -41,10 +41,10 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node.js 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: '20'
           cache: 'npm'
@@ -59,7 +59,7 @@ jobs:
             python3
 
       - name: Cache bge-m3 ONNX model
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: models/bge-m3-onnx/model_int8.onnx
           key: bge-m3-model-int8-v1
@@ -68,7 +68,7 @@ jobs:
         run: node scripts/fetch-bge-model.cjs
 
       - name: Cache electron & electron-builder downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cache/electron
@@ -90,6 +90,15 @@ jobs:
         if: inputs.publish != true
         run: npx electron-builder --linux AppImage --${{ matrix.arch }} --publish never
 
+      - name: Smoke-test AppImage contents
+        if: inputs.publish != true
+        # Quickly extract the AppImage (no FUSE needed) and verify that
+        # AppRun / app.asar / native modules / bge-m3 ONNX model all made it in.
+        # publish=true skips this: by the time the build finishes electron-builder
+        # has already uploaded to the GitHub Release, so the check would be too
+        # late anyway -- the canonical flow is publish=false first, then publish=true.
+        run: node scripts/verify-appimage-contents.cjs "release/Kumiko-Amadeus-${{ matrix.appimage_arch }}.AppImage"
+
       - name: Build AppImage (publish to release)
         if: inputs.publish == true
         env:
@@ -109,7 +118,7 @@ jobs:
         run: node scripts/clean-release.cjs postbuild
 
       - name: Upload AppImage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: kumiko-amadeus-linux-${{ matrix.arch }}
           path: |

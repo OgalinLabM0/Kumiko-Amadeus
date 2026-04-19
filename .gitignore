@@ -23,8 +23,7 @@ migrated_prompt_history
 models/bge-m3-onnx/*.onnx
 
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
+.vscode/
 .idea
 .DS_Store
 *.suo
