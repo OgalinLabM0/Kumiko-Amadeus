@@ -10,6 +10,7 @@
     "desktop:dev": "concurrently -k \"npm run dev\" \"wait-on tcp:3000 && electron .\"",
     "desktop:build": "npm run build:cap && npm run release:clean:prebuild && electron-builder && npm run release:latest-yml && npm run release:assets && npm run release:clean:postbuild",
     "release:assets": "node scripts/package-assets.cjs",
+    "fetch-assets": "node scripts/fetch-assets.cjs",
     "dev": "vite",
     "build": "vite build",
     "build:cap": "vite build --base ./",

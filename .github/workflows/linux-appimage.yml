@@ -80,6 +80,14 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Fetch shared assets
+        # Character-specific assets (emotion sprites, ringtones, favicon,
+        # logo, encrypted lore/worldbook) live outside the tracked tree and
+        # must be unpacked from kumiko-assets.zip before Vite / electron-builder
+        # can pick them up. The script is idempotent for local devs who
+        # already have the assets on disk.
+        run: npm run fetch-assets
+
       - name: Build web bundle
         run: npm run build:cap
 
@@ -106,6 +114,17 @@ jobs:
           # GITHUB_TOKEN for same-repo releases. electron-builder reads either.
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
         run: npx electron-builder --linux AppImage --${{ matrix.arch }} --publish always
+
+      - name: Upload kumiko-assets.zip to release
+        # Only x64 uploads: the zip content is arch-agnostic and we do not want
+        # both matrix jobs racing to attach the same asset to the release.
+        if: inputs.publish == true && matrix.arch == 'x64'
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          npm run release:assets
+          TAG="v$(node -p "require('./package.json').version")"
+          gh release upload "$TAG" release/kumiko-assets.zip --clobber
 
       - name: Generate latest-linux*.yml (no-publish mode only)
         if: inputs.publish != true

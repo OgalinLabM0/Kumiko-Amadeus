@@ -19,6 +19,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Fetch shared assets
+        # Character assets (emotion sprites, ringtones, favicon, ...) live
+        # outside the tracked tree and must be unpacked from kumiko-assets.zip
+        # before the Vite web bundle can reference them.
+        run: npm run fetch-assets
+
       - name: Build web (relative base for WKWebView)
         run: npm run build:cap
 
