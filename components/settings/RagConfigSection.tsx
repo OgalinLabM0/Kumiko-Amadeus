@@ -1,7 +1,8 @@
 import React from 'react';
-import { Database, RefreshCw } from 'lucide-react';
+import { Database, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
 import { BackupConfig, Language } from '../../types';
 import { SettingsToggle } from './SettingsToggle';
+import { Collapse } from '../Collapse';
 
 interface RagConfigSectionProps {
   isOpen: boolean;
@@ -33,22 +34,22 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
     <div className={innerCardClass}>
       <button onClick={onToggle} className="w-full flex items-center justify-between mb-2">
         <div className="text-left">
-          <h4 className={`ka-label flex items-center gap-2 ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}>
-            <Database size={12} /> {language === 'zh' ? '本地 RAG 记忆' : 'Local RAG Memory'}
+          <h4 className={`ka-label font-bold flex items-center gap-2 ${isDarkMode ? 'text-purple-300' : 'text-purple-700'}`}>
+            <Database size={13} /> {language === 'zh' ? '本地 RAG 记忆' : 'Local RAG Memory'}
           </h4>
           {!isOpen && (
-            <div className={`ka-micro mt-1 ${backupConfig.ragEnabled ? (isDarkMode ? 'text-purple-300' : 'text-purple-700') : 'opacity-60'}`}>
+            <div className={`ka-micro mt-1 font-semibold ${backupConfig.ragEnabled ? (isDarkMode ? 'text-purple-400' : 'text-purple-600') : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}>
               {backupConfig.ragEnabled
                 ? (language === 'zh' ? '状态: 已启用' : 'Status: Enabled')
                 : (language === 'zh' ? '状态: 已关闭' : 'Status: Disabled')}
             </div>
           )}
         </div>
-        <span className="ka-micro opacity-50">{isOpen ? '▼' : '▲'}</span>
+        {isOpen ? <ChevronUp size={14} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} /> : <ChevronDown size={14} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} />}
       </button>
 
-      {isOpen && (
-        <div className="animate-in slide-in-from-top-2">
+      <Collapse isOpen={isOpen} duration={180}>
+        <div>
           <div className="flex items-center justify-between py-2 border-b border-gray-500/10 mb-4">
             <div className="flex items-center gap-3">
               <Database size={18} className={backupConfig.ragEnabled ? (isDarkMode ? 'text-purple-400' : 'text-purple-600') : 'opacity-50'} />
@@ -99,7 +100,7 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
             </div>
           )}
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

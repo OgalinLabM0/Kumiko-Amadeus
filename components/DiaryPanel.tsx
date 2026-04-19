@@ -1,17 +1,28 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { db, KumikoDiaryEntity } from '../services/db';
-import { X, ChevronLeft, ChevronRight, ArrowLeft, BookOpen, Calendar, RefreshCw } from 'lucide-react';
+import { X, ChevronLeft, ChevronRight, ArrowLeft, BookOpen, Calendar, RefreshCw, PenLine, CheckSquare, Square } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { DiaryBackfillDialog, type BackfillProgress } from './DiaryBackfillDialog';
-import { SettingsToggle } from './settings/SettingsToggle';
-import type { DiaryGapInfo } from '../services/lifeStreamService';
+import { CustomDialog } from './settings/CustomDialog';
+// SettingsToggle no longer needed here — the auto-backfill toggle moved to
+// SettingsPanel / DiaryLifeSection (P0 #12 + #37 settings consolidation).
+import type { DiaryGapInfo, BatchRewriteResult } from '../services/lifeStreamService';
 
 type ViewLevel = 'year' | 'month' | 'day';
 
 interface DiaryPanelProps {
+  isOpen: boolean;
   onClose: () => void;
   language?: 'zh' | 'en';
   isDarkMode?: boolean;
+  rewritingDate: string | null;
+  setRewritingDate: (date: string | null) => void;
+  bfProgress?: BackfillProgress;
+  setBfProgress: (p: BackfillProgress | undefined) => void;
+  bfComplete: boolean;
+  setBfComplete: (v: boolean) => void;
+  bfCount: number;
+  setBfCount: (v: number) => void;
 }
 
 const toDateStr = (y: number, m: number, d: number) =>
@@ -22,15 +33,10 @@ const WEEKDAY_LABELS_EN = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MONTH_LABELS_ZH = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
 const MONTH_LABELS_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const JST_TIMEZONE = 'Asia/Tokyo';
-const AUTO_DIARY_BACKFILL_STORAGE_KEY = 'kumiko_auto_diary_backfill';
-
-const getAutoDiaryBackfillEnabled = () => {
-  try {
-    return window.localStorage.getItem(AUTO_DIARY_BACKFILL_STORAGE_KEY) === 'true';
-  } catch {
-    return false;
-  }
-};
+// AUTO_DIARY_BACKFILL_STORAGE_KEY and getAutoDiaryBackfillEnabled were moved to
+// hooks/useAutoDiaryBackfill.ts (and the toggle UI to settings/DiaryLifeSection).
+// The behavioral side of the flag still lives in store/slices/diarySlice.ts, which
+// reads the same localStorage key.
 
 const getCurrentJstDate = () => new Date(new Date().toLocaleString('en-US', { timeZone: JST_TIMEZONE }));
 
@@ -41,15 +47,15 @@ const getDelayUntilNextJstDay = () => {
   return Math.max(1000, nextJstDay.getTime() - currentJst.getTime());
 };
 
-const getMondayOfWeek = (date: Date): Date => {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = day === 0 ? -6 : 1 - day;
-  d.setDate(d.getDate() + diff);
-  return d;
-};
+// getMondayOfWeek removed with renderWeekView (P1 #30).
 
-export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh', isDarkMode = false }) => {
+export const DiaryPanel: React.FC<DiaryPanelProps> = ({
+  isOpen, onClose, language = 'zh', isDarkMode = false,
+  rewritingDate, setRewritingDate,
+  bfProgress, setBfProgress,
+  bfComplete, setBfComplete,
+  bfCount, setBfCount,
+}) => {
   const [todayJst, setTodayJst] = useState<Date>(() => getCurrentJstDate());
   const todayStr = useMemo(
     () => toDateStr(todayJst.getFullYear(), todayJst.getMonth() + 1, todayJst.getDate()),
@@ -59,28 +65,59 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
   const [viewLevel, setViewLevel] = useState<ViewLevel>('day');
   const [selectedYear, setSelectedYear] = useState(todayJst.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(todayJst.getMonth() + 1);
-  const [selectedWeekMonday, setSelectedWeekMonday] = useState<Date>(() => getMondayOfWeek(todayJst));
+  // `selectedWeekMonday` removed with renderWeekView (P1 #30).
   const [selectedDate, setSelectedDate] = useState(todayStr);
   const [isAnimating, setIsAnimating] = useState(false);
 
   const [gapInfo, setGapInfo] = useState<DiaryGapInfo | null>(null);
-  const [bfProgress, setBfProgress] = useState<BackfillProgress | undefined>();
-  const [bfComplete, setBfComplete] = useState(false);
-  const [bfCount, setBfCount] = useState(0);
-  const [rewritingDate, setRewritingDate] = useState<string | null>(null);
+  const [gapCheckMsg, setGapCheckMsg] = useState<string | null>(null);
+  const [showRewriteConfirm, setShowRewriteConfirm] = useState(false);
   const [rewriteFeedback, setRewriteFeedback] = useState<string | null>(null);
   const [rewriteError, setRewriteError] = useState<string | null>(null);
-  const [autoDiaryBackfillEnabled, setAutoDiaryBackfillEnabled] = useState<boolean>(() => getAutoDiaryBackfillEnabled());
+  // auto-backfill toggle state + persistence moved to SettingsPanel / DiaryLifeSection.
 
-  const checkGaps = useCallback(async () => {
+  const [batchSelectMode, setBatchSelectMode] = useState(false);
+  const [selectedForRewrite, setSelectedForRewrite] = useState<Set<string>>(new Set());
+  const [showBatchConfirm, setShowBatchConfirm] = useState(false);
+  const [batchRewriting, setBatchRewriting] = useState(false);
+  const [batchRewriteProgress, setBatchRewriteProgress] = useState<{ current: number; total: number; dateStr: string } | null>(null);
+  const [batchRewriteResult, setBatchRewriteResult] = useState<BatchRewriteResult | null>(null);
+
+  // P2 #47: the prior version fired a bare setTimeout to clear `gapCheckMsg`,
+  // with no cleanup path. Closing the panel mid-countdown meant the callback
+  // still tried to setState on an unmounted component. Track the timer in a
+  // ref and clear it on panel close / re-check / unmount.
+  const gapCheckMsgTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelGapCheckMsgTimer = useCallback(() => {
+    if (gapCheckMsgTimerRef.current) {
+      clearTimeout(gapCheckMsgTimerRef.current);
+      gapCheckMsgTimerRef.current = null;
+    }
+  }, []);
+  const checkGaps = useCallback(async (showNoGapFeedback = false) => {
     const { detectDiaryGaps } = await import('../services/lifeStreamService');
     const info = await detectDiaryGaps();
-    if (info.totalMissing > 0) setGapInfo(info);
-  }, []);
+    if (info.totalMissing > 0) {
+      setGapInfo(info);
+      setGapCheckMsg(null);
+      cancelGapCheckMsgTimer();
+    } else if (showNoGapFeedback) {
+      setGapCheckMsg(language === 'zh' ? '没有发现日记缺口' : 'No diary gaps found');
+      cancelGapCheckMsgTimer();
+      gapCheckMsgTimerRef.current = setTimeout(() => {
+        setGapCheckMsg(null);
+        gapCheckMsgTimerRef.current = null;
+      }, 5000);
+    }
+  }, [language, cancelGapCheckMsgTimer]);
 
-  useEffect(() => { checkGaps(); }, [checkGaps]);
+  useEffect(() => { if (isOpen) checkGaps(); }, [checkGaps, isOpen]);
+  useEffect(() => {
+    return cancelGapCheckMsgTimer;
+  }, [cancelGapCheckMsgTimer]);
 
   useEffect(() => {
+    if (!isOpen) return;
     let timerId: number | null = null;
 
     const scheduleNextRefresh = () => {
@@ -97,20 +134,14 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
         window.clearTimeout(timerId);
       }
     };
-  }, []);
+  }, [isOpen]);
 
   useEffect(() => {
     setRewriteFeedback(null);
     setRewriteError(null);
   }, [selectedDate]);
 
-  useEffect(() => {
-    try {
-      window.localStorage.setItem(AUTO_DIARY_BACKFILL_STORAGE_KEY, autoDiaryBackfillEnabled ? 'true' : 'false');
-    } catch {
-      // Ignore storage failures and keep the panel usable.
-    }
-  }, [autoDiaryBackfillEnabled]);
+  // Auto-backfill persistence moved to hooks/useAutoDiaryBackfill.ts.
 
   const handleBfAll = useCallback(async () => {
     if (!gapInfo) return;
@@ -187,15 +218,14 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
     [selectedDate]
   );
 
-  const handleRewriteCurrentDiary = useCallback(async () => {
+  const handleRewriteCurrentDiary = useCallback(() => {
     if (!currentDiary || rewritingDate) return;
+    setShowRewriteConfirm(true);
+  }, [currentDiary, rewritingDate]);
 
-    const confirmed = window.confirm(
-      language === 'zh'
-        ? '要按当前设定重写这篇日记吗？这会直接覆盖当前内容。'
-        : 'Rewrite this diary using the current canon settings? This will overwrite the current entry.'
-    );
-    if (!confirmed) return;
+  const handleRewriteConfirmed = useCallback(async () => {
+    setShowRewriteConfirm(false);
+    if (!currentDiary) return;
 
     setRewriteFeedback(null);
     setRewriteError(null);
@@ -215,15 +245,13 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
     } finally {
       setRewritingDate(null);
     }
-  }, [currentDiary, language, rewritingDate]);
+  }, [currentDiary, language]);
 
   const syncSelectedDate = useCallback((dateStr: string) => {
-    const [year, month, day] = dateStr.split('-').map(Number);
-    const nextDate = new Date(year, month - 1, day);
+    const [year, month] = dateStr.split('-').map(Number);
     setSelectedDate(dateStr);
     setSelectedYear(year);
     setSelectedMonth(month);
-    setSelectedWeekMonday(getMondayOfWeek(nextDate));
   }, []);
 
   const prevDiaryDate = useMemo(() => {
@@ -271,8 +299,8 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
   const inkSoftClass = isDarkMode ? 'text-[#c7b29a]' : 'text-[#785A42]/60';
   const inkMutedClass = isDarkMode ? 'text-[#a48a71]' : 'text-[#785A42]/45';
   const disabledInkClass = isDarkMode ? 'text-[#6a5a4c]' : 'text-[#785A42]/20';
-  const borderClass = isDarkMode ? 'border-[#5a4634]/35' : 'border-[#785A42]/10';
-  const shellBgClass = isDarkMode ? 'bg-[#120f0b]' : 'bg-[#f9f7f2]';
+  const borderClass = isDarkMode ? 'border-[#2a2522]/60' : 'border-[#785A42]/10';
+  const shellBgClass = isDarkMode ? 'bg-[#161412]' : 'bg-[#f9f7f2]';
   const chromeBgClass = isDarkMode ? 'bg-[#17120e]/92' : 'bg-white/50';
   const subChromeBgClass = isDarkMode ? 'bg-[#15110c]/84' : 'bg-white/30';
   const cardBgClass = isDarkMode ? 'bg-[#17120e]' : 'bg-white';
@@ -300,7 +328,7 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
     return language === 'zh'
       ? `${parseInt(m)}月${parseInt(d)}日 周${weekday}`
       : `${selectedDate} ${weekday}`;
-  }, [viewLevel, selectedYear, selectedMonth, selectedWeekMonday, selectedDate, language]);
+  }, [viewLevel, selectedYear, selectedMonth, selectedDate, language]);
 
   const renderYearView = () => {
     const ml = language === 'zh' ? MONTH_LABELS_ZH : MONTH_LABELS_EN;
@@ -359,36 +387,53 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
             const inRange = isDateInRange(dateStr);
             const hasDiary = diaryDates?.has(dateStr);
             const isToday = dateStr === todayStr;
+            const isSelected = batchSelectMode && selectedForRewrite.has(dateStr);
 
             return (
               <button
                 key={dateStr}
-                disabled={!inRange}
+                disabled={!inRange || (batchSelectMode && !hasDiary)}
                 onClick={() => {
-                  syncSelectedDate(dateStr);
-                  animate(() => setViewLevel('day'));
+                  if (batchSelectMode && hasDiary) {
+                    setSelectedForRewrite(prev => {
+                      const next = new Set(prev);
+                      if (next.has(dateStr)) next.delete(dateStr);
+                      else next.add(dateStr);
+                      return next;
+                    });
+                  } else if (!batchSelectMode) {
+                    syncSelectedDate(dateStr);
+                    animate(() => setViewLevel('day'));
+                  }
                 }}
                 className={`group relative min-h-[96px] rounded-xl border p-3 flex flex-col justify-between transition-all overflow-hidden ${
-                  !inRange
-                    ? `${isDarkMode ? 'border-[#3a2d21] bg-[#15100c] text-[#6a5a4c]' : 'border-[#785A42]/5 bg-[#785A42]/[0.02] text-[#785A42]/20'} cursor-not-allowed`
-                    : isToday
-                      ? `${isDarkMode ? 'border-[#7a6246]/55 bg-[#211a14] text-[#f0dfc7] shadow-[0_8px_18px_rgba(0,0,0,0.25)] ring-1 ring-[#d1ad72]/20' : 'border-[#785A42]/40 bg-[#785A42]/8 text-[#785A42] shadow-[0_4px_12px_rgba(120,90,66,0.06)] ring-1 ring-[#785A42]/20'}`
-                      : hasDiary
-                        ? `${isDarkMode ? 'border-[#5f4a37]/45 bg-[#19130f] hover:bg-[#211812] hover:border-[#7a6246]/55 text-[#ead8c1] shadow-sm' : 'border-[#785A42]/20 bg-white hover:bg-[#785A42]/5 hover:border-[#785A42]/30 text-[#785A42] shadow-sm'} cursor-pointer`
-                        : `${isDarkMode ? 'border-[#4a392b] bg-[#15110d] hover:bg-[#1d1711] text-[#d4c1a7]' : 'border-[#785A42]/10 bg-[#fffdf7] hover:bg-[#785A42]/6 text-[#785A42]'} cursor-pointer`
+                  isSelected
+                    ? `${isDarkMode ? 'border-[#d8b36f]/60 bg-[#2a1f14] ring-2 ring-[#d8b36f]/40 text-[#f0dfc7]' : 'border-[#785A42]/50 bg-[#785A42]/12 ring-2 ring-[#785A42]/30 text-[#785A42]'} cursor-pointer`
+                    : !inRange || (batchSelectMode && !hasDiary)
+                      ? `${isDarkMode ? 'border-[#3a2d21] bg-[#15100c] text-[#6a5a4c]' : 'border-[#785A42]/5 bg-[#785A42]/[0.02] text-[#785A42]/20'} cursor-not-allowed`
+                      : isToday
+                        ? `${isDarkMode ? 'border-[#7a6246]/55 bg-[#211a14] text-[#f0dfc7] shadow-[0_8px_18px_rgba(0,0,0,0.25)] ring-1 ring-[#d1ad72]/20' : 'border-[#785A42]/40 bg-[#785A42]/8 text-[#785A42] shadow-[0_4px_12px_rgba(120,90,66,0.06)] ring-1 ring-[#785A42]/20'}`
+                        : hasDiary
+                          ? `${isDarkMode ? 'border-[#5f4a37]/45 bg-[#19130f] hover:bg-[#211812] hover:border-[#7a6246]/55 text-[#ead8c1] shadow-sm' : 'border-[#785A42]/20 bg-white hover:bg-[#785A42]/5 hover:border-[#785A42]/30 text-[#785A42] shadow-sm'} cursor-pointer`
+                          : `${isDarkMode ? 'border-[#4a392b] bg-[#15110d] hover:bg-[#1d1711] text-[#d4c1a7]' : 'border-[#785A42]/10 bg-[#fffdf7] hover:bg-[#785A42]/6 text-[#785A42]'} cursor-pointer`
                 }`}
               >
-                {/* Top Section: Day Number & Weekday */}
                 <div className="flex items-baseline justify-between w-full">
-                  <span className={`ka-value text-xl font-bold tracking-tight ${isToday ? (isDarkMode ? 'text-[#f0dfc7]' : 'text-[#5d402b]') : ''}`}>
-                    {dayNumber}
+                  <span className="flex items-center gap-1.5">
+                    {batchSelectMode && hasDiary && (
+                      isSelected
+                        ? <CheckSquare className={`w-3.5 h-3.5 ${isDarkMode ? 'text-[#d8b36f]' : 'text-[#785A42]'}`} />
+                        : <Square className={`w-3.5 h-3.5 ${isDarkMode ? 'text-[#6a5a4c]' : 'text-[#785A42]/30'}`} />
+                    )}
+                    <span className={`ka-value text-xl font-bold tracking-tight ${isToday ? (isDarkMode ? 'text-[#f0dfc7]' : 'text-[#5d402b]') : ''}`}>
+                      {dayNumber}
+                    </span>
                   </span>
                   <span className={`ka-micro font-medium uppercase tracking-wider ${isToday ? inkClass : `${isDarkMode ? 'text-[#8e7761] group-hover:text-[#c0a788]' : 'text-[#785A42]/40 group-hover:text-[#785A42]/60'}`} transition-colors`}>
                     {weekdayLabels[weekdayIndex]}
                   </span>
                 </div>
                 
-                {/* Bottom Section: Status */}
                 <div className="w-full flex items-center justify-between mt-3">
                   <span className={`text-[10px] font-medium tracking-wide ${inRange ? (hasDiary ? (isDarkMode ? 'text-[#c5b29a]' : 'text-[#785A42]/70') : (isDarkMode ? 'text-[#7a6756]' : 'text-[#785A42]/30')) : 'text-transparent'}`}>
                     {inRange ? (hasDiary ? (language === 'zh' ? '已有记录' : 'Recorded') : (language === 'zh' ? '空白' : 'Blank')) : ''}
@@ -396,7 +441,6 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
                   {hasDiary && <span className={`w-2 h-2 rounded-full ${isDarkMode ? 'bg-[#d8b36f] shadow-[0_0_8px_rgba(216,179,111,0.32)]' : 'bg-[#785A42] shadow-[0_0_6px_rgba(120,90,66,0.6)]'}`} />}
                 </div>
 
-                {/* Decorative background accent for today */}
                 {isToday && (
                   <div className={`absolute -bottom-2 -right-2 w-12 h-12 rounded-full blur-xl pointer-events-none ${isDarkMode ? 'bg-[#d2ab6e]/8' : 'bg-[#785A42]/5'}`} />
                 )}
@@ -408,102 +452,72 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
     );
   };
 
-  const renderWeekView = () => {
-    const wl = language === 'zh' ? WEEKDAY_LABELS_ZH : WEEKDAY_LABELS_EN;
-    return (
-      <div className="grid grid-cols-7 gap-2 p-4">
-        {wl.map((label, i) => (
-          <div key={i} className={`text-center ka-micro pb-1 ${isDarkMode ? 'text-[#a58d73]' : 'text-[#785A42]/50'}`}>{label}</div>
-        ))}
-        {Array.from({ length: 7 }).map((_, i) => {
-          const day = new Date(selectedWeekMonday);
-          day.setDate(day.getDate() + i);
-          const ds = toDateStr(day.getFullYear(), day.getMonth() + 1, day.getDate());
-          const inRange = isDateInRange(ds);
-          const hasDiary = diaryDates?.has(ds);
-          const isToday = ds === todayStr;
-          return (
-            <button
-              key={i}
-              disabled={!inRange}
-              onClick={() => { syncSelectedDate(ds); animate(() => setViewLevel('day')); }}
-              className={`relative flex flex-col items-center gap-1 p-3 rounded-lg border transition-all ${
-                inRange
-                  ? isToday
-                    ? `${isDarkMode ? 'border-[#7a6246]/55 bg-[#211a14] text-[#f0dfc7]' : 'border-[#785A42]/40 bg-[#785A42]/10 text-[#785A42]'} cursor-pointer`
-                    : `${isDarkMode ? 'border-[#5f4a37]/45 hover:bg-[#1d1711] text-[#ead8c1]' : 'border-[#785A42]/20 hover:bg-[#785A42]/10 text-[#785A42]'} cursor-pointer`
-                  : `${isDarkMode ? 'border-[#3a2d21] text-[#6a5a4c]' : 'border-[#785A42]/5 text-[#785A42]/20'} cursor-not-allowed`
-              }`}
-            >
-              <span className="ka-value font-semibold text-lg">{day.getDate()}</span>
-              <span className={`ka-micro ${isDarkMode ? 'text-[#a58d73]' : 'text-[#785A42]/50'}`}>{day.getMonth() + 1}月</span>
-              {hasDiary && inRange && <span className={`w-2 h-2 rounded-full ${isDarkMode ? 'bg-[#d8b36f]' : 'bg-[#785A42]'}`} />}
-              {!hasDiary && inRange && <span className="w-2 h-2" />}
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
+  // P1 #30: `renderWeekView` used to exist here but was never reachable — the
+  // ViewLevel union only has 'year' | 'month' | 'day', and no UI switched to
+  // 'week'. Removed along with its sole supporting state `selectedWeekMonday`
+  // and helper `getMondayOfWeek`.
 
   const renderDayView = () => (
-    <div className="p-6">
+    <div className="px-4 py-3">
       <div className={`${cardBgClass} rounded-xl shadow-md border ${borderClass} overflow-hidden`}>
-        <div className={`${cardHeaderBgClass} px-6 py-4 border-b ${borderClass}`}>
-          <div className="flex items-center justify-between gap-3">
+        <div className={`${cardHeaderBgClass} px-5 py-2.5 border-b ${borderClass}`}>
+          <div className="flex items-center justify-between gap-2">
             <button
               onClick={() => prevDiaryDate && syncSelectedDate(prevDiaryDate)}
               disabled={!prevDiaryDate}
-              className={`p-2 rounded-full transition-colors ${
+              className={`p-1.5 rounded-full transition-colors ${
                 prevDiaryDate
                   ? `${inkClass} ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-[#785A42]/10'}`
                   : `${disabledInkClass} cursor-not-allowed`
               }`}
             >
-              <ChevronLeft size={18} />
+              <ChevronLeft size={16} />
             </button>
-            <div className={`${inkClass} font-mincho ka-overlay-title font-semibold tracking-[0.03em] text-center`}>{titleText}</div>
+            <div className={`${inkClass} font-mincho ka-label font-semibold tracking-[0.03em] text-center flex-1`}>{titleText}</div>
             <button
               onClick={() => nextDiaryDate && syncSelectedDate(nextDiaryDate)}
               disabled={!nextDiaryDate}
-              className={`p-2 rounded-full transition-colors ${
+              className={`p-1.5 rounded-full transition-colors ${
                 nextDiaryDate
                   ? `${inkClass} ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-[#785A42]/10'}`
                   : `${disabledInkClass} cursor-not-allowed`
               }`}
             >
-              <ChevronRight size={18} />
+              <ChevronRight size={16} />
             </button>
-          </div>
-          {currentDiary && (
-            <div className="mt-3 flex items-center justify-between gap-3">
-              <div className={`ka-micro ${
-                rewriteError ? 'text-red-500' : rewriteFeedback ? 'text-green-600' : inkMutedClass
-              }`}>
-                {rewriteError
-                  || rewriteFeedback
-                  || (language === 'zh'
-                    ? '如果旧内容写偏了，可以按当前设定直接覆盖重写。'
-                    : 'If this older entry drifted off-canon, you can rewrite it in place.')}
-              </div>
+            {currentDiary?.rewriteCount && currentDiary.rewriteCount > 0 && (
+              <span
+                title={language === 'zh' ? `已重写 ${currentDiary.rewriteCount} 次` : `Rewritten ${currentDiary.rewriteCount} time${currentDiary.rewriteCount > 1 ? 's' : ''}`}
+                className={`ml-1 cursor-default ${isDarkMode ? 'text-[#cdb89f]/50' : 'text-[#785A42]/45'}`}
+              >
+                <PenLine size={11} />
+              </span>
+            )}
+            {currentDiary && (
               <button
                 onClick={handleRewriteCurrentDiary}
                 disabled={rewritingDate === selectedDate}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded border ka-micro font-semibold transition-colors ${
+                className={`flex items-center gap-1 px-2.5 py-1 rounded border ka-micro font-semibold transition-colors ml-1 ${
                   rewritingDate === selectedDate
                     ? `${borderClass} ${disabledInkClass} cursor-not-allowed`
                     : `${borderClass} ${inkClass} ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-[#785A42]/10'}`
                 }`}
+                title={language === 'zh' ? '如果旧内容写偏了，可以按当前设定直接覆盖重写' : 'Rewrite this entry with current canon settings'}
               >
-                <RefreshCw size={12} className={rewritingDate === selectedDate ? 'animate-spin' : ''} />
+                <RefreshCw size={11} className={rewritingDate === selectedDate ? 'animate-spin' : ''} />
                 {rewritingDate === selectedDate
                   ? (language === 'zh' ? '重写中...' : 'Rewriting...')
-                  : (language === 'zh' ? '按当前设定重写' : 'Rewrite with current canon')}
+                  : (language === 'zh' ? '重写' : 'Rewrite')}
               </button>
+            )}
+          </div>
+          {(rewriteError || rewriteFeedback) && (
+            <div className={`mt-1.5 ka-micro ${rewriteError ? 'text-red-500' : 'text-green-600'}`}>
+              {rewriteError || rewriteFeedback}
             </div>
           )}
         </div>
-        <div className="p-6 min-h-[250px]">
+        <div className="px-5 py-4 min-h-[250px]">
           {currentDiary ? (
             <div className="space-y-4">
               <div className={`${inkClass} leading-relaxed whitespace-pre-wrap ka-copy`}>{currentDiary.content}</div>
@@ -527,7 +541,7 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
   );
 
   return (
-    <div className={`absolute inset-0 z-50 flex flex-col ${shellBgClass} animate-in slide-in-from-bottom-4 duration-300`}>
+    <div className={`absolute inset-0 z-50 flex flex-col ${shellBgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', pointerEvents: isOpen ? 'auto' as const : 'none' as const, visibility: isOpen ? 'visible' as const : 'hidden' as const, transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out, visibility 0s 0s' : 'opacity 200ms ease-in, transform 200ms ease-in, visibility 0s 200ms', willChange: 'opacity, transform' as const, contain: 'layout style' as const }}>
       {/* Header */}
       <div className={`flex-none h-14 border-b ${borderClass} flex items-center justify-between px-4 ${chromeBgClass} backdrop-blur-md`}>
         <div className="flex items-center gap-2">
@@ -543,8 +557,11 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
           </h2>
         </div>
         <div className="flex items-center gap-1">
+          {gapCheckMsg && (
+            <span className={`ka-micro mr-1 animate-in fade-in duration-300 ${isDarkMode ? 'text-green-400/80' : 'text-green-600/80'}`}>{gapCheckMsg}</span>
+          )}
           <button
-            onClick={checkGaps}
+            onClick={() => checkGaps(true)}
             title={language === 'zh' ? '检查日记缺口' : 'Check diary gaps'}
             className={`p-2 ${inkMutedClass} ${isDarkMode ? 'hover:text-[#ead8c1] hover:bg-white/5' : 'hover:text-[#785A42] hover:bg-[#785A42]/5'} rounded-full transition-colors`}
           >
@@ -556,49 +573,49 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
         </div>
       </div>
 
-      <div className={`flex-none border-b ${borderClass} px-4 py-3 ${subChromeBgClass}`}>
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <div className={`ka-label font-semibold ${inkClass}`}>
-              {language === 'zh' ? '自动后台补齐' : 'Auto diary backfill'}
-            </div>
-            <p className={`mt-1 ka-micro leading-relaxed ${inkMutedClass}`}>
-              {language === 'zh'
-                ? '开启后，每次启动软件并进入聊天界面时，会在后台自动补齐缺失的日记。'
-                : 'When enabled, missing diary entries are filled in automatically in the background whenever the app starts and enters chat view.'}
-            </p>
-          </div>
-          <SettingsToggle
-            checked={autoDiaryBackfillEnabled}
-            onClick={() => setAutoDiaryBackfillEnabled(prev => !prev)}
-            activeTrackClass={toggleActiveTrackClass}
-            inactiveTrackClass={toggleInactiveTrackClass}
-            ariaLabel={language === 'zh' ? '切换自动后台补齐' : 'Toggle auto diary backfill'}
-          />
-        </div>
-      </div>
+      {/* Auto-backfill toggle moved to Settings > Diary & Life Stream (P0 #12). */}
 
-      {/* Sub-header with navigation title */}
-      <div className={`flex-none h-10 border-b ${borderClass} flex items-center justify-between px-4 ${subChromeBgClass}`}>
-        {viewLevel === 'year' ? (
-          <>
-            <button onClick={() => canGoYearLeft && animate(() => setSelectedYear(y => y - 1))} disabled={!canGoYearLeft}
-              className={`p-1 rounded ${canGoYearLeft ? `${inkClass} ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-[#785A42]/5'}` : disabledInkClass}`}>
-              <ChevronLeft size={16} />
-            </button>
-            <span className={`font-mincho ka-label font-semibold tracking-[0.03em] ${inkClass}`}>{titleText}</span>
-            <button onClick={() => canGoYearRight && animate(() => setSelectedYear(y => y + 1))} disabled={!canGoYearRight}
-              className={`p-1 rounded ${canGoYearRight ? `${inkClass} ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-[#785A42]/5'}` : disabledInkClass}`}>
-              <ChevronRight size={16} />
-            </button>
-          </>
-        ) : (
-          <span className={`font-mincho ka-label font-semibold tracking-[0.03em] ${inkClass} mx-auto`}>{titleText}</span>
-        )}
-      </div>
+      {/* Sub-header with navigation title — hidden in day view to avoid date duplication */}
+      {viewLevel !== 'day' && (
+        <div className={`flex-none h-10 border-b ${borderClass} flex items-center justify-between px-4 ${subChromeBgClass}`}>
+          {viewLevel === 'year' ? (
+            <>
+              <button onClick={() => canGoYearLeft && animate(() => setSelectedYear(y => y - 1))} disabled={!canGoYearLeft}
+                className={`p-1 rounded ${canGoYearLeft ? `${inkClass} ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-[#785A42]/5'}` : disabledInkClass}`}>
+                <ChevronLeft size={16} />
+              </button>
+              <span className={`font-mincho ka-label font-semibold tracking-[0.03em] ${inkClass}`}>{titleText}</span>
+              <button onClick={() => canGoYearRight && animate(() => setSelectedYear(y => y + 1))} disabled={!canGoYearRight}
+                className={`p-1 rounded ${canGoYearRight ? `${inkClass} ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-[#785A42]/5'}` : disabledInkClass}`}>
+                <ChevronRight size={16} />
+              </button>
+            </>
+          ) : (
+            <div className="flex items-center justify-between w-full">
+              <span className={`font-mincho ka-label font-semibold tracking-[0.03em] ${inkClass}`}>{titleText}</span>
+              <button
+                onClick={() => {
+                  setBatchSelectMode(prev => {
+                    if (prev) setSelectedForRewrite(new Set());
+                    return !prev;
+                  });
+                }}
+                title={language === 'zh' ? (batchSelectMode ? '退出批量选择' : '批量重写') : (batchSelectMode ? 'Exit selection' : 'Batch rewrite')}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all ${
+                  batchSelectMode
+                    ? `${isDarkMode ? 'bg-[#d8b36f]/20 text-[#d8b36f] border border-[#d8b36f]/30' : 'bg-[#785A42]/10 text-[#785A42] border border-[#785A42]/30'}`
+                    : `${isDarkMode ? 'text-[#8e7761] hover:text-[#ead8c1] hover:bg-white/5' : 'text-[#785A42]/50 hover:text-[#785A42] hover:bg-[#785A42]/5'}`
+                }`}
+              >
+                {language === 'zh' ? (batchSelectMode ? '退出选择' : '批量重写') : (batchSelectMode ? 'Cancel' : 'Batch')}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Content */}
-      <div className={`flex-1 overflow-y-auto transition-opacity duration-150 ${isAnimating ? 'opacity-0' : 'opacity-100'}`}>
+      <div data-resize-heavy className={`flex-1 overflow-y-auto transition-opacity duration-150 ${isAnimating ? 'opacity-0' : 'opacity-100'}`}>
         {viewLevel === 'year' && renderYearView()}
         {viewLevel === 'month' && renderMonthView()}
         {viewLevel === 'day' && renderDayView()}
@@ -617,6 +634,103 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({ onClose, language = 'zh'
           generatedCount={bfCount}
         />
       )}
+
+      <CustomDialog
+        isOpen={showRewriteConfirm}
+        title={language === 'zh' ? '重写日记' : 'Rewrite Diary'}
+        message={language === 'zh'
+          ? '要按当前设定重写这篇日记吗？这会直接覆盖当前内容。'
+          : 'Rewrite this diary using the current canon settings? This will overwrite the current entry.'}
+        type="confirm"
+        confirmText={language === 'zh' ? '确定重写' : 'Rewrite'}
+        cancelText={language === 'zh' ? '取消' : 'Cancel'}
+        onConfirm={handleRewriteConfirmed}
+        onCancel={() => setShowRewriteConfirm(false)}
+        isDarkMode={isDarkMode}
+        language={language}
+      />
+
+      {batchSelectMode && viewLevel === 'month' && selectedForRewrite.size > 0 && !batchRewriting && (
+        <div className={`flex-none border-t ${borderClass} px-4 py-3 ${subChromeBgClass} flex items-center justify-between`}>
+          <span className={`ka-label ${inkClass} text-sm`}>
+            {language === 'zh' ? `已选 ${selectedForRewrite.size} 篇` : `${selectedForRewrite.size} selected`}
+          </span>
+          <button
+            onClick={() => setShowBatchConfirm(true)}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${isDarkMode ? 'bg-[#d8b36f]/20 text-[#d8b36f] hover:bg-[#d8b36f]/30 border border-[#d8b36f]/30' : 'bg-[#785A42]/10 text-[#785A42] hover:bg-[#785A42]/15 border border-[#785A42]/20'}`}
+          >
+            {language === 'zh' ? '开始重写' : 'Start Rewrite'}
+          </button>
+        </div>
+      )}
+
+      {batchRewriting && batchRewriteProgress && (
+        <div className={`flex-none border-t ${borderClass} px-4 py-3 ${subChromeBgClass}`}>
+          <div className="flex items-center justify-between mb-2">
+            <span className={`ka-label text-sm ${inkClass}`}>
+              {language === 'zh' ? `重写中 ${batchRewriteProgress.current}/${batchRewriteProgress.total}` : `Rewriting ${batchRewriteProgress.current}/${batchRewriteProgress.total}`}
+            </span>
+            <span className={`ka-micro text-xs ${inkMutedClass}`}>{batchRewriteProgress.dateStr}</span>
+          </div>
+          <div className={`w-full h-1.5 rounded-full ${isDarkMode ? 'bg-[#3a2d21]' : 'bg-[#785A42]/10'}`}>
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${isDarkMode ? 'bg-[#d8b36f]' : 'bg-[#785A42]'}`}
+              style={{ width: `${(batchRewriteProgress.current / batchRewriteProgress.total) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      <CustomDialog
+        isOpen={showBatchConfirm}
+        title={language === 'zh' ? '批量重写日记' : 'Batch Rewrite'}
+        message={language === 'zh'
+          ? `确定要重写选中的 ${selectedForRewrite.size} 篇日记吗？将按日期顺序逐篇重写，耗时较长。`
+          : `Rewrite ${selectedForRewrite.size} selected entries? They will be rewritten sequentially. This may take a while.`}
+        type="confirm"
+        confirmText={language === 'zh' ? '确定重写' : 'Confirm'}
+        cancelText={language === 'zh' ? '取消' : 'Cancel'}
+        onConfirm={async () => {
+          setShowBatchConfirm(false);
+          setBatchRewriting(true);
+          setBatchRewriteResult(null);
+          try {
+            const { batchRewriteDiaries } = await import('../services/lifeStreamService');
+            const result = await batchRewriteDiaries(
+              Array.from(selectedForRewrite),
+              (current, total, dateStr) => setBatchRewriteProgress({ current, total, dateStr })
+            );
+            setBatchRewriteResult(result);
+          } catch (e) {
+            console.error('[DiaryPanel] Batch rewrite failed:', e);
+            setBatchRewriteResult({ rewritten: 0, failed: Array.from(selectedForRewrite), total: selectedForRewrite.size });
+          } finally {
+            setBatchRewriting(false);
+            setBatchRewriteProgress(null);
+            setSelectedForRewrite(new Set());
+            setBatchSelectMode(false);
+          }
+        }}
+        onCancel={() => setShowBatchConfirm(false)}
+        isDarkMode={isDarkMode}
+        language={language}
+      />
+
+      <CustomDialog
+        isOpen={batchRewriteResult !== null}
+        title={language === 'zh' ? '批量重写完成' : 'Batch Rewrite Complete'}
+        message={batchRewriteResult
+          ? (language === 'zh'
+            ? `共 ${batchRewriteResult.total} 篇，成功重写 ${batchRewriteResult.rewritten} 篇。${batchRewriteResult.failed.length > 0 ? `\n失败：${batchRewriteResult.failed.join('、')}` : ''}`
+            : `${batchRewriteResult.rewritten} of ${batchRewriteResult.total} rewritten.${batchRewriteResult.failed.length > 0 ? `\nFailed: ${batchRewriteResult.failed.join(', ')}` : ''}`)
+          : ''}
+        type="info"
+        confirmText={language === 'zh' ? '好的' : 'OK'}
+        onConfirm={() => setBatchRewriteResult(null)}
+        onCancel={() => setBatchRewriteResult(null)}
+        isDarkMode={isDarkMode}
+        language={language}
+      />
     </div>
   );
 };

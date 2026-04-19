@@ -1,16 +1,267 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, Notification, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { execFileSync, spawn } = require('child_process');
 const JSZip = require('jszip');
 const { autoUpdater } = require('electron-updater');
 const { initRag, closeRag } = require('./electron-rag.cjs');
+
+// Platform detection. Used throughout this file to branch registry/PowerShell
+// (Windows-only) vs JSON config store (Linux), drive-letter preference (Windows)
+// vs XDG_DATA_HOME (Linux), and the SoVITS launch pipeline.
+const IS_WINDOWS = process.platform === 'win32';
+const IS_LINUX = process.platform === 'linux';
+const IS_MAC = process.platform === 'darwin';
+
+// --- Chromium GPU acceleration flags (must be applied before app.whenReady) ---
+// P2 #51: trimmed flag set.
+//   - Dropped `ignore-gpu-blocklist`: forcing the GPU path on blocklisted drivers
+//     crashes Chromium on a non-trivial fraction of older Intel/AMD laptops.
+//     We accept the slightly slower software-composite fallback on those
+//     machines rather than hard-crashing the app.
+//   - Dropped `PaintHolding` from enable-features: that experiment was part of
+//     the rolled-back resize "paint hold" investigation. The currently shipping
+//     resize smoothing comes from the backdrop-filter freeze CSS in index.html
+//     and the theme-matched BrowserWindow.backgroundColor below. (The earlier
+//     `opacity: 0.9999` transparent-composition workaround was removed in the
+//     resize_brown_flash_fix plan: it caused newly-exposed pixels during resize
+//     to show the desktop underneath.) Leaving this feature flag on was just
+//     experimental surface area that could shift composition behaviour
+//     between Electron versions.
+//   - Kept zero-copy + GPU rasterization + Skia/Canvas OOP raster, which are
+//     low-risk and well-established.
+app.commandLine.appendSwitch('enable-gpu-rasterization');
+app.commandLine.appendSwitch('enable-zero-copy');
+app.commandLine.appendSwitch('enable-features', 'UseSkiaRenderer,CanvasOopRasterization');
 
 let mainWindow;
 let tray = null;
 let genieProcess = null;
 let unreadMessageCount = 0;
 let lastWrittenBackupPath = null;
+
+// GPT-SoVITS directory authorization: pre-approved install locations. genie:start will
+// only spawn processes from a sovitsDir that the user explicitly picked via the native
+// dialog (genie:pick-sovits-dir), AND that still passes install-fingerprint checks at
+// spawn time. This closes a path-injection → RCE vector where a compromised renderer
+// could otherwise tell the main process to spawn python.exe out of any attacker-controlled
+// directory. Persisted across restarts to keep the "Start server" UX seamless.
+const authorizedSovitsDirs = new Set();
+function getAuthorizedSovitsDirsFile() {
+  return path.join(app.getPath('userData'), 'authorized-sovits-dirs.json');
+}
+function loadAuthorizedSovitsDirs() {
+  try {
+    const file = getAuthorizedSovitsDirsFile();
+    if (!fs.existsSync(file)) return;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (Array.isArray(parsed)) {
+      for (const entry of parsed) {
+        if (typeof entry === 'string' && entry) {
+          authorizedSovitsDirs.add(path.resolve(entry));
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[GENIE] Failed to load authorized sovits dirs:', e && e.message);
+  }
+}
+function persistAuthorizedSovitsDirs() {
+  try {
+    const file = getAuthorizedSovitsDirsFile();
+    const dir = path.dirname(file);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(Array.from(authorizedSovitsDirs), null, 2), 'utf8');
+  } catch (e) {
+    console.warn('[GENIE] Failed to persist authorized sovits dirs:', e && e.message);
+  }
+}
+// Install fingerprint: the canonical GPT-SoVITS directory layout the project relies on.
+// If any of these is missing the dir is clearly NOT a legitimate SoVITS install and we
+// refuse to spawn anything from it.
+//
+// Platform notes:
+//   - Windows: requires the bundled `runtime/python.exe`, since genie:start launches
+//     that specific interpreter directly. This is how the Windows SoVITS distribution
+//     is packaged.
+//   - Linux (BYO Python): users are expected to supply their own python interpreter
+//     via the separate authorizedSovitsPythons authorization flow (pick-sovits-python).
+//     So on Linux we only validate that the directory holds SoVITS's own Python code
+//     (api_v2.py + tts_infer.yaml) and do not require any bundled runtime.
+function isValidSovitsDir(sovitsDir) {
+  if (typeof sovitsDir !== 'string' || !sovitsDir) return false;
+  try {
+    const resolved = path.resolve(sovitsDir);
+    const stat = fs.statSync(resolved);
+    if (!stat.isDirectory()) return false;
+    if (IS_WINDOWS && !fs.existsSync(path.join(resolved, 'runtime', 'python.exe'))) return false;
+    if (!fs.existsSync(path.join(resolved, 'api_v2.py'))) return false;
+    if (!fs.existsSync(path.join(resolved, 'GPT_SoVITS', 'configs', 'tts_infer.yaml'))) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function getSovitsDirFingerprintError() {
+  return IS_WINDOWS
+    ? 'The selected directory is not a valid GPT-SoVITS install (missing runtime/python.exe, api_v2.py, or GPT_SoVITS/configs/tts_infer.yaml).'
+    : 'The selected directory is not a valid GPT-SoVITS install (missing api_v2.py or GPT_SoVITS/configs/tts_infer.yaml). On Linux you supply your own Python interpreter separately.';
+}
+function authorizeSovitsDir(resolvedPath) {
+  if (typeof resolvedPath !== 'string' || !resolvedPath) return;
+  if (!authorizedSovitsDirs.has(resolvedPath)) {
+    authorizedSovitsDirs.add(resolvedPath);
+    persistAuthorizedSovitsDirs();
+  }
+}
+
+// Linux/macOS GPT-SoVITS brings its own Python interpreter — the app does not bundle
+// a python runtime for those platforms because packaging SoVITS's full inference
+// stack would inflate the AppImage considerably and is version-sensitive. Instead,
+// the user picks their own python (conda env / venv) through the native file dialog
+// in Settings → TTS → GPT-SoVITS; the selected path lands in authorizedSovitsPythons
+// and gets persisted so the approval survives restarts. genie:start refuses to spawn
+// any python executable that isn't in this set, closing the same path-injection /
+// RCE vector that authorizedSovitsDirs closes for the SoVITS directory itself.
+const authorizedSovitsPythons = new Set();
+function getAuthorizedSovitsPythonsFile() {
+  return path.join(app.getPath('userData'), 'authorized-sovits-pythons.json');
+}
+function loadAuthorizedSovitsPythons() {
+  try {
+    const file = getAuthorizedSovitsPythonsFile();
+    if (!fs.existsSync(file)) return;
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (Array.isArray(parsed)) {
+      for (const entry of parsed) {
+        if (typeof entry === 'string' && entry) {
+          authorizedSovitsPythons.add(path.resolve(entry));
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[GENIE] Failed to load authorized sovits pythons:', e && e.message);
+  }
+}
+function persistAuthorizedSovitsPythons() {
+  try {
+    const file = getAuthorizedSovitsPythonsFile();
+    const dir = path.dirname(file);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(Array.from(authorizedSovitsPythons), null, 2), 'utf8');
+  } catch (e) {
+    console.warn('[GENIE] Failed to persist authorized sovits pythons:', e && e.message);
+  }
+}
+function authorizeSovitsPython(resolvedPath) {
+  if (typeof resolvedPath !== 'string' || !resolvedPath) return;
+  if (!authorizedSovitsPythons.has(resolvedPath)) {
+    authorizedSovitsPythons.add(resolvedPath);
+    persistAuthorizedSovitsPythons();
+  }
+}
+// Fingerprint an explicit python interpreter path: must be an absolute path to an
+// existing regular file, and on Unix we also require the executable bit. On Windows
+// we don't enforce executable bit because the concept doesn't match (any .exe is
+// executable if the user has read access).
+function isValidSovitsPython(pythonPath) {
+  if (typeof pythonPath !== 'string' || !pythonPath) return false;
+  try {
+    const resolved = path.resolve(pythonPath);
+    const stat = fs.statSync(resolved);
+    if (!stat.isFile()) return false;
+    if (!IS_WINDOWS) {
+      fs.accessSync(resolved, fs.constants.X_OK);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Cross-platform termination of the detached SoVITS server process tree.
+//   - Windows: taskkill with /T walks the process tree (cmd.exe → python.exe →
+//     torch worker) and /F forces; this is the same behaviour the pre-Linux
+//     code had.
+//   - Linux: we spawned with detached:true so the child sits in its own process
+//     group. A negative PID signals the whole group, which is how we reach
+//     python's own subprocesses (DataLoader workers etc.). SIGTERM first for
+//     graceful shutdown, then a SIGKILL backstop 3s later if anything is still
+//     hanging. We use process.kill instead of genieProcess.kill because that
+//     only signals the immediate child.
+function terminateGenieProcess() {
+  if (!genieProcess) return;
+  const pid = genieProcess.pid;
+  if (IS_WINDOWS) {
+    try {
+      spawn('taskkill', ['/F', '/T', '/PID', String(pid)], { windowsHide: true, stdio: 'ignore' });
+    } catch { /* nothing actionable if taskkill itself fails */ }
+  } else if (pid) {
+    try {
+      process.kill(-pid, 'SIGTERM');
+    } catch {
+      try { genieProcess.kill('SIGTERM'); } catch { /* already gone */ }
+    }
+    setTimeout(() => {
+      try {
+        process.kill(-pid, 0);
+        try { process.kill(-pid, 'SIGKILL'); } catch { /* already dead */ }
+      } catch { /* group already exited, nothing to do */ }
+    }, 3000).unref();
+  }
+  genieProcess = null;
+}
+
+// Backup path safety: maintain a set of filesystem paths that the user has explicitly
+// approved through a native dialog (backup:pick-save-file / backup:pick-open-file), or
+// that live inside the app's userData directory (our own data). Any backup:* IPC that
+// actually touches disk must resolve its input against this set, blocking renderer-driven
+// writes/reads to arbitrary paths (hardens against a XSS-style attacker who controls the
+// renderer message bus). See assertBackupPathAllowed().
+//
+// Persisted to userData/authorized-backup-paths.json so that after an app restart the
+// existing auto-save connection to the user's previously chosen backup file still works
+// without forcing them to re-authorize. Only paths the user themselves picked via native
+// dialog ever get added; the renderer cannot grow this set.
+const allowedBackupPaths = new Set();
+function getAuthorizedBackupPathsFile() {
+  return path.join(app.getPath('userData'), 'authorized-backup-paths.json');
+}
+function loadAuthorizedBackupPaths() {
+  try {
+    const file = getAuthorizedBackupPathsFile();
+    if (!fs.existsSync(file)) return;
+    const raw = fs.readFileSync(file, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      for (const entry of parsed) {
+        if (typeof entry === 'string' && entry) {
+          allowedBackupPaths.add(path.resolve(entry));
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('[BACKUP] Failed to load authorized backup paths:', e && e.message);
+  }
+}
+function persistAuthorizedBackupPaths() {
+  try {
+    const file = getAuthorizedBackupPathsFile();
+    const dir = path.dirname(file);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(Array.from(allowedBackupPaths), null, 2), 'utf8');
+  } catch (e) {
+    console.warn('[BACKUP] Failed to persist authorized backup paths:', e && e.message);
+  }
+}
+function authorizeBackupPath(resolvedPath) {
+  if (typeof resolvedPath !== 'string' || !resolvedPath) return;
+  if (!allowedBackupPaths.has(resolvedPath)) {
+    allowedBackupPaths.add(resolvedPath);
+    persistAuthorizedBackupPaths();
+  }
+}
 const isDev = !app.isPackaged;
 let isInstallingUpdate = false;
 let isAutoBackupDone = false;
@@ -29,7 +280,23 @@ let appUpdateState = {
   isPackaged: app.isPackaged
 };
 
-const iconPath = path.join(__dirname, 'public/favicon-KA.ico');
+// App icon resolution. Windows Tray/BrowserWindow strongly prefer .ico (multi-DPI
+// sprite). Linux desktops (GNOME/KDE) only reliably render PNG for StatusNotifier
+// trays, so on Linux we prefer the PNG and fall back to the ICO only if the PNG
+// is missing. macOS also prefers PNG. fs.existsSync is used so a stale build
+// missing one of the assets still starts up cleanly rather than throwing at
+// app startup.
+function resolveAppIconPath() {
+  const icoPath = path.join(__dirname, 'public', 'favicon-KA.ico');
+  const pngPath = path.join(__dirname, 'public', 'favicon-KA.png');
+  if (IS_WINDOWS) {
+    return fs.existsSync(icoPath) ? icoPath : pngPath;
+  }
+  return fs.existsSync(pngPath) ? pngPath : icoPath;
+}
+const iconPath = resolveAppIconPath();
+// Windows-only PowerShell/registry constants. On Linux these are never invoked
+// because configStore short-circuits to JSON — see readConfigValue() below.
 const POWERSHELL_PATH = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const USER_DATA_REGISTRY_KEY = 'HKCU:\\Software\\KumikoAIAmadeus';
 const USER_DATA_VALUE_NAME = 'UserDataPath';
@@ -37,7 +304,12 @@ const PENDING_SOURCE_VALUE_NAME = 'PendingMigrationSource';
 const PENDING_TARGET_VALUE_NAME = 'PendingMigrationTarget';
 const CUSTOM_DATA_DIRECTORY_NAME = 'Kumiko AI Data';
 const legacyDefaultUserDataPath = path.resolve(app.getPath('userData'));
-const SYSTEM_DRIVE_ROOT = `${(process.env.SystemDrive || legacyDefaultUserDataPath).slice(0, 2)}\\`.toUpperCase();
+// Windows-specific drive-letter root (e.g. "C:\"). On non-Windows platforms the
+// "drive" concept is meaningless, so SYSTEM_DRIVE_ROOT is only referenced from
+// inside IS_WINDOWS branches in resolvePreferredDefaultUserDataPath().
+const SYSTEM_DRIVE_ROOT = IS_WINDOWS
+  ? `${(process.env.SystemDrive || legacyDefaultUserDataPath).slice(0, 2)}\\`.toUpperCase()
+  : '/';
 const UPDATER_CACHE_DIRECTORY_NAMES = [
   'kumiko-ai-amadeus-updater',
   'Kumiko AI-updater',
@@ -69,6 +341,29 @@ function canUseDataDirectory(candidatePath) {
 }
 
 function resolvePreferredDefaultUserDataPath() {
+  // Linux: follow the freedesktop.org XDG Base Directory spec. User data goes
+  // under $XDG_DATA_HOME (commonly ~/.local/share), which is the canonical
+  // place for per-user application data on Linux desktops and survives app
+  // uninstall/reinstall cleanly. This is independent of install location
+  // (AppImage typically runs from ~/Applications or /tmp/.mount_*), so the
+  // Windows-style "install drive != system drive" heuristic doesn't apply.
+  if (IS_LINUX) {
+    const xdgDataHome = process.env.XDG_DATA_HOME && process.env.XDG_DATA_HOME.trim();
+    const base = xdgDataHome
+      ? path.resolve(xdgDataHome)
+      : path.join(os.homedir(), '.local', 'share');
+    return path.join(base, 'Kumiko-Amadeus');
+  }
+
+  // macOS falls back to Electron's default (~/Library/Application Support/Kumiko AI).
+  if (!IS_WINDOWS) {
+    return legacyDefaultUserDataPath;
+  }
+
+  // Windows: if the app is installed on a non-system drive (e.g. D:/E:/F:), we
+  // prefer to keep user data on the same drive so it survives OS reinstalls
+  // and so the SSD/HDD choice is respected. This preserves the pre-Linux
+  // behaviour exactly.
   const executablePath = app.getPath('exe');
   const executableDirectory = path.dirname(path.resolve(executablePath));
   const installDriveRoot = getDriveRoot(executableDirectory);
@@ -94,6 +389,118 @@ function resolvePreferredDefaultUserDataPath() {
 const defaultUserDataPath = resolvePreferredDefaultUserDataPath();
 const RINGTONE_AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.ogg', '.m4a', '.aac', '.flac']);
 
+// ── configStore: cross-platform key/value persistence ──────────────
+// Historically (Windows-only) this project stored UserDataPath / pending
+// migration markers / AutoZipBackupEnabled in HKCU via PowerShell. Linux has
+// no equivalent registry, so we now persist the same keys to a JSON file
+// alongside the legacy default userData directory. Windows still works
+// identically from the caller's perspective — on first launch of a
+// configStore-aware build we one-shot copy any legacy registry values into
+// the JSON so existing users don't lose their settings.
+//
+// We intentionally anchor the config file at legacyDefaultUserDataPath, NOT
+// at app.getPath('userData'): userData may itself be redirected to a
+// different drive via UserDataPath, and we need to read UserDataPath *before*
+// that redirect is applied. Anchoring here keeps the config file's own
+// location stable and avoids a chicken-and-egg lookup.
+const CONFIG_STORE_FILENAME = 'kumiko-config.json';
+const CONFIG_STORE_MIGRATION_MARKER = '__migratedFromRegistry';
+const MIGRATABLE_REGISTRY_KEYS = [
+  USER_DATA_VALUE_NAME,
+  PENDING_SOURCE_VALUE_NAME,
+  PENDING_TARGET_VALUE_NAME,
+  'AutoZipBackupEnabled',
+];
+
+function getConfigStoreFilePath() {
+  return path.join(legacyDefaultUserDataPath, CONFIG_STORE_FILENAME);
+}
+
+function loadConfigStoreObject() {
+  try {
+    const file = getConfigStoreFilePath();
+    if (!fs.existsSync(file)) return {};
+    const raw = fs.readFileSync(file, 'utf8');
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch (error) {
+    console.warn('[CONFIG] Failed to read kumiko-config.json, treating as empty:', error && error.message);
+    return {};
+  }
+}
+
+function saveConfigStoreObject(nextStore) {
+  const file = getConfigStoreFilePath();
+  const dir = path.dirname(file);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch { /* mkdir race is harmless */ }
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(nextStore, null, 2), 'utf8');
+  try {
+    fs.renameSync(tmp, file);
+  } catch (error) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* nothing to clean */ }
+    throw error;
+  }
+}
+
+function readConfigValue(key) {
+  const store = loadConfigStoreObject();
+  const value = store[key];
+  return typeof value === 'string' && value ? value : null;
+}
+
+function writeConfigValue(key, value) {
+  const store = loadConfigStoreObject();
+  store[key] = String(value);
+  saveConfigStoreObject(store);
+}
+
+function deleteConfigValue(key) {
+  const store = loadConfigStoreObject();
+  if (!(key in store)) return;
+  delete store[key];
+  saveConfigStoreObject(store);
+}
+
+// Windows-only one-shot import of legacy HKCU values. Called once at startup
+// before any readConfigValue(). If the JSON already carries the migration
+// marker (or we're not on Windows) this is a no-op. Values already present
+// in the JSON are never overwritten — the JSON is authoritative.
+function migrateRegistryToConfigStoreOnce() {
+  if (!IS_WINDOWS) return;
+  const store = loadConfigStoreObject();
+  if (store[CONFIG_STORE_MIGRATION_MARKER]) return;
+  let mutated = false;
+  for (const regKey of MIGRATABLE_REGISTRY_KEYS) {
+    if (typeof store[regKey] === 'string' && store[regKey]) continue;
+    try {
+      const value = readRegistryValue(regKey);
+      if (typeof value === 'string' && value) {
+        store[regKey] = value;
+        mutated = true;
+      }
+    } catch (error) {
+      console.warn(`[CONFIG] Failed to read legacy registry value ${regKey}:`, error && error.message);
+    }
+  }
+  store[CONFIG_STORE_MIGRATION_MARKER] = new Date().toISOString();
+  try {
+    saveConfigStoreObject(store);
+    if (mutated) {
+      console.log('[CONFIG] Imported legacy HKCU values into kumiko-config.json');
+    }
+  } catch (error) {
+    console.warn('[CONFIG] Failed to persist registry migration marker:', error && error.message);
+  }
+}
+
+// Legacy Windows registry accessors. Kept intentionally so
+// migrateRegistryToConfigStoreOnce() can still import pre-JSON values on
+// first launch. All new business code goes through readConfigValue /
+// writeConfigValue / deleteConfigValue above, so these three functions are
+// only called from the migration path now.
 function readRegistryValue(valueName) {
   try {
     const output = execFileSync(
@@ -189,8 +596,27 @@ function normalizeBackupFilePath(filePath) {
   return path.resolve(filePath);
 }
 
+// Check whether a resolved path is allowed for backup IO. Allowed paths are:
+//   1. Anything under the app's userData directory (our own data, safe to read/write).
+//   2. Anything the user explicitly approved in this session via pick-save / pick-open
+//      (and kept in allowedBackupPaths).
+// This prevents a compromised renderer from asking the main process to read or overwrite
+// arbitrary files on the user's disk (e.g., AppData of other applications, system files).
+function assertBackupPathAllowed(resolvedPath) {
+  if (typeof resolvedPath !== 'string' || !resolvedPath) {
+    throw new Error('Backup path is required.');
+  }
+  const userDataRoot = path.resolve(app.getPath('userData'));
+  const isInsideUserData = resolvedPath === userDataRoot
+    || resolvedPath.startsWith(userDataRoot + path.sep);
+  if (isInsideUserData) return;
+  if (allowedBackupPaths.has(resolvedPath)) return;
+  throw new Error('Backup path not authorized. Please re-select the file via the native dialog.');
+}
+
 function writeBackupFile(filePath, content) {
   const normalizedPath = normalizeBackupFilePath(filePath);
+  assertBackupPathAllowed(normalizedPath);
   const serializedContent = typeof content === 'string' ? content : String(content ?? '');
   const tempFilePath = `${normalizedPath}.${process.pid}.tmp`;
 
@@ -220,6 +646,7 @@ function writeBackupFile(filePath, content) {
 
 function readBackupFile(filePath) {
   const normalizedPath = normalizeBackupFilePath(filePath);
+  assertBackupPathAllowed(normalizedPath);
 
   return {
     success: true,
@@ -231,6 +658,7 @@ function readBackupFile(filePath) {
 
 function getBackupFileInfo(filePath) {
   const normalizedPath = normalizeBackupFilePath(filePath);
+  assertBackupPathAllowed(normalizedPath);
 
   return {
     success: true,
@@ -242,6 +670,7 @@ function getBackupFileInfo(filePath) {
 
 async function parseBackupImportFile(filePath) {
   const normalizedPath = normalizeBackupFilePath(filePath);
+  assertBackupPathAllowed(normalizedPath);
   const fileName = path.basename(normalizedPath);
   const extension = path.extname(normalizedPath).toLowerCase();
 
@@ -552,7 +981,7 @@ function setupAutoUpdater() {
 }
 
 function promoteDefaultUserDataPath() {
-  if (readRegistryValue(USER_DATA_VALUE_NAME)) {
+  if (readConfigValue(USER_DATA_VALUE_NAME)) {
     return;
   }
 
@@ -584,7 +1013,7 @@ function promoteDefaultUserDataPath() {
 }
 
 function applyConfiguredUserDataPath() {
-  const configuredPath = readRegistryValue(USER_DATA_VALUE_NAME);
+  const configuredPath = readConfigValue(USER_DATA_VALUE_NAME);
   const resolvedPath = path.resolve(configuredPath || defaultUserDataPath);
   ensureDirectory(resolvedPath);
   app.setPath('userData', resolvedPath);
@@ -592,8 +1021,8 @@ function applyConfiguredUserDataPath() {
 }
 
 function processPendingUserDataMigration() {
-  const pendingSource = readRegistryValue(PENDING_SOURCE_VALUE_NAME);
-  const pendingTarget = readRegistryValue(PENDING_TARGET_VALUE_NAME);
+  const pendingSource = readConfigValue(PENDING_SOURCE_VALUE_NAME);
+  const pendingTarget = readConfigValue(PENDING_TARGET_VALUE_NAME);
 
   if (!pendingSource || !pendingTarget) {
     return;
@@ -621,9 +1050,9 @@ function processPendingUserDataMigration() {
     }
 
     if (targetPath === defaultUserDataPath) {
-      deleteRegistryValue(USER_DATA_VALUE_NAME);
+      deleteConfigValue(USER_DATA_VALUE_NAME);
     } else {
-      writeRegistryValue(USER_DATA_VALUE_NAME, targetPath);
+      writeConfigValue(USER_DATA_VALUE_NAME, targetPath);
     }
 
     lastDataMigrationError = null;
@@ -631,8 +1060,8 @@ function processPendingUserDataMigration() {
     lastDataMigrationError = error instanceof Error ? error.message : String(error);
     console.error('[DATA DIR] Failed to migrate user data directory:', error);
   } finally {
-    deleteRegistryValue(PENDING_SOURCE_VALUE_NAME);
-    deleteRegistryValue(PENDING_TARGET_VALUE_NAME);
+    deleteConfigValue(PENDING_SOURCE_VALUE_NAME);
+    deleteConfigValue(PENDING_TARGET_VALUE_NAME);
   }
 }
 
@@ -672,8 +1101,8 @@ function scheduleUserDataMigration(targetPath) {
 
   try {
     ensureDirectory(resolvedTargetPath);
-    writeRegistryValue(PENDING_SOURCE_VALUE_NAME, currentPath);
-    writeRegistryValue(PENDING_TARGET_VALUE_NAME, resolvedTargetPath);
+    writeConfigValue(PENDING_SOURCE_VALUE_NAME, currentPath);
+    writeConfigValue(PENDING_TARGET_VALUE_NAME, resolvedTargetPath);
     lastDataMigrationError = null;
 
     setTimeout(() => {
@@ -692,6 +1121,7 @@ function scheduleUserDataMigration(targetPath) {
   }
 }
 
+migrateRegistryToConfigStoreOnce();
 processPendingUserDataMigration();
 promoteDefaultUserDataPath();
 applyConfiguredUserDataPath();
@@ -703,9 +1133,10 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
-    minWidth: 800,
+    minWidth: 900,
     minHeight: 600,
     icon: iconPath,
+    backgroundColor: '#f9f7f2',
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
@@ -732,7 +1163,22 @@ function createWindow() {
   mainWindow.webContents.once('did-finish-load', () => {
     emitAppUpdateState();
   });
+
+  // Bump renderer frame rate ceiling from 60 to 120 for faster post-resize recovery.
+  try {
+    mainWindow.webContents.setFrameRate(120);
+  } catch { /* older Electron versions may not support this */ }
 }
+
+// Module-level IPC: theme-matched BrowserWindow background color.
+// Placed here (not inside createWindow) so it is registered exactly once.
+ipcMain.on('app:set-bg-color', (_event, color) => {
+  if (mainWindow && !mainWindow.isDestroyed() && typeof color === 'string') {
+    try {
+      mainWindow.setBackgroundColor(color);
+    } catch { /* ignore invalid color strings */ }
+  }
+});
 
 function createTray() {
   try {
@@ -924,13 +1370,20 @@ if (!singleInstanceLock) {
       const ujiResponse = await fetch('https://api.open-meteo.com/v1/forecast?latitude=34.8906&longitude=135.8016&current_weather=true&timezone=Asia%2FTokyo');
       const ujiData = await ujiResponse.json();
       
-      // User location based on IP (using ip-api.com for rough coordinates)
+      // User location based on IP.
+      // P2 #55: swapped the free ip-api.com endpoint (HTTP-only unless you pay)
+      // for ipapi.co's HTTPS endpoint, so the user's IP-derived coordinates can
+      // no longer be observed / modified by a man in the middle. If the HTTPS
+      // call fails we simply don't surface a user-side weather block — we used
+      // to silently drop it anyway when ip-api timed out.
       let userWeather = null;
       try {
-        const ipResponse = await fetch('http://ip-api.com/json/');
+        const ipResponse = await fetch('https://ipapi.co/json/', { signal: AbortSignal.timeout(5000) });
         const ipData = await ipResponse.json();
-        if (ipData.lat && ipData.lon) {
-          const userWeatherResponse = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${ipData.lat}&longitude=${ipData.lon}&current_weather=true`);
+        const lat = ipData.latitude ?? ipData.lat;
+        const lon = ipData.longitude ?? ipData.lon;
+        if (typeof lat === 'number' && typeof lon === 'number') {
+          const userWeatherResponse = await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`);
           userWeather = await userWeatherResponse.json();
         }
       } catch (e) {
@@ -944,6 +1397,43 @@ if (!singleInstanceLock) {
       };
     } catch (e) {
       console.error('[Weather] Failed to fetch weather data:', e);
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('app:get-historical-weather', async (_event, dateStr) => {
+    try {
+      if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        return { success: false, error: 'Invalid date format' };
+      }
+      const url = `https://archive-api.open-meteo.com/v1/archive?latitude=34.8906&longitude=135.8016&start_date=${dateStr}&end_date=${dateStr}&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=Asia%2FTokyo`;
+      const response = await fetch(url);
+      const data = await response.json();
+      if (data.daily && data.daily.weathercode && data.daily.weathercode.length > 0) {
+        const weathercode = data.daily.weathercode[0];
+        const tempMax = data.daily.temperature_2m_max?.[0];
+        const tempMin = data.daily.temperature_2m_min?.[0];
+        const mapCode = (code) => {
+          if (code === 0) return '晴';
+          if (code === 1 || code === 2 || code === 3) return '多云';
+          if (code >= 45 && code <= 48) return '雾';
+          if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) return '雨';
+          if ((code >= 71 && code <= 77) || (code >= 85 && code <= 86)) return '雪';
+          if (code >= 95) return '雷雨';
+          return '';
+        };
+        const cond = typeof weathercode === 'number' ? mapCode(weathercode) : '';
+        const tempStr = (tempMax != null && tempMin != null) ? `, ${tempMin}~${tempMax}°C` : '';
+        return {
+          success: true,
+          weather: `${cond}${tempStr}`,
+          weathercode,
+          conditionText: cond,
+        };
+      }
+      return { success: false, error: 'No data for date' };
+    } catch (e) {
+      console.warn('[Weather] Historical weather fetch failed:', e.message);
       return { success: false, error: e.message };
     }
   });
@@ -1064,10 +1554,29 @@ if (!singleInstanceLock) {
 
   // ── Voice file IPC ──────────────────────────────────────────────
 
+  // Safe ID pattern for voice/ringtone message IDs — prevents path traversal
+  // via payloads like "../../../../Windows/System32/evil". All voice: handlers
+  // must run the caller-supplied messageId through this.
+  const SAFE_VOICE_ID = /^[a-zA-Z0-9_-]{1,80}$/;
+
   function getVoiceDir() {
     const dir = path.join(app.getPath('userData'), 'voice');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     return dir;
+  }
+
+  // Resolve a voice file path and guarantee it still lives inside the voice dir
+  // after normalization. Throws on any unsafe input.
+  function resolveVoicePath(messageId) {
+    if (typeof messageId !== 'string' || !SAFE_VOICE_ID.test(messageId)) {
+      throw new Error('Invalid voice messageId');
+    }
+    const voiceDir = path.resolve(getVoiceDir());
+    const full = path.resolve(path.join(voiceDir, `${messageId}.mp3`));
+    if (full !== path.join(voiceDir, `${messageId}.mp3`) || !full.startsWith(voiceDir + path.sep)) {
+      throw new Error('Voice path escaped voice directory');
+    }
+    return full;
   }
 
 function getRingtoneDir() {
@@ -1130,11 +1639,130 @@ function writeRingtoneMetadata(dir, originalName) {
     });
   }
 
+  // ── Image file IPC (P1 #36) ─────────────────────────────────────
+  // Images now live as real files under userData/images/{id}.{ext} instead of
+  // being stored as base64 strings inside Dexie. Renderer side still holds only
+  // the ID + caption; bytes are loaded on demand by the UI (<img> via the
+  // kumiko-image:// protocol registered below) or by the model (view_historical_image
+  // tool, which calls images:load).
+
+  const SAFE_IMAGE_ID = /^[a-zA-Z0-9_-]{1,80}$/;
+  const IMAGE_EXT_WHITELIST = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
+
+  function getImagesDir() {
+    const dir = path.join(app.getPath('userData'), 'images');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  function resolveImagePath(imageId, ext) {
+    if (typeof imageId !== 'string' || !SAFE_IMAGE_ID.test(imageId)) {
+      throw new Error('Invalid image id');
+    }
+    const safeExt = typeof ext === 'string' && IMAGE_EXT_WHITELIST.has(ext.toLowerCase())
+      ? ext.toLowerCase()
+      : 'jpg';
+    const dir = path.resolve(getImagesDir());
+    const full = path.resolve(path.join(dir, `${imageId}.${safeExt}`));
+    if (full !== path.join(dir, `${imageId}.${safeExt}`) || !full.startsWith(dir + path.sep)) {
+      throw new Error('Image path escaped images directory');
+    }
+    return full;
+  }
+
+  function findImageFile(imageId) {
+    if (typeof imageId !== 'string' || !SAFE_IMAGE_ID.test(imageId)) return null;
+    const dir = getImagesDir();
+    for (const ext of ['jpg', 'jpeg', 'png', 'webp', 'gif']) {
+      const candidate = path.join(dir, `${imageId}.${ext}`);
+      if (fs.existsSync(candidate)) {
+        const mimeType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
+        return { path: candidate, ext, mimeType };
+      }
+    }
+    return null;
+  }
+
+  ipcMain.handle('images:save', (_event, payload = {}) => {
+    try {
+      const { imageId, ext, buffer } = payload;
+      if (!imageId || !buffer) return { success: false, error: 'Missing params' };
+      const filePath = resolveImagePath(imageId, ext);
+      fs.writeFileSync(filePath, Buffer.from(buffer));
+      return { success: true, filePath };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('images:load', (_event, payload = {}) => {
+    try {
+      const found = findImageFile(payload.imageId);
+      if (!found) return { success: false, error: 'Not found' };
+      const buffer = fs.readFileSync(found.path);
+      return { success: true, buffer, mimeType: found.mimeType, ext: found.ext };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('images:delete', (_event, payload = {}) => {
+    try {
+      const found = findImageFile(payload.imageId);
+      if (found) { try { fs.unlinkSync(found.path); } catch {} }
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  ipcMain.handle('images:list', () => {
+    try {
+      const dir = getImagesDir();
+      const entries = fs.readdirSync(dir).filter(f => /^[\w-]+\.(jpg|jpeg|png|webp|gif)$/i.test(f));
+      const files = entries.map(f => {
+        const stat = fs.statSync(path.join(dir, f));
+        const id = f.replace(/\.(jpg|jpeg|png|webp|gif)$/i, '');
+        return { id, size: stat.size, mtime: stat.mtimeMs };
+      });
+      return { success: true, files };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  // Mirror voice:open-folder. `getImagesDir()` will lazily mkdir-p on first call,
+  // so this IPC is still safe to invoke before the user has ever sent an image.
+  ipcMain.handle('images:open-folder', () => {
+    try {
+      shell.openPath(getImagesDir());
+      return { success: true };
+    } catch (e) {
+      return { success: false, error: e.message };
+    }
+  });
+
+  // Aggregate the userData/images/ footprint for display (count + total bytes).
+  // Same contract as voice:get-storage-info.
+  ipcMain.handle('images:get-storage-info', () => {
+    try {
+      const dir = getImagesDir();
+      const entries = fs.readdirSync(dir).filter(f => /^[\w-]+\.(jpg|jpeg|png|webp|gif)$/i.test(f));
+      let totalBytes = 0;
+      for (const f of entries) {
+        try { totalBytes += fs.statSync(path.join(dir, f)).size; } catch {}
+      }
+      return { success: true, count: entries.length, totalBytes };
+    } catch (e) {
+      return { success: true, count: 0, totalBytes: 0 };
+    }
+  });
+
   ipcMain.handle('voice:save', (_event, payload = {}) => {
     try {
       const { messageId, buffer } = payload;
       if (!messageId || !buffer) return { success: false, error: 'Missing params' };
-      const filePath = path.join(getVoiceDir(), `${messageId}.mp3`);
+      const filePath = resolveVoicePath(messageId);
       fs.writeFileSync(filePath, Buffer.from(buffer));
       return { success: true, filePath };
     } catch (e) {
@@ -1144,7 +1772,7 @@ function writeRingtoneMetadata(dir, originalName) {
 
   ipcMain.handle('voice:load', (_event, payload = {}) => {
     try {
-      const filePath = path.join(getVoiceDir(), `${payload.messageId}.mp3`);
+      const filePath = resolveVoicePath(payload.messageId);
       if (!fs.existsSync(filePath)) return { success: false, error: 'Not found' };
       const buffer = fs.readFileSync(filePath);
       return { success: true, buffer };
@@ -1155,7 +1783,7 @@ function writeRingtoneMetadata(dir, originalName) {
 
   ipcMain.handle('voice:delete', (_event, payload = {}) => {
     try {
-      const filePath = path.join(getVoiceDir(), `${payload.messageId}.mp3`);
+      const filePath = resolveVoicePath(payload.messageId);
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
       return { success: true };
     } catch (e) {
@@ -1303,6 +1931,9 @@ function writeRingtoneMetadata(dir, originalName) {
       }
 
       const filePath = path.resolve(result.filePath);
+      // The user just approved this path via the native dialog — authorize it for
+      // subsequent write/read/parse IPC calls (persisted across restarts).
+      authorizeBackupPath(filePath);
       return {
         success: true,
         canceled: false,
@@ -1333,7 +1964,9 @@ function writeRingtoneMetadata(dir, originalName) {
         return { canceled: true };
       }
 
-      return readBackupFile(result.filePaths[0]);
+      const pickedPath = path.resolve(result.filePaths[0]);
+      authorizeBackupPath(pickedPath);
+      return readBackupFile(pickedPath);
     } catch (error) {
       console.error('[LOCAL BACKUP] Failed to open backup file:', error);
       return {
@@ -1395,7 +2028,7 @@ function writeRingtoneMetadata(dir, originalName) {
   ipcMain.handle('app:set-auto-zip-backup', (_event, payload = {}) => {
     try {
       const enabled = !!payload.enabled;
-      writeRegistryValue('AutoZipBackupEnabled', enabled ? '1' : '0');
+      writeConfigValue('AutoZipBackupEnabled', enabled ? '1' : '0');
       return { success: true, enabled };
     } catch (error) {
       return { success: false, error: error.message };
@@ -1404,7 +2037,7 @@ function writeRingtoneMetadata(dir, originalName) {
 
   ipcMain.handle('app:get-auto-zip-backup', () => {
     try {
-      const val = readRegistryValue('AutoZipBackupEnabled');
+      const val = readConfigValue('AutoZipBackupEnabled');
       return { success: true, enabled: val === '1' };
     } catch (error) {
       return { success: false, error: error.message };
@@ -1412,6 +2045,39 @@ function writeRingtoneMetadata(dir, originalName) {
   });
 
   app.whenReady().then(async () => {
+    // Restore persisted backup path authorization (paths the user previously picked
+    // via native dialog). Must happen before any backup:* IPC is serviced so that
+    // auto-save from a pre-existing connection survives restart.
+    loadAuthorizedBackupPaths();
+    loadAuthorizedSovitsDirs();
+    loadAuthorizedSovitsPythons();
+
+    // Register the kumiko-image:// protocol. ChatBubble / MemoryPanel bind <img src>
+    // to URLs like `kumiko-image://{imageId}`; we map those to the corresponding file
+    // under userData/images/. The protocol is strictly a *read* surface anchored
+    // inside that directory — the SAFE_IMAGE_ID regex and path.startsWith check
+    // prevent any URL from escaping. Any non-well-formed / missing image resolves
+    // to an "image not found" error, which <img onerror> handles.
+    try {
+      protocol.registerFileProtocol('kumiko-image', (request, callback) => {
+        try {
+          const raw = request.url.replace(/^kumiko-image:\/\//i, '');
+          const without = raw.split('?')[0].split('#')[0].split('/')[0];
+          const imageId = decodeURIComponent(without);
+          const found = findImageFile(imageId);
+          if (found) {
+            callback({ path: found.path });
+          } else {
+            callback({ error: -6 });
+          }
+        } catch (_e) {
+          callback({ error: -6 });
+        }
+      });
+    } catch (e) {
+      console.warn('[IMAGES] Failed to register kumiko-image:// protocol:', e && e.message);
+    }
+
     setTimeout(() => {
       cleanupUpdaterCache();
     }, 15000);
@@ -1437,25 +2103,240 @@ function writeRingtoneMetadata(dir, originalName) {
     }
 
     // ── GPT-SoVITS server management ─────────────────────────────
+
+    // User-driven native directory picker. This is the ONLY code path that may add a new
+    // sovits directory to authorizedSovitsDirs. The dialog requires a human at the keyboard
+    // to confirm the selection, and the fingerprint check ensures the picked directory is
+    // really a GPT-SoVITS install. Persisted so the authorization survives app restarts.
+    ipcMain.handle('genie:pick-sovits-dir', async () => {
+      try {
+        const result = await dialog.showOpenDialog(mainWindow || undefined, {
+          title: 'Select GPT-SoVITS installation directory',
+          properties: ['openDirectory'],
+          defaultPath: app.getPath('home'),
+        });
+        if (result.canceled || !result.filePaths[0]) {
+          return { success: false, canceled: true };
+        }
+        const resolved = path.resolve(result.filePaths[0]);
+        if (!isValidSovitsDir(resolved)) {
+          return { success: false, error: getSovitsDirFingerprintError() };
+        }
+        authorizeSovitsDir(resolved);
+        return { success: true, path: resolved };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    });
+
+    // Linux/macOS BYO-Python flow: user picks their own python3 interpreter (conda
+    // env / system python / venv). We persist authorization the same way as the
+    // sovits install directory, so the approval survives restarts. On Windows this
+    // IPC is still wired up (the bundled runtime/python.exe remains the default),
+    // but the Settings UI only surfaces it for Linux users.
+    ipcMain.handle('genie:pick-sovits-python', async () => {
+      try {
+        const result = await dialog.showOpenDialog(mainWindow || undefined, {
+          title: IS_LINUX
+            ? 'Select the Python interpreter for GPT-SoVITS (e.g. ~/miniconda3/envs/GPTSoVits/bin/python)'
+            : 'Select a Python executable for GPT-SoVITS',
+          properties: ['openFile'],
+          defaultPath: IS_LINUX ? '/usr/bin' : app.getPath('home'),
+        });
+        if (result.canceled || !result.filePaths[0]) {
+          return { success: false, canceled: true };
+        }
+        const resolved = path.resolve(result.filePaths[0]);
+        if (!isValidSovitsPython(resolved)) {
+          return {
+            success: false,
+            error: IS_WINDOWS
+              ? 'The selected file is not a valid Python executable.'
+              : 'The selected file is not a valid executable Python interpreter. Check that the file exists and has the executable bit set.'
+          };
+        }
+        authorizeSovitsPython(resolved);
+        return { success: true, path: resolved };
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    });
+
+    // Smoke-test an authorized python interpreter by spawning `python --version`.
+    // Surfaces the first line of stdout/stderr back to the renderer so the user can
+    // confirm they picked the interpreter they thought they did (e.g. the env with
+    // torch / transformers installed, not system python3.12 that lacks SoVITS deps).
+    ipcMain.handle('genie:test-sovits-python', async (_event, payload = {}) => {
+      try {
+        const { pythonPath } = payload || {};
+        if (!pythonPath || typeof pythonPath !== 'string') {
+          return { success: false, error: 'No python interpreter path provided.' };
+        }
+        const resolved = path.resolve(pythonPath);
+        if (!authorizedSovitsPythons.has(resolved)) {
+          return { success: false, error: 'This Python interpreter has not been authorized. Please pick it via the Browse dialog first.' };
+        }
+        if (!isValidSovitsPython(resolved)) {
+          return { success: false, error: 'Python interpreter is missing or not executable at this path.' };
+        }
+        return await new Promise((resolveOuter) => {
+          let stdout = '';
+          let stderr = '';
+          let settled = false;
+          let proc;
+          try {
+            proc = spawn(resolved, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
+          } catch (spawnErr) {
+            resolveOuter({ success: false, error: spawnErr && spawnErr.message ? spawnErr.message : 'Failed to spawn python' });
+            return;
+          }
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+            resolveOuter({ success: false, error: 'Timed out waiting for `python --version` output.' });
+          }, 5000);
+          proc.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+          proc.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+          proc.on('error', (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolveOuter({ success: false, error: err && err.message ? err.message : 'Python process error' });
+          });
+          proc.on('exit', (code) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            // Python 2 writes version to stderr, Python 3 writes to stdout — accept either.
+            const version = ((stdout || stderr).trim().split(/\r?\n/)[0] || '').trim();
+            if (code === 0 && version) {
+              resolveOuter({ success: true, version });
+            } else {
+              resolveOuter({
+                success: false,
+                error: stderr.trim() || stdout.trim() || `python exited with code ${code}`
+              });
+            }
+          });
+        });
+      } catch (e) {
+        return { success: false, error: e.message };
+      }
+    });
+
     ipcMain.handle('genie:start', async (_event, config) => {
       if (genieProcess) return { success: false, error: 'Already running' };
       try {
-        const { sovitsDir, port, gptWeights, vitsWeights } = config;
-        if (!sovitsDir) return { success: false, error: 'GPT-SoVITS directory not configured' };
-        const pythonExe = path.join(sovitsDir, 'runtime', 'python.exe');
+        const { sovitsDir: rawDir, port, gptWeights, vitsWeights, pythonInterpreter: rawPython } = config || {};
+        if (!rawDir) return { success: false, error: 'GPT-SoVITS directory not configured' };
+        const sovitsDir = path.resolve(rawDir);
+
+        // SECURITY: require the user to have picked this exact directory via the native
+        // dialog (genie:pick-sovits-dir) at least once. This blocks a renderer-side
+        // attacker from redirecting spawn to an arbitrary attacker-controlled folder
+        // whose runtime/python.exe has been swapped for malware.
+        if (!authorizedSovitsDirs.has(sovitsDir)) {
+          return {
+            success: false,
+            error: 'This GPT-SoVITS directory has not been authorized. Please click the "Browse" button and pick the install folder via the system dialog.'
+          };
+        }
+        // Re-verify fingerprint at spawn time in case the directory got swapped out
+        // after authorization.
+        if (!isValidSovitsDir(sovitsDir)) {
+          return {
+            success: false,
+            error: IS_WINDOWS
+              ? 'The authorized GPT-SoVITS directory is no longer valid (missing runtime/python.exe, api_v2.py, or GPT_SoVITS/configs/tts_infer.yaml).'
+              : 'The authorized GPT-SoVITS directory is no longer valid (missing api_v2.py or GPT_SoVITS/configs/tts_infer.yaml).'
+          };
+        }
+
+        // Resolve weights paths and require them to live INSIDE the authorized sovitsDir
+        // (i.e. files supplied by the SoVITS install itself or a subfolder the user has
+        // populated there). This stops a renderer from passing paths to files outside the
+        // install, which HTTP /set_*_weights would then load.
+        function resolveInsideSovits(p) {
+          if (!p) return null;
+          // SoVITS accepts both absolute paths and paths relative to its own cwd; resolve
+          // relative to sovitsDir so both shapes end up anchored there.
+          const abs = path.isAbsolute(p) ? path.resolve(p) : path.resolve(sovitsDir, p);
+          if (abs !== sovitsDir && !abs.startsWith(sovitsDir + path.sep)) return null;
+          return abs;
+        }
+        const resolvedGptWeights = gptWeights ? resolveInsideSovits(gptWeights) : null;
+        if (gptWeights && !resolvedGptWeights) {
+          return { success: false, error: 'gptWeights must be a path inside the authorized GPT-SoVITS directory.' };
+        }
+        const resolvedVitsWeights = vitsWeights ? resolveInsideSovits(vitsWeights) : null;
+        if (vitsWeights && !resolvedVitsWeights) {
+          return { success: false, error: 'vitsWeights must be a path inside the authorized GPT-SoVITS directory.' };
+        }
+
         const apiScript = path.join(sovitsDir, 'api_v2.py');
         const configYaml = path.join(sovitsDir, 'GPT_SoVITS', 'configs', 'tts_infer.yaml');
         const serverPort = port || 9880;
 
-        if (!fs.existsSync(pythonExe)) return { success: false, error: 'runtime/python.exe not found in GPT-SoVITS directory' };
-        if (!fs.existsSync(apiScript)) return { success: false, error: 'api_v2.py not found in GPT-SoVITS directory' };
+        if (IS_WINDOWS) {
+          // Windows path: use the bundled runtime/python.exe launched through a temp
+          // .bat wrapper so the user gets a visible console window showing model load
+          // progress (SoVITS prints to stdout and this is the simplest way to keep
+          // the existing UX). Closing the console window is a user-understood "stop".
+          const pythonExe = path.join(sovitsDir, 'runtime', 'python.exe');
+          const batPath = path.join(app.getPath('temp'), 'kumiko-sovits-server.bat');
+          fs.writeFileSync(batPath, [
+            '@echo off',
+            'title GPT-SoVITS Server [Kumiko Amadeus]',
+            `"${pythonExe}" -u "${apiScript}" -a 127.0.0.1 -p ${serverPort} -c "${configYaml}"`,
+          ].join('\r\n'));
 
-        genieProcess = spawn(pythonExe, ['-u', apiScript, '-a', '127.0.0.1', '-p', String(serverPort), '-c', configYaml], {
-          cwd: sovitsDir,
-          windowsHide: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env, PATH: path.join(sovitsDir, 'runtime') + ';' + (process.env.PATH || '') },
-        });
+          genieProcess = spawn('cmd.exe', ['/c', batPath], {
+            cwd: sovitsDir,
+            detached: true,
+            windowsHide: false,
+            stdio: 'ignore',
+            env: { ...process.env, PATH: path.join(sovitsDir, 'runtime') + path.delimiter + (process.env.PATH || '') },
+          });
+        } else if (IS_LINUX) {
+          // Linux BYO Python path: no bundled runtime, no .bat wrapper. Spawn the
+          // user-supplied python interpreter directly. detached:true + a separate
+          // session lets us later kill the whole process group (python plus any
+          // child torch workers) via a negative PID SIGTERM/SIGKILL in terminateGenieProcess.
+          if (!rawPython) {
+            return {
+              success: false,
+              error: 'Python interpreter path not configured. Pick one via Settings → TTS → GPT-SoVITS → Browse (Python).'
+            };
+          }
+          const pythonExe = path.resolve(rawPython);
+          if (!authorizedSovitsPythons.has(pythonExe)) {
+            return {
+              success: false,
+              error: 'Python interpreter has not been authorized. Please re-pick it via the Browse dialog.'
+            };
+          }
+          if (!isValidSovitsPython(pythonExe)) {
+            return { success: false, error: 'Python interpreter is missing or not executable at the configured path.' };
+          }
+
+          genieProcess = spawn(
+            pythonExe,
+            ['-u', apiScript, '-a', '127.0.0.1', '-p', String(serverPort), '-c', configYaml],
+            {
+              cwd: sovitsDir,
+              detached: true,
+              stdio: 'ignore',
+              env: {
+                ...process.env,
+                PATH: [path.join(sovitsDir, 'runtime'), process.env.PATH || ''].filter(Boolean).join(path.delimiter),
+              },
+            }
+          );
+        } else {
+          return { success: false, error: `GPT-SoVITS is not supported on platform "${process.platform}".` };
+        }
+
         genieProcess.on('exit', (code) => {
           genieProcess = null;
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1469,35 +2350,33 @@ function writeRingtoneMetadata(dir, originalName) {
             mainWindow.webContents.send('genie:status-changed', { running: false, error: err.message });
           }
         });
-        for (let i = 0; i < 90; i++) {
+        for (let i = 0; i < 180; i++) {
           await new Promise(r => setTimeout(r, 1000));
           if (!genieProcess) return { success: false, error: 'Process exited during startup' };
           try {
             const res = await fetch(`http://127.0.0.1:${serverPort}/tts`, { method: 'GET', signal: AbortSignal.timeout(2000) });
-            if (res.status === 422 || res.status === 200 || res.status === 405) {
-              // Server is up (422 = missing params on GET, which means it's responding)
-              // Switch models if configured
-              if (gptWeights) {
-                try { await fetch(`http://127.0.0.1:${serverPort}/set_gpt_weights?weights_path=${encodeURIComponent(gptWeights)}`); } catch {}
+            if (res.status) {
+              if (resolvedGptWeights) {
+                try { await fetch(`http://127.0.0.1:${serverPort}/set_gpt_weights?weights_path=${encodeURIComponent(resolvedGptWeights)}`); } catch {}
               }
-              if (vitsWeights) {
-                try { await fetch(`http://127.0.0.1:${serverPort}/set_sovits_weights?weights_path=${encodeURIComponent(vitsWeights)}`); } catch {}
+              if (resolvedVitsWeights) {
+                try { await fetch(`http://127.0.0.1:${serverPort}/set_sovits_weights?weights_path=${encodeURIComponent(resolvedVitsWeights)}`); } catch {}
               }
               return { success: true, pid: genieProcess.pid };
             }
           } catch {}
         }
-        return { success: false, error: 'Server startup timeout (90s)' };
+        if (genieProcess) {
+          return { success: true, pid: genieProcess.pid };
+        }
+        return { success: false, error: 'Server startup timeout' };
       } catch (e) {
         return { success: false, error: e.message };
       }
     });
 
     ipcMain.handle('genie:stop', () => {
-      if (genieProcess) {
-        try { genieProcess.kill(); } catch {}
-        genieProcess = null;
-      }
+      terminateGenieProcess();
       return { success: true };
     });
 
@@ -1514,7 +2393,7 @@ function writeRingtoneMetadata(dir, originalName) {
   app.on('before-quit', (event) => {
     if (isAutoBackupDone || isInstallingUpdate) return;
     try {
-      const autoZipVal = readRegistryValue('AutoZipBackupEnabled');
+      const autoZipVal = readConfigValue('AutoZipBackupEnabled');
       if (autoZipVal !== '1') return;
 
       event.preventDefault();
@@ -1598,9 +2477,6 @@ function writeRingtoneMetadata(dir, originalName) {
 
   app.on('will-quit', () => {
     closeRag();
-    if (genieProcess) {
-      try { genieProcess.kill(); } catch {}
-      genieProcess = null;
-    }
+    terminateGenieProcess();
   });
 }

@@ -6,15 +6,8 @@ type LegacyAIConfig = Partial<AIConfig> & {
 
 type LegacyBackupConfig = Partial<BackupConfig>;
 
-export const CLOUD_SYNC_AVAILABLE = false;
-const DEFAULT_CLOUD_USER_ID = 'default_user';
-
 export const DEFAULT_BACKUP_CONFIG: BackupConfig = {
   localEnabled: true,
-  cloudEnabled: false,
-  endpointUrl: '',
-  userId: DEFAULT_CLOUD_USER_ID,
-  apiKey: '',
   ragEnabled: false
 };
 
@@ -26,6 +19,25 @@ export const DEFAULT_AI_CONFIG: AIConfig = {
   model_summary: 'gemini-2.5-flash',
   model_vision: 'gemini-2.5-flash',
   provider: 'gemini'
+};
+
+export const getDefaultEndpoint = (provider?: AIProvider): string => {
+  switch (provider) {
+    case 'openai': return 'https://api.openai.com/v1/chat/completions';
+    case 'deepseek': return 'https://api.deepseek.com/chat/completions';
+    case 'grok': return 'https://api.x.ai/v1/chat/completions';
+    case 'openrouter': return 'https://openrouter.ai/api/v1/chat/completions';
+    case 'volcengine': return 'https://ark.cn-beijing.volces.com/api/v3/chat/completions';
+    case 'dashscope': return 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+    case 'zhipu': return 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+    case 'moonshot': return 'https://api.moonshot.cn/v1/chat/completions';
+    case 'qianfan': return 'https://qianfan.baidubce.com/v2/chat/completions';
+    case 'hunyuan': return 'https://api.hunyuan.cloud.tencent.com/v1/chat/completions';
+    case 'spark': return 'https://spark-api-open.xf-yun.com/v1/chat/completions';
+    case 'minimax': return 'https://api.minimaxi.com/v1/chat/completions';
+    case 'anthropic': return 'https://api.anthropic.com/v1/messages';
+    default: return '';
+  }
 };
 
 export const getDefaultMainModel = (provider?: AIProvider): string => {
@@ -40,6 +52,22 @@ export const getDefaultMainModel = (provider?: AIProvider): string => {
       return 'grok-2-latest';
     case 'openrouter':
       return 'anthropic/claude-3.7-sonnet';
+    case 'volcengine':
+      return 'ep-xxxx';
+    case 'dashscope':
+      return 'qwen-plus';
+    case 'zhipu':
+      return 'glm-4-plus';
+    case 'moonshot':
+      return 'moonshot-v1-auto';
+    case 'qianfan':
+      return 'ernie-4.0-8k';
+    case 'hunyuan':
+      return 'hunyuan-turbos-latest';
+    case 'spark':
+      return 'spark-x';
+    case 'minimax':
+      return 'MiniMax-M2.7';
     default:
       return DEFAULT_AI_CONFIG.model_main;
   }
@@ -57,6 +85,22 @@ export const getDefaultSummaryModel = (provider?: AIProvider): string => {
       return 'grok-2-latest';
     case 'openrouter':
       return 'anthropic/claude-3.5-haiku';
+    case 'volcengine':
+      return 'ep-xxxx';
+    case 'dashscope':
+      return 'qwen-plus';
+    case 'zhipu':
+      return 'glm-4-flash';
+    case 'moonshot':
+      return 'moonshot-v1-auto';
+    case 'qianfan':
+      return 'ernie-speed-8k';
+    case 'hunyuan':
+      return 'hunyuan-lite';
+    case 'spark':
+      return 'spark-lite';
+    case 'minimax':
+      return 'MiniMax-M2.5';
     default:
       return DEFAULT_AI_CONFIG.model_summary;
   }
@@ -77,8 +121,10 @@ export const getDefaultVisionModel = (provider?: AIProvider): string => {
 
 export const isOpenAICompatibleProvider = (
   provider?: AIProvider
-): provider is 'openai' | 'deepseek' | 'grok' | 'openrouter' => {
-  return provider === 'openai' || provider === 'deepseek' || provider === 'grok' || provider === 'openrouter';
+): provider is 'openai' | 'deepseek' | 'grok' | 'openrouter' | 'volcengine' | 'dashscope' | 'zhipu' | 'moonshot' | 'qianfan' | 'hunyuan' | 'spark' | 'minimax' => {
+  return provider === 'openai' || provider === 'deepseek' || provider === 'grok' || provider === 'openrouter'
+    || provider === 'volcengine' || provider === 'dashscope' || provider === 'zhipu' || provider === 'moonshot'
+    || provider === 'qianfan' || provider === 'hunyuan' || provider === 'spark' || provider === 'minimax';
 };
 
 export const detectEndpointTransport = (
@@ -124,29 +170,14 @@ export const resolveTransportProvider = (
 };
 
 export const normalizeBackupConfig = (rawConfig?: LegacyBackupConfig | null): BackupConfig => {
+  // Cloud-sync-related fields (cloudEnabled, endpointUrl, userId, apiKey) were removed
+  // from BackupConfig when cloud sync was dropped from the product. We intentionally
+  // ignore those keys if present in legacy Dexie data so user imports still work.
   const parsed: LegacyBackupConfig = rawConfig ? { ...rawConfig } : {};
-  const normalized: BackupConfig = {
-    ...DEFAULT_BACKUP_CONFIG,
-    ...parsed
+  return {
+    localEnabled: parsed.localEnabled !== false,
+    ragEnabled: parsed.ragEnabled === true,
   };
-
-  normalized.localEnabled = normalized.localEnabled !== false;
-  normalized.ragEnabled = normalized.ragEnabled === true;
-  normalized.endpointUrl = (normalized.endpointUrl || '').trim();
-  normalized.apiKey = (normalized.apiKey || '').trim();
-  normalized.userId = (normalized.userId || DEFAULT_CLOUD_USER_ID).trim() || DEFAULT_CLOUD_USER_ID;
-
-  if (!CLOUD_SYNC_AVAILABLE || !normalized.endpointUrl) {
-    normalized.cloudEnabled = false;
-  }
-
-  if (!CLOUD_SYNC_AVAILABLE) {
-    normalized.endpointUrl = '';
-    normalized.apiKey = '';
-    normalized.userId = DEFAULT_CLOUD_USER_ID;
-  }
-
-  return normalized;
 };
 
 export const normalizeAIConfig = (rawConfig?: LegacyAIConfig | null): AIConfig => {

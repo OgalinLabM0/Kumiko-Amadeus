@@ -196,16 +196,28 @@ const normalizeLocalRagRebuildSnapshot = (payload: any): LocalRagRebuildSnapshot
   finalStats: payload?.finalStats ? normalizeLocalRagStats(payload.finalStats) : null,
 });
 
-export const initRagModel = async () => {
-  // Model loading is handled by the main process (electron-rag.cjs)
-  // Just check if the model is ready
+/** True only in contexts where the local RAG model pipeline is actually reachable
+ * (i.e. the Electron main process is present). Web/PWA builds have no RAG. */
+export const isLocalRagAvailable = (): boolean => !!getIpcRenderer();
+
+export const initRagModel = async (): Promise<boolean> => {
   const ipc = getIpcRenderer();
   if (ipc) {
+    // Model loading is handled by the main process (electron-rag.cjs); just check status.
+    try {
       const status = await ipc.invoke('rag:status');
       console.log('[LOCAL RAG] Status:', status);
-      return status.modelLoaded;
+      return !!status?.modelLoaded;
+    } catch (e) {
+      console.warn('[LOCAL RAG] rag:status IPC failed:', e);
+      return false;
+    }
   }
-  return true; // fallback: assume ready for API mode
+  // P1 #19: previously this returned `true` outside Electron, which was a
+  // lie — `generateEmbedding` would then immediately throw. Return `false`
+  // so the caller can see that local RAG is unavailable and choose whether
+  // to degrade gracefully. Use `isLocalRagAvailable()` for a pure check.
+  return false;
 };
 
 const mapMainRawMessageToMessage = (raw: any): Message | null => {
@@ -393,21 +405,48 @@ export const getAllVectors = async () => {
 // ==========================================
 // RESTORE VECTORS (from backup/import)
 // ==========================================
-export const restoreVectors = async (vectorsData: any[]) => {
-  try {
-    if (!vectorsData || !Array.isArray(vectorsData)) return;
-    
-    const ipc = getIpcRenderer();
-    if (ipc) {
-      const result = await ipc.invoke('rag:restore', vectorsData);
-      if (result.success) {
-        console.log(`[LOCAL RAG] Restored ${result.count} vectors to SQLite.`);
-        return;
-      }
-      console.warn('[LOCAL RAG] SQLite restore failed, falling back to IndexedDB');
-    }
 
-    // Fallback: IndexedDB
+export interface RestoreVectorsResult {
+  /** True only when every expected vector made it into SQLite (or the IndexedDB fallback). */
+  ok: boolean;
+  /** Number of vectors successfully restored. */
+  restored: number;
+  /** Number of vectors that failed (supplied but not persisted). */
+  failed: number;
+  /** Which storage backend was used ('sqlite' / 'indexeddb' / 'none'). */
+  backend: 'sqlite' | 'indexeddb' | 'none';
+  /** Human-readable error for the caller to surface, when `ok === false`. */
+  error?: string;
+}
+
+// P1 #13: previously this helper returned `void` and swallowed both the SQLite
+// failure path and any IndexedDB bulkAdd exception, so callers saw "Restore
+// succeeded" even when part of the backup silently didn't land. Now we return
+// a structured result so the importer can warn the user (and suggest rebuilding
+// the RAG index) when recovery was partial.
+export const restoreVectors = async (vectorsData: any[]): Promise<RestoreVectorsResult> => {
+  if (!vectorsData || !Array.isArray(vectorsData) || vectorsData.length === 0) {
+    return { ok: true, restored: 0, failed: 0, backend: 'none' };
+  }
+
+  const totalExpected = vectorsData.length;
+  const ipc = getIpcRenderer();
+  if (ipc) {
+    try {
+      const result = await ipc.invoke('rag:restore', vectorsData);
+      if (result?.success) {
+        const restored = typeof result.count === 'number' ? result.count : totalExpected;
+        console.log(`[LOCAL RAG] Restored ${restored} vectors to SQLite.`);
+        return { ok: restored === totalExpected, restored, failed: totalExpected - restored, backend: 'sqlite' };
+      }
+      console.warn('[LOCAL RAG] SQLite restore failed, falling back to IndexedDB:', result?.error);
+    } catch (e) {
+      console.warn('[LOCAL RAG] SQLite restore threw, falling back to IndexedDB:', e);
+    }
+  }
+
+  // Fallback: IndexedDB
+  try {
     const vectorsToRestore = vectorsData.map(v => ({
       id: v.id,
       messageId: v.messageId,
@@ -419,12 +458,14 @@ export const restoreVectors = async (vectorsData: any[]) => {
       score: v.score || 0,
       canonicalKey: v.canonicalKey,
     }));
-    
     await db.vectors.clear();
     await db.vectors.bulkAdd(vectorsToRestore);
     console.log(`Restored ${vectorsToRestore.length} vectors to local RAG memory (IndexedDB).`);
+    return { ok: true, restored: vectorsToRestore.length, failed: 0, backend: 'indexeddb' };
   } catch (e) {
-    console.error("Failed to restore vectors", e);
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('Failed to restore vectors', e);
+    return { ok: false, restored: 0, failed: totalExpected, backend: 'indexeddb', error: message };
   }
 };
 
@@ -811,9 +852,13 @@ export const searchLocalRagMemoryDetailed = async (
       const ipcPayload: Record<string, unknown> = { query, topK: 15, ...temporalFilters, memoryIntent };
       if (keywords && keywords.length > 0) ipcPayload.keywords = keywords;
       const result = await ipc.invoke('rag:search', ipcPayload);
-      if (result.success && result.results.length > 0) {
+      // Defensive: result.results may legitimately be missing/undefined when the
+      // SQLite vector table is empty or during race conditions. Accessing `.length`
+      // on undefined would throw and the outer catch would mask the real "no results"
+      // case as a generic failure, silently dropping all recall results.
+      if (result?.success && Array.isArray(result.results) && result.results.length > 0) {
         rawCandidates = result.results;
-      } else if (!result.success) {
+      } else if (result && !result.success) {
         console.warn('[LOCAL RAG] IPC search failed:', result.error);
       }
     }

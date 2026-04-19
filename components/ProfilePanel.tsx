@@ -1,8 +1,28 @@
 
-import React from 'react';
-import { X, User, Music, Calendar, Heart, Ruler, Activity, Cpu } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { X, User, Music, Calendar, Heart, Ruler, Activity, Cpu, Brain } from 'lucide-react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { Language, EmotionType } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
+import { db } from '../services/db';
+import { getModeName, getModeNameEn, DEFAULT_PSYCHE_STATE, type PsycheMode } from '../services/psycheStateService';
+
+const PsycheBar: React.FC<{ label: string; value: number; isDarkMode: boolean; colorHigh?: boolean }> = ({ label, value, isDarkMode, colorHigh }) => {
+  const pct = Math.max(0, Math.min(100, Math.round(value)));
+  const barColor = colorHigh
+    ? (pct > 65 ? (isDarkMode ? 'bg-red-500/70' : 'bg-red-400') : pct > 40 ? (isDarkMode ? 'bg-yellow-500/70' : 'bg-yellow-500') : (isDarkMode ? 'bg-green-500/60' : 'bg-green-500'))
+    : (isDarkMode ? 'bg-yellow-500/60' : 'bg-yellow-600');
+
+  return (
+    <div className="flex items-center gap-3">
+      <span className={`ka-micro font-bold uppercase w-12 text-right ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{label}</span>
+      <div className={`flex-1 h-2 rounded-full ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200/80'}`}>
+        <div className={`h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className={`ka-micro font-mono w-8 text-right ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{pct}</span>
+    </div>
+  );
+};
 
 interface ProfilePanelProps {
   isOpen: boolean;
@@ -23,11 +43,21 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
     turnCount = 0,
     summaryProgressText = ''
 }) => {
-  if (!isOpen) return null;
-  
   const t = UI_TRANSLATIONS[language];
+  const psycheState = useLiveQuery(() => db.psycheState.get('current'));
+  const psyche = psycheState || DEFAULT_PSYCHE_STATE;
+  const mode = useMemo(() => getModeName(psyche), [psyche]);
+  const modeLabel = language === 'zh' ? `${mode}模式` : getModeNameEn(mode);
+  const timeSinceUpdate = useMemo(() => {
+    const diffMs = Date.now() - psyche.lastUpdated;
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return language === 'zh' ? '刚刚' : 'just now';
+    if (mins < 60) return language === 'zh' ? `${mins}分钟前` : `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    return language === 'zh' ? `${hrs}小时前` : `${hrs}h ago`;
+  }, [psyche.lastUpdated, language]);
 
-  const bgClass = isDarkMode ? 'bg-black/95 border-yellow-900/50' : 'bg-white/95 border-yellow-500/30';
+  const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-white/95 border-yellow-500/30';
   const textClass = isDarkMode ? 'text-yellow-100' : 'text-gray-800';
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]';
   const labelClass = isDarkMode ? 'text-yellow-700' : 'text-yellow-600/80';
@@ -59,8 +89,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.6) 30%, rgba(0,0,0,0) 100%)' }}>
-      <div className={`w-full max-w-md max-h-[90dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden animate-[breathe_0.3s_ease-out] relative ${bgClass}`}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.6) 30%, rgba(0,0,0,0) 100%)', opacity: isOpen ? 1 : 0, pointerEvents: isOpen ? 'auto' : 'none', visibility: isOpen ? 'visible' : 'hidden', transition: isOpen ? 'opacity 300ms ease-out, visibility 0s 0s' : 'opacity 200ms ease-in, visibility 0s 200ms', willChange: 'opacity' }}>
+      <div className={`w-full max-w-md max-h-[90dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden relative ${bgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out' : 'opacity 200ms ease-in, transform 200ms ease-in', willChange: 'transform, opacity', contain: 'layout style paint' }}>
         
         {/* Decorative Scanline */}
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-600 to-transparent opacity-50"></div>
@@ -80,7 +110,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
         </div>
 
         {/* Content - Scrollable */}
-        <div className="flex-1 p-6 flex flex-col gap-3 overflow-y-auto scrollbar-thin">
+        <div data-resize-heavy className="flex-1 p-6 flex flex-col gap-3 overflow-y-auto scrollbar-thin">
           <div className="flex items-end justify-between mb-2">
             <div>
               <h2 className={`font-mincho text-[clamp(1.45rem,1.34rem+0.65vw,1.9rem)] font-bold tracking-[0.02em] ${titleClass}`}>
@@ -95,9 +125,11 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
             </div>
           </div>
 
-          {/* --- MOBILE EXCLUSIVE TELEMETRY MODULE --- */}
-          {/* Synchronized with App.tsx overlay data */}
-          <div className="md:hidden mb-2 pt-2 border-t border-dashed border-gray-500/20 animate-in slide-in-from-bottom-2">
+          {/* --- TELEMETRY MODULE --- */}
+          {/* P1 #34: was previously `md:hidden` (mobile-only), which hid SYS-ID /
+              emotion / turn count / next sync on desktop — contradicting the
+              description in the Omniscient Book guide. Now always visible. */}
+          <div className="mb-2 pt-2 border-t border-dashed border-gray-500/20 animate-in slide-in-from-bottom-2">
               <div className={`flex items-center gap-2 mb-2 ${isDarkMode ? 'text-yellow-500' : 'text-yellow-700'}`}>
                   <Activity size={14} />
                   <h3 className="ka-label">
@@ -127,6 +159,29 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
               </div>
           </div>
           {/* --- END MOBILE MODULE --- */}
+
+          {/* --- PSYCHE STATUS PANEL --- */}
+          <div className={`mb-2 pt-2 border-t border-dashed ${isDarkMode ? 'border-gray-500/20' : 'border-gray-300/40'}`}>
+            <div className={`flex items-center justify-between mb-2`}>
+              <div className={`flex items-center gap-2 ${isDarkMode ? 'text-yellow-500' : 'text-yellow-700'}`}>
+                <Brain size={14} />
+                <h3 className="ka-label">{language === 'zh' ? '心理仪表' : 'PSYCHE STATUS'}</h3>
+              </div>
+              <span className={`ka-micro ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>{timeSinceUpdate}</span>
+            </div>
+            <div className={`p-3 rounded border space-y-2.5 ${isDarkMode ? 'bg-black/40 border-yellow-900/50' : 'bg-white border-yellow-400/50'}`}>
+              <PsycheBar label={language === 'zh' ? '压力' : 'Stress'} value={psyche.stress} isDarkMode={isDarkMode} colorHigh />
+              <PsycheBar label={language === 'zh' ? '精力' : 'Energy'} value={psyche.energy} isDarkMode={isDarkMode} />
+              <PsycheBar label={language === 'zh' ? '松弛' : 'Relaxation'} value={psyche.relaxation} isDarkMode={isDarkMode} />
+              <div className={`flex items-center justify-between pt-1.5 border-t ${isDarkMode ? 'border-yellow-900/30' : 'border-gray-200/60'}`}>
+                <span className={`ka-micro font-bold uppercase ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                  {language === 'zh' ? '当前模式' : 'CURRENT MODE'}
+                </span>
+                <span className={`ka-value font-mono text-sm ${titleClass}`}>{modeLabel}</span>
+              </div>
+            </div>
+          </div>
+          {/* --- END PSYCHE PANEL --- */}
 
           <InfoRow icon={Calendar} label={t.profileBirthday} value={profileData.birthday} />
           <InfoRow icon={Ruler} label={t.profileHeight} value={profileData.height} />

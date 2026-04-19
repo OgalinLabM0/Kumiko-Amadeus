@@ -94,10 +94,13 @@ export const TIMEZONES: BilingualOption[] = [
 export const LOCAL_CONFIG_TRANSLATIONS = {
   zh: {
     apiTitle: 'AI 核心配置',
-    apiDesc: '管理 Gemini API Key 与模型。',
+    apiDesc: '管理 AI 供应商 API Key 与模型。',
     logTitle: '开发者日志',
     logDesc: '查看应用的实时运行日志。',
     clearLog: '清空日志',
+    providerLabel: 'AI 供应商',
+    providerGroup_intl: '── 国际平台 ──',
+    providerGroup_cn: '── 中国平台 ──',
     keyLabel: '主 API KEY (PRIMARY)',
     keyLabel_backup: '备用 API KEY (BACKUP)',
     useCustomEndpoint: '使用自定义接口',
@@ -125,17 +128,17 @@ export const LOCAL_CONFIG_TRANSLATIONS = {
     modelValidationWarning: '一个或多个模型当前可能不可用，建议更换。',
     modelAvailable: '模型可用',
     modelUnavailable: '模型不可用或资源耗尽',
-    saveAndReload: '保存并强制重启 (立即生效)',
-    provider_gemini: 'Google Gemini (默认)',
-    provider_openai: 'OpenAI',
-    provider_anthropic: 'Anthropic Claude'
+    saveAndReload: '保存配置'
   },
   en: {
     apiTitle: 'AI Core Configuration',
-    apiDesc: 'Manage Gemini API Key & models.',
+    apiDesc: 'Manage AI provider API Keys & models.',
     logTitle: 'Developer Log',
     logDesc: 'View real-time application logs.',
     clearLog: 'Clear Log',
+    providerLabel: 'AI PROVIDER',
+    providerGroup_intl: '── International ──',
+    providerGroup_cn: '── China Platforms ──',
     keyLabel: 'PRIMARY API KEY',
     keyLabel_backup: 'BACKUP API KEY',
     useCustomEndpoint: 'Use Custom Endpoint',
@@ -163,9 +166,6 @@ export const LOCAL_CONFIG_TRANSLATIONS = {
     modelValidationWarning: 'One or more models may be unavailable. Consider switching.',
     modelAvailable: 'Model is available',
     modelUnavailable: 'Model is unavailable or exhausted',
-    saveAndReload: 'SAVE & FORCE RESTART',
-    provider_gemini: 'Google Gemini (Default)',
-    provider_openai: 'OpenAI',
-    provider_anthropic: 'Anthropic Claude'
+    saveAndReload: 'SAVE CONFIG'
   }
 };

@@ -1,6 +1,7 @@
 import React from 'react';
 import { ChevronDown, ChevronUp, Clock, Globe, Lock, MapPin, Watch } from 'lucide-react';
 import { LocationConfig, Language } from '../../types';
+import { Collapse } from '../Collapse';
 
 interface BilingualOption {
   value: string;
@@ -74,8 +75,8 @@ export const LocationSection: React.FC<LocationSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      {isOpen && locationConfig && (
-        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 flex flex-col gap-4 overflow-visible">
+      <Collapse isOpen={isOpen && !!locationConfig}>
+        <div className="px-4 pb-4 pt-0 flex flex-col gap-4 overflow-visible">
           <div className={innerCardClass}>
             <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.locationDesc}</p>
             <div className="mb-4">
@@ -145,7 +146,7 @@ export const LocationSection: React.FC<LocationSectionProps> = ({
             <p>{t.timezoneHelp || 'Timezones follow IANA standard.'}</p>
           </div>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

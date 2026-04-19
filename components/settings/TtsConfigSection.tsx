@@ -14,6 +14,7 @@ import {
   getBuiltInRingtoneUrl,
   getAudioMimeTypeForFileName,
 } from '../../services/voiceFileService';
+import { Collapse } from '../Collapse';
 
 const BUILT_IN_RINGTONES = [
   { id: '01.mp3', displayNum: '01', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '115-man Kilo no Film - Kumiko Oumae' },
@@ -71,6 +72,16 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   const [genieStatus, setGenieStatus] = useState<'off' | 'starting' | 'ready' | 'error'>('off');
   const [genieError, setGenieError] = useState<string | null>(null);
   const [geniePid, setGeniePid] = useState<number | null>(null);
+
+  // Host platform detection via preload-exposed property. `hostPlatform` is 'win32'
+  // on Windows, 'linux' on Linux, 'darwin' on macOS, and falls back to 'web' when
+  // the renderer is running outside Electron (e.g. vite dev server in a regular
+  // browser tab). Only used to conditionally surface the Linux "BYO Python" UI.
+  const hostPlatform: string = (window as any)?.electronAPI?.platform ?? 'web';
+  const isLinuxHost = hostPlatform === 'linux';
+
+  const [pythonTestStatus, setPythonTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
+  const [pythonTestMessage, setPythonTestMessage] = useState<string>('');
 
   const update = useCallback((patch: Partial<TtsConfig>) => {
     onTtsConfigChange({ ...ttsConfig, ...patch });
@@ -275,6 +286,10 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
         port: ttsConfig.sovitsPort || 9880,
         gptWeights: ttsConfig.sovitsGptWeights || '',
         vitsWeights: ttsConfig.sovitsVitsWeights || '',
+        // Linux/macOS BYO Python: the main process refuses to start SoVITS until
+        // an authorized interpreter path is supplied. Ignored on Windows, where
+        // the bundled runtime/python.exe is always used.
+        pythonInterpreter: ttsConfig.sovitsPythonPath || '',
       });
       if (result?.success) {
         setGeniePid(result.pid || null);
@@ -289,6 +304,27 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     }
   }, [ttsConfig]);
 
+  // Browse + authorize the GPT-SoVITS directory via the native dialog. Main process
+  // performs fingerprint validation (runtime/python.exe, api_v2.py, tts_infer.yaml) and
+  // persists the approval, so `genie:start` will be allowed to spawn from this path.
+  // Without this step, genie:start now refuses to execute (P0 safety fix).
+  const handlePickSovitsDir = useCallback(async () => {
+    const ipc = (window as any)?.electronAPI;
+    if (!ipc) return;
+    try {
+      const result = await ipc.invoke('genie:pick-sovits-dir');
+      if (result?.canceled) return;
+      if (result?.success && result.path) {
+        update({ sovitsDir: result.path });
+        setGenieError(null);
+      } else {
+        setGenieError(result?.error || (language === 'zh' ? '无法授权该目录' : 'Failed to authorize directory'));
+      }
+    } catch (e: any) {
+      setGenieError(e?.message || 'IPC error');
+    }
+  }, [language, update]);
+
   const handleGenieStop = useCallback(async () => {
     const ipc = (window as any)?.electronAPI;
     if (!ipc) return;
@@ -297,6 +333,58 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     setGeniePid(null);
     setGenieError(null);
   }, []);
+
+  // Linux-only: authorize a user-supplied python interpreter via the native file
+  // dialog. Main process validates the path is a real executable and persists
+  // the approval; we just store the resulting absolute path in ttsConfig.
+  const handlePickSovitsPython = useCallback(async () => {
+    const ipc = (window as any)?.electronAPI;
+    if (!ipc) return;
+    try {
+      const result = await ipc.invoke('genie:pick-sovits-python');
+      if (result?.canceled) return;
+      if (result?.success && result.path) {
+        update({ sovitsPythonPath: result.path });
+        setPythonTestStatus('idle');
+        setPythonTestMessage('');
+        setGenieError(null);
+      } else {
+        setGenieError(result?.error || (language === 'zh' ? '无法授权该 Python 解释器' : 'Failed to authorize Python interpreter'));
+      }
+    } catch (e: any) {
+      setGenieError(e?.message || 'IPC error');
+    }
+  }, [language, update]);
+
+  // Smoke-test the currently configured python interpreter by invoking
+  // `python --version` through the main process. Surfaces the version string on
+  // success and the captured stderr on failure so users can tell whether they
+  // picked the right conda env.
+  const handleTestSovitsPython = useCallback(async () => {
+    const ipc = (window as any)?.electronAPI;
+    if (!ipc) return;
+    const target = ttsConfig.sovitsPythonPath || '';
+    if (!target) {
+      setPythonTestStatus('error');
+      setPythonTestMessage(language === 'zh' ? '请先选择 Python 解释器' : 'Pick a Python interpreter first.');
+      return;
+    }
+    setPythonTestStatus('testing');
+    setPythonTestMessage('');
+    try {
+      const result = await ipc.invoke('genie:test-sovits-python', { pythonPath: target });
+      if (result?.success) {
+        setPythonTestStatus('ok');
+        setPythonTestMessage(result.version || 'Python OK');
+      } else {
+        setPythonTestStatus('error');
+        setPythonTestMessage(result?.error || (language === 'zh' ? '测试失败' : 'Test failed'));
+      }
+    } catch (e: any) {
+      setPythonTestStatus('error');
+      setPythonTestMessage(e?.message || 'IPC error');
+    }
+  }, [language, ttsConfig.sovitsPythonPath]);
 
   const handleTestSovitsVoice = useCallback(async () => {
     if (isTesting || genieStatus !== 'ready') return;
@@ -307,9 +395,10 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       const baseUrl = `http://127.0.0.1:${ttsConfig.sovitsPort || 9880}`;
       const refDir = ttsConfig.sovitsRefAudioDir || '';
       const sep = refDir.includes('/') ? '/' : '\\';
-      const refPath = refDir ? `${refDir}${sep}neutral.wav` : '';
+      const refPath = refDir ? `${refDir}${sep}neutral_casual.wav` : '';
+      const promptText = '万が一ってこともあるし…ごめん奏ちゃん、あとお願いできる?';
       const testText = '全国大会を目指す日々は、決して楽な道のりではありません。しかし、仲間と共に努力する喜びが、私たちを強くしてくれました。';
-      const result = await synthesizeWithSovits(testText, baseUrl, refPath, testText.slice(0, 20), {
+      const result = await synthesizeWithSovits(testText, baseUrl, refPath, promptText, {
         speed: ttsConfig.speed,
         topK: ttsConfig.sovitsTopK,
         topP: ttsConfig.sovitsTopP,
@@ -531,7 +620,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      {isOpen && (
+      <Collapse isOpen={isOpen} duration={180}>
         <div className="px-4 pb-4 flex flex-col gap-4">
           <p className={sectionDescClass}>{t.ttsSectionDesc}</p>
 
@@ -612,14 +701,81 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
               <div>
                 <label className={fieldLabelClass}>{language === 'zh' ? 'GPT-SoVITS 安装目录（必填）' : 'GPT-SoVITS Install Directory (required)'}</label>
-                <input type="text" value={ttsConfig.sovitsDir || ''}
-                  onChange={e => update({ sovitsDir: e.target.value })}
-                  className={`${inputClass} w-full mt-1`}
-                  placeholder={language === 'zh' ? '例：D:\\AI\\GPT-SoVITS\\GPT-SoVITS-v2pro-20250604' : 'e.g. D:\\AI\\GPT-SoVITS-v2pro'} />
+                <div className="flex gap-2 mt-1">
+                  <input type="text" value={ttsConfig.sovitsDir || ''}
+                    onChange={e => update({ sovitsDir: e.target.value })}
+                    className={`${inputClass} flex-1`}
+                    placeholder={isLinuxHost
+                      ? (language === 'zh' ? '例：/home/you/AI/GPT-SoVITS' : 'e.g. /home/you/AI/GPT-SoVITS')
+                      : (language === 'zh' ? '例：D:\\AI\\GPT-SoVITS\\GPT-SoVITS-v2pro-20250604' : 'e.g. D:\\AI\\GPT-SoVITS-v2pro')} />
+                  <button type="button" onClick={handlePickSovitsDir}
+                    className={`px-3 py-2 rounded-lg ka-copy-sm font-semibold transition-colors ${isDarkMode ? 'bg-[#3a2f23] hover:bg-[#4a3f33] text-[#ead8c1]' : 'bg-[#785A42] hover:bg-[#604a35] text-white'}`}>
+                    {language === 'zh' ? '浏览…' : 'Browse…'}
+                  </button>
+                </div>
                 <div className={`${helperClass} mt-0.5`}>
-                  {language === 'zh' ? '需包含 runtime/python.exe 和 api_v2.py' : 'Must contain runtime/python.exe and api_v2.py'}
+                  {isLinuxHost
+                    ? (language === 'zh'
+                        ? '需包含 api_v2.py 和 GPT_SoVITS/configs/tts_infer.yaml。首次使用请点击"浏览"通过系统对话框授权；手动粘贴路径启动会被拒绝。Linux 不使用打包内的 python，请在下方另行指定 Python 解释器。'
+                        : 'Must contain api_v2.py and GPT_SoVITS/configs/tts_infer.yaml. First-time setup requires clicking "Browse" to authorize via the system dialog; a manually pasted path will be refused at startup. On Linux the bundled python runtime is NOT used — configure a Python interpreter below.')
+                    : (language === 'zh'
+                        ? '需包含 runtime/python.exe 和 api_v2.py。首次使用请点击"浏览"通过系统对话框选择并授权；手动粘贴路径启动会被拒绝。'
+                        : 'Must contain runtime/python.exe and api_v2.py. First-time setup requires clicking "Browse" to pick + authorize via the system dialog; a manually pasted path will be refused at startup.')}
                 </div>
               </div>
+
+              {/* Linux-only: Python interpreter picker. On Windows the bundled
+                  runtime/python.exe in the SoVITS install directory is used, so this
+                  field is irrelevant. On Linux/macOS we require the user to supply
+                  their own python (conda env / venv) because we don't ship a SoVITS
+                  Linux runtime — the AppImage stays small and compatibility with
+                  CUDA/torch versions is the user's choice. */}
+              {isLinuxHost && (
+                <div>
+                  <label className={fieldLabelClass}>
+                    {language === 'zh' ? 'Python 解释器路径（Linux 专用，必填）' : 'Python Interpreter Path (Linux only, required)'}
+                  </label>
+                  <div className="flex gap-2 mt-1">
+                    <input type="text" value={ttsConfig.sovitsPythonPath || ''}
+                      onChange={e => update({ sovitsPythonPath: e.target.value })}
+                      className={`${inputClass} flex-1`}
+                      placeholder={language === 'zh' ? '例：/home/you/miniconda3/envs/GPTSoVits/bin/python' : 'e.g. /home/you/miniconda3/envs/GPTSoVits/bin/python'} />
+                    <button type="button" onClick={handlePickSovitsPython}
+                      className={`px-3 py-2 rounded-lg ka-copy-sm font-semibold transition-colors ${isDarkMode ? 'bg-[#3a2f23] hover:bg-[#4a3f33] text-[#ead8c1]' : 'bg-[#785A42] hover:bg-[#604a35] text-white'}`}>
+                      {language === 'zh' ? '浏览…' : 'Browse…'}
+                    </button>
+                    <button type="button" onClick={handleTestSovitsPython}
+                      disabled={pythonTestStatus === 'testing' || !ttsConfig.sovitsPythonPath}
+                      className={`px-3 py-2 rounded-lg ka-copy-sm font-semibold transition-colors flex items-center gap-1.5 ${
+                        pythonTestStatus === 'testing' || !ttsConfig.sovitsPythonPath
+                          ? (isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed')
+                          : (isDarkMode ? 'bg-[#2a3a2b] hover:bg-[#344a35] text-[#c7e6c9] border border-[#4c6a4e]' : 'bg-[#eaf5eb] hover:bg-[#d9ecda] text-[#3e6a42] border border-[#b8d4bb]')
+                      }`}>
+                      {pythonTestStatus === 'testing'
+                        ? <Loader2 size={14} className="animate-spin" />
+                        : <TestTube size={14} />}
+                      {pythonTestStatus === 'testing'
+                        ? (language === 'zh' ? '测试中…' : 'Testing…')
+                        : (language === 'zh' ? '测试连通性' : 'Test')}
+                    </button>
+                  </div>
+                  <div className={`${helperClass} mt-0.5`}>
+                    {language === 'zh'
+                      ? '自备 Python 环境：建议 conda/venv 且已安装 GPT-SoVITS 的依赖（torch、transformers 等）。点击"浏览"通过系统对话框授权——未授权的路径会被启动流程拒绝。'
+                      : 'Bring your own Python: a conda env or venv with GPT-SoVITS dependencies (torch, transformers, etc). Click "Browse" to authorize via the system dialog — unauthorized paths are refused at startup.'}
+                  </div>
+                  {pythonTestStatus === 'ok' && pythonTestMessage && (
+                    <div className={`ka-micro mt-1 rounded px-2 py-1.5 ${isDarkMode ? 'text-[#b4e6b7] bg-[#1b2a1c]' : 'text-[#3e6a42] bg-[#eaf5eb]'}`}>
+                      {language === 'zh' ? `Python 可用 · ${pythonTestMessage}` : `Python OK · ${pythonTestMessage}`}
+                    </div>
+                  )}
+                  {pythonTestStatus === 'error' && pythonTestMessage && (
+                    <div className="ka-micro mt-1 text-red-400 bg-red-500/10 rounded px-2 py-1.5">
+                      {language === 'zh' ? `测试失败：${pythonTestMessage}` : `Test failed: ${pythonTestMessage}`}
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div>
                 <label className={fieldLabelClass}>{language === 'zh' ? '端口（默认即可）' : 'Port (default OK)'}</label>
@@ -655,23 +811,30 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                   placeholder={language === 'zh' ? '例：D:\\Models\\kumiko\\reference' : 'e.g. D:\\Models\\kumiko\\reference'} />
                 <div className={`${helperClass} mt-0.5`}>
                   {language === 'zh'
-                    ? '需包含情绪 WAV：neutral.wav, happy.wav, gentle.wav, resigned.wav, serious.wav, sad.wav, angry.wav, shy.wav, sleepy.wav, surprised.wav'
-                    : 'Must contain: neutral.wav, happy.wav, gentle.wav, resigned.wav, serious.wav, sad.wav, angry.wav, shy.wav, sleepy.wav, surprised.wav'}
+                    ? '需包含 25 个情绪变体 WAV 文件（由 GPT-SoVITS 模型包或单独的参考音频包提供）'
+                    : 'Must contain 25 emotion variant WAV files (from GPT-SoVITS model pack or separate ref audio pack)'}
                 </div>
               </div>
 
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 {genieStatus === 'off' || genieStatus === 'error' ? (
-                  <button onClick={handleGenieStart}
-                    disabled={!ttsConfig.sovitsDir}
-                    className={`flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
-                      ttsConfig.sovitsDir
-                        ? 'bg-green-600 hover:bg-green-700 text-white'
-                        : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                    }`}>
-                    <Power size={14} />
-                    {language === 'zh' ? '启动 GPT-SoVITS 服务器' : 'Start GPT-SoVITS Server'}
-                  </button>
+                  (() => {
+                    // On Linux we additionally require an authorized python interpreter;
+                    // on Windows the bundled runtime/python.exe inside sovitsDir is used.
+                    const canStart = !!ttsConfig.sovitsDir && (!isLinuxHost || !!ttsConfig.sovitsPythonPath);
+                    return (
+                      <button onClick={handleGenieStart}
+                        disabled={!canStart}
+                        className={`flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
+                          canStart
+                            ? 'bg-green-600 hover:bg-green-700 text-white'
+                            : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                        }`}>
+                        <Power size={14} />
+                        {language === 'zh' ? '启动 GPT-SoVITS 服务器' : 'Start GPT-SoVITS Server'}
+                      </button>
+                    );
+                  })()
                 ) : genieStatus === 'starting' ? (
                   <button disabled className="flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold bg-yellow-600/50 text-yellow-200 cursor-wait">
                     <Loader2 size={14} className="animate-spin" />
@@ -684,17 +847,69 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                     {language === 'zh' ? '停止服务器' : 'Stop Server'}
                   </button>
                 )}
-                <button onClick={handleTestSovitsVoice}
-                  disabled={isTesting || genieStatus !== 'ready' || !ttsConfig.sovitsRefAudioDir}
-                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
-                    isTesting ? 'opacity-50 cursor-wait' : ''
-                  } ${genieStatus === 'ready' && ttsConfig.sovitsRefAudioDir
-                      ? (isDarkMode ? 'bg-[#3a2f1e] hover:bg-[#4a3c28] text-[#d4a852] border border-[#5a4630]' : 'bg-white hover:bg-[#faf5ee] text-[#6f5438] border border-[#e6ddcf]')
-                      : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                  }`}>
-                  {isTesting ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
-                  {isTesting ? (language === 'zh' ? '合成中...' : 'Synthesizing...') : (language === 'zh' ? '测试语音' : 'Test Voice')}
-                </button>
+                {testStatus === 'playing' ? (
+                  <button onClick={stopTestVoicePlayback}
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
+                      isDarkMode ? 'bg-sky-600 hover:bg-sky-700 text-white' : 'bg-sky-500 hover:bg-sky-600 text-white'
+                    }`}>
+                    <Square size={14} />
+                    {language === 'zh' ? '停止播放' : 'Stop'}
+                  </button>
+                ) : (
+                  <button onClick={handleTestSovitsVoice}
+                    disabled={isTesting || genieStatus !== 'ready' || !ttsConfig.sovitsRefAudioDir}
+                    className={`flex items-center gap-2 px-4 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
+                      isTesting ? 'opacity-50 cursor-wait' : ''
+                    } ${genieStatus === 'ready' && ttsConfig.sovitsRefAudioDir
+                        ? (isDarkMode ? 'bg-[#3a2f1e] hover:bg-[#4a3c28] text-[#d4a852] border border-[#5a4630]' : 'bg-white hover:bg-[#faf5ee] text-[#6f5438] border border-[#e6ddcf]')
+                        : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                    }`}>
+                    {isTesting ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
+                    {isTesting ? (language === 'zh' ? '合成中...' : 'Synthesizing...') : (language === 'zh' ? '测试语音' : 'Test Voice')}
+                  </button>
+                )}
+              </div>
+
+              {testStatus === 'playing' && (
+                <div className={`p-3 rounded-lg border animate-in fade-in ${isDarkMode ? 'bg-[#2a2116] border-[#7e6338]/40' : 'bg-[#fff8eb] border-[#ecd4a9]'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="flex items-center gap-0.5">
+                      {Array.from({ length: 4 }).map((_, i) => (
+                        <div key={i} className="w-0.5 bg-purple-400 rounded-full animate-pulse"
+                          style={{ height: `${8 + Math.random() * 10}px`, animationDelay: `${i * 0.15}s` }} />
+                      ))}
+                    </div>
+                    <span className={`ka-micro font-semibold ${isDarkMode ? 'text-[#e5c98f]' : 'text-[#a06b22]'}`}>
+                      {language === 'zh' ? '正在播放测试语音...' : 'Playing test voice...'}
+                    </span>
+                    <button onClick={stopTestVoicePlayback} className="ml-auto p-1 rounded hover:bg-amber-500/20">
+                      <Square size={10} className="text-amber-500" />
+                    </button>
+                  </div>
+                  <div className={`ka-copy-sm leading-relaxed ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <div className="ka-copy-sm">「全国大会を目指す日々は、決して楽な道のりではありません。しかし、仲間と共に努力する喜びが、私たちを強くしてくれました。」</div>
+                    <div className={`mt-1 ${helperClass}`}>
+                      {language === 'zh'
+                        ? '(以全国大赛为目标的每一天，绝不是一段轻松的路程。但是，与伙伴们共同努力的喜悦，让我们变得更加坚强。)'
+                        : '(The days spent aiming for the national competition were never an easy road. But the joy of working hard alongside our friends made us stronger.)'}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {testStatus === 'error' && (
+                <div className="ka-micro text-red-400 bg-red-500/10 rounded px-2 py-1.5">
+                  {language === 'zh' ? 'GPT-SoVITS 测试失败，请检查服务器状态和参考音频路径。' : 'GPT-SoVITS test failed. Check server status and reference audio path.'}
+                </div>
+              )}
+
+              <div className={`${helperClass} leading-relaxed`}>
+                {isLinuxHost
+                  ? (language === 'zh'
+                      ? '启动后不会弹出独立控制台窗口（SoVITS 作为后台进程运行）。点击"停止服务器"可结束进程组。'
+                      : 'No separate console window appears on Linux — SoVITS runs as a background process. Use "Stop Server" to terminate the process group.')
+                  : (language === 'zh'
+                      ? '启动后将弹出命令行窗口，可查看加载进度。关闭窗口即停止服务器。'
+                      : 'A console window will appear showing loading progress. Closing it stops the server.')}
               </div>
 
               {genieError && (
@@ -832,6 +1047,56 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               </select>
             </div>
           </div>
+
+          {testStatus === 'playing' ? (
+            <button onClick={stopTestVoicePlayback}
+              className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
+                isDarkMode ? 'bg-sky-600 hover:bg-sky-700 text-white' : 'bg-sky-500 hover:bg-sky-600 text-white'
+              }`}>
+              <Square size={14} />
+              {language === 'zh' ? '停止播放' : 'Stop'}
+            </button>
+          ) : (
+            <button onClick={handleTestVoice} disabled={isTesting || !ttsConfig.fishAudioApiKey}
+              className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
+                isTesting ? 'opacity-50 cursor-wait' : ''
+              } ${ttsConfig.fishAudioApiKey
+                  ? 'bg-[#c79a2f] hover:bg-[#b6881f] text-white'
+                  : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+              }`}>
+              {isTesting ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
+              {isTesting ? t.ttsTestPlaying : t.ttsTestButton}
+            </button>
+          )}
+          {testStatus === 'playing' && (
+            <div className={`p-3 rounded-lg border animate-in fade-in ${isDarkMode ? 'bg-[#2a2116] border-[#7e6338]/40' : 'bg-[#fff8eb] border-[#ecd4a9]'}`}>
+              <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-0.5">
+                  {Array.from({ length: 4 }).map((_, i) => (
+                    <div key={i} className="w-0.5 bg-purple-400 rounded-full animate-pulse"
+                      style={{ height: `${8 + Math.random() * 10}px`, animationDelay: `${i * 0.15}s` }} />
+                  ))}
+                </div>
+                <span className={`ka-micro font-semibold ${isDarkMode ? 'text-[#e5c98f]' : 'text-[#a06b22]'}`}>
+                  {language === 'zh' ? '正在播放测试语音...' : 'Playing test voice...'}
+                </span>
+                <button onClick={stopTestVoicePlayback} className="ml-auto p-1 rounded hover:bg-amber-500/20">
+                  <Square size={10} className="text-amber-500" />
+                </button>
+              </div>
+              <div className={`ka-copy-sm leading-relaxed ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                <div className="ka-copy-sm">「全国大会を目指す日々は、決して楽な道のりではありません。しかし、仲間と共に努力する喜びが、私たちを強くしてくれました。」</div>
+                <div className={`mt-1 ${helperClass}`}>
+                  {language === 'zh'
+                    ? '(以全国大赛为目标的每一天，绝不是一段轻松的路程。但是，与伙伴们共同努力的喜悦，让我们变得更加坚强。)'
+                    : '(The days spent aiming for the national competition were never an easy road. But the joy of working hard alongside our friends made us stronger.)'}
+                </div>
+              </div>
+            </div>
+          )}
+          {testStatus === 'error' && (
+            <div className="ka-micro text-red-400">{language === 'zh' ? 'TTS 测试失败，请检查 API Key 和角色 ID。' : 'TTS test failed. Check API Key and Reference ID.'}</div>
+          )}
 
             </>
           )}
@@ -982,51 +1247,8 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             </div>
           </div>
 
-          {(ttsConfig.ttsBackend || 'fish') !== 'sovits' && (
-          <button onClick={handleTestVoice} disabled={isTesting || !ttsConfig.fishAudioApiKey}
-            className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
-              isTesting ? 'opacity-50 cursor-wait' : ''
-            } ${ttsConfig.fishAudioApiKey
-                ? 'bg-[#c79a2f] hover:bg-[#b6881f] text-white'
-                : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
-            }`}>
-            {isTesting ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
-            {isTesting ? t.ttsTestPlaying : t.ttsTestButton}
-          </button>
-          )}
-          {testStatus === 'playing' && (
-            <div className={`p-3 rounded-lg border animate-in fade-in ${isDarkMode ? 'bg-[#2a2116] border-[#7e6338]/40' : 'bg-[#fff8eb] border-[#ecd4a9]'}`}>
-              <div className="flex items-center gap-2 mb-2">
-                <div className="flex items-center gap-0.5">
-                  {Array.from({ length: 4 }).map((_, i) => (
-                    <div key={i} className="w-0.5 bg-purple-400 rounded-full animate-pulse"
-                      style={{ height: `${8 + Math.random() * 10}px`, animationDelay: `${i * 0.15}s` }} />
-                  ))}
-                </div>
-                <span className={`ka-micro font-semibold ${isDarkMode ? 'text-[#e5c98f]' : 'text-[#a06b22]'}`}>
-                  {language === 'zh' ? '正在播放测试语音...' : 'Playing test voice...'}
-                </span>
-                <button onClick={() => {
-                  stopTestVoicePlayback();
-                }} className="ml-auto p-1 rounded hover:bg-amber-500/20">
-                  <Square size={10} className="text-amber-500" />
-                </button>
-              </div>
-              <div className={`ka-copy-sm leading-relaxed ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                <div className="ka-copy-sm">「全国大会を目指す日々は、決して楽な道のりではありません。しかし、仲間と共に努力する喜びが、私たちを強くしてくれました。」</div>
-                <div className={`mt-1 ${helperClass}`}>
-                  {language === 'zh'
-                    ? '(以全国大赛为目标的每一天，绝不是一段轻松的路程。但是，与伙伴们共同努力的喜悦，让我们变得更加坚强。)'
-                    : '(The days spent aiming for the national competition were never an easy road. But the joy of working hard alongside our friends made us stronger.)'}
-                </div>
-              </div>
-            </div>
-          )}
-          {testStatus === 'error' && (
-            <div className="ka-micro text-red-400">{language === 'zh' ? 'TTS 测试失败，请检查 API Key 和角色 ID。' : 'TTS test failed. Check API Key and Reference ID.'}</div>
-          )}
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

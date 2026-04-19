@@ -1,5 +1,6 @@
 import React from 'react';
 import { ChevronDown, ChevronUp, Edit2, Key, UserCircle } from 'lucide-react';
+import { Collapse } from '../Collapse';
 
 interface AccountSectionProps {
   isOpen: boolean;
@@ -67,8 +68,8 @@ export const AccountSection: React.FC<AccountSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      {isOpen && (
-        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 flex flex-col gap-4">
+      <Collapse isOpen={isOpen}>
+        <div className="px-4 pb-4 pt-0 flex flex-col gap-4">
           <div className={innerCardClass}>
             <p className={`ka-section-desc mb-3 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{desc}</p>
             <h4 className={`ka-label mb-3 flex items-center gap-2 ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
@@ -96,7 +97,7 @@ export const AccountSection: React.FC<AccountSectionProps> = ({
             </div>
           </div>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

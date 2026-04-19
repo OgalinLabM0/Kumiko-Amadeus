@@ -1,8 +1,9 @@
 import React from 'react';
-import { Check, Eye, Globe } from 'lucide-react';
+import { Check, Eye, Globe, ChevronDown, ChevronUp } from 'lucide-react';
 import { AIConfig, Language } from '../../types';
 import { getDefaultVisionModel } from '../../services/appConfig';
 import { ModelCard } from './ModelCard';
+import { Collapse } from '../Collapse';
 
 interface VisionValidationResult {
   vision: boolean | null;
@@ -38,20 +39,25 @@ export const VisionHelperSection: React.FC<VisionHelperSectionProps> = ({
   return (
     <div className={innerCardClass}>
       <button onClick={onToggle} className="w-full flex items-center justify-between mb-2">
-        <h4 className={`ka-label flex items-center gap-2 ${isDarkMode ? 'text-teal-400' : 'text-teal-600'}`}>
-          <Eye size={12} /> {language === 'zh' ? '视觉辅助模型 (VISION HELPER)' : 'VISION HELPER'}
+        <h4 className={`ka-label font-bold flex items-center gap-2 ${isDarkMode ? 'text-teal-300' : 'text-teal-700'}`}>
+          <Eye size={13} /> {language === 'zh' ? '视觉辅助模型 (VISION HELPER)' : 'VISION HELPER'}
         </h4>
-        <span className="ka-micro opacity-50">{isOpen ? '▼' : '▲'}</span>
+        {isOpen ? <ChevronUp size={14} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} /> : <ChevronDown size={14} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} />}
       </button>
+      {!isOpen && (
+        <p className={`ka-micro mb-1 leading-relaxed ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+          {language === 'zh' ? '当主模型无视觉能力时，用于解析图片并转述给主模型。' : 'Used to parse images and describe them to the main model if it lacks vision capabilities.'}
+        </p>
+      )}
 
-      {isOpen && (
-        <div className="animate-in slide-in-from-top-2">
+      <Collapse isOpen={isOpen} duration={180}>
+        <div>
           <div className="flex items-center justify-end mb-2">
             <div className="flex items-center gap-1.5 cursor-pointer" onClick={() => onUpdateAiConfig('useVisionHelper', !localAiConfig.useVisionHelper)}>
               <div className={`w-3 h-3 border rounded-sm flex items-center justify-center transition-colors ${localAiConfig.useVisionHelper ? 'bg-teal-500 border-teal-500' : (isDarkMode ? 'border-gray-500' : 'border-gray-400')}`}>
                 {localAiConfig.useVisionHelper && <Check size={10} className="text-white" />}
               </div>
-              <span className="ka-micro font-mono">{language === 'zh' ? '启用视觉辅助' : 'Enable Vision Helper'}</span>
+              <span className={`ka-micro font-mono ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}>{language === 'zh' ? '启用视觉辅助' : 'Enable Vision Helper'}</span>
             </div>
           </div>
 
@@ -136,7 +142,7 @@ export const VisionHelperSection: React.FC<VisionHelperSectionProps> = ({
             </div>
           )}
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

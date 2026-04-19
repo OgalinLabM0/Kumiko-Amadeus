@@ -24,50 +24,12 @@ function statusToErrorKind(status: number): TtsErrorKind {
     return 'unknown';
 }
 
-async function callFishAudioTts(
-    text: string,
-    config: TtsConfig,
-): Promise<ArrayBuffer> {
-    const url = 'https://api.fish.audio/v1/tts';
-
-    const body: Record<string, unknown> = {
-        text,
-        reference_id: config.fishAudioReferenceId || undefined,
-        format: config.format || 'mp3',
-        latency: config.latency || 'normal',
-        normalize: true,
-        temperature: config.temperature ?? 0.6,
-        prosody: {
-            normalize_loudness: true,
-        },
-    };
-
-    if (config.speed !== undefined && config.speed !== 1.0) {
-        body.prosody = { ...body.prosody as any, speed: config.speed };
-    }
-
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${config.fishAudioApiKey}`,
-            'Content-Type': 'application/json',
-            'model': config.fishAudioModel || 's2-pro',
-        },
-        body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-        let detail = '';
-        try { detail = await res.text(); } catch { /* ignore */ }
-        throw new TtsError(
-            statusToErrorKind(res.status),
-            `Fish Audio TTS failed (${res.status}): ${detail}`,
-            res.status,
-        );
-    }
-
-    return res.arrayBuffer();
-}
+// P1 #33: `callFishAudioTts` was the original non-streaming Fish Audio TTS call;
+// it has been fully superseded by `synthesizeSpeechStreaming` (below) which handles
+// the same request-body + status-code concerns and additionally streams chunks to
+// the caller. Note: Fish Audio is still in active use — `synthesizeSpeech` /
+// `synthesizeSpeechStreaming` remain exported and drive the Fish Audio TTS backend.
+// Only the dead private helper is removed here.
 
 function estimateDurationFromSize(byteLength: number, format: string, bitrate = 128): number {
     if (format === 'opus') bitrate = 32;

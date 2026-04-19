@@ -5,23 +5,22 @@ import {
   Check,
   ChevronDown,
   ChevronUp,
-  Cloud,
   Download,
   FileJson,
   FilePlus,
   FileSearch,
   HardDrive,
-  Link as LinkIcon,
-  Lock,
-  RefreshCw,
   RotateCcw,
   Server,
   Upload,
-  UserCircle
 } from 'lucide-react';
 import { BackupConfig } from '../../types';
+import { Collapse } from '../Collapse';
 import { SettingsToggle } from './SettingsToggle';
 
+// Cloud-sync-related translation keys (cloudPush / cloudRestore / bucketConnected /
+// backendService etc.) have been removed from this interface along with the cloud-sync
+// feature (P0 #6). If any survive in the locale file, they're ignored.
 interface BackupSectionTranslations {
   backupTitle: string;
   backupDesc: string;
@@ -37,21 +36,7 @@ interface BackupSectionTranslations {
   manualSave: string;
   manualLoad: string;
   fsSyncDesc: string;
-  backendService: string;
-  backendDesc: string;
-  backendUrl: string;
-  userId: string;
-  connectingBucket: string;
-  connectBucket: string;
-  bucketConnected: string;
-  autoSavePaused: string;
   disconnect: string;
-  overwriteCloud: string;
-  cloudPush: string;
-  restoreCloud: string;
-  cloudRestore: string;
-  cloudFeatureDisabledTitle: string;
-  cloudFeatureDisabled: string;
   manualBackup: string;
   export: string;
   import: string;
@@ -67,27 +52,16 @@ interface BackupSectionProps {
   isDarkMode: boolean;
   t: BackupSectionTranslations;
   sectionBorder: string;
-  cloudSyncAvailable: boolean;
   backupConfig: BackupConfig;
   connectedFileName: string | null;
   lastBackupTime: number | null;
   isInIframe: boolean;
-  isConnected: boolean;
-  isConnecting: boolean;
-  connectionError: string | null;
-  isCloudSynced: boolean;
   formatLastBackup: (timestamp: number) => string;
   onToggleLocalBackup: () => void;
-  onToggleCloudBackup: () => void;
   onSelectLocalFile: () => void;
   onOpenLocalFile?: () => void;
   onManualLocalSave?: () => void;
   onManualLocalLoad?: () => void;
-  onUpdateCloudConfig: (key: keyof BackupConfig, value: string) => void;
-  onTestConnection: () => void;
-  onDisconnect: () => void;
-  onCloudPush: () => void;
-  onCloudRestore: () => void;
   onExportBackup?: () => void;
   onOpenImportDialog: () => void;
   autoZipEnabled: boolean;
@@ -101,32 +75,21 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
   isDarkMode,
   t,
   sectionBorder,
-  cloudSyncAvailable,
   backupConfig,
   connectedFileName,
   lastBackupTime,
   isInIframe,
-  isConnected,
-  isConnecting,
-  connectionError,
-  isCloudSynced,
   formatLastBackup,
   onToggleLocalBackup,
-  onToggleCloudBackup,
   onSelectLocalFile,
   onOpenLocalFile,
   onManualLocalSave,
   onManualLocalLoad,
-  onUpdateCloudConfig,
-  onTestConnection,
-  onDisconnect,
-  onCloudPush,
-  onCloudRestore,
   onExportBackup,
   onOpenImportDialog,
   autoZipEnabled,
   onToggleAutoZip,
-  onDisconnectLocalFile
+  onDisconnectLocalFile,
 }) => {
   return (
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
@@ -143,8 +106,8 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      {isOpen && (
-        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 overflow-visible">
+      <Collapse isOpen={isOpen}>
+        <div className="px-4 pb-4 pt-0 overflow-visible">
           <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#cdbca9]' : 'text-[#7c6245]'}`}>{t.backupDesc}</p>
 
           <div className="flex flex-col py-2 border-t border-gray-500/10">
@@ -291,7 +254,7 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
             </div>
           </div>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

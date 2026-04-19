@@ -28,6 +28,8 @@ interface AppMessageListProps {
   onImageClick: (src: string) => void;
   onRegenerateVoice?: (message: Message) => void;
   regeneratingVoiceIds?: Set<string>;
+  onResend?: (id: string) => void;
+  onWithdraw?: (id: string) => void;
 }
 
 interface VirtualizedMessageRowProps {
@@ -91,11 +93,16 @@ const VirtualizedMessageRow: React.FC<VirtualizedMessageRowProps> = ({
 
     if (typeof ResizeObserver !== 'function') return;
 
+    let rafId = 0;
     const observer = new ResizeObserver(() => {
-      reportHeight();
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        if (document.documentElement.hasAttribute('data-resizing')) return;
+        reportHeight();
+      });
     });
     observer.observe(element);
-    return () => observer.disconnect();
+    return () => { cancelAnimationFrame(rafId); observer.disconnect(); };
   }, [index, message.id, onMeasured]);
 
   return (
@@ -134,7 +141,9 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
   onReply,
   onImageClick,
   onRegenerateVoice,
-  regeneratingVoiceIds
+  regeneratingVoiceIds,
+  onResend,
+  onWithdraw
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sizeCacheRef = useRef<Map<string, number>>(new Map());
@@ -195,9 +204,16 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
     syncViewport();
 
     if (typeof ResizeObserver === 'function') {
-      const observer = new ResizeObserver(() => syncViewport());
+      let rafId = 0;
+      const observer = new ResizeObserver(() => {
+        cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(() => {
+          if (document.documentElement.hasAttribute('data-resizing')) return;
+          syncViewport();
+        });
+      });
       observer.observe(container);
-      return () => observer.disconnect();
+      return () => { cancelAnimationFrame(rafId); observer.disconnect(); };
     }
   }, []);
 
@@ -263,6 +279,7 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
   return (
     <div
       ref={containerRef}
+      data-resize-heavy
       className="flex-1 overflow-y-auto p-4 md:p-6 no-scrollbar touch-scroll"
       onClick={onBackgroundClick}
       onScroll={handleScroll}
@@ -292,21 +309,18 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
                 onImageClick={onImageClick}
                 onRegenerateVoice={onRegenerateVoice}
                 isRegeneratingVoice={regeneratingVoiceIds?.has(message.id)}
+                onResend={onResend}
+                onWithdraw={onWithdraw}
               />
             </VirtualizedMessageRow>
           );
         })}
       </div>
-      <div className="flex flex-col gap-2 ml-2 mt-2">
+      <div className="flex flex-col gap-2 items-end mr-3 mt-2">
         {isListening && (
           <div className={`flex items-center gap-2 text-xs font-mono animate-pulse ${isDarkMode ? 'text-yellow-600/70' : 'text-yellow-700'}`}>
             <Loader2 size={12} className="animate-spin" />
-            <span>{listeningLabel} {timeLeft}s)...</span>
-          </div>
-        )}
-        {isThinking && (
-          <div className={`flex items-center gap-2 text-sm font-mono ${isDarkMode ? 'text-yellow-600/50' : 'text-yellow-700/50'}`}>
-            <span className="animate-pulse">{typingLabel}</span>
+            <span>{listeningLabel} {timeLeft}s...</span>
           </div>
         )}
         <div ref={messagesEndRef} />

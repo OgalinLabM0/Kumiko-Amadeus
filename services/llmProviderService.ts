@@ -75,6 +75,22 @@ export const callOpenAI = async (
         defaultEndpoint = 'https://api.x.ai/v1/chat/completions';
     } else if (config.provider === 'openrouter') {
         defaultEndpoint = 'https://openrouter.ai/api/v1/chat/completions';
+    } else if (config.provider === 'volcengine') {
+        defaultEndpoint = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions';
+    } else if (config.provider === 'dashscope') {
+        defaultEndpoint = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+    } else if (config.provider === 'zhipu') {
+        defaultEndpoint = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+    } else if (config.provider === 'moonshot') {
+        defaultEndpoint = 'https://api.moonshot.cn/v1/chat/completions';
+    } else if (config.provider === 'qianfan') {
+        defaultEndpoint = 'https://qianfan.baidubce.com/v2/chat/completions';
+    } else if (config.provider === 'hunyuan') {
+        defaultEndpoint = 'https://api.hunyuan.cloud.tencent.com/v1/chat/completions';
+    } else if (config.provider === 'spark') {
+        defaultEndpoint = 'https://spark-api-open.xf-yun.com/v1/chat/completions';
+    } else if (config.provider === 'minimax') {
+        defaultEndpoint = 'https://api.minimaxi.com/v1/chat/completions';
     }
 
     // 清理 Base URL，去掉末尾的斜杠

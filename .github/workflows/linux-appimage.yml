@@ -1,0 +1,113 @@
+# Build Linux AppImage for Kumiko-Amadeus on GitHub-hosted runners.
+# Trigger: GitHub -> Actions -> "Linux AppImage build" -> Run workflow
+# - publish=false (default): produces AppImage + latest-linux*.yml as workflow artifact only
+# - publish=true           : additionally attaches artifacts to the GitHub Release
+#                            that matches package.json version (requires GH_TOKEN secret).
+name: Linux AppImage build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish AppImage + latest-linux*.yml to GitHub Release (requires GH_TOKEN secret)"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  # Required when electron-builder --publish always uploads to the GitHub Release
+  # using the built-in GITHUB_TOKEN fallback. Harmless when publish=false.
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Linux build toolchain
+        # build-essential + python3 are needed to compile hnswlib-node via node-gyp.
+        # libfuse2 is only required to *run* an AppImage, not to build it.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            python3
+
+      - name: Cache bge-m3 ONNX model
+        uses: actions/cache@v4
+        with:
+          path: models/bge-m3-onnx/model_int8.onnx
+          key: bge-m3-model-int8-v1
+
+      - name: Fetch bge-m3 ONNX model
+        run: node scripts/fetch-bge-model.cjs
+
+      - name: Cache electron & electron-builder downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/.cache/electron-builder
+          key: electron-builder-linux-${{ matrix.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-builder-linux-${{ matrix.arch }}-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build web bundle
+        run: npm run build:cap
+
+      - name: Clean release directory (prebuild)
+        run: node scripts/clean-release.cjs prebuild
+
+      - name: Build AppImage (no publish)
+        if: inputs.publish != true
+        run: npx electron-builder --linux AppImage --${{ matrix.arch }} --publish never
+
+      - name: Build AppImage (publish to release)
+        if: inputs.publish == true
+        env:
+          # Prefer a user-provided PAT in GH_TOKEN; fall back to the built-in
+          # GITHUB_TOKEN for same-repo releases. electron-builder reads either.
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --linux AppImage --${{ matrix.arch }} --publish always
+
+      - name: Generate latest-linux*.yml (no-publish mode only)
+        if: inputs.publish != true
+        # When publish=true electron-builder already writes and uploads these
+        # channel files; running our local generator would duplicate the effort
+        # and overwrite any sha512 electron-builder chose.
+        run: node scripts/generate-latest-yml.cjs
+
+      - name: Clean release directory (postbuild)
+        run: node scripts/clean-release.cjs postbuild
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kumiko-amadeus-linux-${{ matrix.arch }}
+          path: |
+            release/Kumiko-Amadeus-${{ matrix.arch }}.AppImage
+            release/latest-linux*.yml
+          if-no-files-found: error
+          retention-days: 14

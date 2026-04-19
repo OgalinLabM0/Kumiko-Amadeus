@@ -141,27 +141,31 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
       "Audio Driver: Euphorium_Resonance.wav",
       "Tuning: Bb Major / A=442Hz",
       "Syncing Emotional Parameters...",
-      language === 'zh' ? "Subject: 黄前久美子" : "Subject: Oumae Kumiko",
+      "SUBJECT_PLACEHOLDER",
       "Status: Waiting for conductor..."
     ];
 
+    const timers: ReturnType<typeof setTimeout>[] = [];
     let delay = 0;
     logs.forEach((log, i) => {
       delay += 300;
-      setTimeout(() => {
+      timers.push(setTimeout(() => {
         setBootLog(prev => [...prev, log]);
         if (i === logs.length - 1) {
-          setTimeout(() => setShowContent(true), 500);
+          timers.push(setTimeout(() => setShowContent(true), 500));
         }
-      }, delay);
+      }, delay));
     });
 
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
     };
     document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, [language]);
+    return () => {
+      timers.forEach(clearTimeout);
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    };
+  }, []);
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
@@ -347,12 +351,17 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
             <div className="hidden md:block bg-[rgba(255,255,255,0.72)] border border-[#785A42]/18 p-[1.55vh] h-[12vh] min-h-[80px] overflow-y-auto log-scroll shadow-sm rounded-sm relative backdrop-blur-[3px]">
                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-16 h-4 bg-[#c5a059]/30 -mt-2 rotate-1"></div>
                <div className="mb-[0.9vh] border-b border-[#785A42]/10 pb-1 text-[0.72rem] tracking-[0.15em] text-[#785A42]/52 font-elegant font-normal uppercase">System Log</div>
-               {bootLog.map((log, i) => (
-                 <div key={i} className={`text-[#785A42]/92 mb-[0.42vh] flex items-center gap-2 ${language === 'en' ? 'text-[0.72rem] leading-[1.46] tracking-[0.012em]' : 'text-[0.77rem] leading-[1.48] tracking-[0.012em]'}`}>
-                   <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#c5a059]/70 shadow-[0_0_0_1px_rgba(120,90,66,0.08)]"></span>
-                   <span className="truncate whitespace-nowrap font-elegant font-normal not-italic tracking-[0.012em] text-[#785A42]/86">{log}</span>
-                 </div>
-               ))}
+               {bootLog.map((log, i) => {
+                 const display = log === 'SUBJECT_PLACEHOLDER'
+                   ? (language === 'zh' ? 'Subject: 黄前久美子' : 'Subject: Oumae Kumiko')
+                   : log;
+                 return (
+                   <div key={i} className={`text-[#785A42]/92 mb-[0.42vh] flex items-center gap-2 ${language === 'en' ? 'text-[0.72rem] leading-[1.46] tracking-[0.012em]' : 'text-[0.77rem] leading-[1.48] tracking-[0.012em]'}`}>
+                     <span className="inline-block h-1.5 w-1.5 rounded-full bg-[#c5a059]/70 shadow-[0_0_0_1px_rgba(120,90,66,0.08)]"></span>
+                     <span className="truncate whitespace-nowrap font-elegant font-normal not-italic tracking-[0.012em] text-[#785A42]/86">{display}</span>
+                   </div>
+                 );
+               })}
             </div>
 
             <div className="bg-[#fffdf5] border-l-4 border-[#785A42] p-[1.5vh] shadow-sm relative overflow-hidden group">

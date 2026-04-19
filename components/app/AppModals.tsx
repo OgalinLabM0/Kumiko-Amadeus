@@ -1,6 +1,6 @@
 import React from 'react';
-import { AlertTriangle, Cloud, CloudDownload, ShieldAlert, Sparkles } from 'lucide-react';
-import { Language } from '../../types';
+import { AlertTriangle, Cloud, CloudDownload, ShieldAlert } from 'lucide-react';
+// `Language` and `Sparkles` were only used by the removed CloudRestoreModal (P0 #6).
 
 interface SyncConflictModalProps {
   isOpen: boolean;
@@ -297,80 +297,4 @@ export const DoubleClearAllModal: React.FC<DoubleClearAllModalProps> = ({
   );
 };
 
-interface CloudRestoreModalProps {
-  isOpen: boolean;
-  isDarkMode: boolean;
-  isIOS: boolean;
-  language: Language;
-  onConfirm: () => void;
-  onDismiss: () => void;
-}
-
-export const CloudRestoreModal: React.FC<CloudRestoreModalProps> = ({
-  isOpen,
-  isDarkMode,
-  isIOS,
-  language,
-  onConfirm,
-  onDismiss
-}) => {
-  if (!isOpen) return null;
-
-  const overlayClass = isIOS ? '' : 'backdrop-blur-[2px]';
-  const containerClass = isDarkMode
-    ? (isIOS
-      ? 'bg-[#17120d] border border-[#5a4635]/55 shadow-[0_18px_42px_rgba(0,0,0,0.42)]'
-      : 'bg-[linear-gradient(180deg,rgba(28,21,16,0.98),rgba(20,15,11,0.98))] border border-[#5a4635]/55 shadow-[0_0_40px_rgba(0,0,0,0.4)]')
-    : (isIOS
-      ? 'bg-[#fffaf0] border border-amber-100 shadow-xl'
-      : 'bg-gradient-to-br from-[#fffaf0] via-[#fff5e6] to-[#ffe4e1] border border-white/60 shadow-[0_0_40px_rgba(255,228,196,0.6)]');
-
-  return (
-    <div className={`fixed inset-0 z-[100] flex items-center justify-center p-4 animate-in fade-in duration-300 ${overlayClass}`} style={{ background: isDarkMode ? 'radial-gradient(circle, rgba(0,0,0,0.72) 30%, rgba(0,0,0,0.08) 100%)' : 'radial-gradient(circle, rgba(0,0,0,0.4) 30%, rgba(0,0,0,0) 100%)' }}>
-      <div className={`relative w-full max-w-sm rounded-3xl overflow-hidden ${containerClass}`}>
-        {!isIOS && !isDarkMode && (
-          <>
-            <div className="absolute -top-10 -right-10 w-40 h-40 bg-yellow-200/40 rounded-full blur-3xl animate-pulse"></div>
-            <div className="absolute -bottom-10 -left-10 w-40 h-40 bg-pink-200/40 rounded-full blur-3xl animate-pulse delay-1000"></div>
-          </>
-        )}
-        {!isIOS && isDarkMode && (
-          <>
-            <div className="absolute -top-10 -right-10 w-40 h-40 bg-amber-500/10 rounded-full blur-3xl"></div>
-            <div className="absolute -bottom-10 -left-10 w-40 h-40 bg-orange-500/10 rounded-full blur-3xl"></div>
-          </>
-        )}
-        <div className="relative z-10 p-8 flex flex-col items-center text-center">
-          <div className="mb-6 relative">
-            <div className={`absolute inset-[-8px] border-2 border-dashed rounded-full animate-[spin_12s_linear_infinite] ${isDarkMode ? 'border-[#cda15f]/30' : 'border-yellow-400/50'}`}></div>
-            <div className={`absolute inset-[-4px] border rounded-full animate-[spin_8s_linear_infinite_reverse] ${isDarkMode ? 'border-[#d8b36f]/20' : 'border-yellow-300/30'}`}></div>
-            <div className={`relative w-16 h-16 rounded-full shadow-inner flex items-center justify-center border ${isDarkMode ? 'bg-[linear-gradient(135deg,#2a1f16,#17120d)] text-[#d8bb88] border-[#6a5138]' : 'bg-gradient-to-tr from-yellow-100 to-white text-yellow-600 border-white'}`}>
-              <Sparkles size={28} className="animate-[spin_3s_linear_infinite]" />
-            </div>
-          </div>
-          <h3 className={`font-mincho ka-overlay-title font-semibold tracking-[0.08em] mb-3 ${isDarkMode ? 'text-[#e6c48f]' : 'text-[#8b5a2b]'}`}>MEMORY SYNC</h3>
-          <p className={`ka-copy-sm leading-relaxed mb-8 px-4 ${isDarkMode ? 'text-[#d0b796]' : 'text-[#a67c52]'}`}>
-            {language === 'zh'
-              ? '检测到时间流中的云端记忆碎片。\n是否将其与当前世界线合并？'
-              : 'Cloud memory fragments detected in the timeline.\nMerge them with the current world line?'}
-          </p>
-          <div className="flex w-full gap-4">
-            <button
-              onClick={onDismiss}
-              className={`flex-1 py-3.5 rounded-xl border ka-label font-semibold transition-all ${isDarkMode ? 'border-[#6c543d] bg-white/[0.03] text-[#ead8c1] hover:bg-white/[0.06] hover:border-[#d8bb88]/50' : 'border-[#d4c5b0] bg-white/50 text-[#8b5a2b] hover:bg-white hover:border-[#8b5a2b]'}`}
-            >
-              {language === 'zh' ? '保持现状 (Local)' : 'KEEP LOCAL'}
-            </button>
-            <button
-              onClick={onConfirm}
-              className={`flex-1 py-3.5 rounded-xl text-white ka-label font-semibold tracking-[0.14em] transition-all flex items-center justify-center gap-2 active:scale-95 ${isDarkMode ? 'bg-[linear-gradient(90deg,#a97b39,#c18a52)] shadow-lg shadow-black/30 hover:brightness-110' : 'bg-gradient-to-r from-[#f6d365] to-[#fda085] shadow-lg shadow-orange-200 hover:brightness-105'}`}
-            >
-              <CloudDownload size={14} />
-              {language === 'zh' ? '接受记忆 (Sync)' : 'ACCEPT'}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-};
+// CloudRestoreModal removed along with the cloud-sync feature (P0 #6).

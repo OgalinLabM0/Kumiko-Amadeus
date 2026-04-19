@@ -6,6 +6,7 @@ import { ApiSecuritySection } from './ApiSecuritySection';
 import { ModelAllocationSection } from './ModelAllocationSection';
 import { RagConfigSection } from './RagConfigSection';
 import { VisionHelperSection } from './VisionHelperSection';
+import { Collapse } from '../Collapse';
 
 interface ModelValidationResult {
   main: boolean | null;
@@ -101,8 +102,8 @@ export const ApiConfigSection: React.FC<ApiConfigSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      {isOpen && (
-        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 space-y-4">
+      <Collapse isOpen={isOpen}>
+        <div className="px-4 pb-4 pt-0 space-y-4">
           <p className={`ka-section-desc ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t_local.apiDesc}</p>
           <ApiSecuritySection
             isOpen={isSecurityOpen}
@@ -166,11 +167,14 @@ export const ApiConfigSection: React.FC<ApiConfigSectionProps> = ({
             isValidating={isValidating}
             isModelValidating={isModelValidating}
             isSearchValidating={isSearchValidating}
+            modelValidationResult={modelValidationResult}
+            modelMainName={localAiConfig.model_main}
+            modelSummaryName={localAiConfig.model_summary}
             onSave={onSave}
             onValidateAll={onValidateAll}
           />
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

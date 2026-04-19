@@ -1,6 +1,10 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  // Exposed so the renderer can branch UI by host OS (e.g. show the Linux-specific
+  // "SoVITS Python interpreter" field only on Linux). Equivalent to process.platform
+  // in the main process — stringly typed so no Node APIs leak into the renderer.
+  platform: process.platform,
   invoke: (channel, data) => {
     const validChannels = [
       'quit-app',
@@ -12,6 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:migrate-data-directory',
       'app:reset-data-directory',
       'app:get-weather',
+      'app:get-historical-weather',
       'app:get-japan-holidays',
       'voice:save',
       'voice:load',
@@ -19,6 +24,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'voice:list',
       'voice:open-folder',
       'voice:get-storage-info',
+      'images:save',
+      'images:load',
+      'images:delete',
+      'images:list',
+      'images:open-folder',
+      'images:get-storage-info',
       'ringtone:save',
       'ringtone:load',
       'ringtone:delete',
@@ -52,7 +63,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:update:quit-and-install',
       'genie:start',
       'genie:stop',
-      'genie:status'
+      'genie:status',
+      'genie:pick-sovits-dir',
+      'genie:pick-sovits-python',
+      'genie:test-sovits-python'
+      // Note: 'app:set-bg-color' intentionally omitted here — it's a fire-and-forget
+      // one-way signal handled by ipcMain.on in the main process, NOT a request/response
+      // handler. Calling electronAPI.invoke('app:set-bg-color', ...) used to land here but
+      // would hang forever since no ipcMain.handle exists. Stay on send() only via setBgColor.
     ];
     if (validChannels.includes(channel)) {
       return ipcRenderer.invoke(channel, data);
@@ -65,12 +83,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:update-unread-state',
       'app:send-notification',
       'app:send-call-notification',
-      'app:close-call-notification'
+      'app:close-call-notification',
+      'app:set-bg-color'
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.send(channel, data);
     }
   },
+  setBgColor: (color) => ipcRenderer.send('app:set-bg-color', color),
   on: (channel, listener) => {
     const validChannels = [
       'rag:rebuild:started',

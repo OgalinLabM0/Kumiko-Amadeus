@@ -1,10 +1,13 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Fingerprint, Lock, ChevronRight, HardDrive, Download, Cloud, RefreshCw, Check, AlertTriangle, FileJson, Link as LinkIcon, UserCircle, Rocket, Database, CheckCircle, RotateCcw } from 'lucide-react';
+import { Fingerprint, Lock, ChevronRight, HardDrive, Download, RefreshCw, Check, AlertTriangle, FileJson, Link as LinkIcon, UserCircle, Rocket, Database, CheckCircle, RotateCcw } from 'lucide-react';
 import { Language, BackupConfig } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
-import { CLOUD_SYNC_AVAILABLE } from '../services/appConfig';
+
+// Cloud sync removed from the product — any references to CLOUD_SYNC_AVAILABLE have been
+// deleted along with the CLOUD tab. If the feature returns, reintroduce the constant
+// and the conditional Tab rendering from git history.
 
 interface AuthScreenProps {
   onEnterApp: () => void;
@@ -16,14 +19,43 @@ interface AuthScreenProps {
   onSelectLocalFile: () => Promise<boolean>;
   onImportBackup: (file: File) => Promise<boolean>;
   onDisconnectLocalFile?: () => void;
-  
-  // Cloud Connection
-  onConnectCloud: (url: string, id: string, key?: string) => Promise<boolean>;
-  onRestoreCloud: () => Promise<boolean>;
-  
+
+  // onConnectCloud / onRestoreCloud removed with cloud sync (P0 #6).
+
   // States
   connectedFileName: string | null;
 }
+
+// --- PORTAL MODAL (module-level so React does not unmount/remount on every parent render) ---
+// Defined at module scope rather than inside AuthScreen because a component defined inside
+// another component creates a *new component type* on every parent render, which makes React
+// treat it as a different component and tear down its state + effects every time. That caused
+// the first-time warning modal to flicker / double-blur, and similar modals in MemoryPanel to
+// lose scroll position when the parent re-rendered.
+const PortalModal: React.FC<{ children: React.ReactNode; onClose: () => void }> = ({ children, onClose }) => {
+    useEffect(() => {
+        if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    }, []);
+    useEffect(() => {
+        const preventScroll = (e: TouchEvent) => e.preventDefault();
+        document.addEventListener('touchmove', preventScroll, { passive: false });
+        return () => {
+            document.removeEventListener('touchmove', preventScroll);
+        };
+    }, []);
+    return createPortal(
+        <div
+            className="fixed inset-0 z-[99999] flex items-center justify-center touch-none safe-area-padding-modal"
+            style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.7) 30%, rgba(0,0,0,0) 100%)' }}
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
+        >
+            <div className="relative z-10 w-full max-w-sm px-4 pointer-events-auto" onClick={e => e.stopPropagation()}>
+                {children}
+            </div>
+        </div>,
+        document.body
+    );
+};
 
 // --- FORCE TOUCH BUTTON (THE ULTIMATE IOS FIX) ---
 const ForceTouchButton = ({ onClick, className, children, style, disabled, type = "button" }: any) => {
@@ -79,8 +111,34 @@ const ForceTouchButton = ({ onClick, className, children, style, disabled, type 
   );
 };
 
+// --- FIRST-TIME WARNING (module-level; see PortalModal note above) ---
+// Previously defined inline in AuthScreen, which caused the modal to unmount & remount
+// on every parent render, triggering repeated focus blur / animation replays.
+interface FirstTimeWarningModalProps {
+  isOpen: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  t: typeof UI_TRANSLATIONS[keyof typeof UI_TRANSLATIONS];
+}
+const FirstTimeWarningModal: React.FC<FirstTimeWarningModalProps> = ({ isOpen, onCancel, onConfirm, t }) => {
+  if (!isOpen) return null;
+  return (
+    <PortalModal onClose={onCancel}>
+      <div className="w-full bg-[#f9f7f2] border border-[#785A42]/20 shadow-[0_8px_32px_rgba(0,0,0,0.3)] p-6 rounded-lg flex flex-col items-center text-center animate-in zoom-in-95 duration-200">
+         <div className="p-3 bg-[#9e2a2b]/10 rounded-full mb-4"><AlertTriangle size={32} className="text-[#9e2a2b]" /></div>
+         <h3 className="font-mincho ka-overlay-title text-[#785A42] mb-3 tracking-[0.04em] border-b border-[#785A42]/20 pb-1">{t.warningTitle}</h3>
+         <p className="ka-copy-sm opacity-90 mb-6 leading-relaxed text-[#785A42] whitespace-pre-wrap">{t.firstTimeWarning}</p>
+         <div className="flex w-full gap-3 relative z-20">
+            <ForceTouchButton onClick={onCancel} className="flex-1 py-3 border border-[#785A42]/20 text-[#785A42] ka-label bg-[#f9f7f2] rounded-lg active:bg-[#785A42]/10">{t.cancel}</ForceTouchButton>
+            <ForceTouchButton onClick={onConfirm} className="flex-1 py-3 bg-[#9e2a2b] text-white ka-label rounded-lg shadow-md flex items-center justify-center gap-2 active:bg-[#b03031]"><span>{t.iUnderstand}</span><ChevronRight size={14} /></ForceTouchButton>
+         </div>
+      </div>
+    </PortalModal>
+  );
+};
+
 export const AuthScreen: React.FC<AuthScreenProps> = ({ 
-  onEnterApp, language, backupConfig, onBackupConfigChange, onSelectLocalFile, onImportBackup, onConnectCloud, onRestoreCloud, connectedFileName, onDisconnectLocalFile
+  onEnterApp, language, backupConfig, onBackupConfigChange, onSelectLocalFile, onImportBackup, connectedFileName, onDisconnectLocalFile
 }) => {
   const t = UI_TRANSLATIONS[language];
   const [step, setStep] = useState<'LOGIN' | 'SETUP'>('LOGIN');
@@ -89,15 +147,16 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState(false);
   const [resetState, setResetState] = useState<'IDLE' | 'CONFIRMING' | 'SUCCESS'>('IDLE');
-  
-  const [setupTab, setSetupTab] = useState<'LOCAL' | 'MANUAL' | 'CLOUD'>('LOCAL');
-  const [setupStatus, setSetupStatus] = useState<string>(''); 
+
+  // Only LOCAL and MANUAL tabs remain; the CLOUD tab (and its isCloudConnected state)
+  // were removed along with the cloud sync feature (P0 #6).
+  const [setupTab, setSetupTab] = useState<'LOCAL' | 'MANUAL'>('LOCAL');
+  const [setupStatus, setSetupStatus] = useState<string>('');
   const [setupError, setSetupError] = useState<string | null>(null);
   const [isReadyToEnter, setIsReadyToEnter] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showFirstTimeWarning, setShowFirstTimeWarning] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
-  const [isCloudConnected, setIsCloudConnected] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const BG_COLOR = "#f9f7f2"; 
@@ -122,7 +181,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     }
 
     /* === RESPONSIVE TEXT SCALE (vw-based) === */
-    .auth-title { font-size: clamp(24px, 3.2vw, 38px); }
+    .auth-title { font-size: clamp(24px, 3.3vw, 38px); }
     .auth-subtitle { font-size: clamp(11px, 1vw, 13px); }
     .auth-label { font-size: clamp(12px, 1.15vw, 14px); }
     .auth-input-text { font-size: clamp(16px, 1.35vw, 19px); }
@@ -135,7 +194,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       position: relative; display: inline-block;
     }
     .auth-title-accent::after {
-      content: ''; position: absolute; bottom: -6px; left: 20%; width: 60%; height: 2px;
+      content: ''; position: absolute; bottom: -6px; left: 15%; width: 70%; height: 2px;
       background: linear-gradient(90deg, transparent, #c5a059, transparent);
       border-radius: 1px;
     }
@@ -266,14 +325,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
     const localReady = setupTab === 'LOCAL' && !!connectedFileName;
     const manualReady = setupTab === 'MANUAL' && setupStatus === t.statusSuccess;
-    const cloudReady = setupTab === 'CLOUD' && isCloudConnected;
 
-    if (localReady || manualReady || cloudReady) {
+    if (localReady || manualReady) {
       setIsReadyToEnter(true);
     } else {
       setIsReadyToEnter(false);
     }
-  }, [step, setupTab, connectedFileName, setupStatus, isCloudConnected, t.statusSuccess]);
+  }, [step, setupTab, connectedFileName, setupStatus, t.statusSuccess]);
 
   const handleLogin = () => {
     const storedUser = localStorage.getItem('kumiko_auth_username') || DEFAULT_USER;
@@ -304,12 +362,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     setTimeout(() => setResetState('IDLE'), 3000);
   };
 
-  const handleTabChange = (tab: 'LOCAL' | 'MANUAL' | 'CLOUD') => {
+  const handleTabChange = (tab: 'LOCAL' | 'MANUAL') => {
     setSetupTab(tab);
     setSetupStatus('');
     setSetupError(null);
     setIsReadyToEnter(false);
-    setIsCloudConnected(false);
   };
 
   const handleLocalMount = async () => {
@@ -353,38 +410,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     handleExitTransition();
   };
 
-  const PortalModal = ({ children, onClose }: { children: React.ReactNode, onClose: () => void }) => {
-      useEffect(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); }, []);
-      useEffect(() => {
-          const preventScroll = (e: TouchEvent) => e.preventDefault();
-          document.addEventListener('touchmove', preventScroll, { passive: false });
-          return () => {
-              document.removeEventListener('touchmove', preventScroll);
-          };
-      }, []);
-      return createPortal(
-          <div className="fixed inset-0 z-[99999] flex items-center justify-center touch-none safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.7) 30%, rgba(0,0,0,0) 100%)' }} onClick={(e) => { e.stopPropagation(); onClose(); }}>
-              <div className="relative z-10 w-full max-w-sm px-4 pointer-events-auto" onClick={e => e.stopPropagation()}>{children}</div>
-          </div>, document.body
-      );
-  };
-
-  const FirstTimeWarningModal = () => {
-    if (!showFirstTimeWarning) return null;
-    return (
-      <PortalModal onClose={() => setShowFirstTimeWarning(false)}>
-        <div className="w-full bg-[#f9f7f2] border border-[#785A42]/20 shadow-[0_8px_32px_rgba(0,0,0,0.3)] p-6 rounded-lg flex flex-col items-center text-center animate-in zoom-in-95 duration-200">
-           <div className="p-3 bg-[#9e2a2b]/10 rounded-full mb-4"><AlertTriangle size={32} className="text-[#9e2a2b]" /></div>
-           <h3 className="font-mincho ka-overlay-title text-[#785A42] mb-3 tracking-[0.04em] border-b border-[#785A42]/20 pb-1">{t.warningTitle}</h3>
-           <p className="ka-copy-sm opacity-90 mb-6 leading-relaxed text-[#785A42] whitespace-pre-wrap">{t.firstTimeWarning}</p>
-           <div className="flex w-full gap-3 relative z-20">
-              <ForceTouchButton onClick={() => setShowFirstTimeWarning(false)} className="flex-1 py-3 border border-[#785A42]/20 text-[#785A42] ka-label bg-[#f9f7f2] rounded-lg active:bg-[#785A42]/10">{t.cancel}</ForceTouchButton>
-              <ForceTouchButton onClick={confirmFirstTimeEnter} className="flex-1 py-3 bg-[#9e2a2b] text-white ka-label rounded-lg shadow-md flex items-center justify-center gap-2 active:bg-[#b03031]"><span>{t.iUnderstand}</span><ChevronRight size={14} /></ForceTouchButton>
-           </div>
-        </div>
-      </PortalModal>
-    );
-  };
+  // PortalModal and FirstTimeWarningModal are defined at module scope above — this
+  // avoids React treating them as fresh component types every render (which would
+  // remount the modal subtree and replay focus/animations). See the long comment
+  // next to the `PortalModal` definition.
 
   const containerAnimation = isExiting ? 'animate-out fade-out zoom-out-95 duration-1000 fill-mode-forwards' : 'animate-in fade-in zoom-in-95 duration-700';
   const bgClass = step === 'LOGIN' ? 'auth-bg-login' : 'auth-bg-setup';
@@ -394,11 +423,11 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
       <style>{styles}</style>
       <div className={`fixed top-0 left-0 w-full z-[90] ${bgClass} text-[#785A42] transition-all ease-in-out`} style={{ height: 'var(--app-height)' }}>
         <div className="relative z-10 w-full min-h-full h-full overflow-y-auto touch-scroll">
-          <div className={`w-full min-h-full flex flex-col items-center ${step === 'LOGIN' ? 'justify-center' : 'justify-start'} px-[clamp(20px,4vw,48px)] pt-[calc(env(safe-area-inset-top)+1.5rem)] pb-[calc(env(safe-area-inset-bottom)+1.5rem)] ${containerAnimation}`}>
+          <div className={`w-full min-h-full h-full flex flex-col items-center justify-center px-[clamp(20px,4vw,48px)] pt-[calc(env(safe-area-inset-top)+1rem)] pb-[calc(env(safe-area-inset-bottom)+0.5rem)] ${containerAnimation}`}>
             <div className="w-[min(92vw,42rem)] flex flex-col items-center">
                 {/* HEADER */}
-                <div className={`text-center ${step === 'SETUP' ? 'mb-[clamp(14px,2vw,24px)] mt-[clamp(10px,1.4vw,18px)]' : 'mb-[clamp(18px,3vw,30px)] mt-[clamp(12px,2vw,24px)]'}`}>
-                  <h2 className="auth-title font-semibold tracking-[0.025em] font-mincho text-[#785A42] scan-underline inline-block leading-[1.08]">
+                <div className={`text-center ${step === 'SETUP' ? 'mb-[clamp(10px,1.5vw,18px)] mt-[clamp(10px,2vw,20px)]' : 'mb-[clamp(18px,3vw,30px)] mt-[clamp(12px,2vw,24px)]'}`}>
+                  <h2 className="auth-title font-semibold tracking-[0.025em] font-mincho text-[#785A42] auth-title-accent inline-block leading-[1.08]">
                     {step === 'LOGIN' ? t.authLoginTitle : t.authSetupTitle}
                   </h2>
                   {step === 'LOGIN' && (
@@ -453,30 +482,26 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
                 {/* ============ SETUP STEP ============ */}
                 {step === 'SETUP' && (
-                <div className="flex flex-col gap-[clamp(16px,2vw,24px)] w-full animate-in fade-in duration-300 pb-10">
+                <div className="flex flex-col gap-[clamp(10px,1.5vw,18px)] w-full animate-in fade-in duration-300">
                     {/* PILL TABS */}
                     <div className="pill-tabs flex">
-                        <ForceTouchButton onClick={() => handleTabChange('LOCAL')} className={`pill-tab flex-1 py-[clamp(8px,1.4vw,14px)] auth-tab-text font-bold tracking-tight flex flex-col items-center gap-1 ${setupTab === 'LOCAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
+                        <ForceTouchButton onClick={() => handleTabChange('LOCAL')} className={`pill-tab flex-1 min-w-0 py-[clamp(8px,1.4vw,14px)] text-[clamp(0.6rem,1.2vw,0.75rem)] font-bold tracking-tight flex flex-col items-center gap-1 whitespace-nowrap overflow-hidden ${setupTab === 'LOCAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
                           <HardDrive size={16} /> {t.tabLocal}
                         </ForceTouchButton>
-                        <ForceTouchButton onClick={() => handleTabChange('MANUAL')} className={`pill-tab flex-1 py-[clamp(8px,1.4vw,14px)] auth-tab-text font-bold tracking-tight flex flex-col items-center gap-1 ${setupTab === 'MANUAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
+                        <ForceTouchButton onClick={() => handleTabChange('MANUAL')} className={`pill-tab flex-1 min-w-0 py-[clamp(8px,1.4vw,14px)] text-[clamp(0.6rem,1.2vw,0.75rem)] font-bold tracking-tight flex flex-col items-center gap-1 whitespace-nowrap overflow-hidden ${setupTab === 'MANUAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
                           <Download size={16} /> {t.tabManual}
                         </ForceTouchButton>
-                        {CLOUD_SYNC_AVAILABLE && (
-                          <ForceTouchButton onClick={() => handleTabChange('CLOUD')} className={`pill-tab flex-1 py-[clamp(8px,1.4vw,14px)] auth-tab-text font-bold tracking-tight flex flex-col items-center gap-1 ${setupTab === 'CLOUD' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
-                            <Cloud size={16} /> {t.tabCloud}
-                          </ForceTouchButton>
-                        )}
+                        {/* CLOUD tab removed with cloud sync feature (P0 #6) */}
                     </div>
 
                     {/* CONTENT AREA */}
-                    <div className="h-[clamp(272px,30vw,326px)] glass-input p-[clamp(16px,2.5vw,28px)] flex flex-col justify-between">
-                        <div className="h-[clamp(182px,21vw,226px)] flex flex-col justify-center">
+                    <div className="h-[clamp(200px,28vh,300px)] glass-input p-[clamp(16px,2.5vw,28px)] flex flex-col justify-between">
+                        <div className="flex-1 min-h-0 flex flex-col justify-center">
                         {setupTab === 'LOCAL' && (
                         <div className="w-full h-full flex flex-col gap-[clamp(12px,1.3vw,16px)] items-center justify-center text-center">
                             <p className="auth-hint ka-copy-sm text-[#785A42]/60 leading-relaxed max-w-[28rem]">{t.authLocalDesc}</p>
                             {connectedFileName ? (
-                                <div className="flex flex-col gap-3 w-full h-[clamp(118px,16vw,152px)] justify-center">
+                                <div className="flex flex-col gap-3 w-full min-h-[80px] flex-1 justify-center">
                                   <div className="flex items-center justify-center gap-2 text-green-700 ka-copy-sm bg-green-50/80 px-3 py-[clamp(8px,1vw,12px)] rounded-xl border border-green-200/50"> 
                                     <Check size={15} /> <span className="truncate max-w-full">{t.savingTo} {connectedFileName}</span>
                                   </div>
@@ -490,7 +515,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                                   )}
                                 </div>
                             ) : (
-                                <ForceTouchButton onClick={handleLocalMount} disabled={isProcessing} className="file-drop-zone w-full h-[clamp(118px,16vw,152px)] py-[clamp(18px,2.5vw,26px)] text-[#785A42] ka-copy-sm font-semibold flex items-center justify-center gap-2" > {isProcessing ? <RefreshCw className="animate-spin" size={16} /> : <HardDrive size={18} />} {t.btnSelectFile} </ForceTouchButton>
+                                <ForceTouchButton onClick={handleLocalMount} disabled={isProcessing} className="file-drop-zone w-full min-h-[80px] flex-1 py-[clamp(18px,2.5vw,26px)] text-[#785A42] ka-copy-sm font-semibold flex items-center justify-center gap-2" > {isProcessing ? <RefreshCw className="animate-spin" size={16} /> : <HardDrive size={18} />} {t.btnSelectFile} </ForceTouchButton>
                             )}
                         </div>
                         )}
@@ -499,12 +524,12 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                         <div className="w-full h-full flex flex-col gap-[clamp(12px,1.3vw,16px)] items-center justify-center text-center">
                             <input type="file" ref={fileInputRef} className="hidden" accept=".json,.zip" onChange={handleManualImport} />
                             {setupError && (setupError.includes('成功') || setupError.includes('Successful')) ? (
-                                <div className="w-full h-[clamp(118px,16vw,152px)] py-[clamp(14px,2.5vw,24px)] border border-green-300/40 text-green-600 ka-copy-sm font-semibold bg-green-50/50 rounded-xl flex flex-col items-center justify-center gap-2">
+                                <div className="w-full min-h-[80px] flex-1 py-[clamp(14px,2.5vw,24px)] border border-green-300/40 text-green-600 ka-copy-sm font-semibold bg-green-50/50 rounded-xl flex flex-col items-center justify-center gap-2">
                                     <Check size={22} />
                                     <span>{t.importSuccess}</span>
                                 </div>
                             ) : (
-                                <ForceTouchButton onClick={() => fileInputRef.current?.click()} disabled={isProcessing} className="file-drop-zone w-full h-[clamp(118px,16vw,152px)] py-[clamp(18px,3vw,30px)] text-[#785A42] ka-copy-sm font-semibold flex flex-col items-center justify-center gap-2" > 
+                                <ForceTouchButton onClick={() => fileInputRef.current?.click()} disabled={isProcessing} className="file-drop-zone w-full min-h-[80px] flex-1 py-[clamp(18px,3vw,30px)] text-[#785A42] ka-copy-sm font-semibold flex flex-col items-center justify-center gap-2" > 
                                     {isProcessing ? <RefreshCw className="animate-spin" size={22} /> : <FileJson size={24} />} 
                                     <span>{t.btnImport}</span>
                                     <span className="auth-hint ka-copy-sm font-normal text-[#785A42]/55">{language === 'zh' ? '支持 .json / .zip 格式' : 'Supports .json / .zip formats'}</span>
@@ -528,13 +553,18 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 </div>
                 )}
                 
-                <div className="mt-auto pt-[clamp(14px,2.5vw,24px)] auth-hint ka-kicker text-[#785A42]/25 tracking-[0.2em]"> {t.securityLayer} </div>
+                <div className="mt-[clamp(6px,1vw,12px)] auth-hint ka-kicker text-[#785A42]/25 tracking-[0.2em]"> {t.securityLayer} </div>
             </div>
           </div>
         </div>
       </div>
 
-      <FirstTimeWarningModal />
+      <FirstTimeWarningModal
+        isOpen={showFirstTimeWarning}
+        onCancel={() => setShowFirstTimeWarning(false)}
+        onConfirm={confirmFirstTimeEnter}
+        t={t}
+      />
     </>
   );
 };

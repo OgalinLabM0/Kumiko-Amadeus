@@ -1,7 +1,7 @@
 import React from 'react';
 import { ExtendedSyncStatus } from '../SyncStatus';
 import { AppMainView } from './AppMainView';
-import { AppState, AppUpdateState, BackupConfig, EmotionType, Language, LocationConfig, Message, WorldBookEntry, AnchorEntry, TtsConfig } from '../../types';
+import { AppUpdateState, BackupConfig, EmotionType, Language, LocationConfig, Message, WorldBookEntry, AnchorEntry, TtsConfig } from '../../types';
 
 type RelativeReminderView = {
   id: string;
@@ -31,6 +31,14 @@ interface BuildAppMainViewPropsParams {
   setIsTaskPanelOpen: React.Dispatch<React.SetStateAction<boolean>>;
   isDiaryOpen: boolean;
   setIsDiaryOpen: React.Dispatch<React.SetStateAction<boolean>>;
+  diaryRewritingDate: string | null;
+  setDiaryRewritingDate: React.Dispatch<React.SetStateAction<string | null>>;
+  diaryBfProgress?: { current: number; total: number; currentDate: string };
+  setDiaryBfProgress: React.Dispatch<React.SetStateAction<{ current: number; total: number; currentDate: string } | undefined>>;
+  diaryBfComplete: boolean;
+  setDiaryBfComplete: React.Dispatch<React.SetStateAction<boolean>>;
+  diaryBfCount: number;
+  setDiaryBfCount: React.Dispatch<React.SetStateAction<number>>;
   flushIfDirty: () => void;
   coreMemory: string;
   contextLimit: number;
@@ -40,6 +48,7 @@ interface BuildAppMainViewPropsParams {
   isDarkMode: boolean;
   turnCount: number;
   summaryProgressText: string;
+  handleManualSummary: () => Promise<void>;
   language: Language;
   handleUpdateMessage: (id: string, newText: string) => void;
   handleDeleteMessage: (id: string) => void;
@@ -74,25 +83,17 @@ interface BuildAppMainViewPropsParams {
   handleImportBackup: (file: File) => Promise<boolean>;
   handleRebuildRag: () => Promise<void>;
   setLanguage: React.Dispatch<React.SetStateAction<Language>>;
-  locationConfig: LocationConfig;
   setLocationConfig: React.Dispatch<React.SetStateAction<LocationConfig>>;
-  autoBackupInterval: number;
   setAutoBackupInterval: React.Dispatch<React.SetStateAction<number>>;
-  connectedFileName: string | null;
-  lastBackupTime: number | null;
   handleCreateNewLocalFile: () => Promise<boolean>;
   handleOpenLocalFile: () => Promise<boolean>;
   triggerManualSave: () => void;
   handleManualLocalReload: () => Promise<void>;
   backupConfig: BackupConfig;
-  cloudSyncAvailable: boolean;
   handleBackupConfigChange: (nextConfig: BackupConfig) => void;
-  handleCloudRestore: (silent?: boolean, checkWelcome?: boolean) => Promise<boolean | any>;
-  handleCloudPush: () => Promise<void>;
-  isCloudSynced: boolean;
+  // cloudSyncAvailable / handleCloudRestore / handleCloudPush removed with cloud sync.
   devLogs: { level: 'log' | 'warn' | 'error'; message: string; timestamp: string }[];
   setDevLogs: React.Dispatch<React.SetStateAction<{ level: 'log' | 'warn' | 'error'; message: string; timestamp: string }[]>>;
-  ttsConfig: TtsConfig;
   handleTtsConfigChange: (config: TtsConfig) => void;
   appUpdateState: AppUpdateState;
   handleCheckForAppUpdates: () => Promise<void>;
@@ -100,7 +101,6 @@ interface BuildAppMainViewPropsParams {
   handleInstallAppUpdate: () => Promise<void>;
   showAppUpdateModal: boolean;
   setShowAppUpdateModal: React.Dispatch<React.SetStateAction<boolean>>;
-  autoZipEnabled: boolean;
   handleToggleAutoZip: () => void;
   showDeleteConfirm: boolean;
   setShowDeleteConfirm: React.Dispatch<React.SetStateAction<boolean>>;
@@ -115,10 +115,8 @@ interface BuildAppMainViewPropsParams {
   showSyncErrorModal: boolean;
   setShowSyncErrorModal: React.Dispatch<React.SetStateAction<boolean>>;
   syncErrorMessage: string | null;
-  showCloudRestorePrompt: boolean;
-  setShowCloudRestorePrompt: React.Dispatch<React.SetStateAction<boolean>>;
+  // showCloudRestorePrompt / setShowCloudRestorePrompt / hasPerformedInitialPull removed with cloud sync.
   isIOS: boolean;
-  hasPerformedInitialPull: React.MutableRefObject<boolean>;
   viewingImage: string | null;
   isTalking: boolean;
   statusText: string;
@@ -126,10 +124,8 @@ interface BuildAppMainViewPropsParams {
   overlayClass: string;
   avatarGradient: string;
   statusTextColor: string;
-  isFullscreen: boolean;
   isSelectionMode: boolean;
   ragStatus: 'IDLE' | 'RECALLING' | 'INDEXING' | 'ERROR' | 'OFF' | 'STALE';
-  ragProgressLabel: string | null;
   headerBg: string;
   headerShadow: string;
   textColor: string;
@@ -137,7 +133,7 @@ interface BuildAppMainViewPropsParams {
   fileHandleRef: React.MutableRefObject<any>;
   toggleFullscreen: () => void;
   toggleSelectionMode: () => void;
-  toggleTheme: () => void;
+  toggleTheme: (e?: React.MouseEvent) => void;
   manualRetry: () => void;
   initiateClearAll: () => void;
   selectedIds: Set<string>;
@@ -151,26 +147,23 @@ interface BuildAppMainViewPropsParams {
   handleSelectMessage: (id: string) => void;
   handleRecall: (id: string) => void;
   handleReply: (msg: Message) => void;
-  selectedImage: string | null;
-  replyingToMsg: Message | null;
-  inputValue: string;
   inputAreaBg: string;
   inputShadow: string;
   inputBoxBg: string;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
-  setInputValue: React.Dispatch<React.SetStateAction<string>>;
   handleKeyDown: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   handleImageSelect: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
   handleSend: () => void;
   messagesRef: React.MutableRefObject<Message[]>;
-  handleCancelReply: () => void;
-  setSelectedImage: React.Dispatch<React.SetStateAction<string | null>>;
   initiateDeleteSelected: () => void;
   sidebarBg: string;
   chatContainerShadow: string;
   handleRegenerateVoice?: (msg: Message) => void;
   regeneratingVoiceIds?: Set<string>;
   handleDisconnectLocalFile?: () => void;
+  handleResendMessage?: (id: string) => void;
+  handleWithdrawMessage?: (id: string) => void;
+  isDisconnected?: boolean;
 }
 
 export const buildAppMainViewProps = (
@@ -183,13 +176,21 @@ export const buildAppMainViewProps = (
     setIsProfileOpen,
     isSettingsOpen,
     setIsSettingsOpen,
-  isMessageCenterOpen,
-  setIsMessageCenterOpen,
-  isTaskPanelOpen,
-  setIsTaskPanelOpen,
-  isDiaryOpen,
-  setIsDiaryOpen,
-  flushIfDirty,
+    isMessageCenterOpen,
+    setIsMessageCenterOpen,
+    isTaskPanelOpen,
+    setIsTaskPanelOpen,
+    isDiaryOpen,
+    setIsDiaryOpen,
+    diaryRewritingDate,
+    setDiaryRewritingDate,
+    diaryBfProgress,
+    setDiaryBfProgress,
+    diaryBfComplete,
+    setDiaryBfComplete,
+    diaryBfCount,
+    setDiaryBfCount,
+    flushIfDirty,
     coreMemory,
     contextLimit,
     messages,
@@ -198,6 +199,7 @@ export const buildAppMainViewProps = (
     isDarkMode,
     turnCount,
     summaryProgressText,
+    handleManualSummary,
     language,
     handleUpdateMessage,
     handleDeleteMessage,
@@ -225,25 +227,16 @@ export const buildAppMainViewProps = (
     handleImportBackup,
     handleRebuildRag,
     setLanguage,
-    locationConfig,
     setLocationConfig,
-    autoBackupInterval,
     setAutoBackupInterval,
-    connectedFileName,
-    lastBackupTime,
     handleCreateNewLocalFile,
     handleOpenLocalFile,
     triggerManualSave,
     handleManualLocalReload,
     backupConfig,
-    cloudSyncAvailable,
     handleBackupConfigChange,
-    handleCloudRestore,
-    handleCloudPush,
-    isCloudSynced,
     devLogs,
     setDevLogs,
-    ttsConfig,
     handleTtsConfigChange,
     appUpdateState,
     handleCheckForAppUpdates,
@@ -251,7 +244,6 @@ export const buildAppMainViewProps = (
     handleInstallAppUpdate,
     showAppUpdateModal,
     setShowAppUpdateModal,
-    autoZipEnabled,
     handleToggleAutoZip,
     showDeleteConfirm,
     setShowDeleteConfirm,
@@ -266,10 +258,7 @@ export const buildAppMainViewProps = (
     showSyncErrorModal,
     setShowSyncErrorModal,
     syncErrorMessage,
-    showCloudRestorePrompt,
-    setShowCloudRestorePrompt,
     isIOS,
-    hasPerformedInitialPull,
     viewingImage,
     isTalking,
     statusText,
@@ -277,10 +266,8 @@ export const buildAppMainViewProps = (
     overlayClass,
     avatarGradient,
     statusTextColor,
-    isFullscreen,
     isSelectionMode,
     ragStatus,
-    ragProgressLabel,
     headerBg,
     headerShadow,
     textColor,
@@ -302,25 +289,17 @@ export const buildAppMainViewProps = (
     handleSelectMessage,
     handleRecall,
     handleReply,
-    selectedImage,
-    replyingToMsg,
-    inputValue,
     inputAreaBg,
     inputShadow,
     inputBoxBg,
     fileInputRef,
-    setInputValue,
     handleKeyDown,
     handleImageSelect,
     handleSend,
     messagesRef,
-    handleCancelReply,
-    setSelectedImage,
     initiateDeleteSelected,
     sidebarBg,
     chatContainerShadow,
-    handleRegenerateVoice,
-    regeneratingVoiceIds,
     handleDisconnectLocalFile
   } = params;
 
@@ -333,10 +312,9 @@ export const buildAppMainViewProps = (
       messages,
       worldBook,
       onSave: handleSaveMemory,
-      isDarkMode,
       turnCount,
       summaryProgressText,
-      language,
+      onManualSummary: handleManualSummary,
       onUpdateMessage: handleUpdateMessage,
       onDeleteMessage: handleDeleteMessage,
       onInsertMessage: handleInsertMessage,
@@ -361,46 +339,40 @@ export const buildAppMainViewProps = (
     settingsPanelProps: {
       isOpen: isSettingsOpen,
       onClose: () => { setIsSettingsOpen(false); flushIfDirty(); },
-      isDarkMode,
       onExportBackup: handleExportBackup,
       onImportBackup: (file) => handleImportBackup(file),
       onRebuildRag: handleRebuildRag,
-      ragStatus,
-      ragProgressLabel,
-      language,
       onLanguageChange: setLanguage,
-      locationConfig,
       onLocationChange: setLocationConfig,
-      autoBackupInterval,
       onIntervalChange: setAutoBackupInterval,
-      connectedFileName,
-      lastBackupTime,
       onSelectLocalFile: handleCreateNewLocalFile,
       onOpenLocalFile: handleOpenLocalFile,
       onManualLocalSave: triggerManualSave,
       onManualLocalLoad: handleManualLocalReload,
-      backupConfig,
       onBackupConfigChange: handleBackupConfigChange,
-      onCloudRestore: handleCloudRestore,
-      onCloudPush: handleCloudPush,
-      isCloudSynced,
       devLogs,
       onClearDevLogs: () => setDevLogs([]),
-      ttsConfig,
       onTtsConfigChange: handleTtsConfigChange,
-      appUpdateState,
       onCheckForUpdates: handleCheckForAppUpdates,
       onDownloadUpdate: handleDownloadAppUpdate,
       onInstallUpdate: handleInstallAppUpdate,
-      autoZipEnabled,
       onToggleAutoZip: handleToggleAutoZip,
       onDisconnectLocalFile: handleDisconnectLocalFile
     },
-    diaryPanelProps: isDiaryOpen ? {
+    diaryPanelProps: {
+      isOpen: isDiaryOpen,
       onClose: () => setIsDiaryOpen(false),
       language,
-      isDarkMode
-    } : null,
+      isDarkMode,
+      rewritingDate: diaryRewritingDate,
+      setRewritingDate: setDiaryRewritingDate,
+      bfProgress: diaryBfProgress,
+      setBfProgress: setDiaryBfProgress,
+      bfComplete: diaryBfComplete,
+      setBfComplete: setDiaryBfComplete,
+      bfCount: diaryBfCount,
+      setBfCount: setDiaryBfCount,
+    },
     deleteConfirmationModalProps: {
       isOpen: showDeleteConfirm,
       isDarkMode,
@@ -441,7 +413,8 @@ export const buildAppMainViewProps = (
       isOpen: syncStatus === 'CONFLICT',
       isDarkMode,
       message: t.syncConflict,
-      onRestore: () => { void handleCloudRestore(); }
+      // Cloud restore removed; conflict modal is no-op for this button until resolved manually.
+      onRestore: () => { /* cloud sync removed */ }
     },
     syncErrorModalProps: {
       isOpen: showSyncErrorModal,
@@ -462,23 +435,7 @@ export const buildAppMainViewProps = (
       onInstall: () => { void handleInstallAppUpdate(); },
       onClose: () => setShowAppUpdateModal(false)
     },
-    cloudRestoreModalProps: {
-      isOpen: cloudSyncAvailable && showCloudRestorePrompt,
-      isDarkMode,
-      isIOS,
-      language,
-      onConfirm: () => {
-        void (async () => {
-          await handleCloudRestore(false, true);
-          setShowCloudRestorePrompt(false);
-          hasPerformedInitialPull.current = true;
-        })();
-      },
-      onDismiss: () => {
-        setShowCloudRestorePrompt(false);
-        hasPerformedInitialPull.current = true;
-      }
-    },
+    // cloudRestoreModalProps removed with cloud sync feature.
     imageViewerProps: {
       src: viewingImage,
       onClose: () => setViewingImage(null),
@@ -504,41 +461,22 @@ export const buildAppMainViewProps = (
       voiceSyncLabel: t.voiceSync
     },
     chatHeaderProps: {
-      isDarkMode,
-      isTalking,
-      language,
-      isFullscreen,
-      isSelectionMode,
-      unreadMessageCount,
-      activeTaskCount: relativeReminders.length + dailyReminders.length,
       ragStatus,
       syncStatus: syncStatus as ExtendedSyncStatus,
       headerBg,
       headerShadow,
       textColor,
       mutedTextColor,
-      isCloudEnabled: !!backupConfig.cloudEnabled && !!backupConfig.endpointUrl,
+      isCloudEnabled: false,
       isLocalEnabled: !!fileHandleRef.current,
       onToggleFullscreen: toggleFullscreen,
       onToggleSelectionMode: toggleSelectionMode,
-      onOpenMemory: () => setIsMemoryPanelOpen(true),
-      onOpenDiary: () => setIsDiaryOpen(true),
       onToggleTheme: toggleTheme,
-      onOpenProfile: () => setIsProfileOpen(true),
-      onOpenInbox: () => {
-        setIsTaskPanelOpen(false);
-        setIsMessageCenterOpen(prev => !prev);
-      },
-      onOpenTasks: () => {
-        setIsMessageCenterOpen(false);
-        setIsTaskPanelOpen(prev => !prev);
-      },
       onSyncClick: () => {
         if ((syncStatus as string) === 'ERROR') manualRetry();
         else if ((syncStatus as string) === 'ERROR' || syncErrorMessage) setShowSyncErrorModal(true);
         else triggerManualSave();
       },
-      onOpenSettings: () => setIsSettingsOpen(true)
     },
     messageCenterPanelProps: {
       isOpen: isMessageCenterOpen,
@@ -590,18 +528,12 @@ export const buildAppMainViewProps = (
       onReply: handleReply,
     onImageClick: setViewingImage,
     onRegenerateVoice: params.handleRegenerateVoice,
-    regeneratingVoiceIds: params.regeneratingVoiceIds
+    regeneratingVoiceIds: params.regeneratingVoiceIds,
+    onResend: params.handleResendMessage,
+    onWithdraw: params.handleWithdrawMessage
   },
+    isDisconnected: params.isDisconnected ?? false,
     chatFooterProps: {
-      isDarkMode,
-      isSelectionMode,
-      selectedIdsCount: selectedIds.size,
-      selectedImage,
-      replyingToMsg,
-      isListening,
-      isThinking,
-      inputValue,
-      statusText,
       inputAreaBg,
       inputShadow,
       inputBoxBg,
@@ -611,11 +543,11 @@ export const buildAppMainViewProps = (
       roleModelLabel: t.roleModel,
       roleUserLabel: t.roleUser,
       recallGlobalTooltip: t.recallGlobalTooltip,
+      typingLabel: t.typing,
       uploadTitle: t.uploadTitle,
       sendPlaceholder: t.sendPlaceholder,
       inputRef,
       fileInputRef,
-      onInputChange: setInputValue,
       onKeyDown: handleKeyDown,
       onImageSelect: handleImageSelect,
       onSend: handleSend,
@@ -624,8 +556,6 @@ export const buildAppMainViewProps = (
         const latest = messagesRef.current.filter((m) => pendingMessageIdsRef.current.has(m.id)).pop();
         if (latest) handleRecall(latest.id);
       },
-      onCancelReply: handleCancelReply,
-      onClearSelectedImage: () => setSelectedImage(null),
       onDeleteSelected: initiateDeleteSelected
     },
     isSelectionMode,

@@ -1,5 +1,6 @@
 import React from 'react';
 import { Book, ChevronDown, ChevronUp } from 'lucide-react';
+import { Collapse } from '../Collapse';
 
 interface GuideSectionTranslations {
   guideTitle: string;
@@ -39,8 +40,8 @@ export const GuideSection: React.FC<GuideSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className="opacity-50" /> : <ChevronDown size={16} className="opacity-50" />}
       </button>
 
-      {isOpen && (
-        <div className="p-4 pt-0 animate-in slide-in-from-top-2">
+      <Collapse isOpen={isOpen}>
+        <div className="p-4 pt-0">
           <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.guideDesc}</p>
           <button
             onClick={onOpenGuide}
@@ -53,7 +54,7 @@ export const GuideSection: React.FC<GuideSectionProps> = ({
             <Book size={14} /> {t.viewFullGuide}
           </button>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

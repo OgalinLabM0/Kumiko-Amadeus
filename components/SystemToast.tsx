@@ -28,7 +28,13 @@ export const SystemToast: React.FC<SystemToastProps> = ({ message, onClose, isDa
           exit={{ y: -50, opacity: 0 }}
           className="fixed top-12 left-1/2 -translate-x-1/2 z-[250] pointer-events-none"
         >
+          {/* P2 #43: screen readers need role="status" + aria-live to announce
+              transient toasts. Before this the message was visually shown but
+              invisible to assistive tech. `polite` keeps it non-interrupting. */}
           <div
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
             className={`
               flex items-center gap-2 px-4 py-2 rounded-full border shadow-lg backdrop-blur-md
               ka-copy-sm font-semibold

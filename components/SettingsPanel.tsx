@@ -3,9 +3,10 @@ import React, { startTransition, useState, useEffect, useRef, useMemo, useLayout
 import { X, Save, RotateCcw, Settings, Edit2, Eye, EyeOff, Cloud, HardDrive, Upload, Download, RefreshCw, Check, Globe, ChevronUp, ChevronDown, MapPin, Clock, FileJson, AlertTriangle, Link as LinkIcon, UserCircle, Key, Menu, Brain, Paperclip, CheckSquare, Zap, Send, Database, Image, Watch, AlertCircle, Lock, Activity, ShieldCheck, Power, CheckCircle, Volume2, Maximize2, Minimize2, BookOpen } from 'lucide-react';
 import { Language, LocationConfig, BackupConfig, AIConfig } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
+import { useAppStore } from '../store';
 import { getCurrentAIConfig, validateAIConnection, validateModels, validateSearchCapability } from '../services/geminiService';
 import { clearAllLocalRagMemory, syncRawHistoryMessagesToMain } from '../services/localRagService';
-import { CLOUD_SYNC_AVAILABLE, getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel } from '../services/appConfig';
+import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel } from '../services/appConfig';
 import { db } from '../services/db';
 import { deleteRingtoneFile, deleteVoiceFile, isVoiceServiceAvailable, listVoiceFiles } from '../services/voiceFileService';
 import { DataManagementSection } from './settings/DataManagementSection';
@@ -13,6 +14,9 @@ import { AccountSection } from './settings/AccountSection';
 import { ApiConfigSection } from './settings/ApiConfigSection';
 import { AppUpdateSection } from './settings/AppUpdateSection';
 import { BackupSection } from './settings/BackupSection';
+import { DiaryLifeSection } from './settings/DiaryLifeSection';
+import { MemoryContextSection } from './settings/MemoryContextSection';
+import { MediaSection } from './settings/MediaSection';
 import { CustomDialog } from './settings/CustomDialog';
 import { FullGuideModal } from './settings/FullGuideModal';
 import { GeneralSection } from './settings/GeneralSection';
@@ -34,44 +38,25 @@ import type { AppUpdateState, TtsConfig } from '../types';
 interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
-  isDarkMode: boolean;
   onExportBackup?: () => void;
   onImportBackup?: (file: File) => void;
   onRebuildRag?: () => void;
-  ragStatus?: 'IDLE' | 'RECALLING' | 'INDEXING' | 'ERROR' | 'OFF' | 'STALE';
-  ragProgressLabel?: string | null;
-  language: Language;
   onLanguageChange: (lang: Language) => void;
-  locationConfig?: LocationConfig;
   onLocationChange?: (config: LocationConfig) => void;
-  
-  autoBackupInterval: number;
   onIntervalChange: (minutes: number) => void;
-  connectedFileName: string | null;
-  lastBackupTime: number | null;
   onSelectLocalFile: () => void; 
   onOpenLocalFile: () => void;   
   onManualLocalSave?: () => void; 
   onManualLocalLoad?: () => void; 
-
-  backupConfig: BackupConfig;
   onBackupConfigChange: (config: BackupConfig) => void;
   onCloudRestore: () => void;
   onCloudPush: () => void;
-  
-  isCloudSynced: boolean;
-  
-  // New props for Dev Logs
   devLogs: { level: 'log' | 'warn' | 'error'; message: string; timestamp: string }[];
   onClearDevLogs: () => void;
-  ttsConfig?: TtsConfig;
   onTtsConfigChange?: (config: TtsConfig) => void;
-  appUpdateState: AppUpdateState;
   onCheckForUpdates: () => void;
   onDownloadUpdate: () => void;
   onInstallUpdate: () => void;
-
-  autoZipEnabled: boolean;
   onToggleAutoZip: () => void;
   onDisconnectLocalFile?: () => void;
 }
@@ -82,6 +67,9 @@ type SettingsSectionId =
   | 'search'
   | 'general'
   | 'location'
+  | 'memoryContext'
+  | 'diaryLife'
+  | 'media'
   | 'backup'
   | 'data'
   | 'update'
@@ -92,41 +80,40 @@ type SettingsSectionId =
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ 
   isOpen, 
   onClose, 
-  isDarkMode,
   onExportBackup,
   onImportBackup,
-  ragStatus = 'OFF',
-  ragProgressLabel = null,
-  language,
   onLanguageChange,
-  locationConfig,
   onLocationChange,
-  autoBackupInterval,
   onIntervalChange,
-  connectedFileName,
-  lastBackupTime,
   onSelectLocalFile,
   onOpenLocalFile,
   onManualLocalSave,
   onManualLocalLoad,
-  backupConfig,
   onBackupConfigChange,
   onCloudRestore,
   onCloudPush,
-  isCloudSynced,
   devLogs,
   onClearDevLogs,
   onRebuildRag,
-  ttsConfig,
   onTtsConfigChange,
-  appUpdateState,
   onCheckForUpdates,
   onDownloadUpdate,
   onInstallUpdate,
-  autoZipEnabled,
   onToggleAutoZip,
   onDisconnectLocalFile
 }) => {
+  const isDarkMode = useAppStore(s => s.isDarkMode);
+  const language = useAppStore(s => s.language);
+  const locationConfig = useAppStore(s => s.locationConfig);
+  const ragStatus = useAppStore(s => s.ragStatus) as 'IDLE' | 'RECALLING' | 'INDEXING' | 'ERROR' | 'OFF' | 'STALE';
+  const ragProgressLabel = useAppStore(s => s.ragProgressLabel);
+  const backupConfig = useAppStore(s => s.backupConfig);
+  const connectedFileName = useAppStore(s => s.connectedFileName);
+  const lastBackupTime = useAppStore(s => s.lastBackupTime);
+  const autoBackupInterval = useAppStore(s => s.autoBackupInterval);
+  const autoZipEnabled = useAppStore(s => s.autoZipEnabled);
+  const ttsConfig = useAppStore(s => s.ttsConfig);
+  const appUpdateState = useAppStore(s => s.appUpdateState);
   const t = UI_TRANSLATIONS[language];
   const t_local = LOCAL_CONFIG_TRANSLATIONS[language];
   const isDesktopElectron = typeof window !== 'undefined' && 'electronAPI' in window;
@@ -135,6 +122,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [isAccountOpen, setIsAccountOpen] = useState(true);
   const [isLocationOpen, setIsLocationOpen] = useState(true);
   const [isBackupOpen, setIsBackupOpen] = useState(true);
+  const [isDiaryLifeOpen, setIsDiaryLifeOpen] = useState(true);
+  const [isMemoryContextOpen, setIsMemoryContextOpen] = useState(true);
+  const [isMediaOpen, setIsMediaOpen] = useState(true);
   const [isGuideOpen, setIsGuideOpen] = useState(true); 
   const [isUpdateOpen, setIsUpdateOpen] = useState(true);
   const [isApiConfigOpen, setIsApiConfigOpen] = useState(true);
@@ -170,22 +160,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     cancelEditingAccount,
     handleSaveAccount
   } = useAccountSettings(isOpen, language, showDialog);
+  // useBackupSettings simplified after cloud-sync removal: only local toggle + time formatter.
   const {
-    isConnecting,
-    isConnected,
-    connectionError,
     toggleBackup,
-    updateCloudConfig,
-    testConnection,
-    handleDisconnect,
-    formatLastBackup
+    formatLastBackup,
   } = useBackupSettings({
-    isOpen,
     language,
     backupConfig,
-    cloudSyncAvailable: CLOUD_SYNC_AVAILABLE,
     onBackupConfigChange,
-    showDialog
   });
   
   const { previewTime, modelPreviewTime } = useLocationPreview(isOpen, locationConfig, language);
@@ -266,7 +248,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     setIsLogViewerOpen(false);
   }, []);
 
-  const isCompactSettingsLayout = useMemo(() => !isExpandedView || viewportWidth < 1024, [isExpandedView, viewportWidth]);
+  const isCompactSettingsLayout = useMemo(() => !isExpandedView || viewportWidth < 900, [isExpandedView, viewportWidth]);
 
   useEffect(() => {
     if (isOpen) {
@@ -278,16 +260,31 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   }, [isOpen]); 
 
   useEffect(() => {
-    if (!isOpen) return;
+    const rootEl = document.documentElement;
 
-    const updateViewportWidth = () => {
+    const syncViewportWidth = () => {
       setViewportWidth(window.innerWidth);
     };
+    const onResize = () => {
+      if (rootEl.hasAttribute('data-resizing')) return;
+      syncViewportWidth();
+    };
 
-    updateViewportWidth();
-    window.addEventListener('resize', updateViewportWidth);
-    return () => window.removeEventListener('resize', updateViewportWidth);
-  }, [isOpen]);
+    syncViewportWidth();
+    window.addEventListener('resize', onResize);
+
+    const observer = new MutationObserver(() => {
+      if (!rootEl.hasAttribute('data-resizing')) {
+        syncViewportWidth();
+      }
+    });
+    observer.observe(rootEl, { attributes: true, attributeFilter: ['data-resizing'] });
+
+    return () => {
+      window.removeEventListener('resize', onResize);
+      observer.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -346,11 +343,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       setIsValidating(true);
       setValidationStatus(t_local.validating);
       setValidationStatusType('neutral');
-      setModelValidationResult({ main: null, summary: null }); 
-      setSearchStatus(''); 
+      setModelValidationResult({ main: null, summary: null, vision: null });
+      setSearchStatus('');
 
       const isValid = await validateAIConnection(localAiConfig);
-      
+
       if (!isValid) {
           setValidationStatus(t_local.error_invalid);
           setValidationStatusType('error');
@@ -431,22 +428,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   const handleSaveApiConfig = () => {
       localStorage.setItem('kumiko_ai_config', JSON.stringify(localAiConfig));
-      // Force reload is MANDATORY for iOS Web App to pick up new config cleanly
       showDialog({
         title: language === 'zh' ? "配置已保存" : "Configuration Saved",
-        message: language === 'zh' ? "配置已保存。系统将立即重启以应用更改。\n\n这能确保新 Key 被正确加载。" : "Configuration saved. System will restart immediately to apply changes.\n\nThis ensures the new Key is loaded correctly.",
-        type: 'confirm',
-        confirmText: language === 'zh' ? "立即重启" : "Restart Now",
-        cancelText: language === 'zh' ? "稍后" : "Later",
+        message: language === 'zh' ? "配置已保存并即时生效。" : "Configuration saved and applied.",
+        type: 'alert',
         onConfirm: () => {
-            closeDialog();
-            window.location.reload();
-        },
-        onCancel: () => {
             closeDialog();
             setValidationStatus('');
             setValidationStatusType('neutral');
-            setModelValidationResult({ main: null, summary: null });
+            setModelValidationResult({ main: null, summary: null, vision: null });
         }
       });
   };
@@ -715,7 +705,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           setValidationStatusType('neutral');
       }
       if (key === 'model_main' || key === 'model_summary') {
-          setModelValidationResult({ main: null, summary: null });
+          setModelValidationResult(prev => ({ ...prev, main: null, summary: null }));
+      }
+      if (key === 'model_vision' || key === 'visionProvider') {
+          setModelValidationResult(prev => ({ ...prev, vision: null }));
       }
       setSearchStatus('');
       setSearchStatusType('neutral');
@@ -728,6 +721,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       { id: 'search', label: t.internetSearchConfig, desc: t.internetSearchDesc, icon: Globe, active: activeSectionId === 'search', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'general', label: t.generalSettings, desc: t.generalDesc, icon: Settings, active: activeSectionId === 'general', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'location', label: t.locationTitle, desc: t.locationDesc, icon: MapPin, active: activeSectionId === 'location', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'memoryContext', label: t.memoryContextTitle, desc: t.memoryContextDesc, icon: Brain, active: activeSectionId === 'memoryContext', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'diaryLife', label: t.diaryLifeTitle, desc: t.diaryLifeDesc, icon: BookOpen, active: activeSectionId === 'diaryLife', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      { id: 'media', label: t.mediaTitle, desc: t.mediaDesc, icon: Image, active: activeSectionId === 'media', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'backup', label: t.backupTitle, desc: t.backupDesc, icon: HardDrive, active: activeSectionId === 'backup', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'data', label: t.dataManagementTitle, desc: t.dataManagementDesc, icon: Database, active: activeSectionId === 'data', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'update', label: t.updateSection, desc: t.updateSectionDesc, icon: Zap, active: activeSectionId === 'update', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
@@ -755,14 +751,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     ? 'w-[min(98vw,90rem)] h-[min(95dvh,60rem)] rounded-[1.85rem]'
     : 'w-[min(92vw,60rem)] h-[min(88dvh,50rem)] rounded-[1.5rem]';
   const shellSurfaceClass = isDarkMode
-    ? 'border-[#4d3824]/70 bg-[linear-gradient(180deg,rgba(20,15,11,0.95),rgba(13,10,7,0.98))] shadow-[0_26px_70px_rgba(0,0,0,0.42)]'
+    ? 'border-[#4d3824]/70 bg-[#161412]/96 shadow-[0_26px_70px_rgba(0,0,0,0.42)]'
     : 'border-[#ded5c8]/90 bg-[rgba(255,255,255,0.95)] shadow-[0_24px_52px_rgba(42,31,20,0.08)]';
   const shellDividerClass = isDarkMode ? 'border-[#4d3824]/60' : 'border-[#ebe2d7]';
   const railClass = isDarkMode
     ? 'bg-[linear-gradient(180deg,rgba(36,27,19,0.74),rgba(16,12,9,0.8))]'
     : 'bg-[rgba(255,255,255,0.62)]';
   const bodyClass = isDarkMode
-    ? 'bg-[linear-gradient(180deg,rgba(18,15,12,0.8),rgba(12,10,8,0.9))]'
+    ? 'bg-[#161412]'
     : 'bg-[rgba(255,255,255,0.76)]';
   const navButtonBaseClass = isDarkMode
     ? 'border-transparent bg-transparent text-[#efe3d6] hover:bg-white/[0.04] hover:border-[#5b4630]'
@@ -810,6 +806,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       case 'location':
         setIsLocationOpen(prev => !prev);
         break;
+      case 'memoryContext':
+        setIsMemoryContextOpen(prev => !prev);
+        break;
+      case 'diaryLife':
+        setIsDiaryLifeOpen(prev => !prev);
+        break;
+      case 'media':
+        setIsMediaOpen(prev => !prev);
+        break;
       case 'backup':
         setIsBackupOpen(prev => !prev);
         break;
@@ -847,6 +852,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         break;
       case 'location':
         setIsLocationOpen(true);
+        break;
+      case 'memoryContext':
+        setIsMemoryContextOpen(true);
+        break;
+      case 'diaryLife':
+        setIsDiaryLifeOpen(true);
+        break;
+      case 'media':
+        setIsMediaOpen(true);
         break;
       case 'backup':
         setIsBackupOpen(true);
@@ -929,6 +943,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   };
 
   const scheduleTopNavIndicatorUpdate = () => {
+    if (document.documentElement.hasAttribute('data-resizing')) return;
     if (topNavIndicatorRafRef.current !== null) return;
     topNavIndicatorRafRef.current = window.requestAnimationFrame(() => {
       topNavIndicatorRafRef.current = null;
@@ -1145,6 +1160,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     };
 
     const scheduleActiveSectionSync = () => {
+      if (document.documentElement.hasAttribute('data-resizing')) return;
       if (contentScrollSyncRafRef.current !== null) return;
       contentScrollSyncRafRef.current = window.requestAnimationFrame(() => {
         contentScrollSyncRafRef.current = null;
@@ -1296,6 +1312,42 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       </div>
       )}
 
+      {shouldRenderSection('memoryContext') && (
+      <div id="settings-section-memoryContext">
+        <MemoryContextSection
+          isOpen={isMemoryContextOpen}
+          onToggle={() => handleSectionToggle('memoryContext', isMemoryContextOpen)}
+          isDarkMode={isDarkMode}
+          t={t as any}
+          sectionBorder={sectionBorder}
+        />
+      </div>
+      )}
+
+      {shouldRenderSection('diaryLife') && (
+      <div id="settings-section-diaryLife">
+        <DiaryLifeSection
+          isOpen={isDiaryLifeOpen}
+          onToggle={() => handleSectionToggle('diaryLife', isDiaryLifeOpen)}
+          isDarkMode={isDarkMode}
+          t={t as any}
+          sectionBorder={sectionBorder}
+        />
+      </div>
+      )}
+
+      {shouldRenderSection('media') && (
+      <div id="settings-section-media">
+        <MediaSection
+          isOpen={isMediaOpen}
+          onToggle={() => handleSectionToggle('media', isMediaOpen)}
+          isDarkMode={isDarkMode}
+          t={t as any}
+          sectionBorder={sectionBorder}
+        />
+      </div>
+      )}
+
       {shouldRenderSection('backup') && (
       <div id="settings-section-backup" >
         <BackupSection
@@ -1304,27 +1356,16 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           isDarkMode={isDarkMode}
           t={t}
           sectionBorder={sectionBorder}
-          cloudSyncAvailable={CLOUD_SYNC_AVAILABLE}
           backupConfig={backupConfig}
           connectedFileName={connectedFileName}
           lastBackupTime={lastBackupTime}
           isInIframe={isInIframe}
-          isConnected={isConnected}
-          isConnecting={isConnecting}
-          connectionError={connectionError}
-          isCloudSynced={isCloudSynced}
           formatLastBackup={formatLastBackup}
           onToggleLocalBackup={() => toggleBackup('localEnabled')}
-          onToggleCloudBackup={() => toggleBackup('cloudEnabled')}
           onSelectLocalFile={onSelectLocalFile}
           onOpenLocalFile={onOpenLocalFile}
           onManualLocalSave={onManualLocalSave}
           onManualLocalLoad={onManualLocalLoad}
-          onUpdateCloudConfig={updateCloudConfig}
-          onTestConnection={testConnection}
-          onDisconnect={handleDisconnect}
-          onCloudPush={onCloudPush}
-          onCloudRestore={onCloudRestore}
           onExportBackup={onExportBackup}
           onOpenImportDialog={() => {
             fileInputRef.current?.click();
@@ -1439,7 +1480,6 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     autoZipEnabled,
     backupConfig,
     connectedFileName,
-    connectionError,
     dataDirectoryInfo,
     devLogs,
     enableInternetSearch,
@@ -1450,9 +1490,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     isAccountOpen,
     isApiConfigOpen,
     isBackupOpen,
-    isCloudSynced,
-    isConnected,
-    isConnecting,
+    isDiaryLifeOpen,
+    isMemoryContextOpen,
+    isMediaOpen,
     isDarkMode,
     isDataManagementOpen,
     isGeneralOpen,
@@ -1511,18 +1551,23 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     validationStatusType
   ]);
 
-  if (!isOpen) return null;
-
   return (
     <div
-      className="absolute inset-0 z-50 flex items-center justify-center p-3 md:p-5 safe-area-padding-modal animate-in fade-in duration-300 backdrop-blur-[8px]"
+      className="absolute inset-0 z-50 flex items-center justify-center p-3 md:p-5 safe-area-padding-modal backdrop-blur-[8px]"
       style={{
         background: isDarkMode
           ? 'radial-gradient(circle at center, rgba(12,9,7,0.78), rgba(8,6,5,0.92) 72%)'
-          : 'radial-gradient(circle at center, rgba(255,255,255,0.42), rgba(238,234,228,0.68) 74%, rgba(226,220,211,0.62) 100%)'
+          : 'radial-gradient(circle at center, rgba(255,255,255,0.42), rgba(238,234,228,0.68) 74%, rgba(226,220,211,0.62) 100%)',
+        opacity: isOpen ? 1 : 0,
+        pointerEvents: isOpen ? 'auto' as const : 'none' as const,
+        visibility: isOpen ? 'visible' as const : 'hidden' as const,
+        transition: isOpen
+          ? 'opacity 300ms ease-out, visibility 0s 0s'
+          : 'opacity 200ms ease-in, visibility 0s 200ms',
+        willChange: 'opacity' as const,
       }}
     >
-      <div className={`ka-settings-shell relative flex overflow-hidden border ${shellClass} ${shellSurfaceClass}`}>
+      <div className={`ka-settings-shell relative flex overflow-hidden border ${shellClass} ${shellSurfaceClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out' : 'opacity 200ms ease-in, transform 200ms ease-in', willChange: 'transform, opacity', contain: 'layout style paint' }}>
         <div className={`absolute top-0 left-0 h-px w-full pointer-events-none ${isDarkMode ? 'bg-gradient-to-r from-transparent via-yellow-700/45 to-transparent' : 'bg-gradient-to-r from-transparent via-[#d8b56f]/42 to-transparent'}`} />
         <div className={`absolute inset-0 pointer-events-none ${isDarkMode ? 'bg-[linear-gradient(135deg,rgba(188,149,91,0.03),transparent_40%,rgba(188,149,91,0.02)_72%,transparent)]' : 'bg-[linear-gradient(180deg,rgba(255,255,255,0.22),rgba(255,255,255,0.02)_26%,transparent_52%)]'}`} />
         {!isExpandedView && (
@@ -1667,7 +1712,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             )}
           </div>
 
-          <div ref={contentScrollRef} className="flex-1 overflow-y-auto touch-scroll scrollbar-thin">
+          <div ref={contentScrollRef} data-resize-heavy className="flex-1 overflow-y-auto touch-scroll scrollbar-thin">
             <div className={`mx-auto w-full ${isExpandedView ? 'max-w-[54rem]' : 'max-w-[46rem]'} px-4 py-5 md:px-6 md:py-6 flex flex-col gap-4`}>
               {sectionsMarkup}
             </div>

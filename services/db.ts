@@ -18,6 +18,8 @@ export interface MessageEntity {
   voiceFileId?: string;
   voiceDuration?: number;
   japaneseText?: string;
+  sendStatus?: 'sending' | 'delivered' | 'failed';
+  failReason?: string;
 }
 
 export interface ImageEntity {
@@ -90,6 +92,10 @@ export interface KumikoDiaryEntity {
   summary: string;
   weather?: string;
   holiday?: string;
+  rewriteCount?: number;
+  validationStatus?: 'passed' | 'partial' | 'failed';
+  previousContent?: string;
+  previousSummary?: string;
 }
 
 export interface PsycheStateEntity {
@@ -98,6 +104,7 @@ export interface PsycheStateEntity {
   energy: number; // 0-100
   relaxation: number; // 0-100
   lastUpdated: number;
+  lastChatDeltaDirection?: { stress: number; energy: number; relaxation: number };
 }
 
 export class AppDatabase extends Dexie {
@@ -230,13 +237,13 @@ export const INITIAL_WORLD_CHARACTER_STATUS: WorldCharacterStatusMap = {
   },
   reina: {
     aliases: ["丽奈", "高坂", "reina"],
-    current_status: "在美国进修，有时差，只能偶尔打视频电话。",
+    current_status: "在美国以职业小号演奏者身份活动，有时差，只能偶尔打视频电话。不是学生，没有学期概念。",
     last_major_event: "上周视频聊了两个小时",
     current_attitude: "非常想念，但不想打扰她练习，提起她时会带着自豪和些许寂寞。"
   },
   kanade: {
     aliases: ["小奏", "久石奏", "kanade"],
-    current_status: "大学在读，偶尔会在 LINE 上联系。",
+    current_status: "已大学毕业，在社会上工作了，偶尔会在 LINE 上联系。",
     last_major_event: "无",
     current_attitude: "觉得她还是个爱捉弄人的可爱后辈。"
   }

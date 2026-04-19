@@ -21,21 +21,28 @@ const { Worker } = require('worker_threads');
 const { pathToFileURL } = require('url');
 
 // --- LORE DATA ---
+// NOTE ON "ENCRYPTION":
+// `lore.enc` is OBFUSCATED, not cryptographically secret. The key below ships inside the
+// binary by design — anyone with the .exe / source can recover it in seconds (grep or
+// asar extract). The goal is purely to discourage casual tampering and keep the lore
+// file out of plain text diffs. If you ever need lore to be actually private, fetch it
+// from a server at runtime or inject the key at build-time via an env var — do not try
+// to "hide" the key inside source.
 let loreChunks = [];
 try {
     const lorePath = path.join(__dirname, 'assets', 'lore.enc');
     const crypto = require('crypto');
     if (fs.existsSync(lorePath)) {
-        const ENCRYPTION_KEY = 'kumiko-amadeus-lore-2026-hibike';
+        const LORE_OBFUSCATION_KEY = 'kumiko-amadeus-lore-2026-hibike';
         const encrypted = fs.readFileSync(lorePath, 'utf8');
         const [ivHex, encryptedHex] = encrypted.split(':');
-        const key = crypto.createHash('sha256').update(ENCRYPTION_KEY).digest();
+        const key = crypto.createHash('sha256').update(LORE_OBFUSCATION_KEY).digest();
         const iv = Buffer.from(ivHex, 'hex');
         const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
         let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
         decrypted += decipher.final('utf8');
         loreChunks = JSON.parse(decrypted);
-        console.log(`[RAG] Loaded ${loreChunks.length} lore chunks from encrypted file`);
+        console.log(`[RAG] Loaded ${loreChunks.length} lore chunks from obfuscated file`);
     }
 } catch (e) {
     console.warn('[RAG] Could not load lore.enc, lore data will be empty:', e.message);
@@ -516,6 +523,12 @@ function initDatabase() {
     
     db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
+    // P1 #20: previously WAL was enabled without a busy_timeout. Long-running
+    // RAG operations (rebuild, batch embed) can coincide with backup read or
+    // index maintenance and briefly contend on the write lock; without a
+    // timeout better-sqlite3 surfaces SQLITE_BUSY immediately and the caller
+    // sees "database is locked". 5s gives us a comfortable retry window.
+    db.pragma('busy_timeout = 5000');
     
     db.exec(`
         CREATE TABLE IF NOT EXISTS vectors (

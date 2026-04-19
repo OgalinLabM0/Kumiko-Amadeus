@@ -2,6 +2,7 @@ import React from 'react';
 import { CheckCircle2, ChevronDown, ChevronUp, Download, RefreshCw, Rocket } from 'lucide-react';
 import { UI_TRANSLATIONS } from '../../constants';
 import type { AppUpdateState, Language } from '../../types';
+import { Collapse } from '../Collapse';
 
 interface AppUpdateSectionProps {
   isOpen: boolean;
@@ -80,8 +81,8 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      {isOpen && (
-        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 flex flex-col gap-3">
+      <Collapse isOpen={isOpen}>
+        <div className="px-4 pb-4 pt-0 flex flex-col gap-3">
           <p className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.updateSectionDesc}</p>
 
           <div className={`rounded-lg border p-3 ${isDarkMode ? 'border-white/10 bg-black/30' : 'border-gray-200 bg-white'}`}>
@@ -159,7 +160,7 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
             </button>
           </div>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

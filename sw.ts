@@ -36,7 +36,7 @@ self.addEventListener('push', (event) => {
       // c) Catch the response and use it as `notificationBody`
       
       const notificationTitle = 'Kumiko Amadeus';
-      const notificationBody = '这是一个测试的本地 AI 唤醒消息！由于现在还在原型阶段，以后这里的话会是由 Gemini 本地生成的。';
+      const notificationBody = '这是一个测试的本地 AI 唤醒消息！由于现在还在原型阶段，以后这里的话会是由 AI 本地生成的。';
 
       // 3. Show the notification
       await self.registration.showNotification(notificationTitle, {

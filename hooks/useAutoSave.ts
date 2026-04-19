@@ -78,10 +78,17 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
     const currentHandle = fileHandleRef.current;
     const currentData = dataRef.current;
 
-    // --- NEW: WRITE PROTECTION ---
-    // If validation fails, abort save silently (or with warning) to prevent corruption
+    // --- WRITE PROTECTION ---
+    // If validation fails we MUST report it. Previously this silently returned which
+    // left syncStatus stuck on DIRTY forever and the user had no way to know saves
+    // were being skipped. Now we flip to ERROR and notify so the user can investigate
+    // or trigger a manual retry after fixing the source data.
     if (validate && !validate(currentData)) {
         console.warn("[AutoSave] Data validation failed (Write Protection). Skipping save.");
+        setStatus('ERROR');
+        if (onSaveError) {
+            onSaveError('数据完整性校验失败，已暂停自动保存以防止覆盖。请检查记忆/世界书等是否异常后手动重试。');
+        }
         return;
     }
 
@@ -184,22 +191,25 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
   // --- WATCHERS ---
 
   // Watch for Data Changes
+  //
+  // Note (P2 #48): we investigated adding a cheap structural "fingerprint"
+  // pre-check so we could skip JSON.stringify on renders where the shape is
+  // obviously unchanged. We backed it out because any fingerprint loose enough
+  // to be cheap would miss in-place edits (e.g. retyping a middle message's
+  // text with the same length), causing silent "DIRTY never fires" regressions.
+  // The deep-stringify comparison stays as the source of truth.
   useEffect(() => {
-    // 1. Deep compare to avoid unnecessary triggers
     const currentSnapshot = JSON.stringify(data);
     if (currentSnapshot === lastSnapshotRef.current) return;
 
-    // 2. Data changed! Mark dirty.
     if (status !== 'ERROR' && status !== 'CONFLICT' && status !== 'SAVING') {
         setStatus('DIRTY');
     }
-    
+
     setLastChangeTime(Date.now());
 
-    // 3. Blocker Check
-    if (isBlocked) return; 
+    if (isBlocked) return;
 
-    // 4. Debounce Timer (Standard Path: 3 seconds)
     const timer = setTimeout(() => {
         triggerSave();
     }, 3000);

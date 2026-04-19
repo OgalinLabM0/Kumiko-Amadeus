@@ -1,6 +1,7 @@
 import React from 'react';
 import { BookOpen, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import type { DiaryGapInfo } from '../services/lifeStreamService';
+import { useModalKeyboard } from '../hooks/useModalKeyboard';
 
 export interface BackfillProgress {
   current: number;
@@ -33,6 +34,11 @@ export const DiaryBackfillDialog: React.FC<DiaryBackfillDialogProps> = ({
 }) => {
   const isZh = language === 'zh';
   const isGenerating = !!progress && !isComplete;
+
+  // P2 #42: allow Esc to dismiss. Respect ongoing batch generation — do not
+  // let Esc cancel mid-batch (matches the existing behaviour where the Skip
+  // button is hidden while generating).
+  useModalKeyboard({ isOpen: !isGenerating, onClose: onDismiss });
   const panelClass = isDarkMode
     ? 'bg-[#17120e] border-[#6a523f]/60 text-[#ead8c1] shadow-[0_30px_90px_rgba(0,0,0,0.55)]'
     : 'bg-[#f9f7f2] border-[#785A42]/20 text-[#785A42]';

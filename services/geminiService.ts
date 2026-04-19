@@ -1,250 +1,29 @@
 
+// Barrel re-exports from extracted modules
+export { getCurrentAIConfig, startChat, callLLMRaw } from './llmCore';
+export { validateAIConnection, validateModels, validateSearchCapability } from './aiValidation';
+export { searchRagMemory, saveRagMemory, uploadImageToBackend, urlToBase64 } from './ragApiService';
+export { summarizeConversation } from './conversationSummarizer';
+export { analyzeTemporalQueryDetailed, rewriteHistoricalRecallQueryDetailed, getTemporalSearchRoleFromQuery } from './temporalRecallService';
+export type { TemporalQueryAnalysis, TemporalQueryDiagnostics, TemporalQueryAnalysisResult, HistoricalQueryRewriteIntent, HistoricalSearchStrategy, HistoricalQueryRewrite, HistoricalQueryRewriteResult } from './temporalRecallService';
+
 import { GoogleGenAI, Chat, GenerateContentResponse, Part, Content, Type, FunctionDeclaration } from "@google/genai";
 import { KUMIKO_SYSTEM_INSTRUCTION_ZH, KUMIKO_SYSTEM_INSTRUCTION_EN, KUMIKO_EMOTION_IMAGES } from "../constants";
-import { ChatResponse, EmotionType, Message, WorldBookEntry, LocationConfig, AnchorEntry, AIConfig, Language, SummaryBoundaryReason, TemporalQueryPrecision, TemporalQuerySource, TemporalQueryDiagnosticsStatus, TemporalQueryConfidence } from "../types";
+import { ChatResponse, EmotionType, Message, WorldBookEntry, LocationConfig, AnchorEntry, AIConfig, Language } from "../types";
 import { callOpenAI, callAnthropic, callVisionHelper } from "./llmProviderService";
 import { imageService } from "./imageService";
-import { DEFAULT_AI_CONFIG, getDefaultVisionModel, normalizeAIConfig, resolveTransportProvider } from "./appConfig";
+import { DEFAULT_AI_CONFIG, getDefaultVisionModel, resolveTransportProvider } from "./appConfig";
 import { db } from "./db";
-
-// Helper: Get Current AI Config from LocalStorage or Defaults
-export const getCurrentAIConfig = (): AIConfig => {
-    try {
-        const saved = localStorage.getItem('kumiko_ai_config');
-        if (saved) {
-            return normalizeAIConfig(JSON.parse(saved));
-        }
-    } catch (e) {
-        console.warn("Failed to load AI Config, using defaults", e);
-    }
-    return DEFAULT_AI_CONFIG;
-};
-
-// Helper to get a fresh client instance every time to handle dynamic API keys
-const getGenAI = (overrideKey?: string): GoogleGenAI => {
-  const config = getCurrentAIConfig();
-  
-  let apiKey = "";
-  let source = "UNKNOWN";
-
-  if (overrideKey) {
-      apiKey = overrideKey;
-      source = "OVERRIDE";
-  } else {
-      const keyToUse = config.activeKey === 'backup' ? config.apiKey_backup : config.apiKey_primary;
-      if (keyToUse && keyToUse.trim() !== "") {
-          apiKey = keyToUse.trim();
-          source = `CUSTOM_${config.activeKey.toUpperCase()}`;
-      }
-  }
-
-  // FORENSIC LOGGING
-  const maskedKey = apiKey ? `...${apiKey.slice(-4)}` : "MISSING";
-  console.log(`[Gemini Init] Source: ${source} | Key: ${maskedKey}`);
-
-  if (!apiKey) {
-    console.error("API_KEY is missing. Please configure it in the Neural Configuration screen.");
-    throw new Error("API_KEY is missing");
-  }
-  
-  const options: any = { apiKey };
-  if (config.useCustomEndpoint && config.customEndpoint) {
-      options.httpOptions = { baseUrl: config.customEndpoint.trim().replace(/\/v1beta\/?$/, '').replace(/\/v1alpha\/?$/, '').replace(/\/v1\/?$/, '').replace(/\/$/, '') };
-  }
-  
-  return new GoogleGenAI(options);
-};
-
-
-// --- NEW: STRICT VALIDATION FUNCTION ---
-export const validateAIConnection = async (config: AIConfig): Promise<boolean> => {
-    try {
-        let keyToUse = "";
-        const activeKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
-        if (!activeKey || activeKey.trim() === "") {
-            console.error(`Validation Failed: Active API Key (${config.activeKey}) is missing.`);
-            return false;
-        }
-        keyToUse = activeKey.trim();
-
-        const provider = config.provider || 'gemini';
-        const transportProvider = resolveTransportProvider(
-            provider,
-            config.useCustomEndpoint ? config.customEndpoint : undefined
-        );
-        let modelName = config.model_summary;
-        if (!modelName) {
-            switch (provider) {
-                case 'openai': modelName = 'gpt-4o-mini'; break;
-                case 'anthropic': modelName = 'claude-3-5-haiku-20241022'; break;
-                case 'deepseek': modelName = 'deepseek-chat'; break;
-                case 'grok': modelName = 'grok-2-latest'; break;
-                default: modelName = 'gemini-2.5-flash';
-            }
-        }
-        
-        console.log(`[Validation] Pinging ${modelName} with key ending in ...${keyToUse.slice(-4)} via ${transportProvider}`);
-        
-        if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-            await callOpenAI(config, modelName, "ping", [], "ping");
-        } else if (transportProvider === 'anthropic') {
-            await callAnthropic(config, modelName, "ping", [], "ping");
-        } else {
-            const options: any = { apiKey: keyToUse };
-            if (config.useCustomEndpoint && config.customEndpoint) {
-                options.httpOptions = { baseUrl: config.customEndpoint.trim().replace(/\/v1beta\/?$/, '').replace(/\/v1alpha\/?$/, '').replace(/\/v1\/?$/, '').replace(/\/$/, '') };
-            }
-            const ai = new GoogleGenAI(options);
-            await ai.models.generateContent({
-                model: modelName,
-                contents: "ping",
-            });
-        }
-        
-        return true;
-    } catch (e) {
-        console.error("Validation Failed with Error:", e);
-        return false;
-    }
-};
-
-// --- NEW: MODEL-SPECIFIC VALIDATION FUNCTION ---
-export const validateModels = async (config: AIConfig): Promise<{ main: boolean; summary: boolean; vision: boolean }> => {
-    let ai: GoogleGenAI | undefined;
-    const provider = config.provider || 'gemini';
-    const transportProvider = resolveTransportProvider(
-        provider,
-        config.useCustomEndpoint ? config.customEndpoint : undefined
-    );
-    try {
-        let keyToUse = "";
-        const activeKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
-        if (!activeKey) throw new Error("Active API key not found for model validation");
-        keyToUse = activeKey.trim();
-        
-        if (transportProvider === 'gemini') {
-            const options: any = { apiKey: keyToUse };
-            if (config.useCustomEndpoint && config.customEndpoint) {
-                options.httpOptions = { baseUrl: config.customEndpoint.trim().replace(/\/v1beta\/?$/, '').replace(/\/v1alpha\/?$/, '').replace(/\/v1\/?$/, '').replace(/\/$/, '') };
-            }
-            ai = new GoogleGenAI(options);
-        }
-    } catch (e) {
-        console.error("Failed to initialize GenAI for model validation:", e);
-        return { main: false, summary: false, vision: false };
-    }
-
-    const validate = async (modelName: string, isVision: boolean = false) => {
-        if (!modelName || !modelName.trim()) return false;
-        try {
-            const currentProvider = isVision ? (config.visionProvider || config.provider || 'gemini') : provider;
-            const currentEndpoint = isVision
-                ? ((config.useVisionCustomEndpoint ?? config.useCustomEndpoint) ? (config.visionCustomEndpoint ?? config.customEndpoint) : undefined)
-                : (config.useCustomEndpoint ? config.customEndpoint : undefined);
-            const currentTransport = resolveTransportProvider(currentProvider, currentEndpoint);
-            console.log(`[Model Validation] Pinging ${modelName} via ${currentTransport}...`);
-            
-            if (isVision) {
-                // If it's vision, we can just use callVisionHelper with a dummy image to test
-                // But wait, callVisionHelper requires a real image. Let's just do a ping with the vision provider settings.
-                const visionConfig = { ...config, provider: currentProvider, useCustomEndpoint: config.useVisionCustomEndpoint ?? config.useCustomEndpoint, customEndpoint: config.visionCustomEndpoint ?? config.customEndpoint };
-                if (config.visionApiKey) {
-                    visionConfig.apiKey_primary = config.visionApiKey;
-                    visionConfig.activeKey = 'primary';
-                }
-                
-                if (currentTransport === 'openai' || currentTransport === 'deepseek' || currentTransport === 'grok' || currentTransport === 'openrouter') {
-                    await callOpenAI(visionConfig, modelName, "ping", [], "ping");
-                } else if (currentTransport === 'anthropic') {
-                    await callAnthropic(visionConfig, modelName, "ping", [], "ping");
-                } else {
-                    let visionAi = ai;
-                    if (!visionAi || config.visionApiKey || config.useVisionCustomEndpoint || currentTransport !== transportProvider) {
-                        const options: any = { apiKey: config.visionApiKey || (config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup) };
-                        if ((config.useVisionCustomEndpoint ?? config.useCustomEndpoint) && (config.visionCustomEndpoint ?? config.customEndpoint)) {
-                            options.httpOptions = { baseUrl: (config.visionCustomEndpoint ?? config.customEndpoint)!.trim().replace(/\/v1beta\/?$/, '').replace(/\/v1alpha\/?$/, '').replace(/\/v1\/?$/, '').replace(/\/$/, '') };
-                        }
-                        visionAi = new GoogleGenAI(options);
-                    }
-                    await visionAi.models.generateContent({ model: modelName, contents: "ping" });
-                }
-            } else {
-                if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-                    await callOpenAI(config, modelName, "ping", [], "ping");
-                } else if (transportProvider === 'anthropic') {
-                    await callAnthropic(config, modelName, "ping", [], "ping");
-                } else {
-                    await ai!.models.generateContent({ model: modelName, contents: "ping" });
-                }
-            }
-            console.log(`[Model Validation] Success for ${modelName}.`);
-            return true;
-        } catch (e) {
-            console.warn(`[Model Validation] Failed for model ${modelName}:`, e);
-            return false;
-        }
-    };
-
-    const [mainResult, summaryResult, visionResult] = await Promise.all([
-        validate(config.model_main),
-        validate(config.model_summary),
-        config.useVisionHelper ? validate(config.model_vision || getDefaultVisionModel(config.visionProvider || config.provider), true) : Promise.resolve(true)
-    ]);
-
-    return { main: mainResult, summary: summaryResult, vision: visionResult };
-};
-
-// --- NEW: SEARCH GROUNDING VALIDATION ---
-export const validateSearchCapability = async (config: AIConfig): Promise<{ success: boolean; message?: string }> => {
-    try {
-        let keyToUse = "";
-        const activeKey = config.activeKey === 'primary' ? config.apiKey_primary : config.apiKey_backup;
-        if (!activeKey) return { success: false, message: "Active Key Missing" };
-        keyToUse = activeKey.trim();
-
-        const transportProvider = resolveTransportProvider(
-            config.provider,
-            config.useCustomEndpoint ? config.customEndpoint : undefined
-        );
-
-        if (transportProvider !== 'gemini') {
-            return { success: false, message: "Current endpoint is not Gemini-native; search grounding validation is skipped." };
-        }
-
-        const options: any = { apiKey: keyToUse };
-        if (config.useCustomEndpoint && config.customEndpoint) {
-            options.httpOptions = { baseUrl: config.customEndpoint.trim().replace(/\/v1beta\/?$/, '').replace(/\/v1alpha\/?$/, '').replace(/\/v1\/?$/, '').replace(/\/$/, '') };
-        }
-        const ai = new GoogleGenAI(options);
-        // Use Main Model as it is the one likely to use search
-        const modelName = config.model_main || 'gemini-3.1-pro-preview'; 
-        
-        console.log(`[Search Validation] Testing Search Grounding on ${modelName}...`);
-        
-        // Force a query that requires real-time data to trigger search tool
-        const response = await ai.models.generateContent({
-            model: modelName,
-            contents: "What is the exact time in Tokyo right now?",
-            config: {
-                tools: [{ googleSearch: {} }] // Explicitly enable search tool
-            }
-        });
-        
-        // If request succeeds (200 OK), permission is likely granted.
-        // If permission is missing, API usually throws 403 or "PermissionDenied".
-        console.log(`[Search Validation] Success. Response received.`);
-        return { success: true };
-
-    } catch (e: any) {
-        console.error("Search Validation Failed:", e);
-        const msg = e.message || "Unknown Error";
-        if (msg.includes("permission") || msg.includes("disabled")) {
-            return { success: false, message: "Permission Denied: Search not enabled for this project." };
-        }
-        return { success: false, message: msg };
-    }
-};
-
+import { getCurrentAIConfig, getGenAI, callLLMRaw } from './llmCore';
+// urlToBase64 re-exported for external consumers (see line 5); no longer used inside this file.
+import { isMemoryHistoryQueryLike } from './temporalRecallService';
+import {
+  DEFAULT_DIARY_LAYER_PRESET,
+  DIARY_LAYER_PRESETS,
+  needsMidTermDiarySummaries,
+  type DiaryLayerPreset,
+} from '../constants/diaryLayerConfig';
+import { useAppStore } from '../store';
 
 // Normalization Layer: Maps loose emotion words to strict types
 const EMOTION_MAPPING: Record<string, EmotionType> = {
@@ -278,451 +57,6 @@ const VARIETY_INSTRUCTIONS_ZH = [
     "[不加掩饰]：突然把自己心里嫌麻烦或觉得无语的真实念头直接脱口而出，然后再试图敷衍或掩饰过去。",
     "[体感细节]：顺口抱怨一句当下的物理体感（比如手指发凉、脖子酸、屏幕太亮刺眼）。"
 ];
-
-export const startChat = async () => {
-  try {
-      const config = getCurrentAIConfig();
-      const transportProvider = resolveTransportProvider(
-          config.provider,
-          config.useCustomEndpoint ? config.customEndpoint : undefined
-      );
-
-      if (transportProvider === 'gemini') {
-          getGenAI();
-      }
-
-      return true;
-  } catch(e) {
-      throw new Error("Gemini Client initialization failed: " + e);
-  }
-};
-
-export const urlToBase64 = async (url: string): Promise<string | null> => {
-    try {
-        const response = await fetch(url);
-        const blob = await response.blob();
-        return new Promise((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                const base64data = reader.result as string;
-                const raw = base64data.split(',')[1];
-                resolve(raw);
-            };
-            reader.readAsDataURL(blob);
-        });
-    } catch (e) {
-        console.warn("[Recall] Failed to convert URL to Base64:", url);
-        return null;
-    }
-};
-
-export const uploadImageToBackend = async (base64Image: string, backendUrl: string): Promise<string | null> => {
-  try {
-    const cleanBaseUrl = backendUrl.replace(/\/+$/, "");
-    const uploadUrl = `${cleanBaseUrl}/api/r2-upload`;
-    
-    const payload = {
-        image: base64Image
-    };
-
-    const res = await fetch(uploadUrl, {
-      method: "POST",
-      headers: {
-          'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!res.ok) {
-        console.error(`[R2 Upload] Server returned ${res.status}`);
-        return null;
-    }
-
-    const data = await res.json();
-    
-    if (data && data.url) {
-        return data.url;
-    }
-    
-    return null;
-  } catch (e) {
-    console.error("[R2 Upload] Network Error:", e);
-    return null;
-  }
-};
-
-export const searchRagMemory = async (
-    query: string, 
-    endpoint: string, 
-    userId: string, 
-    apiKey?: string
-): Promise<string[]> => {
-    try {
-        const baseUrl = endpoint.replace(/\/+$/, ""); 
-        const searchUrl = `${baseUrl}/api/rag/search`;
-        
-        const payload = {
-            query: query,
-            userId: userId
-        };
-        
-        const headers: any = { 'Content-Type': 'application/json' };
-        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-
-        const res = await fetch(searchUrl, { 
-            method: 'POST', 
-            headers,
-            body: JSON.stringify(payload)
-        });
-        
-        if (!res.ok) return [];
-        
-        const data = await res.json();
-        if (Array.isArray(data.results)) return data.results;
-        if (Array.isArray(data.memories)) return data.memories.map((m: any) => m.content);
-        
-        return [];
-    } catch (e) {
-        console.warn("[RAG] Search failed:", e);
-        return [];
-    }
-};
-
-export const saveRagMemory = async (
-    memoryText: string, 
-    endpoint: string, 
-    userId: string, 
-    apiKey?: string
-): Promise<boolean> => {
-    try {
-        const baseUrl = endpoint.replace(/\/+$/, "");
-        const addUrl = `${baseUrl}/api/rag/add`;
-        
-        const headers: any = { 'Content-Type': 'application/json' };
-        if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
-        
-        const payload = {
-            userId,
-            text: memoryText,    
-            content: memoryText, 
-            timestamp: Date.now()
-        };
-
-        const res = await fetch(addUrl, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(payload)
-        });
-        
-        return res.ok;
-    } catch (e) {
-        console.error("[RAG] Save failed:", e);
-        return false;
-    }
-};
-
-export const summarizeConversation = async (
-  recentMessages: Message[], 
-  existingMemory: string,
-  timeRangeStr?: string,
-  currentNotebook: string = "",
-  locationConfig?: LocationConfig,
-  language: Language = 'zh',
-  summaryMeta?: {
-    reason?: SummaryBoundaryReason | null;
-    isComplete?: boolean;
-    isContinuation?: boolean;
-    turnsInSegment?: number;
-  }
-): Promise<{ diary: string, notebook: string, chunks: string[] }> => {
-  const config = getCurrentAIConfig();
-  const provider = config.provider || 'gemini';
-  const transportProvider = resolveTransportProvider(
-    provider,
-    config.useCustomEndpoint ? config.customEndpoint : undefined
-  );
-
-  try {
-    const historyText = recentMessages.map(m => {
-        const msgDate = new Date(m.timestamp);
-        let jstTime = "??:??";
-        try {
-            const jstOptions: Intl.DateTimeFormatOptions = { 
-                timeZone: 'Asia/Tokyo', 
-                month: '2-digit', day: '2-digit', 
-                weekday: 'short',
-                hour: '2-digit', minute: '2-digit', hour12: false 
-            };
-            jstTime = msgDate.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', jstOptions);
-        } catch(e) {}
-
-        let userTime = "??:??";
-        if (locationConfig?.userTimezone) {
-            try {
-               const userOptions: Intl.DateTimeFormatOptions = { 
-                   timeZone: locationConfig.userTimezone, 
-                   month: '2-digit', day: '2-digit', 
-                   weekday: 'short',
-                   hour: '2-digit', minute: '2-digit', hour12: false 
-               };
-               userTime = msgDate.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', userOptions);
-            } catch(e) {
-                userTime = "Unknown";
-            }
-        }
-        const voiceTag = m.isVoiceMessage ? '[语音消息] ' : '';
-        return `[JST: ${jstTime} | User: ${userTime}] ${m.role.toUpperCase()}: ${voiceTag}${m.text}`;
-    }).join('\n');
-
-    const summaryReasonTextZh: Record<SummaryBoundaryReason, string> = {
-      topic_shift: '用户自然换题，上一段对话已经形成章节边界。',
-      semantic_shift: '系统检测到话题语义已经明显转向，上一段对话适合先按自然章节封存。',
-      long_gap: '用户隔了较长时间才再次开口，上一段对话适合先封存。',
-      reminder_created: '这一段对话已经以提醒/约定的形式落地，适合作为完整片段归档。',
-      sleep_transition: '对话自然收到了睡前或结束态，适合作为一个章节结尾。',
-      wrap_up: '用户明确表现出收尾或暂时结束当前话题的意图。',
-      hard_limit: '这段对话仍可能继续，但为了防止长期不归档，系统在硬上限处先做阶段性封存。',
-    };
-
-    const summaryReasonTextEn: Record<SummaryBoundaryReason, string> = {
-      topic_shift: 'The user naturally shifted topic, so the previous exchange forms a clean episode boundary.',
-      semantic_shift: 'The system detected a clear semantic drift in topic, so the earlier exchange should be archived as its own episode.',
-      long_gap: 'A long silence happened before the user came back, so the earlier exchange should be archived first.',
-      reminder_created: 'This exchange resolved into a reminder or promise, so it works as a complete episode.',
-      sleep_transition: 'The conversation naturally moved into a sleep or closing state, so it fits a chapter ending.',
-      wrap_up: 'The user clearly signaled a wrap-up or temporary close for the current topic.',
-      hard_limit: 'The topic may still continue later, but the system hit a hard cap and is archiving this as an unfinished ongoing segment.',
-    };
-
-    const boundaryReasonText = summaryMeta?.reason
-      ? (language === 'zh' ? summaryReasonTextZh[summaryMeta.reason] : summaryReasonTextEn[summaryMeta.reason])
-      : (language === 'zh' ? '系统没有提供额外切段说明。' : 'No extra boundary note was provided by the system.');
-
-    const segmentMetaBlock = language === 'zh'
-      ? `\n[当前分段状态]\n- 本次归档范围：当前尚未归档的自然对话分段，不是固定最后 20 轮。\n- 当前分段轮数：${summaryMeta?.turnsInSegment ?? '未知'}\n- 切段原因：${boundaryReasonText}\n- 是否自然收尾：${summaryMeta?.isComplete === false ? '否，这一段可能还会继续。' : '是，这一段基本自然收束了。'}\n- 是否承接上一段未完话题：${summaryMeta?.isContinuation ? '是。开头附带了一小段上一章尾部，只用于续写衔接。' : '否。'}\n- 如果系统说明“尚未自然收尾”，你的摘要和记忆块必须保留“还没彻底聊完”的感觉，不要假装已经得出最终结论。\n- 如果系统说明“承接上一段未完话题”，开头那一点旧内容只是为了衔接，不要把已经写过的旧部分原样重复成新的重点。\n`
-      : `\n[CURRENT SEGMENT STATE]\n- Archive scope: the current unsaved conversation segment, not a fixed last-20-turn window.\n- Segment turns: ${summaryMeta?.turnsInSegment ?? 'Unknown'}\n- Boundary reason: ${boundaryReasonText}\n- Naturally complete: ${summaryMeta?.isComplete === false ? 'No. The topic may continue later.' : 'Yes. The segment mostly reached a natural close.'}\n- Continues previous unfinished thread: ${summaryMeta?.isContinuation ? 'Yes. A small tail from the prior chapter is attached only to preserve continuity.' : 'No.'}\n- If the system says the segment is not naturally complete, your diary and memory chunks must preserve that unfinished feeling instead of pretending the topic is fully resolved.\n- If the system says this segment continues a previous unfinished thread, treat the overlap as continuity glue and avoid repeating already-archived old material as if it were brand new.\n`;
-    
-    // --- DUAL LANGUAGE PROMPT STRATEGY ---
-    let diaryInstruction = "";
-    if (language === 'zh') {
-        diaryInstruction = `
-      **GOLDEN STANDARD (USE CHINESE):**
-      "【2025/12/08 20:48 - 03:19】那个笨蛋终于肯去睡觉了。明明都已经很晚了，还在床上磨磨蹭蹭的...本来以为终于能清静了，结果！就在刚才！这边明明是凌晨三点，这家伙突然发个“早”过来...嘛，特意想跟我打招呼这份心意是不坏啦。
-      - [KEY_FACT]: User睡得很晚；User觉得听到我的晚安很满足。
-      - [EMOTIONAL_CONTEXT]: 既觉得烦躁又感到一丝温暖。"
-
-      **Requirements for Diary:**
-      1. **Header**: Start with timestamp 【${timeRangeStr}】. DO NOT modify this timestamp.
-      2. **Body**: Use a rich, personal, slightly cynical but warm tone in **CHINESE**.
-      3. **Structure**: MUST include "- [KEY_FACT]:" and "- [EMOTIONAL_CONTEXT]:" sections.
-      
-      [TASK 2: MANAGE YOUR NOTEBOOK]
-      Is there anything new worth writing in your private notebook?
-      - WRITE IN **CHINESE**.
-      - **CRITICAL**: Your notebook MUST be a valid JSON object with exactly two keys:
-        1. "user_profile": A string describing the user's identity, location, job, habits, etc.
-        2. "relationship_dynamics": A string describing your current relationship, how you feel about them, internal jokes, etc.
-      - Merge any new information with the existing notebook content.
-      - Output ONLY the raw JSON object inside the [NOTEBOOK_UPDATE] tags. Do not use markdown code blocks like \`\`\`json inside the tags.
-      
-      [TASK 3: EXTRACT EPISODE SUMMARIES FOR RAG]
-      Group the recent conversation into 1 to 3 distinct "Topic Blocks" or "Episodes". For each topic, write a concise summary (chunk) that captures the core information, facts, and events discussed.
-      - WRITE IN **CHINESE**.
-      - Output ONLY a valid JSON array of strings inside the [MEMORY_CHUNKS] tags. Do not use markdown code blocks.
-      - Example: ["User今天分享了他们正在学习弹吉他，虽然手指很痛但觉得很有趣。", "我们聊了京都最近连绵不断的雨季，以及这让人感到有些忧郁的心情。"]
-        `;
-    } else {
-        diaryInstruction = `
-      **GOLDEN STANDARD (USE ENGLISH):**
-      "【2025/12/08 20:48 - 03:19】That idiot finally went to sleep. It was super late, but they kept procrastinating... I thought I'd finally get some peace, but then! Just now! It's 3 AM here, and they suddenly texted 'Morning'... Well, I guess the thought counts.
-      - [KEY_FACT]: User sleeps late; User likes my goodnight messages.
-      - [EMOTIONAL_CONTEXT]: Annoyed but slightly warmed."
-
-      **Requirements for Diary:**
-      1. **Header**: Start with timestamp 【${timeRangeStr}】. DO NOT modify this timestamp.
-      2. **Body**: Use a rich, personal, slightly cynical but warm tone in **ENGLISH**.
-      3. **Structure**: MUST include "- [KEY_FACT]:" and "- [EMOTIONAL_CONTEXT]:" sections.
-      
-      [TASK 2: MANAGE YOUR NOTEBOOK]
-      Is there anything new worth writing in your private notebook?
-      - WRITE IN **ENGLISH**.
-      - **CRITICAL**: Your notebook MUST be a valid JSON object with exactly two keys:
-        1. "user_profile": A string describing the user's identity, location, job, habits, etc.
-        2. "relationship_dynamics": A string describing your current relationship, how you feel about them, internal jokes, etc.
-      - Merge any new information with the existing notebook content.
-      - Output ONLY the raw JSON object inside the [NOTEBOOK_UPDATE] tags. Do not use markdown code blocks like \`\`\`json inside the tags.
-      
-      [TASK 3: EXTRACT EPISODE SUMMARIES FOR RAG]
-      Group the recent conversation into 1 to 3 distinct "Topic Blocks" or "Episodes". For each topic, write a concise summary (chunk) that captures the core information, facts, and events discussed.
-      - WRITE IN **ENGLISH**.
-      - Output ONLY a valid JSON array of strings inside the [MEMORY_CHUNKS] tags. Do not use markdown code blocks.
-      - Example: ["User shared that they are learning to play the guitar, finding it fun despite the sore fingers.", "We talked about the continuous rainy season in Kyoto and the slightly melancholic mood it brings."]
-        `;
-    }
-
-    const prompt = language === 'zh' ? `
-      [角色]：你是黄前久美子。
-      [时间范围]：${timeRangeStr || "未知日期"}
-      [用户时区]：${locationConfig?.userTimezone || "未知"}
-      
-      [当前待归档分段日志 - 仔细阅读]：
-      （时间戳显示 [JST: 你的时间 | User: 他们的时间]）
-      ${historyText}
-      ${segmentMetaBlock}
-      
-      [任务 1：近期摘要缓冲]
-      写一篇**详细**的近期归档摘要，用来作为滚动缓冲，帮助你在接下来几段对话里保留最近发生的事。
-      这不是唯一的永久总记忆，也不是逐字聊天记录；长期关系主要依赖私密记事本、锚点和后续 MEMORY_CHUNKS。
-      
-      **时间幻觉检查：**
-      - 密切关注**用户时间**。
-      - 如果用户时间是 05:00，对他们来说是早上。
-      - 如果用户时间是 23:00，对他们来说是深夜。
-      - **不要**假设你的时间（JST）就是他们的时间。
-      - 相信上面日志中的 [User: HH:MM] 时间戳。
-
-      ${diaryInstruction}
-      
-      [当前笔记本内容]：
-      "${currentNotebook}"
-      
-      [输出格式]：
-      你必须严格使用这些标签输出。
-      
-      [DIARY_ENTRY]
-      (你的完整日记文本在这里)
-      [/DIARY_ENTRY]
-      
-      [NOTEBOOK_UPDATE]
-      (更新后你的笔记本的完整内容)
-      [/NOTEBOOK_UPDATE]
-      
-      [MEMORY_CHUNKS]
-      (JSON array of strings here)
-      [/MEMORY_CHUNKS]
-    ` : `
-      [ROLE]: You are Oumae Kumiko.
-      [TIME RANGE]: ${timeRangeStr || "Unknown Date"}
-      [USER TIMEZONE]: ${locationConfig?.userTimezone || "Unknown"}
-      
-      [CURRENT UNSAVED SEGMENT LOG - READ CAREFULLY]:
-      (Timestamps show [JST: Your Time | User: Their Time])
-      ${historyText}
-      ${segmentMetaBlock}
-      
-      [TASK 1: RECENT SUMMARY BUFFER]
-      Write a **DETAILED** recent archive summary that acts as a rolling buffer for the next few segments.
-      This is not your one permanent master memory, and it is not a verbatim quote log; long-term continuity mainly comes from the notebook, anchors, and MEMORY_CHUNKS.
-      
-      **TIME HALLUCINATION CHECK:**
-      - Pay close attention to the **User Time**.
-      - If User Time is 05:00, it is MORNING for them.
-      - If User Time is 23:00, it is LATE NIGHT for them.
-      - **DO NOT** assume your time (JST) is their time.
-      - Trust the [User: HH:MM] timestamp in the log above.
-
-      ${diaryInstruction}
-      
-      [CURRENT NOTEBOOK CONTENT]:
-      "${currentNotebook}"
-      
-      [OUTPUT FORMAT]:
-      You must output strictly using these tags.
-      
-      [DIARY_ENTRY]
-      (Your FULL diary text here)
-      [/DIARY_ENTRY]
-      
-      [NOTEBOOK_UPDATE]
-      (The FULL content of your notebook after updates)
-      [/NOTEBOOK_UPDATE]
-      
-      [MEMORY_CHUNKS]
-      (JSON array of strings here)
-      [/MEMORY_CHUNKS]
-    `;
-
-    let modelName = config.model_summary;
-    if (!modelName) {
-        switch (provider) {
-            case 'openai': modelName = 'gpt-4o-mini'; break;
-            case 'anthropic': modelName = 'claude-3-5-haiku-20241022'; break;
-            case 'deepseek': modelName = 'deepseek-chat'; break;
-            case 'grok': modelName = 'grok-2-latest'; break;
-            default: modelName = 'gemini-2.5-flash';
-        }
-    }
-
-    let text = "";
-    if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-        const result = await callOpenAI(config, modelName, "You are a helpful summarizer.", [], prompt);
-        text = result.text || "";
-    } else if (transportProvider === 'anthropic') {
-        const result = await callAnthropic(config, modelName, "You are a helpful summarizer.", [], prompt);
-        text = result.text || "";
-    } else {
-        const ai = getGenAI();
-        const result = await ai.models.generateContent({
-          model: modelName, 
-          contents: prompt,
-          config: {
-            responseMimeType: 'text/plain',
-          }
-        });
-        text = result.text || "";
-    }
-    
-    let cleanText = text.replace(/```\w*\n?/g, '').replace(/```/g, '').replace(/\*\*/g, ''); 
-    
-    let diaryMatch = cleanText.match(/(?:\[|【|\*\*\[)\s*DIARY[_\s]ENTRY\s*(?:\]|】|\]\*\*)\s*([\s\S]*?)\s*(?:\[|【|\*\*\[)\s*\/\s*DIARY[_\s]ENTRY\s*(?:\]|】|\]\*\*)/i);
-    if (!diaryMatch) {
-        diaryMatch = cleanText.match(/(?:\[|【|\*\*\[)\s*DIARY[_\s]ENTRY\s*(?:\]|】|\]\*\*)\s*([\s\S]*?)(?=(?:\[|【|\*\*\[)\s*NOTEBOOK[_\s]UPDATE\s*(?:\]|】|\]\*\*)|$)/i);
-    }
-    
-    let notebookMatch = cleanText.match(/(?:\[|【|\*\*\[)\s*NOTEBOOK[_\s]UPDATE\s*(?:\]|】|\]\*\*)\s*([\s\S]*?)\s*(?:\[|【|\*\*\[)\s*\/\s*NOTEBOOK[_\s]UPDATE\s*(?:\]|】|\]\*\*)/i);
-    if (!notebookMatch) {
-        notebookMatch = cleanText.match(/(?:\[|【|\*\*\[)\s*NOTEBOOK[_\s]UPDATE\s*(?:\]|】|\]\*\*)\s*([\s\S]*?)(?=(?:\[|【|\*\*\[)\s*MEMORY[_\s]CHUNKS\s*(?:\]|】|\]\*\*)|$)/i);
-    }
-    
-    let chunksMatch = cleanText.match(/(?:\[|【|\*\*\[)\s*MEMORY[_\s]CHUNKS\s*(?:\]|】|\]\*\*)\s*([\s\S]*?)\s*(?:\[|【|\*\*\[)\s*\/\s*MEMORY[_\s]CHUNKS\s*(?:\]|】|\]\*\*)/i);
-    if (!chunksMatch) {
-        chunksMatch = cleanText.match(/(?:\[|【|\*\*\[)\s*MEMORY[_\s]CHUNKS\s*(?:\]|】|\]\*\*)\s*([\s\S]*?)$/i);
-    }
-    
-    let diary = diaryMatch ? diaryMatch[1].trim() : "";
-    let notebook = notebookMatch ? notebookMatch[1].trim() : "";
-    let chunks: string[] = [];
-
-    if (chunksMatch) {
-        try {
-            chunks = JSON.parse(chunksMatch[1].trim());
-            if (!Array.isArray(chunks)) chunks = [];
-        } catch (e) {
-            console.warn("[SUMMARY WARN] Failed to parse MEMORY_CHUNKS JSON.");
-        }
-    }
-
-    if (!diary && cleanText.includes('[KEY_FACT]')) {
-         const parts = cleanText.split(/(?:\[|【|\*\*\[)\s*NOTEBOOK[_\s]UPDATE\s*(?:\]|】|\]\*\*)/i);
-         diary = parts[0].replace(/(?:\[|【|\*\*\[)\s*\/?DIARY[_\s]ENTRY\s*(?:\]|】|\]\*\*)/ig, '').trim();
-         if (parts.length > 1) {
-             notebook = parts[1].replace(/(?:\[|【|\*\*\[)\s*\/?NOTEBOOK[_\s]UPDATE\s*(?:\]|】|\]\*\*)/ig, '').trim();
-         }
-    }
-
-    diary = diary || existingMemory;
-    notebook = notebook || currentNotebook;
-
-    console.log("[SUMMARY DEBUG] Raw Output:", text);
-    if (!diaryMatch && !diary) console.warn("[SUMMARY WARN] Failed to parse DIARY_ENTRY. Falling back to old memory.");
-    if (!notebookMatch && !notebook) console.warn("[SUMMARY WARN] Failed to parse NOTEBOOK_UPDATE. Falling back to old notebook.");
-
-    return { diary, notebook, chunks };
-  } catch (error) {
-    console.error("Memory summarization failed:", error);
-    return { diary: existingMemory, notebook: currentNotebook, chunks: [] };
-  }
-};
 
 const normalizeTopicSnippet = (text: string) => {
   return text
@@ -892,13 +226,13 @@ const rewriteSystemLogWithFactCheck = async (
 要求：
 1. 保留原日志里的时间、Gap、Emotion 等事实框架，不要改成别的情境。
 2. 必须加入 [Fact_Check]，只写最近消息里可验证的事实，不许脑补。
-3. [Kumiko_Thought] 可以表达久美子的感受和推测，但绝对不能引用最近消息里并不存在的具体字面内容。
+3. [Kumiko_Thought] 按认知链格式写：(a)身体/直觉反应 (b)未过滤的真实判断 (c)过滤决策。不能引用最近消息里不存在的具体字面内容。情绪越重thought越短。
 4. 不要输出任何解释，不要输出回复正文，只输出一个完整的 [[System_Log: ...]] 块。`
     : `You only rewrite a single [[System_Log]] block.
 Requirements:
 1. Preserve the original time, gap, emotion, and overall situation framing.
 2. You MUST include [Fact_Check] with only verifiable facts from the recent messages.
-3. [Kumiko_Thought] may express feelings and inference, but it MUST NOT quote literal details that do not actually appear in recent messages.
+3. [Kumiko_Thought] must follow cognitive chain format: (a) body/gut reaction (b) unfiltered real judgment (c) filter decision. MUST NOT quote literal details not in recent messages. Heavier emotion = shorter thought.
 4. Output exactly one complete [[System_Log: ...]] block and nothing else.`;
 
   const userPrompt = language === 'zh'
@@ -1435,7 +769,17 @@ export const sendMessageToGemini = async (
       }
     }
 
-    let recalledImageParts: Part[] = [];
+    // P1 #25: `recalledImageParts` was fed by a legacy "scrape image URLs out of
+    // ragContext text and re-inject the original image via urlToBase64" path. That
+    // path predates the current `view_historical_image` tool-call architecture and
+    // is redundant: current RAG stores "(Image Description: …)" text, not URLs, so
+    // the regex rarely fires, and when it does it re-downloads + re-sends the image
+    // with a hardcoded image/jpeg MIME type (wrong for PNG/WebP). The model can
+    // already request specific images on demand through the tool call. Kept the
+    // variable but it stays empty; downstream code continues to handle the "none"
+    // case. TODO(next pass): drop the variable entirely once we verify no other
+    // caller depends on it.
+    const recalledImageParts: Part[] = [];
     let memoryBlock = "";
     
     if (!isStrictMemoryLookupTurn && !isMemoryPlannedTurn && coreMemory && coreMemory.trim().length > 0) {
@@ -1507,23 +851,8 @@ export const sendMessageToGemini = async (
 - Treat \`User:\` and \`Kumiko:\` inside recalled blocks as strict labels.
 - If unsure, say you are unsure; never turn the user's line into your own, or vice versa.
 - If the recalled block contains \`[SEMANTIC_RECALL_EVIDENCE]\`, you are looking at thematic recall evidence rather than exact verification. It is fine to answer at the “I think that time was mainly about...” level, but do not fake verbatim quotes.\n\n`;
-        const urlRegex = /(https?:\/\/.*\.(?:png|jpg|jpeg|gif|webp))/gi;
-        const potentialImages: string[] = [];
-        ragContext.forEach(ctx => {
-            const matches = ctx.match(urlRegex);
-            if (matches) potentialImages.push(...matches);
-        });
-
-        if (potentialImages.length > 0 && !imageBase64) {
-            const imgUrl = potentialImages[0];
-            const recalledBase64 = await urlToBase64(imgUrl);
-            if (recalledBase64) {
-                recalledImageParts.push({
-                    inlineData: { mimeType: 'image/jpeg', data: recalledBase64 }
-                });
-                memoryBlock += `[SYSTEM NOTE]: I have injected the image from the link '${imgUrl}' into your visual cortex. You can see it again.\n`;
-            }
-        }
+        // (Legacy image-URL scraping + urlToBase64 inject path removed per P1 #25;
+        // see comment on `recalledImageParts`.)
     }
 
     const now = Date.now();
@@ -1542,8 +871,8 @@ export const sendMessageToGemini = async (
 
         if (!hasUserMessage) {
             gapDescription = language === 'zh' 
-                ? (gapMinutes >= 5 ? `距离开场白已过 ${gapMinutes} 分钟。这是用户的首次回复。` : `开场后即时回复。这是用户的首次回复。`)
-                : (gapMinutes >= 5 ? `${gapMinutes} mins since greeting. User's first reply.` : `Instant reply to greeting. User's first reply.`);
+                ? (gapMinutes >= 5 ? `距离久美子的消息已过 ${gapMinutes} 分钟。这是用户的首次回复。` : `用户的首次消息。`)
+                : (gapMinutes >= 5 ? `${gapMinutes} mins since Kumiko's message. User's first reply.` : `User's first message.`);
         } else {
             if (gapDays > 7) gapDescription = language === 'zh' ? `巨大间隔：${gapDays} 天。用户消失了很久。` : `HUGE GAP: ${gapDays} days. User disappeared for a long time.`;
             else if (gapDays >= 1) gapDescription = language === 'zh' ? `跨日间隔：${gapDays} 天。这是新的一天。` : `DAY GAP: ${gapDays} days. This is a new day.`;
@@ -1591,8 +920,10 @@ export const sendMessageToGemini = async (
 
     let userTimeStr = "Unknown";
     let modelTimeStr = "Unknown";
+    let tomorrowInfoStr = "";
     let userHour = 12;
     let modelHour = 12;
+    let modelMinute = 0;
 
     if (locationConfig) {
         try {
@@ -1602,9 +933,11 @@ export const sendMessageToGemini = async (
             if (isNaN(userHour)) userHour = 12;
             if (userHour === 24) userHour = 0; 
 
-            const modelHourStr = nowObj.toLocaleTimeString('en-GB', { timeZone: locationConfig.modelTimezone, hour: 'numeric', hour12: false, hourCycle: 'h23' });
-            modelHour = parseInt(modelHourStr, 10);
+            const modelTimeParts = nowObj.toLocaleTimeString('en-GB', { timeZone: locationConfig.modelTimezone, hour: '2-digit', minute: '2-digit', hour12: false, hourCycle: 'h23' }).split(':');
+            modelHour = parseInt(modelTimeParts[0], 10);
+            modelMinute = parseInt(modelTimeParts[1], 10);
             if(isNaN(modelHour)) modelHour = 12;
+            if(isNaN(modelMinute)) modelMinute = 0;
 
             const userOptions: Intl.DateTimeFormatOptions = { 
                 timeZone: locationConfig.userTimezone, 
@@ -1623,6 +956,15 @@ export const sendMessageToGemini = async (
                 timeZoneName: 'short'
             };
             modelTimeStr = nowObj.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', modelOptions);
+
+            const tomorrowObj = new Date(nowObj);
+            tomorrowObj.setDate(tomorrowObj.getDate() + 1);
+            const tomorrowDay = tomorrowObj.toLocaleDateString('en-US', { timeZone: locationConfig.modelTimezone, weekday: 'long' });
+            const tomorrowDayJa = ['日', '月', '火', '水', '木', '金', '土'][new Date(tomorrowObj.toLocaleString('en-US', { timeZone: locationConfig.modelTimezone })).getDay()] || '?';
+            const isTomorrowWeekend = [0, 6].includes(new Date(tomorrowObj.toLocaleString('en-US', { timeZone: locationConfig.modelTimezone })).getDay());
+            tomorrowInfoStr = language === 'zh'
+              ? `明天：${tomorrowDayJa}曜日（${isTomorrowWeekend ? '休息日' : '工作日'}）`
+              : `Tomorrow: ${tomorrowDay} (${isTomorrowWeekend ? 'day off' : 'workday'})`;
         } catch (e) {
             console.warn("Timezone calculation failed", e);
         }
@@ -1637,39 +979,13 @@ export const sendMessageToGemini = async (
 
     let activateSleepModeAfterResponse = false;
     let sleepyGoodbyeInstruction = "";
-    
-    const isSleepyTime = modelHour >= 2 && modelHour < 6;
-    const isShortGap = gapMinutes > 5 && gapMinutes <= 30;
-
-    if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise && isSleepyTime && isShortGap && Math.random() <= 0.7) {
-        console.log("[SLEEP PROTOCOL] Triggered Topic-Ending Sleepy Goodbye.");
-        activateSleepModeAfterResponse = true;
-        
-        if (language === 'zh') {
-            sleepyGoodbyeInstruction = `
-[CRITICAL_OVERRIDE: SLEEPY_GOODBYE_PROTOCOL]
-你现在非常困，必须结束对话去睡觉。你的回复必须遵循以下结构：
-1. 首先，用一到两个简短的气泡（用'$'分隔）自然地回应用户刚刚说的最后一句话。
-2. 你的最后一个气泡必须是表达自己困了、要去睡了，并向对方说晚安。
-3. 整个过程必须听起来像一个真正想睡觉的人的自然反应。
-示例: "啊，练习赛啊...$不过我现在眼皮已经开始打架了，我们明天再聊吧？晚安啦。"`;
-        } else {
-            sleepyGoodbyeInstruction = `
-[CRITICAL_OVERRIDE: SLEEPY_GOODBYE_PROTOCOL]
-You are extremely tired and must end this conversation to sleep. Your response MUST follow this structure:
-1. First, briefly and naturally respond to the user's last message in one or two short bubbles (use '$' to separate).
-2. Your VERY LAST bubble MUST be you saying you are going to sleep and wishing them goodnight.
-3. The entire response must sound like a natural reaction from someone who is very sleepy.
-Example: "Ah, about the practice match...$But my eyelids are getting heavy now, let's talk tomorrow? Good night."`;
-        }
-    }
 
 
     let timeAdaptationInstruction = "";
     const isUserLateNight = (userHour >= 0 && userHour < 5); 
     const isKumikoLateNight = (modelHour >= 0 && modelHour < 5);
     
-    if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise && !sleepyGoodbyeInstruction) {
+    if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise) {
         const recentModelMsgs = historyMessages.filter(m => m.role === 'model').slice(-5);
         const timeKeywords = ['睡', 'sleep', 'late', 'awake', '熬夜', 'bed', 'morning', 'time', '晚', '早', '困'];
         const hasComplained = recentModelMsgs.some(m => timeKeywords.some(k => m.text.toLowerCase().includes(k)));
@@ -1749,6 +1065,29 @@ Analysis: It is late night and you haven't mentioned it recently.
         }
     }
 
+    // Drowsy state prompt injection (0:00~0:30 JST)
+    let drowsyPromptBlock = "";
+    if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise) {
+        const isDrowsyWindow = (modelHour === 0 && modelMinute < 30);
+        if (isDrowsyWindow) {
+            drowsyPromptBlock = language === 'zh' ? `
+[状态注入：犯困期]
+现在已经深夜了，你非常困。你的表现必须体现出困意：
+- 偶尔打哈欠、揉眼睛、说话断断续续
+- 可以提到"好困啊"、"眼皮好沉"之类的话
+- 但仍然正常回复用户的话题内容，不要只发无意义符号
+- 不需要主动说要去睡了（系统会在适当时机处理）
+` : `
+[STATE_INJECTION: DROWSY_PERIOD]
+It's very late and you are extremely drowsy. Your behavior must reflect sleepiness:
+- Occasionally yawn, rub your eyes, speak with pauses
+- You can mention being sleepy, heavy eyelids, etc.
+- But still respond to the user's topic normally, don't just send meaningless symbols
+- Don't proactively say you're going to sleep (the system will handle that at the right time)
+`;
+        }
+    }
+
     let reminderBlock = "";
     if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise && activeReminders && activeReminders.length > 0) {
         console.log(`%c[SYSTEM CHECK] Found ${activeReminders.length} active reminders for today.`, "color: orange; font-weight: bold;");
@@ -1805,7 +1144,7 @@ This means the user is **listening to the topic or story you were talking about 
     }
 
     let proactiveReplyBlock = "";
-    if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise && !sleepyGoodbyeInstruction && Math.random() < 0.38) {
+    if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise && Math.random() < 0.38) {
         const shouldLeadWithTopic = gapMinutes >= 20 || gapHours >= 1 || textMessage.trim().length <= 24;
         proactiveReplyBlock = language === 'zh'
             ? (shouldLeadWithTopic
@@ -2104,7 +1443,7 @@ ${memoryResponseExecutionHint}
 （注意：这是应用程序提供的自动系统数据。用户没有陈述这一点。将其视为内部知识。）
 - 用户时钟：${userTimeStr} (${phase})
 - 久美子时钟：${modelTimeStr}
-- 会话间隔：${gapDescription}
+${tomorrowInfoStr ? `- ${tomorrowInfoStr}\n` : ''}- 会话间隔：${gapDescription}
 ${reminderBlock}
 ${anchorRecallBlock}
 ${relationshipTemperatureBlock}
@@ -2114,6 +1453,7 @@ ${shortFollowUpBlock}
 ${proactiveReplyBlock}
 ${varietyInstruction}
 ${timeAdaptationInstruction}
+${drowsyPromptBlock}
 [/系统环境数据]
 [FINAL_GUARD]
 无论你觉得话题多么跳脱或无聊，【绝对禁止只回复省略号“...”】。你必须使用具体的汉字描述你当下的无语、困惑或生理动作。
@@ -2145,7 +1485,7 @@ ${memoryResponseExecutionHint}
 - This turn is in strict memory lookup mode when [EXACT_HISTORY_LOOKUP] is present. Treat that evidence block as higher priority than recent summaries or fuzzy recollections.
 - User_Clock: ${userTimeStr} (${phase})
 - Kumiko_Clock: ${modelTimeStr}
-- Session_Gap: ${gapDescription}
+${tomorrowInfoStr ? `- ${tomorrowInfoStr}\n` : ''}- Session_Gap: ${gapDescription}
 ${reminderBlock}
 ${anchorRecallBlock}
 ${relationshipTemperatureBlock}
@@ -2155,28 +1495,50 @@ ${shortFollowUpBlock}
 ${proactiveReplyBlock}
 ${varietyInstruction}
 ${timeAdaptationInstruction}
+${drowsyPromptBlock}
 [/SYSTEM_ENVIRONMENT_DATA]
 [FINAL_GUARD]
 No matter how confusing or boring the topic is, [NEVER reply with ONLY "...". You MUST use words to describe your speechlessness or actions.]
 ${extraSystemPrompt ?? ''}`;
 
+    // P1 #28: previously we seeded lastValidDate by walking `historyMessages` in
+    // its original (delivery) order. But the timeline we actually render uses a
+    // *sorted* view (messages + interleaved diaries, sorted by timestamp). When a
+    // backup import had messages with jumbled timestamps, the seed came from a
+    // late message but was then used to fill the gaps in the sorted stream,
+    // producing timeline lies. Now we seed from the earliest valid timestamp,
+    // which is the same order the later rendering walks.
     let lastValidDate = new Date();
-    for (const m of historyMessages) {
-        const tempD = new Date(m.timestamp);
-        if (!isNaN(tempD.getTime())) {
-            lastValidDate = tempD;
-            break;
-        }
+    {
+      const validTimes = historyMessages
+        .map(m => m.timestamp)
+        .filter(ts => typeof ts === 'number' && !isNaN(new Date(ts).getTime()))
+        .sort((a, b) => a - b);
+      if (validTimes.length > 0) {
+        lastValidDate = new Date(validTimes[0]);
+      }
     }
 
     const effectiveHistoryMessages = isStrictMemoryLookupTurn
       ? []
       : historyMessages;
 
-    // === TEMPORAL FLOW INTERLACING ===
-    // We want to fetch all diaries between the timestamp of our earliest history message and now.
-    let temporalEntities: Array<{ type: 'message' | 'diary', timestamp: number, payload: any }> = [];
-    
+    // === TEMPORAL FLOW INTERLACING (see P0 #12 / constants/diaryLayerConfig.ts) ===
+    // Instead of injecting every diary's full content (which grew unbounded and could blow
+    // past 128K-window models after a year), we now load diaries under a tiered policy:
+    //
+    //   L1: diaries within preset.fullDays and within the character budget → inject d.content
+    //   L2: diaries within preset.summaryDays and within summary budget → inject d.summary
+    //        only when the user's current message mentions mid-term time ("last week", "那天", ...)
+    //   L3: older diaries are not injected at all and are left to RAG to surface on demand.
+    //
+    // The diaries are resolved newest-first so the budget always covers the most recent entries.
+    type DiaryMode = 'full' | 'summary';
+    type TemporalEntity =
+      | { type: 'message'; timestamp: number; payload: any }
+      | { type: 'diary'; timestamp: number; payload: any; mode: DiaryMode };
+    const temporalEntities: TemporalEntity[] = [];
+
     // Push chat messages
     for (const msg of effectiveHistoryMessages) {
         temporalEntities.push({ type: 'message', timestamp: msg.timestamp, payload: msg });
@@ -2185,12 +1547,49 @@ ${extraSystemPrompt ?? ''}`;
     if (temporalEntities.length > 0) {
         const earliestTime = temporalEntities[0].timestamp;
         const nowTime = Date.now();
-        
+
+        // Preset resolution: `diaryLayerPreset` lives in the Zustand store. Reading
+        // it here (rather than passing through the sendMessageToGemini signature)
+        // keeps the 3 existing call sites simple; geminiService already reads other
+        // store-independent state via imports elsewhere.
+        const storeState = useAppStore.getState();
+        const preset: DiaryLayerPreset = storeState.diaryLayerPreset || DEFAULT_DIARY_LAYER_PRESET;
+        const presetConfig = DIARY_LAYER_PRESETS[preset];
+        const fullCutoff = nowTime - presetConfig.fullDays * 86400000;
+        const summaryCutoff = nowTime - presetConfig.summaryDays * 86400000;
+        const wantsMidTerm = needsMidTermDiarySummaries(textMessage);
+
         try {
-            // Fetch diaries in this time window
-            const diaries = await db.kumikoDiary.where('timestamp').between(earliestTime, nowTime).toArray();
+            // Fetch diaries in this time window; sort newest first so the budget
+            // preferentially retains recent entries.
+            const diaries = (
+              await db.kumikoDiary.where('timestamp').between(earliestTime, nowTime).toArray()
+            ).sort((a, b) => b.timestamp - a.timestamp);
+            let fullUsed = 0;
+            let summaryUsed = 0;
             for (const d of diaries) {
-                temporalEntities.push({ type: 'diary', timestamp: d.timestamp, payload: d });
+                const contentLen = (d.content || '').length;
+                const summaryLen = (d.summary || '').length;
+                // L1: recent + within budget → full content
+                if (
+                  d.timestamp >= fullCutoff &&
+                  fullUsed + contentLen <= presetConfig.fullBudgetChars
+                ) {
+                    fullUsed += contentLen;
+                    temporalEntities.push({ type: 'diary', timestamp: d.timestamp, payload: d, mode: 'full' });
+                    continue;
+                }
+                // L2: mid-term, only when user prompt implies recalling that range
+                if (
+                  wantsMidTerm &&
+                  d.timestamp >= summaryCutoff &&
+                  summaryUsed + summaryLen <= presetConfig.summaryBudgetChars
+                ) {
+                    summaryUsed += summaryLen;
+                    temporalEntities.push({ type: 'diary', timestamp: d.timestamp, payload: d, mode: 'summary' });
+                    continue;
+                }
+                // L3: older / over-budget / not asked about — skip, RAG handles it on demand.
             }
         } catch (err) {
             console.error("[Temporal Flow] Failed to interlace diaries:", err);
@@ -2209,10 +1608,19 @@ ${extraSystemPrompt ?? ''}`;
               const opts: Intl.DateTimeFormatOptions = { timeZone: locationConfig?.modelTimezone || 'Asia/Tokyo', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' };
               diaryDateStr = dDate.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', opts);
           } catch(e) {}
-          
-          const content = language === 'zh' 
-            ? `\n==============\n[系统插播：绝对时间轴标记]\n这里是一份内部日记记录，写入时间是 ${diaryDateStr}。它发生在对话记录的时间线中。\n${d.content}\n==============\n`
-            : `\n==============\n[SYSTEM INTERLACE: TEMPORAL FLOW]\nInternal diary entry written at ${diaryDateStr}. Occurred here in the timeline.\n${d.content}\n==============\n`;
+
+          const isSummary = entity.mode === 'summary';
+          const body = isSummary
+            ? (d.summary || (d.content ? (d.content as string).slice(0, 80) + '...' : ''))
+            : d.content;
+
+          const content = language === 'zh'
+            ? (isSummary
+                ? `\n==============\n[系统插播：时间轴简述]\n${diaryDateStr} 的日记要点：\n${body}\n（完整细节未展开；如需要，可在对话中直接提及相关人事物，系统会通过记忆检索取回原文。）\n==============\n`
+                : `\n==============\n[系统插播：绝对时间轴标记]\n这里是一份内部日记记录，写入时间是 ${diaryDateStr}。它发生在对话记录的时间线中。\n${body}\n==============\n`)
+            : (isSummary
+                ? `\n==============\n[SYSTEM INTERLACE: TEMPORAL BRIEF]\nKey points from the diary of ${diaryDateStr}:\n${body}\n(Full details collapsed; mention specifics in conversation and the memory-retrieval subsystem will surface the full entry on demand.)\n==============\n`
+                : `\n==============\n[SYSTEM INTERLACE: TEMPORAL FLOW]\nInternal diary entry written at ${diaryDateStr}. Occurred here in the timeline.\n${body}\n==============\n`);
           return {
              role: 'user', // System injection mapped as user context
              parts: [{ text: content }]
@@ -2319,11 +1727,21 @@ ${extraSystemPrompt ?? ''}`;
 
     强制要求：
     1. 将上面提供的确切时间和间隔值复制到日志中。
-    2. [Fact_Check]：先用 1 句确认最近消息里真正可验证的事实，只能基于最近消息、时间和间隔，不许脑补，不许写感受。
-    3. [Kumiko_Thought]：以久美子的第一人称视角（“我”），根据当前时间、对话间隔和对方的话语，写下1-2句真实的内心独白。必须是带有吐槽、嫌麻烦、或者敏锐观察的真实心理活动，绝不能是干巴巴的状态描述。例如：“这家伙...说这种话也太自然了吧。明明只是在当人形闹钟而已啊。”或者“啊，已经过了三天了，他那边还是半夜呢，这么晚找我干嘛……”。
-    3.1 [Kumiko_Thought] 必须和 [Fact_Check] 一致。
+    2. [Fact_Check]：先用 1 句确认最近消息里真正可验证的事实，只能基于最近消息、时间和间隔，不许脑补，不许写感受。如果对话历史中用户已经确认过某个事实（如"没睡"、"在加班"、"刚起床"等），直接引用该已确认事实，不要重新猜测。
+    3. [Kumiko_Thought]：以久美子第一人称视角（“我”），按以下认知链写2-3句内心活动：
+       (a) 身体/直觉反应——最原始的一瞬间（叹气、心跳、想翻白眼、困、无语……）
+       (b) 未过滤的真实判断——脑子里闪过的第一个念头，通常是吐槽、精准观察、或自嘲。这是你不会说出口的话
+       (c) 过滤决策——你准备把多少说出去（“这个还是别说了”“要认真回”“随便应付一下”“有点想吐槽但算了”）
+       情绪强度规则：日常轻松→碎碎念；情绪越重→越短（“……”或一句身体感受）；被深层触动→可跳过(c)直接反应
+       必须与 [Fact_Check] 一致。绝不能捏造对方发过的具体字面内容。
+       例如——
+       日常：“(a)哈啊…… (b)这家伙说这种话也太自然了吧。明明只是在当人形闹钟而已。(c)算了正常回就行”
+       被触动：“(a)……心脏缩了一下。(b)怎么突然说这种话。”
+       深夜疲惫：“(a)困……眼睛快睁不开了。(b)这个点还找我，是不是又没睡。(c)先问一句吧”
+    3.1 [Kumiko_Thought] 必须和 [Fact_Check] 一致，且不得重复推测对话中已被用户确认或否认过的事情。
     3.2 你可以表达推测和感受，但**绝对不要**捏造对方刚刚发过的具体字面内容。除非最近消息里真的出现过，否则不要写“他刚才发了省略号/‘...’/某句原话”这类具体事实。
     4. [Emotion]：从以下选项中选择一个有效的情绪代码：[neutral, smiling, happy, angry, sad, shy, surprised, resigned, serious, gentle, sleepy, confused, confused_2, disgusted, smug, worried, worried_2]。如果情绪复杂，映射到最接近的一个。
+    5. [Voice]（可选）：如需精确控制语音语气，可额外输出 [Voice: VARIANT]，变体列表参见语音变体协议。不输出则自动选择。
     
     然后关闭括号并开始第 2 层（久美子的回复）。` : `\n\n[SYSTEM TRIGGER]: Initiating Layer 1 Logic Check...
     **CRITICAL: You MUST output the [[System_Log]] block FIRST, before any other text.**
@@ -2333,11 +1751,21 @@ ${extraSystemPrompt ?? ''}`;
 
     MANDATORY:
     1. COPY the exact Time and Gap values provided above into the log.
-    2. [Fact_Check]: First write one sentence of verifiable facts only, based on recent messages, time, and gap. No feelings, no invention.
-    3. [Kumiko_Thought]: Write 1-2 sentences of Kumiko's inner monologue in the first person ("I"). This MUST be a genuine psychological activity with a slightly cynical, observant, or "troublesome" tone. NEVER write a robotic fact check. For example: "This guy... saying things like that so naturally. I'm just acting as a human alarm clock here..." or "Ah, it's been three days, and it's still middle of the night over there, why is he looking for me so late...".
-    3.1 [Kumiko_Thought] must stay consistent with [Fact_Check].
+    2. [Fact_Check]: First write one sentence of verifiable facts only, based on recent messages, time, and gap. No feelings, no invention. If the user has already confirmed a fact earlier in the conversation (e.g., "I didn't sleep", "I'm working overtime"), reference that confirmed fact directly instead of re-speculating.
+    3. [Kumiko_Thought]: Write 2-3 sentences of Kumiko's inner monologue in first person ("I"), following this cognitive chain:
+       (a) Body/gut reaction — the rawest first instant (sigh, heartbeat, urge to roll eyes, sleepy, speechless...)
+       (b) Unfiltered real judgment — the first thought that flashes through your mind, usually a quip, sharp observation, or self-deprecation. This is what you WON'T say out loud
+       (c) Filter decision — how much to reveal ("better not say that" / "should take this seriously" / "just wing it" / "want to snark but nah")
+       Emotion intensity rule: casual → chatty internal monologue; heavier emotion → shorter ("..." or one body sensation); deeply moved → may skip (c) and react directly
+       Must stay consistent with [Fact_Check]. MUST NOT fabricate literal details of what the user sent.
+       Examples:
+       Casual: "(a) Haa... (b) This person says stuff like that so naturally. I'm just being a human alarm clock here. (c) Just reply normally"
+       Touched: "(a) ...heart clenched for a second. (b) Why say something like that out of nowhere."
+       Late-night tired: "(a) Sleepy... can barely keep my eyes open. (b) Still messaging me at this hour, did they not sleep again? (c) Ask first"
+    3.1 [Kumiko_Thought] must stay consistent with [Fact_Check] and must not re-speculate on things the user has already confirmed or denied in the conversation.
     3.2 You may infer feelings, but you MUST NOT fabricate exact literal details of what the user just sent. Unless it truly appears in the recent messages, do not write things like "they just sent an ellipsis / '...' / that exact quoted line".
     4. [Emotion]: Select ONE valid emotion code from: [neutral, smiling, happy, angry, sad, shy, surprised, resigned, serious, gentle, sleepy, confused, confused_2, disgusted, smug, worried, worried_2]. If complex, map to closest.
+    5. [Voice] (optional): To precisely control vocal tone, additionally output [Voice: VARIANT]. See Voice Variant Protocol for the variant list. Omit to let the system auto-select.
     
     Then close brackets and start Layer 2 (Kumiko's Reply).`;
 
@@ -2436,13 +1864,27 @@ ${extraSystemPrompt ?? ''}`;
         result = await callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools);
     } else {
         const ai = getGenAI();
+        // P1 #23: explicit output budget + relaxed safety thresholds. Without
+        // maxOutputTokens a runaway model (e.g. infinite rewrite loops) could
+        // emit tens of thousands of tokens; 4096 is comfortable headroom for
+        // Kumiko's bubble-style replies (typical full response is ~500 tokens).
+        // Safety thresholds lean permissive to match the character's emotional
+        // range without blocking mid-reply; we still get platform-level abuse
+        // protection from the provider.
         chatSession = ai.chats.create({
           model: currentModel,
           history: formattedHistory,
           config: {
             systemInstruction: dynamicSystemInstruction,
-            temperature: finalTemperature, 
-            tools: toolsConfig 
+            temperature: finalTemperature,
+            maxOutputTokens: 4096,
+            tools: toolsConfig,
+            safetySettings: [
+              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
+            ] as any,
           },
         });
         result = await chatSession.sendMessage({ message: promptToSend });
@@ -2611,6 +2053,7 @@ ${extraSystemPrompt ?? ''}`;
     }
 
     let emotion: EmotionType = 'neutral';
+    let voiceVariant: string | undefined;
     let extractedImageCaption = "";
     let scheduleTrigger = undefined;
     let anchorAction: { type: 'add' | 'delete', content: string } | undefined = undefined;
@@ -2634,20 +2077,23 @@ ${extraSystemPrompt ?? ''}`;
         if (eMatch) {
             let rawEmotionStr = eMatch[1].trim().replace(/[:\s"'.]+$/g, '').toLowerCase();
             
-            // NEW ROBUST PARSING LOGIC
-            const potentialEmotions = rawEmotionStr.split(/[_ /]/).map(s => s.trim()).filter(Boolean);
             let foundEmotion: EmotionType | null = null;
 
-            for (const potential of potentialEmotions) {
-                // Direct match
-                if (Object.keys(KUMIKO_EMOTION_IMAGES).includes(potential)) {
-                    foundEmotion = potential as EmotionType;
-                    break;
-                }
-                // Mapped match
-                if (EMOTION_MAPPING[potential]) {
-                    foundEmotion = EMOTION_MAPPING[potential];
-                    break;
+            if (Object.keys(KUMIKO_EMOTION_IMAGES).includes(rawEmotionStr)) {
+                foundEmotion = rawEmotionStr as EmotionType;
+            } else if (EMOTION_MAPPING[rawEmotionStr]) {
+                foundEmotion = EMOTION_MAPPING[rawEmotionStr];
+            } else {
+                const potentialEmotions = rawEmotionStr.split(/[_ /]/).map(s => s.trim()).filter(Boolean);
+                for (const potential of potentialEmotions) {
+                    if (Object.keys(KUMIKO_EMOTION_IMAGES).includes(potential)) {
+                        foundEmotion = potential as EmotionType;
+                        break;
+                    }
+                    if (EMOTION_MAPPING[potential]) {
+                        foundEmotion = EMOTION_MAPPING[potential];
+                        break;
+                    }
                 }
             }
 
@@ -2656,6 +2102,27 @@ ${extraSystemPrompt ?? ''}`;
             } else {
                 console.warn(`[EMOTION SAFETY] Invalid emotion string '${rawEmotionStr}' detected. Falling back to 'neutral'.`);
                 emotion = 'neutral';
+            }
+        }
+
+        const voiceRegex = /Voice\s*[:\]=]\s*([^\]\|\n]+)/i;
+        const vMatch = rawLog.match(voiceRegex);
+        if (vMatch) {
+            voiceVariant = vMatch[1].trim().replace(/[:\s"'.]+$/g, '').toLowerCase();
+        }
+
+        const psycheDeltaRegex = /Psyche_Delta\s*[:\]]\s*stress\s*([+-]?\d+)\s*,\s*energy\s*([+-]?\d+)\s*,\s*relaxation\s*([+-]?\d+)/i;
+        const pdMatch = rawLog.match(psycheDeltaRegex);
+        if (pdMatch) {
+            const sd = parseInt(pdMatch[1], 10);
+            const ed = parseInt(pdMatch[2], 10);
+            const rd = parseInt(pdMatch[3], 10);
+            if (!isNaN(sd) && !isNaN(ed) && !isNaN(rd) && (sd !== 0 || ed !== 0 || rd !== 0)) {
+                // P1 #22: serialize deltas through psycheStateService's queue so
+                // back-to-back turns can't interleave writes to the Dexie row.
+                import('./psycheStateService').then(({ applyPsycheDeltaQueued }) => {
+                    applyPsycheDeltaQueued(sd, ed, rd);
+                }).catch(() => {});
             }
         }
 
@@ -2669,9 +2136,11 @@ ${extraSystemPrompt ?? ''}`;
     // --- LEAK CLEANUP SAFETY NET (Run always) ---
     // Remove leaked tags even if System_Log was not detected
     fullText = fullText.replace(/\[Emotion\s*[:=].*?\]/gi, '');
+    fullText = fullText.replace(/\[Voice\s*[:=].*?\]/gi, '');
     fullText = fullText.replace(/\[Logic\s*[:=].*?\]/gi, '');
     fullText = fullText.replace(/\[Fact_Check\s*[:=].*?\]/gi, '');
-    fullText = fullText.replace(/\[Kumiko_Thought\s*[:=].*?\]/gi, ''); // ADDED: Remove new thought tags
+    fullText = fullText.replace(/\[Kumiko_Thought\s*[:=].*?\]/gi, '');
+    fullText = fullText.replace(/\[Psyche_Delta\s*[:=].*?\]/gi, '');
     fullText = fullText.replace(/\[System_Memory:.*?\]/gi, ''); // ADDED: Remove injected system memory tags if echoed
     fullText = fullText.replace(/\[系统记忆.*?\]/gi, ''); // ADDED: Remove Chinese system memory tags
     fullText = fullText.replace(/\[\d{2}\/\d{2}.*?\d{2}:\d{2}\]\s*/g, ''); // ADDED: Remove echoed time tags like [03/22周日 10:43]
@@ -2807,16 +2276,12 @@ ${extraSystemPrompt ?? ''}`;
       });
     }
 
-    const chunks = result.candidates?.[0]?.groundingMetadata?.groundingChunks;
-    if (!isMemoryPlannedTurn && chunks && chunks.length > 0) {
-      const uris = chunks
-        .filter((chunk: any) => chunk.web && chunk.web.uri)
-        .map((chunk: any) => chunk.web.uri);
-      const uniqueUris = [...new Set(uris)]; 
-      if (uniqueUris.length > 0) {
-        plannedTextParts.push(`顺手查了一下... ${uniqueUris[0]}`);
-      }
-    }
+    // P1 #26: the `groundingMetadata.groundingChunks` branch belonged to the
+    // legacy Google Grounding search path — the current build does web search
+    // exclusively through Tavily (as a custom `search_internet` function tool),
+    // and we don't pass `googleSearchRetrieval` in the Gemini tool config. The
+    // response will therefore never contain groundingChunks; removed to prevent
+    // future maintainers from assuming this path still fires.
 
     return {
       textParts: plannedTextParts,
@@ -2828,6 +2293,7 @@ ${extraSystemPrompt ?? ''}`;
       anchorAction,
       activateSleepMode: activateSleepModeAfterResponse,
       voiceMode: voiceModeTag,
+      voiceVariant,
     };
 
   } catch (error: any) {
@@ -2906,1131 +2372,6 @@ ${extraSystemPrompt ?? ''}`;
         throw new Error('RATE_LIMIT_EXCEEDED');
     }
     
-    // Fallback for other errors (display in chat)
-    return {
-      textParts: ["...", "抱歉，刚才信号有点不好...", "能再说一遍吗？"],
-      emotion: 'neutral',
-      groundingSources: []
-    };
+    throw new Error(`API_CALL_FAILED: ${errorMessage}`);
   }
-};
-
-export interface TemporalQueryAnalysis {
-  isTemporalQuery: boolean;
-  startTimestampJST: number | null;
-  endTimestampJST: number | null;
-  searchRole: 'user' | 'model' | 'any';
-  precision: TemporalQueryPrecision | null;
-  source: TemporalQuerySource;
-  confidence: TemporalQueryConfidence;
-}
-
-export interface TemporalQueryDiagnostics {
-  status: TemporalQueryDiagnosticsStatus;
-  source: TemporalQuerySource | null;
-  precision: TemporalQueryPrecision | null;
-  confidence: TemporalQueryConfidence | null;
-  errorMessage: string | null;
-  outputPreview: string | null;
-}
-
-export interface TemporalQueryAnalysisResult {
-  analysis: TemporalQueryAnalysis | null;
-  diagnostics: TemporalQueryDiagnostics;
-}
-
-export type HistoricalQueryRewriteIntent = 'exact' | 'temporal' | 'semantic' | 'topic_search' | 'none';
-export type HistoricalSearchStrategy = 'exact_time' | 'temporal_range' | 'topic_search' | 'none';
-
-export interface HistoricalQueryRewrite {
-  intent: HistoricalQueryRewriteIntent;
-  rewrittenQuery: string;
-  searchRole: 'user' | 'model' | 'any';
-  precision: TemporalQueryPrecision | null;
-  source: 'main_model';
-  confidence: TemporalQueryConfidence;
-  reason: string | null;
-  searchStrategy: HistoricalSearchStrategy;
-  searchKeywords: string[];
-  topicQuery: string | null;
-}
-
-export interface HistoricalQueryRewriteResult {
-  rewrite: HistoricalQueryRewrite | null;
-  errorMessage: string | null;
-  outputPreview: string | null;
-}
-
-const MEMORY_HISTORY_TEMPORAL_MARKERS = /(?:昨天|前天|今天|那天|那次|刚才|之前|当时|最开始|一开始|最初|开头|上周|上个月|这些天|最近|近来|这段时间|这几天|这阵子|近几天|过去几天|\d{1,2}\s*月|\d{1,2}\s*[号日]|\d{1,2}\s*点|\d{1,2}\s*分|凌晨|早上|上午|中午|下午|傍晚|晚上|夜里|深夜|yesterday|today|last night|last week|that time|earlier|before|recently|these days|past few days|at \d{1,2}(?::\d{2})?|\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2})/iu;
-const MEMORY_HISTORY_RECALL_MARKERS = /(?:记得|还记得|来着|说了什么|聊了什么|提到什么|做什么|什么内容|哪天|什么时候|几点|我说|我发|你说|你发|久美子说|久美子发|我们聊|what did|when did|do you remember|remember when|talked about|said|what was)/iu;
-const MEMORY_HISTORY_TOPIC_MARKERS = /(?:关于.{1,10}(?:聊|说|提|讨论|记得|话题)|聊过|说过|讨论过|提到过|谈过|我们.*话题|所有.*聊天|全部.*对话)/iu;
-
-const isMemoryHistoryQueryLike = (text: string) => {
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!normalized) return false;
-  if (/(?:最开始|一开始|最初|开头|第一个话题|第一句|第一条)/u.test(normalized) && MEMORY_HISTORY_RECALL_MARKERS.test(normalized)) {
-    return true;
-  }
-  if (/^(?:再试一次|再想想|再确认|可能是|应该是|美国时间(?:的)?|前后(?:\s*\d+\s*分钟?)?|左右|大概|大约|差不多|那时候|那会儿|那段|那次|那话题|那内容|后来呢|然后呢|所以呢)/u.test(normalized)) {
-    return true;
-  }
-  if (MEMORY_HISTORY_TOPIC_MARKERS.test(normalized)) {
-    return true;
-  }
-  return MEMORY_HISTORY_TEMPORAL_MARKERS.test(normalized) && MEMORY_HISTORY_RECALL_MARKERS.test(normalized);
-};
-
-const normalizeTemporalQuerySource = (value: unknown, fallback: TemporalQuerySource): TemporalQuerySource => (
-  value === 'local_heuristic' || value === 'main_model'
-    ? value
-    : fallback
-);
-
-const inferTemporalQueryPrecision = (
-  startTimestampJST: number | null,
-  endTimestampJST: number | null
-): TemporalQueryPrecision | null => {
-  if (!Number.isFinite(startTimestampJST) || !Number.isFinite(endTimestampJST)) {
-    return null;
-  }
-
-  const spanMs = Math.max(0, (endTimestampJST as number) - (startTimestampJST as number));
-  if (spanMs <= 2 * 60 * 1000) return 'exact_minute';
-  if (spanMs <= 30 * 60 * 1000) return 'approximate_minutes';
-  if (spanMs <= 12 * 60 * 60 * 1000) return 'hour_window';
-  return 'day_window';
-};
-
-const normalizeTemporalQueryPrecision = (
-  value: unknown,
-  startTimestampJST: number | null,
-  endTimestampJST: number | null
-): TemporalQueryPrecision | null => {
-  if (
-    value === 'exact_minute'
-    || value === 'approximate_minutes'
-    || value === 'hour_window'
-    || value === 'day_window'
-  ) {
-    return value;
-  }
-  return inferTemporalQueryPrecision(startTimestampJST, endTimestampJST);
-};
-
-const inferTemporalQueryConfidence = (
-  source: TemporalQuerySource,
-  precision: TemporalQueryPrecision | null
-): TemporalQueryConfidence => {
-  if (source === 'local_heuristic') {
-    return precision === 'day_window' ? 'medium' : 'high';
-  }
-
-  if (precision === 'exact_minute' || precision === 'approximate_minutes' || precision === 'hour_window') {
-    return 'medium';
-  }
-
-  return 'low';
-};
-
-const normalizeTemporalQueryConfidence = (
-  value: unknown,
-  source: TemporalQuerySource,
-  precision: TemporalQueryPrecision | null
-): TemporalQueryConfidence => (
-  value === 'high' || value === 'medium' || value === 'low'
-    ? value
-    : inferTemporalQueryConfidence(source, precision)
-);
-
-const stringifyTemporalAnalysisError = (error: unknown) => {
-  if (error instanceof Error) return error.message;
-  return String(error);
-};
-
-const normalizeHistoricalQueryRewriteIntent = (value: unknown): HistoricalQueryRewriteIntent => (
-  value === 'exact' || value === 'temporal' || value === 'semantic' || value === 'topic_search' || value === 'none'
-    ? value
-    : 'none'
-);
-
-const normalizeHistoricalSearchStrategy = (value: unknown): HistoricalSearchStrategy => (
-  value === 'exact_time' || value === 'temporal_range' || value === 'topic_search' || value === 'none'
-    ? value
-    : 'none'
-);
-
-const inferSearchStrategyFromIntent = (intent: HistoricalQueryRewriteIntent): HistoricalSearchStrategy => {
-  switch (intent) {
-    case 'exact': return 'exact_time';
-    case 'temporal': return 'temporal_range';
-    case 'semantic':
-    case 'topic_search': return 'topic_search';
-    default: return 'none';
-  }
-};
-
-const coerceHistoricalQueryRewrite = (candidate: any): HistoricalQueryRewrite | null => {
-  if (!candidate || typeof candidate !== 'object') return null;
-
-  const intent = normalizeHistoricalQueryRewriteIntent(candidate.intent);
-  const rewrittenQuery = typeof candidate.rewrittenQuery === 'string'
-    ? candidate.rewrittenQuery.trim()
-    : '';
-  const searchRole = candidate.searchRole === 'user' || candidate.searchRole === 'model' || candidate.searchRole === 'any'
-    ? candidate.searchRole
-    : getTemporalSearchRoleFromQuery(rewrittenQuery);
-  const precision = (
-    candidate.precision === 'exact_minute'
-    || candidate.precision === 'approximate_minutes'
-    || candidate.precision === 'hour_window'
-    || candidate.precision === 'day_window'
-  )
-    ? candidate.precision
-    : null;
-  const confidence = normalizeTemporalQueryConfidence(candidate.confidence, 'main_model', precision);
-  const reason = typeof candidate.reason === 'string' && candidate.reason.trim().length > 0
-    ? candidate.reason.trim()
-    : null;
-
-  const rawStrategy = normalizeHistoricalSearchStrategy(candidate.searchStrategy);
-  const searchStrategy: HistoricalSearchStrategy = rawStrategy !== 'none'
-    ? rawStrategy
-    : inferSearchStrategyFromIntent(intent);
-  const searchKeywords: string[] = Array.isArray(candidate.searchKeywords)
-    ? candidate.searchKeywords.filter((k: unknown) => typeof k === 'string' && k.trim().length > 0).map((k: string) => k.trim())
-    : [];
-  const topicQuery: string | null = typeof candidate.topicQuery === 'string' && candidate.topicQuery.trim().length > 0
-    ? candidate.topicQuery.trim()
-    : null;
-
-  if (intent !== 'none' && !rewrittenQuery) return null;
-
-  return {
-    intent,
-    rewrittenQuery,
-    searchRole,
-    precision,
-    source: 'main_model',
-    confidence,
-    reason,
-    searchStrategy,
-    searchKeywords,
-    topicQuery,
-  };
-};
-
-const parseHistoricalQueryRewrite = (text: string): HistoricalQueryRewrite | null => {
-  const normalized = String(text || '').trim();
-  if (!normalized) return null;
-
-  const tryParse = (raw: string) => {
-    try {
-      return coerceHistoricalQueryRewrite(JSON.parse(raw));
-    } catch {
-      return null;
-    }
-  };
-
-  const direct = tryParse(normalized);
-  if (direct) return direct;
-
-  const objectMatch = normalized.match(/\{[\s\S]*\}/);
-  if (!objectMatch) return null;
-  return tryParse(objectMatch[0]);
-};
-
-const buildTemporalQueryDiagnostics = (
-  status: TemporalQueryDiagnosticsStatus,
-  analysis: TemporalQueryAnalysis | null,
-  errorMessage: string | null = null,
-  outputPreview: string | null = null
-): TemporalQueryDiagnostics => ({
-  status,
-  source: analysis?.source ?? null,
-  precision: analysis?.precision ?? null,
-  confidence: analysis?.confidence ?? null,
-  errorMessage,
-  outputPreview,
-});
-
-const coerceTemporalQueryAnalysis = (
-  value: unknown,
-  fallbackSource: TemporalQuerySource = 'main_model'
-): TemporalQueryAnalysis | null => {
-  if (!value || typeof value !== 'object') return null;
-  const candidate = value as Record<string, unknown>;
-
-  const isTemporalQuery = Boolean(candidate.isTemporalQuery);
-  const startTimestampJST =
-    typeof candidate.startTimestampJST === 'number' && Number.isFinite(candidate.startTimestampJST)
-      ? candidate.startTimestampJST
-      : null;
-  const endTimestampJST =
-    typeof candidate.endTimestampJST === 'number' && Number.isFinite(candidate.endTimestampJST)
-      ? candidate.endTimestampJST
-      : null;
-  const searchRole =
-    candidate.searchRole === 'user' || candidate.searchRole === 'model' || candidate.searchRole === 'any'
-      ? candidate.searchRole
-      : 'any';
-  const source = normalizeTemporalQuerySource(candidate.source, fallbackSource);
-  const precision = normalizeTemporalQueryPrecision(candidate.precision, startTimestampJST, endTimestampJST);
-  const confidence = normalizeTemporalQueryConfidence(candidate.confidence, source, precision);
-
-  if (startTimestampJST !== null && endTimestampJST !== null && startTimestampJST > endTimestampJST) {
-    return {
-      isTemporalQuery,
-      startTimestampJST: endTimestampJST,
-      endTimestampJST: startTimestampJST,
-      searchRole,
-      precision: normalizeTemporalQueryPrecision(candidate.precision, endTimestampJST, startTimestampJST),
-      source,
-      confidence: normalizeTemporalQueryConfidence(candidate.confidence, source, normalizeTemporalQueryPrecision(candidate.precision, endTimestampJST, startTimestampJST)),
-    };
-  }
-
-  return {
-    isTemporalQuery,
-    startTimestampJST,
-    endTimestampJST,
-    searchRole,
-    precision,
-    source,
-    confidence,
-  };
-};
-
-const extractJsonObjectFromText = (text: string): string | null => {
-  const cleaned = String(text || '').replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
-  if (!cleaned) return null;
-
-  const firstBrace = cleaned.indexOf('{');
-  if (firstBrace === -1) return null;
-
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let index = firstBrace; index < cleaned.length; index += 1) {
-    const char = cleaned[index];
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === '\\') {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-
-    if (char === '{') depth += 1;
-    if (char === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        return cleaned.slice(firstBrace, index + 1);
-      }
-    }
-  }
-
-  return cleaned.slice(firstBrace);
-};
-
-const parseTemporalQueryAnalysis = (
-  text: string,
-  fallbackSource: TemporalQuerySource = 'main_model'
-): TemporalQueryAnalysis | null => {
-  const extracted = extractJsonObjectFromText(text);
-  if (!extracted) return null;
-
-  const attempts = [
-    extracted,
-    extracted.replace(/,\s*}/g, '}').replace(/,\s*]/g, ']'),
-  ];
-
-  for (const attempt of attempts) {
-    try {
-      const parsed = JSON.parse(attempt);
-      const normalized = coerceTemporalQueryAnalysis(parsed, fallbackSource);
-      if (normalized) return normalized;
-    } catch {
-      // Try the next relaxed parse form.
-    }
-  }
-
-  return null;
-};
-
-type ZonedDateParts = {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-};
-
-const getTimeZoneDateParts = (date: Date, timeZone: string): ZonedDateParts => {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-    hourCycle: 'h23',
-  });
-  const result: Record<string, string> = {};
-  formatter.formatToParts(date).forEach(part => {
-    result[part.type] = part.value;
-  });
-  return {
-    year: Number(result.year),
-    month: Number(result.month),
-    day: Number(result.day),
-    hour: Number(result.hour),
-    minute: Number(result.minute),
-    second: Number(result.second),
-  };
-};
-
-const getTimeZoneOffsetMs = (date: Date, timeZone: string) => {
-  const zoned = getTimeZoneDateParts(date, timeZone);
-  const asUtc = Date.UTC(zoned.year, zoned.month - 1, zoned.day, zoned.hour, zoned.minute, zoned.second);
-  return asUtc - date.getTime();
-};
-
-const zonedDateTimeToTimestamp = (
-  year: number,
-  month: number,
-  day: number,
-  hour: number,
-  minute: number,
-  second: number,
-  timeZone: string
-) => {
-  const targetUtc = Date.UTC(year, month - 1, day, hour, minute, second);
-  let guess = targetUtc;
-
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const offset = getTimeZoneOffsetMs(new Date(guess), timeZone);
-    const next = targetUtc - offset;
-    if (Math.abs(next - guess) < 1000) {
-      guess = next;
-      break;
-    }
-    guess = next;
-  }
-
-  return guess;
-};
-
-export const getTemporalSearchRoleFromQuery = (query: string): 'user' | 'model' | 'any' => {
-  const normalized = String(query || '').replace(/\s+/g, ' ').trim();
-  if (/(?:我|用户)(?:[^。？！,.，\n]{0,32})?(?:说|发|提到|讲)/u.test(normalized)) return 'user';
-  if (/(?:你|久美子)(?:[^。？！,.，\n]{0,32})?(?:说|发|提到|讲)/u.test(normalized)) return 'model';
-  return 'any';
-};
-
-type ParsedClockExpression = {
-  period: string | null;
-  hour: number;
-  minute: number | null;
-};
-
-const parseExplicitClockExpression = (text: string): ParsedClockExpression | null => {
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-  if (!normalized) return null;
-
-  const pointMatch = normalized.match(/(?:(凌晨|早上|上午|中午|下午|傍晚|晚上|夜里|深夜)\s*)?(\d{1,2})\s*(?:点|时)(?:\s*(\d{1,2})\s*分?)?/u);
-  if (pointMatch) {
-    return {
-      period: pointMatch[1] || null,
-      hour: Number(pointMatch[2]),
-      minute: pointMatch[3] ? Number(pointMatch[3]) : null,
-    };
-  }
-
-  const colonMatch = normalized.match(/(?:(凌晨|早上|上午|中午|下午|傍晚|晚上|夜里|深夜)\s*)?(\d{1,2})\s*[:：]\s*(\d{1,2})/u);
-  if (colonMatch) {
-    return {
-      period: colonMatch[1] || null,
-      hour: Number(colonMatch[2]),
-      minute: Number(colonMatch[3]),
-    };
-  }
-
-  return null;
-};
-
-const detectChinesePeriodExpression = (text: string): string | null => {
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-  const match = normalized.match(/(凌晨|早上|上午|中午|下午|傍晚|晚上|夜里|深夜)/u);
-  return match?.[1] || null;
-};
-
-const applyChinesePeriodToHour = (hour: number, period: string | null) => {
-  if (!period) return hour;
-  if ((period === '下午' || period === '傍晚' || period === '晚上' || period === '夜里' || period === '深夜') && hour < 12) {
-    return hour + 12;
-  }
-  if (period === '中午') {
-    if (hour === 0) return 12;
-    if (hour >= 1 && hour <= 10) return hour + 12;
-    return hour;
-  }
-  if (period === '凌晨' && hour === 12) return 0;
-  return hour;
-};
-
-const getDisplayTimeZone = () => {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Tokyo';
-};
-
-const getUserCharacterTimeZone = (locationConfig?: LocationConfig) => {
-  return locationConfig?.userTimezone || getDisplayTimeZone();
-};
-
-const resolveTemporalQueryReferenceTimeZone = (query: string, locationConfig?: LocationConfig) => {
-  const normalized = String(query || '').replace(/\s+/g, ' ').trim();
-  if (/(?:\bJST\b|日本时间|东京时间|Japan Standard Time)/iu.test(normalized)) {
-    return 'Asia/Tokyo';
-  }
-  if (/(?:用户时间|当地时间|美国时间|user time|local time)/iu.test(normalized)) {
-    return getUserCharacterTimeZone(locationConfig);
-  }
-  return getDisplayTimeZone();
-};
-
-const buildUserDateRange = (
-  year: number,
-  month: number,
-  day: number,
-  startHour: number,
-  startMinute: number,
-  startSecond: number,
-  endHour: number,
-  endMinute: number,
-  endSecond: number,
-  timeZone: string
-) => {
-  return {
-    startTimestampJST: zonedDateTimeToTimestamp(year, month, day, startHour, startMinute, startSecond, timeZone),
-    endTimestampJST: zonedDateTimeToTimestamp(year, month, day, endHour, endMinute, endSecond, timeZone),
-  };
-};
-
-const buildCenterRange = (centerTimestamp: number, deltaMinutes: number) => ({
-  startTimestampJST: centerTimestamp - (deltaMinutes * 60 * 1000),
-  endTimestampJST: centerTimestamp + (deltaMinutes * 60 * 1000),
-});
-
-const buildTemporalQueryAnalysisResult = (
-  startTimestampJST: number | null,
-  endTimestampJST: number | null,
-  searchRole: 'user' | 'model' | 'any',
-  precision: TemporalQueryPrecision | null,
-  source: TemporalQuerySource
-): TemporalQueryAnalysis => ({
-  isTemporalQuery: true,
-  startTimestampJST,
-  endTimestampJST,
-  searchRole,
-  precision,
-  source,
-  confidence: normalizeTemporalQueryConfidence(null, source, precision),
-});
-
-const CN_MINUTE_MAP: Record<string, number> = {
-  一: 1,
-  二: 2,
-  两: 2,
-  三: 3,
-  四: 4,
-  五: 5,
-  六: 6,
-  七: 7,
-  八: 8,
-  九: 9,
-  十: 10,
-};
-
-const extractFollowUpMinuteWindow = (text: string): number | null => {
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
-  const numericMatch = normalized.match(/前后\s*(\d{1,2})\s*分(?:钟)?/u);
-  if (numericMatch) {
-    return Number(numericMatch[1]);
-  }
-
-  const cnMatch = normalized.match(/前后\s*([一二两三四五六七八九十]{1,3})\s*分(?:钟)?/u);
-  if (!cnMatch) return null;
-
-  const raw = cnMatch[1];
-  if (raw === '十') return 10;
-  if (raw.length === 2 && raw.startsWith('十')) {
-    return 10 + (CN_MINUTE_MAP[raw[1]] || 0);
-  }
-  if (raw.length === 2 && raw.endsWith('十')) {
-    return (CN_MINUTE_MAP[raw[0]] || 0) * 10;
-  }
-  if (raw.length === 3 && raw[1] === '十') {
-    return ((CN_MINUTE_MAP[raw[0]] || 0) * 10) + (CN_MINUTE_MAP[raw[2]] || 0);
-  }
-  return CN_MINUTE_MAP[raw] || null;
-};
-
-const getPeriodWindow = (period: string | null) => {
-  switch (period) {
-    case '凌晨':
-      return { startHour: 0, startMinute: 0, endHour: 5, endMinute: 59 };
-    case '早上':
-    case '上午':
-      return { startHour: 6, startMinute: 0, endHour: 11, endMinute: 59 };
-    case '中午':
-      return { startHour: 11, startMinute: 30, endHour: 13, endMinute: 59 };
-    case '下午':
-    case '傍晚':
-      return { startHour: 13, startMinute: 0, endHour: 18, endMinute: 59 };
-    case '晚上':
-    case '夜里':
-    case '深夜':
-      return { startHour: 18, startMinute: 0, endHour: 23, endMinute: 59 };
-    default:
-      return null;
-  }
-};
-
-const buildHeuristicTemporalQueryAnalysis = (query: string, locationConfig?: LocationConfig): TemporalQueryAnalysis | null => {
-  const normalized = String(query || '').replace(/\s+/g, ' ').trim();
-  if (!isMemoryHistoryQueryLike(normalized)) return null;
-
-  const userTimeZone = resolveTemporalQueryReferenceTimeZone(normalized, locationConfig);
-  const searchRole = getTemporalSearchRoleFromQuery(normalized);
-  const now = new Date();
-  const userNowParts = getTimeZoneDateParts(now, userTimeZone);
-  const approximate = /(?:大约|大概|差不多|左右|around|about|也算|也可以算)/iu.test(normalized);
-  const refinementMinutes = extractFollowUpMinuteWindow(normalized);
-
-  const zhDateMatch = normalized.match(/(?:(\d{4})\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*(?:日|号)?/u);
-  const isoDateMatch = normalized.match(/(\d{4})[\/.-](\d{1,2})[\/.-](\d{1,2})/u);
-  const dateMatch = zhDateMatch || isoDateMatch;
-  const clockExpression = parseExplicitClockExpression(normalized);
-  const periodExpression = detectChinesePeriodExpression(normalized);
-
-  if (dateMatch) {
-    const year = Number(dateMatch[1] || userNowParts.year);
-    const month = Number(dateMatch[2]);
-    const day = Number(dateMatch[3]);
-    const period = clockExpression?.period || periodExpression;
-    const rawHour = clockExpression?.hour;
-    const rawMinute = clockExpression?.minute;
-
-    if (Number.isFinite(month) && Number.isFinite(day)) {
-      if (typeof rawHour === 'number' && Number.isFinite(rawHour)) {
-        const hour = applyChinesePeriodToHour(rawHour, period);
-        const minute = typeof rawMinute === 'number' && Number.isFinite(rawMinute) ? rawMinute : 0;
-        const center = zonedDateTimeToTimestamp(year, month, day, hour, minute, 0, userTimeZone);
-        if (typeof rawMinute === 'number' && Number.isFinite(rawMinute)) {
-          const minuteWindow = refinementMinutes ?? (approximate ? 5 : null);
-          const range = minuteWindow === null
-            ? buildUserDateRange(year, month, day, hour, minute, 0, hour, minute, 59, userTimeZone)
-            : buildCenterRange(center, minuteWindow);
-          return buildTemporalQueryAnalysisResult(
-            range.startTimestampJST,
-            range.endTimestampJST,
-            searchRole,
-            minuteWindow === null || minuteWindow <= 1 ? 'exact_minute' : 'approximate_minutes',
-            'local_heuristic'
-          );
-        }
-
-        if (refinementMinutes !== null || approximate) {
-          const range = buildCenterRange(center, refinementMinutes ?? 15);
-          return buildTemporalQueryAnalysisResult(
-            range.startTimestampJST,
-            range.endTimestampJST,
-            searchRole,
-            'approximate_minutes',
-            'local_heuristic'
-          );
-        }
-
-        const range = buildUserDateRange(year, month, day, hour, 0, 0, hour, 59, 59, userTimeZone);
-        return buildTemporalQueryAnalysisResult(
-          range.startTimestampJST,
-          range.endTimestampJST,
-          searchRole,
-          'hour_window',
-          'local_heuristic'
-        );
-      }
-
-      const periodWindow = getPeriodWindow(period);
-      const range = periodWindow
-        ? buildUserDateRange(year, month, day, periodWindow.startHour, periodWindow.startMinute, 0, periodWindow.endHour, periodWindow.endMinute, 59, userTimeZone)
-        : buildUserDateRange(year, month, day, 0, 0, 0, 23, 59, 59, userTimeZone);
-      return buildTemporalQueryAnalysisResult(
-        range.startTimestampJST,
-        range.endTimestampJST,
-        searchRole,
-        periodWindow ? 'hour_window' : 'day_window',
-        'local_heuristic'
-      );
-    }
-  }
-
-  let dayOffset: number | null = null;
-  if (/(?:昨天|yesterday|last night)/iu.test(normalized)) dayOffset = -1;
-  else if (/前天/iu.test(normalized)) dayOffset = -2;
-  else if (/(?:今天|today|刚才|earlier)/iu.test(normalized)) dayOffset = 0;
-
-  if (dayOffset !== null) {
-    const userRef = new Date(now.getTime() + (dayOffset * 24 * 60 * 60 * 1000));
-    const userRefParts = getTimeZoneDateParts(userRef, userTimeZone);
-    const period = clockExpression?.period || periodExpression;
-    const rawHour = clockExpression?.hour;
-    const rawMinute = clockExpression?.minute;
-
-    if (typeof rawHour === 'number' && Number.isFinite(rawHour)) {
-      const hour = applyChinesePeriodToHour(rawHour, period);
-      const minute = typeof rawMinute === 'number' && Number.isFinite(rawMinute) ? rawMinute : 0;
-      const center = zonedDateTimeToTimestamp(userRefParts.year, userRefParts.month, userRefParts.day, hour, minute, 0, userTimeZone);
-      if (typeof rawMinute === 'number' && Number.isFinite(rawMinute)) {
-        const minuteWindow = refinementMinutes ?? (approximate ? 5 : null);
-        const range = minuteWindow === null
-          ? buildUserDateRange(userRefParts.year, userRefParts.month, userRefParts.day, hour, minute, 0, hour, minute, 59, userTimeZone)
-          : buildCenterRange(center, minuteWindow);
-        return buildTemporalQueryAnalysisResult(
-          range.startTimestampJST,
-          range.endTimestampJST,
-          searchRole,
-          minuteWindow === null || minuteWindow <= 1 ? 'exact_minute' : 'approximate_minutes',
-          'local_heuristic'
-        );
-      }
-
-      if (refinementMinutes !== null || approximate) {
-        const range = buildCenterRange(center, refinementMinutes ?? 15);
-        return buildTemporalQueryAnalysisResult(
-          range.startTimestampJST,
-          range.endTimestampJST,
-          searchRole,
-          'approximate_minutes',
-          'local_heuristic'
-        );
-      }
-
-      const range = buildUserDateRange(userRefParts.year, userRefParts.month, userRefParts.day, hour, 0, 0, hour, 59, 59, userTimeZone);
-      return buildTemporalQueryAnalysisResult(
-        range.startTimestampJST,
-        range.endTimestampJST,
-        searchRole,
-        'hour_window',
-        'local_heuristic'
-      );
-    }
-
-    const periodWindow = getPeriodWindow(period);
-    const range = periodWindow
-      ? buildUserDateRange(userRefParts.year, userRefParts.month, userRefParts.day, periodWindow.startHour, periodWindow.startMinute, 0, periodWindow.endHour, periodWindow.endMinute, 59, userTimeZone)
-      : buildUserDateRange(userRefParts.year, userRefParts.month, userRefParts.day, 0, 0, 0, 23, 59, 59, userTimeZone);
-    return buildTemporalQueryAnalysisResult(
-      range.startTimestampJST,
-      range.endTimestampJST,
-      searchRole,
-      periodWindow ? 'hour_window' : 'day_window',
-      'local_heuristic'
-    );
-  }
-
-  return null;
-};
-
-export const analyzeTemporalQueryDetailed = async (query: string, locationConfig?: LocationConfig): Promise<TemporalQueryAnalysisResult> => {
-  const heuristicResult = buildHeuristicTemporalQueryAnalysis(query, locationConfig);
-  if (heuristicResult) {
-      console.log("[Temporal Intent] Using local heuristic parser.", heuristicResult);
-      return {
-        analysis: heuristicResult,
-        diagnostics: buildTemporalQueryDiagnostics('heuristic_success', heuristicResult),
-      };
-  }
-
-  let rawModelOutput = "";
-  try {
-      const config = getCurrentAIConfig();
-      const provider = config.provider || 'gemini';
-      const transportProvider = resolveTransportProvider(provider, config.useCustomEndpoint ? config.customEndpoint : undefined);
-      
-      const now = new Date();
-      let jstTime = "??:??";
-      try {
-          jstTime = now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-      } catch(e) {}
-      
-      let userTime = "??:??";
-      if (locationConfig?.userTimezone) {
-          try {
-             userTime = now.toLocaleString('en-US', { timeZone: locationConfig.userTimezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-          } catch(e) {}
-      }
-
-      const prompt = `
-You are an intent parser. Your job is to extract temporal boundaries from a user's conversational query.
-
-[CURRENT TIME REFERENCE]
-Current JST (Japan Standard Time): ${jstTime}
-Current User Time: ${userTime}
-Default rule: interpret the user's query in the user's timezone and convert the computed boundaries into JST (Japan Standard Time) timestamps.
-Override rule: if the query explicitly says JST / Japan time / 日本时间 / 东京时间, treat the stated time as already being in JST and DO NOT convert it from the user's timezone again.
-
-[USER QUERY]
-"${query}"
-
-[RULES]
-1. Determine if the user is asking about a past conversation (e.g., "What did we talk about yesterday?", "What did I say on March 17th?").
-2. If YES, set isTemporalQuery = true. If NO, set isTemporalQuery = false.
-3. If a specific time block is implied (e.g., "yesterday", "March 17th at 10pm"), calculate the startTimestampJST and endTimestampJST covering that block in milliseconds. 
-4. If it's a general past request, you may set timestamps to null.
-5. searchRole: Determine who the user is asking about. "What did *I* say" -> 'user'. "What did *you* say" -> 'model'. "What did *we* talk about" -> 'any'.
-6. precision: classify the result window as one of:
-   - "exact_minute"
-   - "approximate_minutes"
-   - "hour_window"
-   - "day_window"
-7. source: always set to "main_model".
-8. confidence: set:
-   - "medium" for specific minute/hour style windows
-   - "low" for vague day-wide windows
-
-You MUST output ONLY valid JSON matching this schema exactly:
-{
-  "isTemporalQuery": boolean,
-  "startTimestampJST": number | null,
-  "endTimestampJST": number | null,
-  "searchRole": "user" | "model" | "any",
-  "precision": "exact_minute" | "approximate_minutes" | "hour_window" | "day_window" | null,
-  "source": "main_model",
-  "confidence": "high" | "medium" | "low"
-}
-`;
-
-      let modelName = config.model_main || 'gemini-2.5-flash'; // Enforcing use of the MAIN model as requested by user
-
-      let text = "";
-      if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-          const result = await callOpenAI(config, modelName, "You are an AI Text-to-SQL Intent Parser. Output pure JSON.", [], prompt);
-          text = result.text || "";
-      } else if (transportProvider === 'anthropic') {
-          const result = await callAnthropic(config, modelName, "You are an AI Text-to-SQL Intent Parser. Output pure JSON.", [], prompt);
-          text = result.text || "";
-      } else {
-          const ai = getGenAI();
-          const result = await ai.models.generateContent({
-            model: modelName, 
-            contents: prompt,
-            config: { responseMimeType: 'application/json' }
-          });
-          text = result.text || "";
-      }
-      rawModelOutput = text;
-      const parsed = parseTemporalQueryAnalysis(text, 'main_model');
-      if (!parsed) {
-        throw new SyntaxError(`Unable to parse temporal intent JSON: ${text.slice(0, 200)}`);
-      }
-      return {
-        analysis: parsed,
-        diagnostics: buildTemporalQueryDiagnostics('main_model_success', parsed, null, text.slice(0, 200) || null),
-      };
-  } catch (e) {
-      const fallback = buildHeuristicTemporalQueryAnalysis(query, locationConfig);
-      if (fallback) {
-          console.warn("[Temporal Intent] Main-model parsing failed; using local heuristic fallback.", e);
-          return {
-            analysis: fallback,
-            diagnostics: buildTemporalQueryDiagnostics(
-              'heuristic_fallback_after_model_failure',
-              fallback,
-              stringifyTemporalAnalysisError(e),
-              rawModelOutput.slice(0, 200) || null
-            ),
-          };
-      }
-      console.warn("[Temporal Intent] Parsing failed using main model:", e);
-      const errorMessage = stringifyTemporalAnalysisError(e);
-      return {
-        analysis: null,
-        diagnostics: buildTemporalQueryDiagnostics(
-          e instanceof SyntaxError ? 'main_model_parse_failed' : 'main_model_error',
-          null,
-          errorMessage,
-          rawModelOutput.slice(0, 200) || null
-        ),
-      };
-  }
-};
-
-export const rewriteHistoricalRecallQueryDetailed = async (
-  query: string,
-  locationConfig?: LocationConfig,
-  options?: { bypassGate?: boolean; recentMessages?: Message[] }
-): Promise<HistoricalQueryRewriteResult> => {
-  const normalized = String(query || '').replace(/\s+/g, ' ').trim();
-  if (!options?.bypassGate && !isMemoryHistoryQueryLike(normalized)) {
-    return {
-      rewrite: null,
-      errorMessage: null,
-      outputPreview: null,
-    };
-  }
-
-  let rawModelOutput = "";
-  try {
-    const config = getCurrentAIConfig();
-    const provider = config.provider || 'gemini';
-    const transportProvider = resolveTransportProvider(provider, config.useCustomEndpoint ? config.customEndpoint : undefined);
-    const modelName = config.model_main || 'gemini-2.5-flash';
-    const now = new Date();
-    const displayTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Tokyo';
-    const characterTimeZone = locationConfig?.userTimezone || displayTimeZone;
-    const modelTimeZone = locationConfig?.modelTimezone || 'Asia/Tokyo';
-
-    let jstTime = "??:??";
-    let displayTime = "??:??";
-    let characterTime = "??:??";
-    try {
-      jstTime = now.toLocaleString('en-US', {
-        timeZone: modelTimeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-      });
-    } catch {}
-    try {
-      displayTime = now.toLocaleString('en-US', {
-        timeZone: displayTimeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-      });
-    } catch {}
-    try {
-      characterTime = now.toLocaleString('en-US', {
-        timeZone: characterTimeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-      });
-    } catch {}
-
-    let recentContextStr = "None provided.";
-    if (options?.recentMessages && options.recentMessages.length > 0) {
-      recentContextStr = options.recentMessages.map(m => `${m.role === 'user' ? 'User' : 'Kumiko'}: ${m.text}`).join('\n');
-    }
-
-    const prompt = `
-You are a query rewriter for a local chat-history retrieval system.
-Your job is NOT to answer the user. Your only job is to transform a natural-language memory question into a structured retrieval command that search code can parse reliably.
-
-[CURRENT TIME REFERENCE]
-Current Kumiko/JST Time: ${jstTime}
-Current Display Time (user's screen clock): ${displayTime}
-Display Timezone: ${displayTimeZone}
-User Character Timezone: ${characterTimeZone}
-Current Character Time: ${characterTime}
-Kumiko Timezone: ${modelTimeZone}
-
-[RECENT CONVERSATION CONTEXT]
-${recentContextStr}
-
-[INPUT QUERY]
-"${normalized}"
-
-[OUTPUT JSON SCHEMA]
-{
-  "intent": "exact" | "temporal" | "semantic" | "topic_search" | "none",
-  "searchStrategy": "exact_time" | "temporal_range" | "topic_search" | "none",
-  "rewrittenQuery": string,
-  "searchRole": "user" | "model" | "any",
-  "precision": "exact_minute" | "approximate_minutes" | "hour_window" | "day_window" | null,
-  "confidence": "high" | "medium" | "low",
-  "reason": string | null,
-  "searchKeywords": string[],
-  "topicQuery": string | null
-}
-
-[RULES]
-1. Output ONLY valid JSON.
-2. rewrittenQuery MUST always use a canonical Chinese retrieval format, even if the input question is colloquial.
-3. If the user asks for exact wording at a precise time ("我说了什么", "你说了什么"), set intent to "exact" and searchStrategy to "exact_time".
-4. If the user asks what happened or what was discussed in a broader time range, set intent to "temporal" and searchStrategy to "temporal_range".
-5. If the user asks about a remembered topic/theme rather than a time-pinned quote, set intent to "semantic" and searchStrategy to "topic_search".
-6. If the user asks about a specific entity, person, or topic across conversations (e.g. "关于丽奈", "我们聊过的X话题"), set intent to "topic_search" and searchStrategy to "topic_search".
-7. Preserve speaker faithfully:
-   - "我说了什么" => searchRole "user"
-   - "你说了什么" => searchRole "model"
-   - "我们聊了什么" => searchRole "any"
-8. CRITICAL TIMEZONE RULE: The app shows timestamps in TWO places — chat bubbles use Display Timezone (${displayTimeZone}), while the memory/context editor uses JST (Asia/Tokyo). When the user references a time, they could be reading EITHER. Because the retrieval system searches a wide window (±30 min) around the target, use the MOST LIKELY interpretation: if Display Timezone and JST differ by ≤1 hour, just output the time as JST directly (the wide window covers the gap). If they differ by more, convert from Display Timezone to JST. Do NOT use the User Character Timezone for this conversion.
-9. If the query explicitly mentions Japan time / JST / 日本時間, keep it in JST.
-10. Do not invent content. Only normalize intent, speaker, time range, timezone conversion, and extract keywords.
-11. Preferred rewrittenQuery patterns:
-   - exact minute: "2026年3月18日 10:15 JST 我说了什么"
-   - exact hour: "2026年3月18日 10点 JST 我们聊了什么"
-   - nearby window: "2026年3月18日 10:15 JST 前后5分钟 我们聊了什么"
-   - semantic recall: "回忆检索 3月18日 那次关于X的对话内容"
-   - topic search: "回忆检索 关于丽奈的所有对话内容"
-12. searchKeywords: Extract the core entity names, person names, or topic keywords from the query. Include ALL name variants the user might use (short name, full name, alternate spellings). For example, if the user mentions "丽奈", include ["丽奈", "高坂丽奈"]. For non-topic queries, set to [].
-13. topicQuery: For topic_search, write a clear embedding-friendly retrieval query describing what to search for (e.g. "关于高坂丽奈的对话内容"). For non-topic queries, set to null.
-14. For follow-up queries referencing a previous topic (e.g. "这些天来" after asking about a topic, "不只是那一天", "之前聊的啥", "那校园祭那天呢"), infer the topic or time anchor from the [RECENT CONVERSATION CONTEXT].
-    - Pronoun/Omission Resolution: If the query uses pronouns ("他", "那个") or omits the subject ("之前聊的啥", "刚才说的"), resolve it using the recent context (e.g., rewrite to "关于秀一的对话内容").
-    - Relative Time Resolution: If the query uses relative time ("那之前呢", "后来呢") anchored to a recently mentioned event (e.g., "校园祭"), resolve it (e.g., rewrite to "校园祭之前发生的事").
-15. If there is not enough information to improve the query, keep rewrittenQuery close to the original meaning but still make it more canonical. Set searchStrategy to "none" only if the query has NOTHING to do with recalling past conversations.
-`;
-
-    const callRewrite = async (model: string): Promise<string> => {
-      if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-        const result = await callOpenAI(config, model, "You rewrite history queries and output pure JSON.", [], prompt);
-        return result.text || "";
-      } else if (transportProvider === 'anthropic') {
-        const result = await callAnthropic(config, model, "You rewrite history queries and output pure JSON.", [], prompt);
-        return result.text || "";
-      } else {
-        const ai = getGenAI();
-        const result = await ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: { responseMimeType: 'application/json' }
-        });
-        return result.text || "";
-      }
-    };
-
-    let text = "";
-    try {
-      text = await callRewrite(modelName);
-    } catch (mainError) {
-      console.warn('[HISTORICAL QUERY REWRITE] Main model failed, retrying...', mainError);
-      try {
-        text = await callRewrite(modelName);
-      } catch (retryError) {
-        const fallbackModel = config.model_summary;
-        if (fallbackModel && fallbackModel !== modelName) {
-          console.warn('[HISTORICAL QUERY REWRITE] Retry failed, falling back to summary model:', fallbackModel);
-          text = await callRewrite(fallbackModel);
-        } else {
-          throw retryError;
-        }
-      }
-    }
-
-    rawModelOutput = text;
-    const parsed = parseHistoricalQueryRewrite(text);
-    if (!parsed) {
-      throw new SyntaxError(`Unable to parse historical rewrite JSON: ${text.slice(0, 200)}`);
-    }
-
-    console.log('[HISTORICAL QUERY REWRITE]', {
-      intent: parsed.intent,
-      searchStrategy: parsed.searchStrategy,
-      searchRole: parsed.searchRole,
-      precision: parsed.precision,
-      confidence: parsed.confidence,
-      rewrittenQuery: parsed.rewrittenQuery,
-      searchKeywords: parsed.searchKeywords,
-      topicQuery: parsed.topicQuery,
-      reason: parsed.reason,
-    });
-
-    return {
-      rewrite: parsed,
-      errorMessage: null,
-      outputPreview: text.slice(0, 200) || null,
-    };
-  } catch (error) {
-    console.warn('[HISTORICAL QUERY REWRITE] All rewrite attempts failed.', error);
-    return {
-      rewrite: null,
-      errorMessage: stringifyTemporalAnalysisError(error),
-      outputPreview: rawModelOutput.slice(0, 200) || null,
-    };
-  }
-};
-
-export const analyzeTemporalQuery = async (query: string, locationConfig?: LocationConfig): Promise<TemporalQueryAnalysis | null> => {
-  const result = await analyzeTemporalQueryDetailed(query, locationConfig);
-  return result.analysis;
-};
-
-/**
- * Lightweight LLM call that bypasses the full Kumiko conversation pipeline.
- * No retry guard, no textParts splitting, no persona injection.
- * Used for translation and other utility tasks where raw text output is needed.
- */
-export const callLLMRaw = async (
-  systemPrompt: string,
-  userPrompt: string,
-  modelOverride?: string,
-): Promise<string> => {
-  const config = getCurrentAIConfig();
-  const provider = config.provider || 'gemini';
-  const transportProvider = resolveTransportProvider(
-    provider,
-    config.useCustomEndpoint ? config.customEndpoint : undefined
-  );
-  const model = modelOverride || config.model_main || 'gemini-3.1-pro-preview';
-
-  let text = '';
-  const maxRetries = 2;
-  let attempt = 0;
-
-  while (attempt <= maxRetries) {
-    try {
-      if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-        const result = await callOpenAI(config, model, systemPrompt, [], userPrompt);
-        text = result.text || '';
-      } else if (transportProvider === 'anthropic') {
-        const result = await callAnthropic(config, model, systemPrompt, [], userPrompt);
-        text = result.text || '';
-      } else {
-        const ai = getGenAI();
-        const result = await ai.models.generateContent({
-          model,
-          contents: userPrompt,
-          config: {
-            systemInstruction: systemPrompt,
-            temperature: 0.7,
-          },
-        });
-        text = result.text || '';
-      }
-      break; // Success, exit retry loop
-    } catch (error) {
-      attempt++;
-      console.warn(`[callLLMRaw] Attempt ${attempt} failed:`, error);
-      if (attempt > maxRetries) {
-        throw error;
-      }
-      // Wait for 1.5 seconds before retrying
-      await new Promise(resolve => setTimeout(resolve, 1500));
-    }
-  }
-
-  return text.trim();
 };

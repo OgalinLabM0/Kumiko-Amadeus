@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { Language } from '../../types';
 import { SOFTWARE_GUIDE_SECTIONS } from '../../constants';
+import { useModalKeyboard } from '../../hooks/useModalKeyboard';
 
 const INLINE_ICONS: Record<string, React.ElementType> = {
   Maximize,
@@ -65,16 +66,21 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
   isDarkMode
 }) => {
   const [activeGuideSection, setActiveGuideSection] = useState('intro');
+  const [isClosing, setIsClosing] = useState(false);
   const articleScrollRef = useRef<HTMLDivElement | null>(null);
-  const bgClass = isDarkMode ? 'bg-[#0f0c08] border-[#3d2e1a]/60' : 'bg-[#faf6f0] border-[#e6ddcf]';
+
+  const isVisible = isOpen || isClosing;
+
+  const bgClass = isDarkMode ? 'bg-[#161412] border-[#2a2522]/60' : 'bg-[#faf6f0] border-[#e6ddcf]';
   const textClass = isDarkMode ? 'text-[#f1e6d7]' : 'text-[#3d2a18]';
   const titleClass = isDarkMode ? 'text-[#d4a852]' : 'text-[#8a6122]';
   const mutedClass = isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]';
-  const panelClass = isDarkMode ? 'bg-[#1a1510] border-[#3d2e1a]/40' : 'bg-white border-[#e6ddcf]';
+  const panelClass = isDarkMode ? 'bg-[#1e1c1a] border-[#2a2522]/40' : 'bg-white border-[#e6ddcf]';
   const panelMutedClass = isDarkMode ? 'bg-[#211912] border-[#4f3b2a]' : 'bg-[#faf5ee] border-[#eadfce]';
 
   useEffect(() => {
     if (isOpen) {
+      setIsClosing(false);
       setActiveGuideSection('intro');
     }
   }, [isOpen]);
@@ -86,6 +92,21 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
 
   const handleGuideSectionChange = (nextSectionId: string) => {
     setActiveGuideSection(nextSectionId);
+  };
+
+  const handleClose = () => {
+    setIsClosing(true);
+  };
+
+  // P2 #42: Esc closes the guide just like the X button (goes through the
+  // same animation path so the exit transition still plays).
+  useModalKeyboard({ isOpen, onClose: handleClose });
+
+  const handleAnimationEnd = (e: React.AnimationEvent) => {
+    if (isClosing && e.animationName === 'guideOut') {
+      setIsClosing(false);
+      onClose();
+    }
   };
 
   const renderInlineContent = (line: string) => {
@@ -104,7 +125,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
           <code
             key={i}
             className={`mx-0.5 rounded px-1.5 py-0.5 font-mono text-[0.92em] ${
-              isDarkMode ? 'bg-[#1a1510] text-[#d4a852]' : 'bg-[#f5efe4] text-[#7c5710]'
+              isDarkMode ? 'bg-[#1e1c1a] text-[#d4a852]' : 'bg-[#f5efe4] text-[#7c5710]'
             }`}
           >
             {part.slice(1, -1)}
@@ -120,7 +141,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
             <span
               key={i}
               className={`inline-flex items-center justify-center align-text-bottom mx-1 p-0.5 rounded ${
-                isDarkMode ? 'bg-[#1a1510] text-[#d4a852]' : 'bg-[#f5efe4] text-[#8a6122]'
+                isDarkMode ? 'bg-[#1e1c1a] text-[#d4a852]' : 'bg-[#f5efe4] text-[#8a6122]'
               }`}
             >
               <IconComponent size={14} />
@@ -149,7 +170,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
           <h1
             key={idx}
             className={`mb-6 mt-2 border-b pb-3 font-mincho text-[1.72rem] md:text-[1.92rem] font-bold tracking-[0.02em] ${
-              isDarkMode ? 'border-[#3d2e1a]/50 text-[#f1e6d7]' : 'border-[#e6ddcf] text-[#6f4e19]'
+              isDarkMode ? 'border-[#2a2522]/50 text-[#f1e6d7]' : 'border-[#e6ddcf] text-[#6f4e19]'
             }`}
           >
             {line.replace('# ', '')}
@@ -234,161 +255,192 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
     });
   }, [activeData.content, isDarkMode]);
 
-  if (!isOpen) {
+  const animClass = isClosing
+    ? 'animate-[guideOut_200ms_ease-in_forwards]'
+    : 'animate-[guideIn_300ms_ease-out]';
+  const backdropAnimClass = isClosing
+    ? 'animate-[guideBackdropOut_200ms_ease-in_forwards]'
+    : 'animate-[guideBackdropIn_300ms_ease-out]';
+
+  if (!isVisible) {
     return null;
   }
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-300 safe-area-padding-modal"
-      style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.62) 30%, rgba(0,0,0,0) 100%)' }}
-    >
+    <>
+      <style>{`
+        @keyframes guideIn {
+          from { transform: translateY(24px) scale(0.97); opacity: 0; }
+          to { transform: translateY(0) scale(1); opacity: 1; }
+        }
+        @keyframes guideOut {
+          from { transform: translateY(0) scale(1); opacity: 1; }
+          to { transform: translateY(12px) scale(0.98); opacity: 0; }
+        }
+        @keyframes guideBackdropIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes guideBackdropOut {
+          from { opacity: 1; }
+          to { opacity: 0; }
+        }
+      `}</style>
       <div
-        className={`relative w-full max-w-7xl h-full max-h-[92dvh] rounded-[1.2rem] border shadow-2xl overflow-hidden flex flex-col animate-[breathe_0.3s_ease-out] ${bgClass}`}
+        className={`fixed inset-0 z-[100] flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal ${backdropAnimClass}`}
+        style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.62) 30%, rgba(0,0,0,0) 100%)' }}
       >
-        <div className={`absolute top-0 left-0 w-full h-[2px] ${isDarkMode ? 'bg-gradient-to-r from-transparent via-[#d4a852]/50 to-transparent' : 'bg-gradient-to-r from-transparent via-[#b8860b]/30 to-transparent'}`}></div>
+        <div
+          className={`relative w-full max-w-7xl h-full max-h-[92dvh] rounded-[1.2rem] border shadow-2xl overflow-hidden flex flex-col ${animClass} ${bgClass}`}
+          style={{ contain: 'layout style paint' }}
+          onAnimationEnd={handleAnimationEnd}
+        >
+          <div className={`absolute top-0 left-0 w-full h-[2px] ${isDarkMode ? 'bg-gradient-to-r from-transparent via-[#d4a852]/50 to-transparent' : 'bg-gradient-to-r from-transparent via-[#b8860b]/30 to-transparent'}`}></div>
 
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-[#3d2e1a]/50' : 'border-[#e6ddcf]'}`}>
-          <div className="flex items-center gap-3 min-w-0">
-            <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-amber-500/20 bg-amber-900/20 text-amber-300' : 'border-amber-200 bg-amber-50/90 text-amber-700'}`}>
-              <Info size={18} />
-            </div>
-            <div className="min-w-0">
-              <div className={`text-xl sm:text-2xl md:text-3xl font-bold ${titleClass}`}>
-                {language === 'zh' ? '全知全能之书' : 'Omniscient Book'}
+          <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-[#2a2522]/50' : 'border-[#e6ddcf]'}`}>
+            <div className="flex items-center gap-3 min-w-0">
+              <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-amber-500/20 bg-amber-900/20 text-amber-300' : 'border-amber-200 bg-amber-50/90 text-amber-700'}`}>
+                <Info size={18} />
               </div>
-              <p className={`mt-1 ka-copy-sm ${mutedClass}`}>
-                {language === 'zh'
-                  ? '功能结构、数据链路、回复逻辑与桌面行为的完整系统档案。'
-                  : 'Full archive for features, data flow, reply logic, and desktop behavior.'}
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            className={`p-1.5 rounded-full hover:bg-red-500/10 hover:text-red-500 transition-colors ${textClass}`}
-          >
-            <X size={20} />
-          </button>
-        </div>
-
-        <div className="flex-1 min-h-0 flex flex-col md:flex-row">
-          <div
-            className={`w-full md:w-64 lg:w-72 flex flex-col border-b md:border-b-0 md:border-r min-h-0 ${
-              isDarkMode ? 'bg-[#0c0a06] border-[#3d2e1a]/50' : 'bg-[#f5f0e8] border-[#e6ddcf]'
-            }`}
-          >
-            <div className={`p-4 border-b ${isDarkMode ? 'border-[#3d2e1a]/40' : 'border-[#e6ddcf]'}`}>
-              <div className={`rounded-lg border p-4 ${panelMutedClass}`}>
-                <div className={`ka-kicker ${titleClass}`}>
-                  {language === 'zh' ? 'AMADEUS 档案索引' : 'AMADEUS INDEX'}
+              <div className="min-w-0">
+                <div className={`text-xl sm:text-2xl md:text-3xl font-bold ${titleClass}`}>
+                  {language === 'zh' ? '全知全能之书' : 'Omniscient Book'}
                 </div>
-                <p className={`mt-2 text-[14px] leading-7 md:text-[14.5px] ${mutedClass}`}>
+                <p className={`mt-1 ka-copy-sm ${mutedClass}`}>
                   {language === 'zh'
-                    ? '这里写的是软件真正如何运转，而不是宣传页摘要。每一章都对应当前桌面版的一条实际链路。'
-                    : 'This archive documents how the desktop build actually works, not just what it claims to do.'}
+                    ? '功能结构、数据链路、回复逻辑与桌面行为的完整系统档案。'
+                    : 'Full archive for features, data flow, reply logic, and desktop behavior.'}
                 </p>
               </div>
             </div>
-
-            <div className="flex flex-1 overflow-x-auto md:overflow-y-auto md:flex-col p-3 gap-2 scrollbar-thin">
-              {sections.map((section, index) => {
-                const isActive = activeGuideSection === section.id;
-                const Icon = section.icon;
-
-                return (
-                  <button
-                    key={section.id}
-                    onClick={() => handleGuideSectionChange(section.id)}
-                    className={`flex items-center gap-3 px-4 py-3 rounded-xl text-left transition-all whitespace-nowrap md:whitespace-normal border ${
-                      isActive
-                        ? (isDarkMode
-                          ? 'bg-[#d4a852] text-[#21150a] border-transparent shadow-[0_10px_20px_rgba(212,168,82,0.18)]'
-                          : 'bg-[#fff5e3] text-[#8a6122] border-[#e0c58f] shadow-[0_8px_18px_rgba(138,97,34,0.10)]')
-                        : (isDarkMode
-                          ? 'text-[#b69f87] border-transparent hover:text-[#dccab6] hover:bg-white/5'
-                          : 'text-[#776552] border-transparent hover:text-[#5c4720] hover:bg-[#faf5ee]')
-                    }`}
-                  >
-                    <div className={`rounded-xl p-2 ${isActive ? (isDarkMode ? 'bg-[#21150a]/30 text-[#21150a]' : 'bg-[#e0c58f]/40 text-[#8a6122]') : (isDarkMode ? 'bg-white/5 text-[#8f7458]' : 'bg-black/[0.04] text-[#9d8251]')}`}>
-                      <Icon size={14} />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="ka-micro opacity-55">{String(index + 1).padStart(2, '0')}</div>
-                      <div className="text-[14.5px] leading-6 font-semibold md:text-[15px]">{section.title}</div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            <div
-              className={`px-4 py-2 border-t flex items-center justify-between ka-micro ${
-                isDarkMode ? 'border-[#3d2e1a]/40 text-[#6b5a45]' : 'border-[#e6ddcf] text-[#8a7557]'
-              }`}
+            <button
+              onClick={handleClose}
+              className={`p-1.5 rounded-full hover:bg-red-500/10 hover:text-red-500 transition-colors ${textClass}`}
             >
-              <span>DESKTOP ARCHIVE</span>
-              <span>LOCAL FIRST</span>
-            </div>
+              <X size={20} />
+            </button>
           </div>
 
-          <div className="relative min-h-0 flex-1 flex flex-col overflow-hidden">
-            <div className={`px-5 md:px-6 py-4 border-b ${isDarkMode ? 'border-[#3d2e1a]/40 bg-[#0f0c08]' : 'border-[#e6ddcf] bg-[#faf6f0]'}`}>
-              <div className="flex items-center gap-3">
-                <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${isDarkMode ? 'bg-[#211912] text-[#d4a852]' : 'bg-[#fff5e3] text-[#8a6122]'}`}>
-                  <ActiveIcon size={16} />
-                </div>
-                <div className="min-w-0">
-                  <div className={`ka-kicker ${isDarkMode ? 'text-[#6b5a45]' : 'text-[#9a7d50]'}`}>
-                    {language === 'zh' ? `章节 ${activeIndex + 1} / ${sections.length}` : `Section ${activeIndex + 1} / ${sections.length}`}
-                  </div>
-                  <h3 className={`font-mincho text-base sm:text-lg md:text-xl font-semibold tracking-[0.02em] ${isDarkMode ? 'text-[#f1e6d7]' : 'text-[#6f4e19]'}`}>
-                    {activeData.title}
-                  </h3>
-                </div>
-              </div>
-            </div>
-
+          <div className="flex-1 min-h-0 flex flex-col md:flex-row">
             <div
-              ref={articleScrollRef}
-              className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:p-8 scrollbar-thin"
-            >
-              <div className={`mx-auto max-w-4xl rounded-[1.15rem] border overflow-hidden ${panelClass}`}>
-                <div className={`px-5 py-3 border-b flex items-center justify-between gap-3 ${isDarkMode ? 'border-[#3d2e1a]/30 bg-[#1a1510]' : 'border-[#eadfce] bg-[#faf5ee]'}`}>
-                  <div className="min-w-0">
-                    <div className={`ka-kicker ${titleClass}`}>
-                      {language === 'zh' ? '系统设计说明' : 'SYSTEM DESIGN DOSSIER'}
-                    </div>
-                    <p className={`mt-1 text-[14px] leading-7 md:text-[14.5px] ${mutedClass}`}>
-                      {language === 'zh'
-                        ? '以下内容描述的是软件当前实际执行的结构、条件、数据流与行为规则。'
-                        : 'The sections below describe the current live structure, conditions, data flow, and behavior rules.'}
-                    </p>
-                  </div>
-                  <div className={`hidden md:flex items-center gap-2 rounded-full px-3 py-1 ka-micro border ${isDarkMode ? 'border-[#4f3b2a] text-[#d4a852] bg-[#211912]' : 'border-[#eadfce] text-[#8f6b12] bg-white'}`}>
-                    <ActiveIcon size={12} />
-                    <span>AMADEUS</span>
-                  </div>
-                </div>
-
-                <div className={`p-4 md:p-6 lg:p-8 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
-                  {renderedContent}
-                  <div className="h-16"></div>
-                </div>
-              </div>
-            </div>
-
-            <div
-              className={`px-5 md:px-6 py-2 border-t flex items-center justify-between ka-micro ${
-                isDarkMode ? 'border-[#3d2e1a]/40 bg-[#0c0a06] text-[#6b5a45]' : 'border-[#e6ddcf] bg-[#f5f0e8] text-[#8d7654]'
+              className={`w-full md:w-64 lg:w-72 flex flex-col border-b md:border-b-0 md:border-r min-h-0 ${
+                isDarkMode ? 'bg-[#1c1a18] border-[#2a2522]/50' : 'bg-[#f5f0e8] border-[#e6ddcf]'
               }`}
             >
-              <span>KUMIKO·AMADEUS DESKTOP MANUAL</span>
-              <span>AMADEUS ARCHIVE</span>
+              <div className={`hidden md:block p-4 border-b ${isDarkMode ? 'border-[#2a2522]/40' : 'border-[#e6ddcf]'}`}>
+                <div className={`rounded-lg border p-4 ${panelMutedClass}`}>
+                  <div className={`ka-kicker ${titleClass}`}>
+                    {language === 'zh' ? 'AMADEUS 档案索引' : 'AMADEUS INDEX'}
+                  </div>
+                  <p className={`mt-2 text-[14px] leading-7 md:text-[14.5px] ${mutedClass}`}>
+                    {language === 'zh'
+                      ? '这里写的是软件真正如何运转，而不是宣传页摘要。每一章都对应当前桌面版的一条实际链路。'
+                      : 'This archive documents how the desktop build actually works, not just what it claims to do.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-1 overflow-x-auto md:overflow-y-auto md:flex-col p-2 md:p-3 gap-1.5 md:gap-2 no-scrollbar md:scrollbar-thin snap-x snap-mandatory md:snap-none">
+                {sections.map((section, index) => {
+                  const isActive = activeGuideSection === section.id;
+                  const Icon = section.icon;
+
+                  return (
+                    <button
+                      key={section.id}
+                      onClick={() => handleGuideSectionChange(section.id)}
+                      className={`flex items-center gap-1.5 md:gap-3 px-2.5 py-2 md:px-4 md:py-3 rounded-full md:rounded-xl text-left transition-all whitespace-nowrap md:whitespace-normal border snap-start ${
+                        isActive
+                          ? (isDarkMode
+                            ? 'bg-[#d4a852] text-[#21150a] border-transparent shadow-[0_10px_20px_rgba(212,168,82,0.18)]'
+                            : 'bg-[#fff5e3] text-[#8a6122] border-[#e0c58f] shadow-[0_8px_18px_rgba(138,97,34,0.10)]')
+                          : (isDarkMode
+                            ? 'text-[#b69f87] border-transparent hover:text-[#dccab6] hover:bg-white/5'
+                            : 'text-[#776552] border-transparent hover:text-[#5c4720] hover:bg-[#faf5ee]')
+                      }`}
+                    >
+                      <div className={`rounded-lg md:rounded-xl p-1.5 md:p-2 ${isActive ? (isDarkMode ? 'bg-[#21150a]/30 text-[#21150a]' : 'bg-[#e0c58f]/40 text-[#8a6122]') : (isDarkMode ? 'bg-white/5 text-[#8f7458]' : 'bg-black/[0.04] text-[#9d8251]')}`}>
+                        <Icon size={14} />
+                      </div>
+                      <span className="md:hidden ka-micro font-semibold">{String(index + 1).padStart(2, '0')}</span>
+                      <div className="min-w-0 hidden md:block">
+                        <div className="ka-micro opacity-55">{String(index + 1).padStart(2, '0')}</div>
+                        <div className="text-[14.5px] leading-6 font-semibold md:text-[15px]">{section.title}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div
+                className={`hidden md:flex px-4 py-2 border-t items-center justify-between ka-micro ${
+                  isDarkMode ? 'border-[#2a2522]/40 text-[#6b5a45]' : 'border-[#e6ddcf] text-[#8a7557]'
+                }`}
+              >
+                <span>DESKTOP ARCHIVE</span>
+                <span>LOCAL FIRST</span>
+              </div>
+            </div>
+
+            <div className="relative min-h-0 flex-1 flex flex-col overflow-hidden">
+              <div className={`px-5 md:px-6 py-4 border-b ${isDarkMode ? 'border-[#2a2522]/40 bg-[#161412]' : 'border-[#e6ddcf] bg-[#faf6f0]'}`}>
+                <div className="flex items-center gap-3">
+                  <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${isDarkMode ? 'bg-[#211912] text-[#d4a852]' : 'bg-[#fff5e3] text-[#8a6122]'}`}>
+                    <ActiveIcon size={16} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className={`ka-kicker ${isDarkMode ? 'text-[#6b5a45]' : 'text-[#9a7d50]'}`}>
+                      {language === 'zh' ? `章节 ${activeIndex + 1} / ${sections.length}` : `Section ${activeIndex + 1} / ${sections.length}`}
+                    </div>
+                    <h3 className={`font-mincho text-base sm:text-lg md:text-xl font-semibold tracking-[0.02em] ${isDarkMode ? 'text-[#f1e6d7]' : 'text-[#6f4e19]'}`}>
+                      {activeData.title}
+                    </h3>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                ref={articleScrollRef}
+                data-resize-heavy
+                className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:p-8 scrollbar-thin"
+              >
+                <div className={`mx-auto max-w-4xl rounded-[1.15rem] border overflow-hidden ${panelClass}`}>
+                  <div className={`px-5 py-3 border-b flex items-center justify-between gap-3 ${isDarkMode ? 'border-[#2a2522]/30 bg-[#1e1c1a]' : 'border-[#eadfce] bg-[#faf5ee]'}`}>
+                    <div className="min-w-0">
+                      <div className={`ka-kicker ${titleClass}`}>
+                        {language === 'zh' ? '系统设计说明' : 'SYSTEM DESIGN DOSSIER'}
+                      </div>
+                      <p className={`mt-1 text-[14px] leading-7 md:text-[14.5px] ${mutedClass}`}>
+                        {language === 'zh'
+                          ? '以下内容描述的是软件当前实际执行的结构、条件、数据流与行为规则。'
+                          : 'The sections below describe the current live structure, conditions, data flow, and behavior rules.'}
+                      </p>
+                    </div>
+                    <div className={`hidden md:flex items-center gap-2 rounded-full px-3 py-1 ka-micro border ${isDarkMode ? 'border-[#4f3b2a] text-[#d4a852] bg-[#211912]' : 'border-[#eadfce] text-[#8f6b12] bg-white'}`}>
+                      <ActiveIcon size={12} />
+                      <span>AMADEUS</span>
+                    </div>
+                  </div>
+
+                  <div className={`p-4 md:p-6 lg:p-8 ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>
+                    {renderedContent}
+                    <div className="h-16"></div>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                className={`px-5 md:px-6 py-2 border-t flex items-center justify-between ka-micro ${
+                  isDarkMode ? 'border-[#2a2522]/40 bg-[#1c1a18] text-[#6b5a45]' : 'border-[#e6ddcf] bg-[#f5f0e8] text-[#8d7654]'
+                }`}
+              >
+                <span>KUMIKO·AMADEUS DESKTOP MANUAL</span>
+                <span>AMADEUS ARCHIVE</span>
+              </div>
             </div>
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 };

@@ -1,5 +1,6 @@
 import React from 'react';
 import { ChevronDown, ChevronUp, Terminal } from 'lucide-react';
+import { Collapse } from '../Collapse';
 
 interface LogViewerTranslations {
   logTitle: string;
@@ -52,8 +53,8 @@ export const LogViewerSection: React.FC<LogViewerSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      {isOpen && (
-        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 space-y-2">
+      <Collapse isOpen={isOpen}>
+        <div className="px-4 pb-4 pt-0 space-y-2">
           <p className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.logDesc}</p>
           {hiddenLogCount > 0 && (
             <p className={`ka-copy-sm ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
@@ -78,7 +79,7 @@ export const LogViewerSection: React.FC<LogViewerSectionProps> = ({
             {t.clearLog}
           </button>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

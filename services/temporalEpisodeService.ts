@@ -139,10 +139,16 @@ export const buildTemporalEpisodes = (messages: Message[]): EpisodeEntity[] => {
 
 export const syncTemporalEpisodes = async (messages: Message[]) => {
   const episodes = buildTemporalEpisodes(messages);
-  await db.episodes.clear();
-  if (episodes.length > 0) {
-    await db.episodes.bulkPut(episodes);
-  }
+  // P1 #15: wrap clear+bulkPut in a single Dexie transaction so a bulkPut failure
+  // (schema migration, quota, etc.) rolls back the preceding clear(). Previously a
+  // mid-operation crash left the episodes table empty, which silently broke temporal
+  // recall for an entire session until the next successful sync.
+  await db.transaction('rw', db.episodes, async () => {
+    await db.episodes.clear();
+    if (episodes.length > 0) {
+      await db.episodes.bulkPut(episodes);
+    }
+  });
   return episodes.length;
 };
 

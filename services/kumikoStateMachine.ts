@@ -15,7 +15,7 @@ export interface StateContext {
 
 export type ScheduleSlotType =
   | 'teaching' | 'free' | 'shr' | 'lunch'
-  | 'cleaning' | 'after_school' | 'commuting' | 'home' | 'sleeping'
+  | 'cleaning' | 'after_school' | 'commuting' | 'home' | 'sleeping' | 'drowsy'
   | 'school_prep';
 
 export interface DetailedScheduleSlot {
@@ -24,6 +24,7 @@ export interface DetailedScheduleSlot {
   subject?: string;
   currentUnit?: string;
   freeActivity?: string;
+  prepPhaseKey?: string;
   periodNumber?: number;
   description: string;
   canChat: boolean;
@@ -386,7 +387,8 @@ export const getSchoolTermContext = (dateStr: string): string => {
 
   const prep = getSchoolPrepPhase(dateStr);
   if (prep) {
-    return `学校准备期（${prep.description}，尚未正式按课表上课）`;
+    const isAfterCeremony = prep.phase !== 'staff_prep';
+    return `学校准备期（${prep.description}，尚未正式按课表上课）${isAfterCeremony ? '。注意：始業式之后学校已正式开学，这是正式上课前的准备日，绝对不要说"开学前"，应说"正式上课前"。' : ''}`;
   }
 
   if (md >= 411 && md <= 720) {
@@ -519,36 +521,37 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
   const inSession = isSchoolInSession(dateStr);
 
   if (prepPhase && !isWeekend && !isHoliday) {
-    if (minutesOfDay < 6 * 60) {
+    if (minutesOfDay < 30) {
+      return { slotType: 'drowsy', description: '深夜犯困中', canChat: true, interceptChance: 0 };
+    } else if (minutesOfDay < 6 * 60) {
       return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0 };
     } else if (minutesOfDay < 7 * 60 + 50) {
       return { slotType: 'commuting', description: '早晨通勤中（7:40左右到校）', canChat: false, interceptChance: 0 };
     } else if (minutesOfDay < 17 * 60) {
-      return { slotType: 'school_prep', freeActivity: prepPhase.description, description: prepPhase.description, canChat: true, interceptChance: 0.05 };
+      return { slotType: 'school_prep', freeActivity: prepPhase.description, prepPhaseKey: prepPhase.phase, description: prepPhase.description, canChat: true, interceptChance: 0.05 };
     } else if (minutesOfDay < 18 * 60 + 30) {
       return { slotType: 'commuting', description: '傍晚通勤回家', canChat: false, interceptChance: 0 };
-    } else if (minutesOfDay < 23 * 60) {
-      return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0 };
     } else {
-      return { slotType: 'sleeping', description: '准备睡觉', canChat: false, interceptChance: 0 };
+      return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0 };
     }
   }
 
   if (isWeekend || isHoliday || !inSession) {
-    if (minutesOfDay < 6 * 60) {
-      return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0 };
+    if (minutesOfDay < 30) {
+      return { slotType: 'drowsy', description: '深夜犯困中', canChat: true, interceptChance: 0 };
     } else if (minutesOfDay < 8 * 60) {
-      return { slotType: 'home', description: isHoliday ? '节假日早晨，在家' : !inSession ? '假期中，在家' : '周末早晨，在家', canChat: true, interceptChance: 0 };
+      return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0 };
     } else if (minutesOfDay < 18 * 60) {
       return { slotType: 'home', description: isHoliday ? '节假日休息/外出中' : !inSession ? '假期中，自由安排' : '周末休息/外出中', canChat: true, interceptChance: 0 };
-    } else if (minutesOfDay < 23 * 60) {
-      return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0 };
     } else {
-      return { slotType: 'sleeping', description: '准备睡觉', canChat: false, interceptChance: 0 };
+      return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0 };
     }
   }
 
   // Weekday during school session
+  if (minutesOfDay < 30) {
+    return { slotType: 'drowsy', description: '深夜犯困中', canChat: true, interceptChance: 0 };
+  }
   if (minutesOfDay < 6 * 60) {
     return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0 };
   }
@@ -643,11 +646,11 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
     return { slotType: 'commuting', description: '傍晚通勤回家', canChat: false, interceptChance: 0 };
   }
 
-  if (minutesOfDay >= 19 * 60 + 30 && minutesOfDay < 23 * 60) {
+  if (minutesOfDay >= 19 * 60 + 30) {
     return { slotType: 'home', description: '在家休息/备课或批改作文', canChat: true, interceptChance: 0 };
   }
 
-  return { slotType: 'sleeping', description: '深夜，准备睡觉', canChat: false, interceptChance: 0 };
+  return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0 };
 };
 
 export const getDayScheduleSummary = (dateStr: string, timezone: string = 'Asia/Tokyo'): string => {
@@ -752,7 +755,9 @@ export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo', isHoliday
   const inSession = isSchoolInSession(dateStr);
 
   if (isWeekendOrHoliday || !inSession) {
-    if (minutesOfDay < 8 * 60) {
+    if (minutesOfDay < 30) {
+      return { currentState: 'RELAXING_HOME', stateDescription: '深夜犯困中', canUseVoice: true, voicePolicy: 'allow', proactiveProbability: 0.5 };
+    } else if (minutesOfDay < 8 * 60) {
       return { currentState: 'SLEEPING', stateDescription: isHoliday ? '正在睡觉（节假日）' : !inSession ? '正在睡觉（假期中）' : '正在睡觉（周末）', canUseVoice: false, voicePolicy: 'forbid', proactiveProbability: 0.01 };
     } else if (minutesOfDay < 18 * 60) {
       return { currentState: 'OUTING', stateDescription: isHoliday ? '节假日休息/外出中' : !inSession ? '假期中，自由安排' : '周末休息/外出中', canUseVoice: true, voicePolicy: 'allow', proactiveProbability: 0.3 };
@@ -764,6 +769,8 @@ export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo', isHoliday
   const slot = getDetailedScheduleSlot(timezone, isHoliday);
 
   switch (slot.slotType) {
+    case 'drowsy':
+      return { currentState: 'RELAXING_HOME', stateDescription: slot.description, canUseVoice: true, voicePolicy: 'allow', proactiveProbability: 0.5 };
     case 'sleeping':
       return { currentState: 'SLEEPING', stateDescription: slot.description, canUseVoice: false, voicePolicy: 'forbid', proactiveProbability: 0.01 };
     case 'commuting':

@@ -408,6 +408,60 @@
         /* PERFORMANCE FIX: Removed 'will-change: transform' to save VRAM on static background */
       }
 
+      /* --- Resize performance freeze ---
+         backdrop-filter (used by every modal: MemoryPanel, SettingsPanel, FullGuideModal)
+         is extremely expensive in Chromium: each frame it must capture the pixels beneath
+         and run a Gaussian-blur shader. During window resize those underlying pixels change
+         every frame, so the blur is fully recomputed per frame -- this is THE main cause
+         of modal resize jank.
+
+         While <html> carries the data-resizing flag (set by App.tsx's resize listener and
+         released 200ms after the last tick), we forcibly disable backdrop-filter on every
+         element that uses it (Tailwind variants backdrop-blur-sm / backdrop-blur-[8px]
+         plus any inline style). Transitions and animations are frozen alongside so no
+         extra per-frame work piles up during the drag. After 200ms of no resize events
+         the flag is removed and everything restores in a single reflow.
+
+         NOTE: the earlier blanket `content-visibility: hidden` rule that hid every modal
+         subtree during resize was removed -- combined with `opacity: 0.9999` on the
+         BrowserWindow it caused newly-exposed pixels during resize to show the desktop
+         underneath (see plan: resize_brown_flash_fix). Instead of the blanket rule we
+         now use a narrower `[data-resize-heavy]` selector further down that only skips
+         the truly expensive reflow subtrees (chat virtual list + panel inner content),
+         so panel headers / close buttons / chat header / input stay visible. */
+      html[data-resizing] [class*="backdrop-blur"],
+      html[data-resizing] [style*="backdrop-filter"] {
+        backdrop-filter: none !important;
+        -webkit-backdrop-filter: none !important;
+      }
+      html[data-resizing] *,
+      html[data-resizing] *::before,
+      html[data-resizing] *::after {
+        transition-duration: 0s !important;
+        animation-duration: 0s !important;
+        animation-iteration-count: 1 !important;
+      }
+
+      /* Skip layout + paint + composite for the HEAVIEST subtrees while resizing.
+         These are the ones that dominate reflow cost on APP page: chat virtual list
+         plus each modal panel's inner content region. Lightweight siblings (panel
+         header, close button, chat header/footer, bg-grid layer) still render normally
+         so the window frame tracks the drag smoothly; only the expensive inner list
+         briefly hides and recovers in a single paint after the 200ms release. */
+      html[data-resizing] [data-resize-heavy] {
+        content-visibility: hidden !important;
+        contain-intrinsic-size: auto 80vh !important;
+      }
+
+      /* --- View Transitions --- */
+      ::view-transition-old(root),
+      ::view-transition-new(root) {
+        animation: none;
+        mix-blend-mode: normal;
+      }
+      ::view-transition-old(root) { z-index: 1; }
+      ::view-transition-new(root) { z-index: 9999; }
+
       /* --- iOS ZOOM FIX --- */
       @media screen and (max-width: 768px) {
         input, textarea, select {

@@ -21,6 +21,8 @@ export interface Message {
   voiceFileId?: string;
   voiceDuration?: number;
   japaneseText?: string;
+  sendStatus?: 'sending' | 'delivered' | 'failed';
+  failReason?: string;
 }
 
 export interface WorldBookEntry {
@@ -47,15 +49,11 @@ export interface LocationConfig {
 
 export interface BackupConfig {
   localEnabled: boolean;
-  cloudEnabled?: boolean;
-  endpointUrl?: string;
-  userId?: string;
-  apiKey?: string;
   ragEnabled?: boolean;
 }
 
 // NEW: AI Configuration Interface
-export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'deepseek' | 'grok' | 'openrouter';
+export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'deepseek' | 'grok' | 'openrouter' | 'volcengine' | 'dashscope' | 'zhipu' | 'moonshot' | 'qianfan' | 'hunyuan' | 'spark' | 'minimax';
 
 export interface AIConfig {
   provider?: AIProvider; // NEW: AI Provider selection
@@ -98,7 +96,8 @@ export type SummaryBoundaryReason =
   | 'reminder_created'
   | 'sleep_transition'
   | 'wrap_up'
-  | 'hard_limit';
+  | 'hard_limit'
+  | 'manual';
 
 export interface SummarySegmentMetadata {
   segmentId: string;
@@ -184,6 +183,7 @@ export interface ChatResponse {
   systemNotice?: string; // NEW: Notification field for model switching events
   activateSleepMode?: boolean; // NEW: Signal to activate sleep mode after this response
   voiceMode?: boolean;
+  voiceVariant?: string;
 }
 
 export type VoiceMode = 'full' | 'text' | 'hybrid';
@@ -206,6 +206,10 @@ export interface TtsConfig {
   sovitsGptWeights?: string;
   sovitsVitsWeights?: string;
   sovitsRefAudioDir?: string;
+  // Linux/macOS BYO Python: absolute path to the python interpreter that runs
+  // SoVITS's api_v2.py. Unused on Windows, where the bundled runtime/python.exe
+  // is spawned directly by the main process.
+  sovitsPythonPath?: string;
   sovitsTopK?: number;
   sovitsTopP?: number;
   sovitsTemperature?: number;
@@ -236,6 +240,29 @@ export interface AppUpdateState {
   isPackaged: boolean;
 }
 
+export type MessageAlertKind = 'reply' | 'proactive' | 'reminder';
+
+export type MissedMessageAlert = {
+  id: string;
+  messageId: string;
+  preview: string;
+  timestamp: number;
+  kind: MessageAlertKind;
+  isRead?: boolean;
+};
+
+export interface VoiceCallOverlayData {
+  reminderEvent: string;
+  reminderText: string;
+  emotion: EmotionType;
+  onAccept: () => void;
+  onReject: () => void;
+  onClose?: () => void;
+  isConnecting?: boolean;
+  isPlayingVoice?: boolean;
+  isEnded?: boolean;
+}
+
 declare global {
   interface Window {
     electronAPI?: {
@@ -243,6 +270,7 @@ declare global {
       send: (channel: string, data?: any) => void;
       on: (channel: string, listener: (event: any, ...args: any[]) => void) => void;
       removeListener: (channel: string, listener: (event: any, ...args: any[]) => void) => void;
+      setBgColor: (color: string) => void;
     };
   }
 }

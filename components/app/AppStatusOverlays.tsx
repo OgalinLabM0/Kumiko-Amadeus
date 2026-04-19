@@ -1,5 +1,6 @@
 import React from 'react';
-import { AlertTriangle, Loader2 } from 'lucide-react';
+import { AlertTriangle, Loader2, WifiOff, Settings } from 'lucide-react';
+import { AnimatePresence, motion } from 'framer-motion';
 
 export const LoadingDataScreen: React.FC = () => {
   return (
@@ -31,6 +32,54 @@ interface AppErrorOverlayProps {
   isOpen: boolean;
   onReconfigure: () => void;
 }
+
+interface DisconnectedBannerProps {
+  isVisible: boolean;
+  isDarkMode: boolean;
+  language: 'zh' | 'en';
+  onOpenSettings?: () => void;
+}
+
+export const DisconnectedBanner: React.FC<DisconnectedBannerProps> = ({ isVisible, isDarkMode, language, onOpenSettings }) => (
+  <AnimatePresence>
+    {isVisible && (
+      <motion.div
+        initial={{ y: -40, opacity: 0 }}
+        animate={{ y: 0, opacity: 1 }}
+        exit={{ y: -40, opacity: 0 }}
+        transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+        className={`
+          flex items-center justify-center gap-2 px-4 py-2 z-[120]
+          backdrop-blur-md border-b
+          ${isDarkMode
+            ? 'bg-red-950/60 border-red-800/40 text-red-300'
+            : 'bg-red-50/80 border-red-200 text-red-700'
+          }
+        `}
+      >
+        <WifiOff size={14} className="flex-shrink-0 opacity-80" />
+        <span className="ka-copy-sm font-semibold">
+          {language === 'zh' ? '信号中断 · 消息发送失败' : 'Signal Lost · Message delivery failed'}
+        </span>
+        {onOpenSettings && (
+          <button
+            onClick={onOpenSettings}
+            className={`
+              flex items-center gap-1 px-2 py-0.5 rounded-full ka-micro font-semibold transition-colors ml-2
+              ${isDarkMode
+                ? 'bg-red-900/50 hover:bg-red-800/60 text-red-200'
+                : 'bg-red-100 hover:bg-red-200 text-red-700'
+              }
+            `}
+          >
+            <Settings size={11} />
+            {language === 'zh' ? '检查设置' : 'Settings'}
+          </button>
+        )}
+      </motion.div>
+    )}
+  </AnimatePresence>
+);
 
 export const AppErrorOverlay: React.FC<AppErrorOverlayProps> = ({ isOpen, onReconfigure }) => {
   if (!isOpen) return null;

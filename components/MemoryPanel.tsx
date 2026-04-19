@@ -1,9 +1,11 @@
 
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { X, BrainCircuit, ChevronDown, ChevronUp, Plus, Trash2, ArrowUp, ArrowDown, BookOpen, RotateCcw, Lock, History, Bookmark, Edit2, Check, Clock, ListPlus, GripVertical, EyeOff, Eye, Quote, Pin, StickyNote, Image as ImageIcon, LocateFixed, NotebookPen, Zap, RefreshCw, AlertTriangle, Search, Power, Star } from 'lucide-react';
-import { WorldBookEntry, Message, Language, AnchorEntry } from '../types';
+import { X, BrainCircuit, ChevronDown, ChevronUp, Plus, Trash2, ArrowUp, ArrowDown, BookOpen, RotateCcw, Lock, History, Bookmark, Edit2, Check, Clock, ListPlus, GripVertical, EyeOff, Eye, Quote, Pin, StickyNote, Image as ImageIcon, LocateFixed, NotebookPen, Zap, RefreshCw, AlertTriangle, Search, Power, Star, Code2 } from 'lucide-react';
+import { WorldBookEntry, Message, AnchorEntry } from '../types';
+import { Collapse } from './Collapse';
 import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, KUMIKO_EMOTION_IMAGES, LOCALIZED_WORLD_BOOK } from '../constants';
+import { useAppStore } from '../store';
 
 interface MemoryPanelProps {
   isOpen: boolean;
@@ -13,29 +15,20 @@ interface MemoryPanelProps {
   messages: Message[]; 
   worldBook: WorldBookEntry[];
   onSave: (newCoreMemory: string, newWorldBook: WorldBookEntry[], newContextLimit: number) => void;
-  isDarkMode: boolean;
   turnCount?: number;
   summaryProgressText?: string;
-  language?: Language;
-  // New Handlers
+  onManualSummary?: () => Promise<void>;
   onUpdateMessage?: (id: string, newText: string) => void;
   onDeleteMessage?: (id: string) => void;
   onInsertMessage?: (afterId: string | null, role: 'user' | 'model') => void;
   onReorderMessages?: (dragIndex: number, hoverIndex: number) => void;
   onToggleHidden?: (id: string) => void;
   onTogglePin?: (id: string) => void; 
-  onJumpToMessage?: (id: string) => void; // New Prop for Jump functionality
-  
-  // Anchors
+  onJumpToMessage?: (id: string) => void;
   anchors?: AnchorEntry[];
   onDeleteAnchor?: (id: string) => void;
-
-  // Image Viewer
   onImageClick?: (src: string) => void;
-
-  // New: Notebook (Read Only)
   kumikoNotebook?: string;
-
 }
 
 // DEFINITION OF CORE MEMORIES THAT SHOULD BE RECOMMENDED
@@ -47,6 +40,106 @@ const CORE_MEMORY_IDS = new Set([
     'rag_char_others'          // Daily companions circle
 ]);
 
+// Pure formatter — module-level so PinnedModal (also module-level now) can reuse it
+// without needing to close over component-scope helpers.
+const formatKyotoTime = (timestamp: number): string => {
+  try {
+    return new Intl.DateTimeFormat('ja-JP', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      timeZone: 'Asia/Tokyo', hour12: false
+    }).format(new Date(timestamp));
+  } catch (e) {
+    return new Date(timestamp).toLocaleString();
+  }
+};
+
+// --- PINNED MODAL (module-level) ---
+// Previously defined inside MemoryPanel, which caused the modal to unmount and
+// remount on every parent re-render — users saw scroll positions reset, animations
+// re-play, and focus jump whenever the parent updated (e.g. virtualized list scroll
+// or worldBook edits). Defining it here gives it a stable component identity.
+interface PinnedModalProps {
+  isOpen: boolean;
+  onCloseModal: () => void;
+  onClosePanel: () => void;
+  pinnedMessages: Message[];
+  sortedMessages: Message[];
+  onJumpToMessage?: (id: string) => void;
+  onTogglePin?: (id: string) => void;
+  isDarkMode: boolean;
+  t: typeof UI_TRANSLATIONS[keyof typeof UI_TRANSLATIONS];
+}
+
+const PinnedModal: React.FC<PinnedModalProps> = ({
+  isOpen, onCloseModal, onClosePanel,
+  pinnedMessages, sortedMessages,
+  onJumpToMessage, onTogglePin,
+  isDarkMode, t,
+}) => {
+  if (!isOpen) return null;
+  const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-[rgba(255,255,255,0.98)] border-[#e6ded3]';
+  const textClass = isDarkMode ? 'text-[#f0e6d8]' : 'text-[#4c3a2b]';
+  const titleClass = isDarkMode ? 'text-[#e5c992]' : 'text-[#a97832]';
+  const closeButtonClass = isDarkMode ? 'hover:bg-red-500/10 hover:text-red-400' : 'hover:bg-red-500/10 hover:text-red-500';
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(10,8,6,0.54) 24%, rgba(10,8,6,0.08) 100%)' }}>
+      <div className={`w-full max-w-md max-h-[70vh] flex flex-col rounded-lg border shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 ${bgClass}`}>
+        <div className={`flex items-center justify-between p-3 border-b ${isDarkMode ? 'border-[#4f3926]' : 'border-[#ece3d8]'}`}>
+          <div className={`flex items-center gap-2 ${titleClass}`}>
+            <Pin size={16} className="fill-current" />
+            <span className="font-mincho font-semibold ka-floating-title tracking-[0.04em] uppercase">{t.pinnedMemoriesTitle}</span>
+          </div>
+          <button onClick={onCloseModal} className={`p-1.5 rounded-full transition-colors ${textClass} ${closeButtonClass}`}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-thin">
+          {pinnedMessages.length === 0 && (
+            <div className="text-center opacity-50 ka-copy-sm py-10">{t.noPinnedMessages}</div>
+          )}
+          {pinnedMessages.map(msg => {
+            const contextIndex = sortedMessages.findIndex(m => m.id === msg.id) + 1;
+            return (
+              <div
+                key={msg.id}
+                onClick={() => {
+                  if (onJumpToMessage) {
+                    onJumpToMessage(msg.id);
+                    onCloseModal();
+                    onClosePanel();
+                  }
+                }}
+                className={`p-3 rounded border text-xs relative cursor-pointer transition-all hover:scale-[1.01] ${isDarkMode ? 'bg-[#18130f] border-[#4e3928]/40 hover:bg-[#1e1712]' : 'bg-[#fffdf9] border-[#ebe2d6] hover:bg-[#faf6ef]'}`}
+                title={t.jumpToContext}
+              >
+                <div className="flex justify-between items-center mb-1 opacity-60 pointer-events-none">
+                  <div className="flex items-center gap-2">
+                    <span className={`ka-micro font-semibold ${isDarkMode ? 'text-[#d0b180]/80' : 'text-[#b18645]/80'}`}>#{contextIndex}</span>
+                    <span className="ka-micro font-semibold">{msg.role === 'model' ? 'Kumiko' : 'You'}</span>
+                  </div>
+                  <span className="ka-micro">{formatKyotoTime(msg.timestamp)}</span>
+                </div>
+                <p className="whitespace-pre-wrap leading-relaxed pointer-events-none">{msg.text}</p>
+                {onTogglePin && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onTogglePin(msg.id); }}
+                    className={`absolute top-2 right-2 transition-colors p-1 ${isDarkMode ? 'text-[#d0b180] hover:text-red-400' : 'text-[#b18645] hover:text-red-500'}`}
+                    title={t.unpin}
+                  >
+                    <Pin size={12} className="fill-current" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const MemoryPanel: React.FC<MemoryPanelProps> = ({ 
   isOpen, 
   onClose, 
@@ -55,10 +148,9 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
   messages,
   worldBook,
   onSave, 
-  isDarkMode,
   turnCount = 0,
   summaryProgressText = '',
-  language = 'zh',
+  onManualSummary,
   onUpdateMessage,
   onDeleteMessage,
   onInsertMessage,
@@ -71,6 +163,8 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
   onImageClick,
   kumikoNotebook = "",
 }) => {
+  const isDarkMode = useAppStore(s => s.isDarkMode);
+  const language = useAppStore(s => s.language);
   const t = UI_TRANSLATIONS[language];
   const [localCoreMemory, setLocalCoreMemory] = useState(memoryContent);
   const [localWorldBook, setLocalWorldBook] = useState<WorldBookEntry[]>([]);
@@ -86,6 +180,8 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
   
   // New: Pinned Modal State
   const [isPinnedModalOpen, setIsPinnedModalOpen] = useState(false);
+  const [isCoreSourceOpen, setIsCoreSourceOpen] = useState(false);
+  const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
   
   // Track expanded state for individual entries by ID
   const [expandedEntryIds, setExpandedEntryIds] = useState<Set<string>>(new Set());
@@ -118,15 +214,6 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
   const [historySearchQuery, setHistorySearchQuery] = useState('');
   const [historySearchMatches, setHistorySearchMatches] = useState<string[]>([]);
   const [historySearchIndex, setHistorySearchIndex] = useState(0);
-
-  const [isReady, setIsReady] = useState(false);
-  useEffect(() => {
-    if (isOpen) {
-      const id = requestAnimationFrame(() => setIsReady(true));
-      return () => cancelAnimationFrame(id);
-    }
-    setIsReady(false);
-  }, [isOpen]);
 
   const sortedMessages = useMemo(() => {
       if (!isHistoryConfigOpen) return [] as Message[];
@@ -377,21 +464,9 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
     setDraggedItemIndex(null);
   };
 
-  const formatKyotoTime = (timestamp: number) => {
-    try {
-      return new Intl.DateTimeFormat('ja-JP', {
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', second: '2-digit',
-        timeZone: 'Asia/Tokyo', hour12: false
-      }).format(new Date(timestamp));
-    } catch (e) {
-      return new Date(timestamp).toLocaleString();
-    }
-  };
+  // formatKyotoTime is now defined at module scope (needed by the extracted PinnedModal).
 
-  if (!isOpen) return null;
-
-  const bgClass = isDarkMode ? 'bg-[#1a1714]/96 border-[#4f3d31]/60' : 'bg-[rgba(255,255,255,0.98)] border-[#e6ded3]';
+  const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-[rgba(255,255,255,0.98)] border-[#e6ded3]';
   const textClass = isDarkMode ? 'text-[#f0e6d8]' : 'text-[#4c3a2b]';
   const titleClass = isDarkMode ? 'text-[#e5c992]' : 'text-[#a97832]';
   const inputBgClass = isDarkMode ? 'bg-[#221d18] border-[#433428]' : 'bg-[#fbfaf8] border-[#e2d9cf]';
@@ -432,36 +507,36 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
     },
     history: {
       note: language === 'zh' ? '上下文窗口 / 对话编辑' : 'Context Window / Editor',
-      shell: isDarkMode ? 'border-[#3d554e]/55 bg-[#1a2322]' : 'border-[#d0e8e2] bg-[#f5fdf9]',
-      header: isDarkMode ? 'border-b border-[#3d554e] bg-[#1f2b28] hover:bg-[#263430] text-[#5eb8a0]' : 'border-b border-[#c8e4dc] bg-[#f0faf6] hover:bg-[#e8f4ef] text-[#3d8e7a]',
-      chip: isDarkMode ? 'border-[#4a8a7a]/50 bg-[#243030] text-[#5eb8a0]' : 'border-[#a8d4c8] bg-[#f0fff8] text-[#3d8e7a]',
+      shell: isDarkMode ? 'border-[#2a3530]/50 bg-[#141816]' : 'border-[#d0e8e0] bg-[#f5faf8]',
+      header: isDarkMode ? 'border-b border-[#2a3530] bg-[#1a1e1c] hover:bg-[#212826] text-[#6dbba8]' : 'border-b border-[#c8e4dc] bg-[#f5faf8] hover:bg-[#e8f4ef] text-[#3d8e7a]',
+      chip: isDarkMode ? 'border-[#3d8e7a]/50 bg-[#1a2422] text-[#6dbba8]' : 'border-[#a8d4c8] bg-[#f0fff8] text-[#3d8e7a]',
       chipShape: 'rounded-[0.95rem]',
-      badge: isDarkMode ? 'bg-[#4da89a]/25 text-[#5eb8a0]' : 'bg-[#d4ede8] text-[#3d8e7a]',
-      accentStrip: isDarkMode ? 'bg-[#4da89a]' : 'bg-[linear-gradient(180deg,#5ec4aa,#3d9e8a)]',
+      badge: isDarkMode ? 'bg-[#3d8e7a]/25 text-[#6dbba8]' : 'bg-[#d4ede8] text-[#3d8e7a]',
+      accentStrip: isDarkMode ? 'bg-[#6dbba8]' : 'bg-[linear-gradient(180deg,#6dbba8,#3d8e7a)]',
       ornamentLabel: language === 'zh' ? '窗口' : 'LEDGER',
-      ornamentClass: isDarkMode ? 'rounded-[0.5rem] border border-[#4a8a7a]/70 bg-[#1a2a25] text-[#5eb8a0]' : 'rounded-[0.5rem] border border-[#a8d4c8] bg-[#f0fff8] text-[#3d8e7a]'
+      ornamentClass: isDarkMode ? 'rounded-[0.5rem] border border-[#3d8e7a]/70 bg-[#141816] text-[#6dbba8]' : 'rounded-[0.5rem] border border-[#a8d4c8] bg-[#f0fff8] text-[#3d8e7a]'
     },
     official: {
       note: language === 'zh' ? '官方设定 / 只读档案' : 'Official Lore / Read-only',
-      shell: isDarkMode ? 'border-[#5e4a5e]/55 bg-[#1e1a1f]' : 'border-[#e9d8e9] bg-[#fdf5fd]',
-      header: isDarkMode ? 'border-b border-[#5e4a5e] bg-[#2a1f2a] hover:bg-[#322630] text-[#b898c8]' : 'border-b border-[#e8d8e8] bg-[#faf3fb] hover:bg-[#f5eef6] text-[#8a5fb5]',
-      chip: isDarkMode ? 'border-[#7a5a8a]/50 bg-[#302030] text-[#b898c8]' : 'border-[#d4c0e8] bg-[#f8f4ff] text-[#7a5fb5]',
+      shell: isDarkMode ? 'border-[#2a2830]/50 bg-[#18161c]' : 'border-[#e0d8ec] bg-[#f8f5fc]',
+      header: isDarkMode ? 'border-b border-[#2a2830] bg-[#1e1c22] hover:bg-[#252328] text-[#b0a0d0]' : 'border-b border-[#e0d8ec] bg-[#f8f5fc] hover:bg-[#f2eef8] text-[#8a7ab5]',
+      chip: isDarkMode ? 'border-[#8a7ab5]/50 bg-[#1e1c22] text-[#b0a0d0]' : 'border-[#d4c0e8] bg-[#f8f4ff] text-[#8a7ab5]',
       chipShape: 'rounded-[1.15rem] rounded-br-[0.5rem]',
-      badge: isDarkMode ? 'bg-[#9a7ab5]/25 text-[#b898c8]' : 'bg-[#e8d8f0] text-[#7a5fb5]',
-      accentStrip: isDarkMode ? 'bg-[#9a7ab5]' : 'bg-[linear-gradient(180deg,#b08ecc,#8a5fb5)]',
+      badge: isDarkMode ? 'bg-[#8a7ab5]/25 text-[#b0a0d0]' : 'bg-[#e8d8f0] text-[#8a7ab5]',
+      accentStrip: isDarkMode ? 'bg-[#b0a0d0]' : 'bg-[linear-gradient(180deg,#b0a0d0,#8a7ab5)]',
       ornamentLabel: language === 'zh' ? '馆藏' : 'ARCHIVE',
-      ornamentClass: isDarkMode ? 'rounded-full border border-dashed border-[#7a5a8a]/70 bg-[#251a28] text-[#b898c8]' : 'rounded-full border border-dashed border-[#d4c0e8] bg-[#f8f4ff] text-[#7a5fb5]'
+      ornamentClass: isDarkMode ? 'rounded-full border border-dashed border-[#8a7ab5]/70 bg-[#18161c] text-[#b0a0d0]' : 'rounded-full border border-dashed border-[#d4c0e8] bg-[#f8f4ff] text-[#8a7ab5]'
     },
     custom: {
       note: language === 'zh' ? '用户补充 / 可编辑' : 'User Lore / Editable',
-      shell: isDarkMode ? 'border-[#35558a]/40 bg-[#161e2c]' : 'border-[#d8e5ff] bg-[#f7fbff]',
-      header: isDarkMode ? 'border-b border-[#2a3b5e] bg-[#1d2538] hover:bg-[#242e46] text-[#a0c4ff]' : 'border-b border-[#dfe9fb] bg-[#f8fbff] hover:bg-[#eff5ff] text-[#3168d9]',
-      chip: isDarkMode ? 'border-[#4a76bf]/50 bg-[#1e2d4a] text-[#a0c4ff]' : 'border-[#cfe0ff] bg-white text-[#3168d9]',
+      shell: isDarkMode ? 'border-[#252a34]/50 bg-[#14161c]' : 'border-[#d5e0ec] bg-[#f7f9fc]',
+      header: isDarkMode ? 'border-b border-[#252a34] bg-[#1a1c24] hover:bg-[#21232c] text-[#8eaac8]' : 'border-b border-[#d5e0ec] bg-[#f7f9fc] hover:bg-[#eff3f9] text-[#6882a8]',
+      chip: isDarkMode ? 'border-[#6882a8]/50 bg-[#1a1c24] text-[#8eaac8]' : 'border-[#c0d4e8] bg-[#f7f9fc] text-[#6882a8]',
       chipShape: 'rounded-[1rem] rounded-tl-[0.35rem]',
-      badge: isDarkMode ? 'bg-blue-900/45 text-[#a0c4ff]' : 'bg-blue-100 text-[#3168d9]',
-      accentStrip: isDarkMode ? 'bg-[#5e8fff]' : 'bg-[linear-gradient(180deg,#92b7ff,#4d86ff)]',
+      badge: isDarkMode ? 'bg-[#6882a8]/25 text-[#8eaac8]' : 'bg-[#e0eaf4] text-[#6882a8]',
+      accentStrip: isDarkMode ? 'bg-[#8eaac8]' : 'bg-[linear-gradient(180deg,#8eaac8,#6882a8)]',
       ornamentLabel: language === 'zh' ? '用户' : 'CUSTOM',
-      ornamentClass: isDarkMode ? 'rounded-[0.55rem] border border-[#4c76ba]/70 bg-[#1c2840] text-[#a0c4ff]' : 'rounded-[0.55rem] border border-[#cfe0ff] bg-white text-[#3168d9]'
+      ornamentClass: isDarkMode ? 'rounded-[0.55rem] border border-[#6882a8]/70 bg-[#14161c] text-[#8eaac8]' : 'rounded-[0.55rem] border border-[#c0d4e8] bg-[#f7f9fc] text-[#6882a8]'
     }
   };
 
@@ -474,71 +549,12 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
     ? 'hover:bg-red-500/10 hover:text-red-400'
     : 'hover:bg-red-500/10 hover:text-red-500';
 
-  // --- PINNED MODAL ---
-  const PinnedModal = () => {
-      if (!isPinnedModalOpen) return null;
-      return (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(10,8,6,0.54) 24%, rgba(10,8,6,0.08) 100%)' }}>
-             <div className={`w-full max-w-md max-h-[70vh] flex flex-col rounded-lg border shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 ${bgClass}`}>
-                <div className={`flex items-center justify-between p-3 border-b ${isDarkMode ? 'border-[#4f3926]' : 'border-[#ece3d8]'}`}>
-                   <div className={`flex items-center gap-2 ${titleClass}`}>
-                      <Pin size={16} className="fill-current" />
-                      <span className="font-mincho font-semibold ka-floating-title tracking-[0.04em] uppercase">{t.pinnedMemoriesTitle}</span>
-                   </div>
-                   <button onClick={() => setIsPinnedModalOpen(false)} className={`p-1.5 rounded-full transition-colors ${textClass} ${closeButtonClass}`}>
-                      <X size={18} />
-                   </button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-thin">
-                   {pinnedMessages.length === 0 && (
-                       <div className="text-center opacity-50 ka-copy-sm py-10">{t.noPinnedMessages}</div>
-                   )}
-                   {pinnedMessages.map(msg => {
-                       const contextIndex = sortedMessages.findIndex(m => m.id === msg.id) + 1;
-                       return (
-                       <div 
-                         key={msg.id} 
-                         onClick={() => {
-                             if(onJumpToMessage) {
-                                 onJumpToMessage(msg.id);
-                                 setIsPinnedModalOpen(false);
-                                 onClose();
-                             }
-                         }}
-                         className={`p-3 rounded border text-xs relative cursor-pointer transition-all hover:scale-[1.01] ${isDarkMode ? 'bg-[#18130f] border-[#4e3928]/40 hover:bg-[#1e1712]' : 'bg-[#fffdf9] border-[#ebe2d6] hover:bg-[#faf6ef]'}`}
-                         title={t.jumpToContext}
-                       >
-                           <div className="flex justify-between items-center mb-1 opacity-60 pointer-events-none">
-                               <div className="flex items-center gap-2">
-                                   <span className={`ka-micro font-semibold ${isDarkMode ? 'text-[#d0b180]/80' : 'text-[#b18645]/80'}`}>#{contextIndex}</span>
-                                   <span className="ka-micro font-semibold">{msg.role === 'model' ? 'Kumiko' : 'You'}</span>
-                               </div>
-                               <span className="ka-micro">{formatKyotoTime(msg.timestamp)}</span>
-                           </div>
-                           <p className="whitespace-pre-wrap leading-relaxed pointer-events-none">{msg.text}</p>
-                           {onTogglePin && (
-                               <button 
-                                 onClick={(e) => {
-                                     e.stopPropagation();
-                                     onTogglePin(msg.id);
-                                 }}
-                                 className={`absolute top-2 right-2 transition-colors p-1 ${isDarkMode ? 'text-[#d0b180] hover:text-red-400' : 'text-[#b18645] hover:text-red-500'}`}
-                                 title={t.unpin}
-                               >
-                                  <Pin size={12} className="fill-current" />
-                               </button>
-                           )}
-                       </div>
-                   )})}
-                </div>
-             </div>
-          </div>
-      );
-  };
+  // PinnedModal is now a module-level component to keep its identity stable across
+  // parent renders. See the PinnedModal definition + comment near the top of this file.
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(10,8,6,0.48) 24%, rgba(10,8,6,0.08) 100%)' }}>
-      <div className={`w-full max-w-2xl max-h-[85dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden animate-[breathe_0.3s_ease-out] ${bgClass}`}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(10,8,6,0.48) 24%, rgba(10,8,6,0.08) 100%)', opacity: isOpen ? 1 : 0, pointerEvents: isOpen ? 'auto' : 'none', visibility: isOpen ? 'visible' : 'hidden', transition: isOpen ? 'opacity 300ms ease-out, visibility 0s 0s' : 'opacity 200ms ease-in, visibility 0s 200ms', willChange: 'opacity' }}>
+      <div className={`w-full max-w-2xl max-h-[85dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden ${bgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out' : 'opacity 200ms ease-in, transform 200ms ease-in', willChange: 'transform, opacity', contain: 'layout style paint' }}>
         
         {/* Header */}
         <div className={`flex items-center justify-between px-4 py-3 border-b ${isDarkMode ? 'border-[#4f3926]' : 'border-[#ece3d8]'}`}>
@@ -555,12 +571,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
         </div>
 
         {/* Scrollable Content Wrapper */}
-        <div className="flex-1 overflow-y-auto w-full scrollbar-thin">
-          {!isReady ? (
-            <div className="flex items-center justify-center h-32 opacity-50">
-              <RefreshCw size={20} className="animate-spin" />
-            </div>
-          ) : (
+        <div data-resize-heavy className="flex-1 overflow-y-auto w-full scrollbar-thin">
           <div className="p-4 flex flex-col gap-4">
             
             {/* Section 1: Core Memory */}
@@ -588,30 +599,75 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                 </div>
               </button>
               
-              {isCoreOpen && (
-                <div className="p-3 animate-in slide-in-from-top-2 duration-200 flex flex-col gap-3">
+              <Collapse isOpen={isCoreOpen}>
+                <div className="p-3 flex flex-col gap-3">
                   <div className={`flex items-start gap-2 p-2 rounded text-[10px] border ${isDarkMode ? 'bg-black/20 border-white/5 text-gray-400' : 'bg-black/5 border-black/5 text-gray-600'}`}>
                     <BrainCircuit size={12} className="flex-shrink-0 mt-0.5 opacity-60" />
                     <p>{t.coreMemoryHelp}</p>
                   </div>
-                  <div className={`relative w-full min-h-[10rem] p-4 rounded ka-copy-sm leading-relaxed overflow-y-auto scrollbar-thin border-2 border-double ${isDarkMode ? 'bg-[#14100c] border-[#5d4731]/55 text-[#eadfce]' : 'bg-[#fffefd] border-[#e8ddcf] text-[#4b3a2a]'}`}>
-                       <div className="absolute inset-0 pointer-events-none opacity-[0.03]" style={{ backgroundImage: `repeating-linear-gradient(transparent, transparent 23px, ${isDarkMode ? '#ffffff' : '#000000'} 24px)` }}></div>
-                       <textarea
-                         value={localCoreMemory}
-                         onChange={(e) => setLocalCoreMemory(e.target.value)}
-                         className={`w-full h-32 p-2 rounded ka-input-copy text-base md:text-sm resize-none scrollbar-thin outline-none bg-transparent ${textClass}`}
-                         placeholder={t.noCoreMemoryPlaceholder}
-                       />
-                  </div>
+                  {/* Structured card view */}
+                  {localCoreMemory.trim() ? (
+                    <div className="flex flex-col gap-2">
+                      {localCoreMemory.trim().split(/\n\n+/).filter(Boolean).map((block, i) => {
+                        const headerMatch = block.match(/^【(.+?)】/);
+                        return (
+                          <div key={i} className={`relative rounded-lg border pl-3 pr-3 py-2.5 text-sm leading-relaxed ${isDarkMode ? 'bg-[#14100c] border-[#5d4731]/40 text-[#eadfce]' : 'bg-[#fffefd] border-[#e8ddcf] text-[#4b3a2a]'}`}>
+                            <div className={`absolute left-0 top-0 bottom-0 w-[3px] rounded-l-lg ${isDarkMode ? 'bg-[#d7bb88]/40' : 'bg-[#c9983f]/40'}`} />
+                            {headerMatch ? (
+                              <>
+                                <div className={`text-[10px] font-mono font-semibold mb-1 ${isDarkMode ? 'text-[#d7bb88]/70' : 'text-[#b08957]/70'}`}>{headerMatch[1]}</div>
+                                <p className="whitespace-pre-wrap ka-copy-sm">{block.slice(headerMatch[0].length).trim()}</p>
+                              </>
+                            ) : (
+                              <p className="whitespace-pre-wrap ka-copy-sm">{block}</p>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className={`text-center py-8 text-sm opacity-50 border border-dashed rounded-lg ${isDarkMode ? 'border-gray-700 text-gray-400' : 'border-gray-300 text-gray-500'}`}>
+                      {t.noCoreMemoryPlaceholder}
+                    </div>
+                  )}
+                  {/* Source text toggle */}
+                  <button
+                    onClick={() => setIsCoreSourceOpen(!isCoreSourceOpen)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-mono transition-colors ${isDarkMode ? 'text-[#d7bb88]/60 hover:text-[#d7bb88] hover:bg-white/5' : 'text-[#b08957]/60 hover:text-[#b08957] hover:bg-black/5'}`}
+                  >
+                    <Code2 size={11} />
+                    {language === 'zh' ? '源文本' : 'Source'}
+                    {isCoreSourceOpen ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+                  </button>
+                  <Collapse isOpen={isCoreSourceOpen}>
+                    <div className={`relative w-full p-3 rounded border-2 border-double ${isDarkMode ? 'bg-[#14100c] border-[#5d4731]/55 text-[#eadfce]' : 'bg-[#fffefd] border-[#e8ddcf] text-[#4b3a2a]'}`}>
+                      <textarea
+                        value={localCoreMemory}
+                        onChange={(e) => setLocalCoreMemory(e.target.value)}
+                        className={`w-full h-32 p-1 rounded ka-input-copy text-base md:text-sm resize-none scrollbar-thin outline-none bg-transparent ${textClass}`}
+                        placeholder={t.noCoreMemoryPlaceholder}
+                      />
+                    </div>
+                  </Collapse>
                   <div className={`flex items-center justify-between text-[10px] ${isDarkMode ? 'text-[#bfa483]' : 'text-[#b08957]'}`}>
                     <div className="flex items-center gap-1.5">
                       <div className={`h-1.5 w-1.5 rounded-full ${isDarkMode ? 'bg-[#d7bb88]/60' : 'bg-[#c9983f]/60'}`}></div>
                       <span>{t.nextSyncIn} {summaryProgressText}</span>
+                      {onManualSummary && (
+                        <button
+                          onClick={() => setShowArchiveConfirm(true)}
+                          className={`ml-2 px-2.5 py-1 rounded-md text-[10px] font-semibold tracking-wide transition-all cursor-pointer ${isDarkMode ? 'bg-[#d7bb88]/15 hover:bg-[#d7bb88]/30 text-[#d7bb88] border border-[#d7bb88]/20' : 'bg-[#c9983f]/10 hover:bg-[#c9983f]/25 text-[#b08957] border border-[#c9983f]/25'} disabled:opacity-40 disabled:cursor-wait`}
+                          title={language === 'zh' ? '将当前对话总结并归档到记忆系统（核心记忆、笔记本、RAG 记忆块）' : 'Summarize and archive current conversation to memory system (core memory, notebook, RAG chunks)'}
+                        >
+                          <RefreshCw className="inline w-3 h-3 mr-1 -mt-px" />
+                          {language === 'zh' ? '立即归档' : 'Archive Now'}
+                        </button>
+                      )}
                     </div>
                     <span className="opacity-50 font-mono">RAG BUFFER</span>
                   </div>
                 </div>
-              )}
+              </Collapse>
             </div>
 
             {/* Section 2: Kumiko's Notebook */}
@@ -642,49 +698,47 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                 </div>
               </button>
               
-              {isNotebookOpen && (
-                <div className="p-3 animate-in slide-in-from-top-2 duration-200 flex flex-col gap-2">
+              <Collapse isOpen={isNotebookOpen}>
+                <div className="p-3 flex flex-col gap-3">
                   <div className={`ka-copy-sm opacity-70 mb-1 ${textClass}`}>
                     {t.notebookDesc}
                   </div>
-                  <div className={`relative w-full h-48 p-4 rounded ka-copy-sm leading-relaxed overflow-y-auto scrollbar-thin border-2 border-double ${isDarkMode ? 'bg-[#14100c] border-[#5d4731]/55 text-[#eadfce]' : 'bg-[#fffefd] border-[#e8ddcf] text-[#4b392a]'}`}>
-                       <div className="absolute inset-0 pointer-events-none opacity-5" style={{ backgroundImage: `repeating-linear-gradient(transparent, transparent 23px, ${isDarkMode ? '#ffffff' : '#000000'} 24px)` }}></div>
-                       {kumikoNotebook ? (
-                           <div className="relative z-10">
-                             {(() => {
-                               try {
-                                 const parsed = JSON.parse(kumikoNotebook);
-                                 return (
-                                   <div className="space-y-4">
-                                     {parsed.user_profile && (
-                                       <div>
-                                         <h4 className={`font-bold mb-1 ${isDarkMode ? 'text-[#d9bc89]' : 'text-[#a97832]'}`}>【用户档案】</h4>
-                                         <p className={`whitespace-pre-wrap pl-2 border-l-2 ${isDarkMode ? 'border-[#d9bc89]/25' : 'border-[#c8aa76]/35'}`}>{parsed.user_profile}</p>
-                                       </div>
-                                     )}
-                                     {parsed.relationship_dynamics && (
-                                       <div>
-                                         <h4 className={`font-bold mb-1 ${isDarkMode ? 'text-[#d9bc89]' : 'text-[#a97832]'}`}>【当前羁绊】</h4>
-                                         <p className={`whitespace-pre-wrap pl-2 border-l-2 ${isDarkMode ? 'border-[#d9bc89]/25' : 'border-[#c8aa76]/35'}`}>{parsed.relationship_dynamics}</p>
-                                       </div>
-                                     )}
-                                   </div>
-                                 );
-                               } catch (e) {
-                                 return <p className="whitespace-pre-wrap">{kumikoNotebook}</p>;
-                               }
-                             })()}
-                           </div>
-                       ) : (
-                           <p className="italic opacity-50 relative z-10">{t.notebookPlaceholder}</p>
-                       )}
-                  </div>
+                  {kumikoNotebook ? (
+                    <div className="flex flex-col gap-2">
+                      {(() => {
+                        try {
+                          const parsed = JSON.parse(kumikoNotebook);
+                          const nbCards: { label: string; content: string }[] = [];
+                          if (parsed.user_profile) nbCards.push({ label: language === 'zh' ? '用户档案' : 'User Profile', content: parsed.user_profile });
+                          if (parsed.relationship_dynamics) nbCards.push({ label: language === 'zh' ? '当前羁绊' : 'Relationship Dynamics', content: parsed.relationship_dynamics });
+                          return nbCards.map((card, i) => (
+                            <div key={i} className={`relative rounded-lg border pl-3 pr-3 py-2.5 text-sm leading-relaxed ${isDarkMode ? 'bg-[#18140f] border-[#6b5030]/40 text-[#eadfce]' : 'bg-[#fffdfb] border-[#e5ddd3] text-[#4b392a]'}`}>
+                              <div className={`absolute left-0 top-0 bottom-0 w-[3px] rounded-l-lg ${isDarkMode ? 'bg-[#baa287]/40' : 'bg-[#a78a68]/40'}`} />
+                              <div className={`text-[10px] font-mono font-semibold mb-1 ${isDarkMode ? 'text-[#baa287]/70' : 'text-[#a78a68]/70'}`}>{card.label}</div>
+                              <p className="whitespace-pre-wrap ka-copy-sm">{card.content}</p>
+                            </div>
+                          ));
+                        } catch {
+                          return (
+                            <div className={`relative rounded-lg border pl-3 pr-3 py-2.5 text-sm leading-relaxed ${isDarkMode ? 'bg-[#18140f] border-[#6b5030]/40 text-[#eadfce]' : 'bg-[#fffdfb] border-[#e5ddd3] text-[#4b392a]'}`}>
+                              <div className={`absolute left-0 top-0 bottom-0 w-[3px] rounded-l-lg ${isDarkMode ? 'bg-[#baa287]/40' : 'bg-[#a78a68]/40'}`} />
+                              <p className="whitespace-pre-wrap ka-copy-sm">{kumikoNotebook}</p>
+                            </div>
+                          );
+                        }
+                      })()}
+                    </div>
+                  ) : (
+                    <div className={`text-center py-8 text-sm opacity-50 border border-dashed rounded-lg ${isDarkMode ? 'border-gray-700 text-gray-400' : 'border-gray-300 text-gray-500'}`}>
+                      {t.notebookPlaceholder}
+                    </div>
+                  )}
                   <div className={`flex items-start gap-2 mt-1 p-2 rounded text-[10px] border opacity-80 ${isDarkMode ? 'bg-black/20 border-white/5 text-gray-400' : 'bg-black/5 border-black/5 text-gray-600'}`}>
                       <Lock size={12} className="flex-shrink-0 mt-0.5" />
                       <p>{t.notebookFooter}</p>
                   </div>
                 </div>
-              )}
+              </Collapse>
             </div>
 
             {/* Section 3: Life Anchors */}
@@ -712,15 +766,15 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                 </div>
               </button>
               
-              {isAnchorsOpen && (
-                <div className="p-3 animate-in slide-in-from-top-2 duration-200 flex flex-col gap-3">
+              <Collapse isOpen={isAnchorsOpen}>
+                <div className="p-3 flex flex-col gap-3">
                   <p className={`ka-copy-sm opacity-70 ${textClass}`}>{t.lifeAnchorsHelp}</p>
                   {anchors.length === 0 && (
                       <div className={`text-center py-6 opacity-80 text-xs font-mono border border-dashed rounded ${isDarkMode ? 'border-gray-700 text-gray-400' : 'border-gray-400 text-gray-600'}`}>
                           {t.noAnchors}
                       </div>
                   )}
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 gap-2.5">
                       {anchors.map((anchor) => (
                           <div
                             key={anchor.id}
@@ -748,7 +802,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                       ))}
                   </div>
                 </div>
-              )}
+              </Collapse>
             </div>
 
             {/* Section 4: Context History EDITOR */}
@@ -767,7 +821,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                   </div>
                   <div className="min-w-0 text-left">
                     <div className="truncate">{t.contextWindowWithEditor}</div>
-                    <div className={`ka-micro font-medium tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#baa585]' : 'text-[#3d8e7a]'}`}>{memorySectionMeta.history.note}</div>
+                    <div className={`ka-micro font-medium tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#6dbba8]' : 'text-[#3d8e7a]'}`}>{memorySectionMeta.history.note}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -776,20 +830,18 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                 </div>
               </button>
               
-              {isHistoryConfigOpen && (
-                <div className="p-3 animate-in slide-in-from-top-2 duration-200 flex flex-col gap-4">
-                  {/* ... same editor content ... */}
+              <Collapse isOpen={isHistoryConfigOpen}>
+                <div className="p-3 flex flex-col gap-4">
+                  {/* P1 #37: the editable "Context Limit" input moved to Settings >
+                      Memory & Context. We still show the current value read-only
+                      so users know at a glance how the history list is sliced. */}
                   <div className="flex items-center justify-between flex-wrap gap-2">
                       <div className="flex items-center gap-4">
                         <label className={`ka-label ${textClass}`}>{t.contextLimit}</label>
-                        <input 
-                        type="number" 
-                        min="1" 
-                        max="500"
-                        value={localContextLimit}
-                        onChange={(e) => setLocalContextLimit(parseInt(e.target.value) || 0)}
-                        className={`w-24 px-2 py-1 rounded text-center ka-input-copy outline-none focus:ring-1 focus:ring-purple-500 ${inputBgClass} ${textClass}`}
-                        />
+                        <span className={`ka-value font-semibold ${textClass}`}>{localContextLimit}</span>
+                        <span className={`ka-copy-xs opacity-60 ${textClass}`}>
+                          {language === 'zh' ? '（在设置 → 记忆与上下文中修改）' : '(edit in Settings → Memory & Context)'}
+                        </span>
                       </div>
                       <button 
                         onClick={() => setIsPinnedModalOpen(true)}
@@ -801,7 +853,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                   </div>
                   {/* ... rest of history editor ... */}
                   {/* --- HISTORY SEARCH BAR (MOVED HERE & OPTIMIZED FOR MOBILE) --- */}
-                  <div className={`flex items-center gap-1.5 p-1.5 rounded border ${isDarkMode ? 'bg-black/20 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                  <div className={`flex items-center gap-1.5 p-1.5 rounded border ${isDarkMode ? 'bg-[#111413] border-[#2a3530]/40' : 'bg-[#f5f8f6] border-[#d0e8e0]'}`}>
                       <Search size={14} className="opacity-50 flex-shrink-0 ml-1" />
                       <input 
                           value={historySearchQuery}
@@ -827,15 +879,15 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                   </div>
                   
                   <div className="flex gap-2">
-                    <button onClick={(e) => { e.stopPropagation(); if(onInsertMessage) onInsertMessage(null, 'model'); }} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded ka-label font-semibold border border-dashed transition-colors ${isDarkMode ? 'border-gray-700 text-gray-400 hover:border-yellow-500 hover:text-yellow-500' : 'border-gray-300 text-gray-600 hover:border-yellow-600 hover:text-yellow-700'}`}>
+                    <button onClick={(e) => { e.stopPropagation(); if(onInsertMessage) onInsertMessage(null, 'model'); }} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded ka-label font-semibold border border-dashed transition-colors ${isDarkMode ? 'border-[#2a3530] text-[#6dbba8]/60 hover:border-[#3d8e7a] hover:text-[#6dbba8]' : 'border-[#d0e8e0] text-[#3d8e7a]/60 hover:border-[#3d8e7a] hover:text-[#3d8e7a]'}`}>
                         <Plus size={14} /> {t.addMessage} ({t.roleModel})
                     </button>
-                    <button onClick={(e) => { e.stopPropagation(); if(onInsertMessage) onInsertMessage(null, 'user'); }} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded ka-label font-semibold border border-dashed transition-colors ${isDarkMode ? 'border-gray-700 text-gray-400 hover:border-yellow-500 hover:text-yellow-500' : 'border-gray-300 text-gray-600 hover:border-yellow-600 hover:text-yellow-700'}`}>
+                    <button onClick={(e) => { e.stopPropagation(); if(onInsertMessage) onInsertMessage(null, 'user'); }} className={`flex-1 flex items-center justify-center gap-2 py-2 rounded ka-label font-semibold border border-dashed transition-colors ${isDarkMode ? 'border-[#2a3530] text-[#6dbba8]/60 hover:border-[#3d8e7a] hover:text-[#6dbba8]' : 'border-[#d0e8e0] text-[#3d8e7a]/60 hover:border-[#3d8e7a] hover:text-[#3d8e7a]'}`}>
                         <Plus size={14} /> {t.addMessage} ({t.roleUser})
                     </button>
                   </div>
 
-                  <div className={`rounded flex flex-col h-80 border overflow-hidden ${isDarkMode ? 'bg-black/30 border-white/10' : 'bg-gray-100 border-gray-300'}`}>
+                  <div className={`rounded flex flex-col h-80 border overflow-hidden ${isDarkMode ? 'bg-[#111413] border-[#2a3530]/40' : 'bg-[#f5f8f6] border-[#d0e8e0]'}`}>
                     <div ref={scrollContainerRef} className="flex-1 overflow-y-auto scrollbar-thin p-3">
                         {sortedMessages.length === 0 && <div className="text-center opacity-50 ka-copy-sm pt-10">{t.noHistory}</div>}
                         {sortedMessages.length > 0 && (
@@ -887,7 +939,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                                     </div>
                                     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
                                         <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold ${isUser ? (isDarkMode ? 'bg-yellow-700 text-yellow-100' : 'bg-yellow-200 text-yellow-800') : (isDarkMode ? 'bg-gray-700 text-white' : 'bg-white border text-gray-800')}`}>{isUser ? 'YOU' : '久'}</div>
-                                        <div className={`relative flex-1 min-w-0 max-w-[85%] rounded-lg p-2 text-sm transition-colors ${isEditing ? (isDarkMode ? 'bg-blue-900/20 border border-blue-500/50' : 'bg-blue-50 border border-blue-300') : (isUser ? (isDarkMode ? 'bg-yellow-900/20 text-yellow-100' : 'bg-yellow-100 text-yellow-900') : (isDarkMode ? 'bg-gray-800 text-gray-300' : 'bg-white border text-gray-800'))}`}>
+                                        <div className={`relative flex-1 min-w-0 max-w-[85%] rounded-lg p-2 text-sm transition-colors ${isEditing ? (isDarkMode ? 'bg-blue-900/20 border border-blue-500/50' : 'bg-blue-50 border border-blue-300') : (isUser ? (isDarkMode ? 'bg-yellow-900/20 text-yellow-100' : 'bg-yellow-100 text-yellow-900') : (isDarkMode ? 'bg-[#1a1e1c] text-gray-300' : 'bg-white border text-gray-800'))}`}>
                                             {isEditing ? (
                                                 <div className="flex flex-col gap-2">
                                                     <textarea value={editMessageText} onChange={(e) => setEditMessageText(e.target.value)} className={`w-full h-24 p-2 rounded text-base md:text-sm ka-input-copy resize-none outline-none focus:ring-1 focus:ring-blue-500 ${inputBgClass} ${textClass}`} />
@@ -918,10 +970,10 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                           </div>
                         )}
                     </div>
-                    <div className={`p-2 ka-micro flex justify-end items-center ${isDarkMode ? 'bg-black/40 text-gray-500' : 'bg-gray-200 text-gray-600'}`}><span>{formattedFooter}</span></div>
+                    <div className={`p-2 ka-micro flex justify-end items-center ${isDarkMode ? 'bg-[#111413] text-[#6dbba8]/50' : 'bg-[#f0f5f3] text-[#3d8e7a]/60'}`}><span>{formattedFooter}</span></div>
                   </div>
                 </div>
-              )}
+              </Collapse>
             </div>
 
             {/* Section 5: Default World Book */}
@@ -940,7 +992,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                   </div>
                   <div className="min-w-0 text-left">
                     <div className="truncate">{t.officialLore}</div>
-                    <div className={`ka-micro font-medium tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#baa585]' : 'text-[#7a5fb5]'}`}>{memorySectionMeta.official.note}</div>
+                    <div className={`ka-micro font-medium tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#b0a0d0]' : 'text-[#8a7ab5]'}`}>{memorySectionMeta.official.note}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -949,8 +1001,8 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                 </div>
               </button>
 
-              {isDefaultBookOpen && (
-                <div className="p-3 flex flex-col gap-3 animate-in slide-in-from-top-2 duration-200">
+              <Collapse isOpen={isDefaultBookOpen}>
+                <div className="p-3 flex flex-col gap-3">
                   <p className={`ka-copy-sm opacity-70 ${textClass}`}>{t.officialLoreHelp}</p>
                   {systemEntries.map((entry) => {
                     const isExpanded = expandedEntryIds.has(entry.id);
@@ -958,17 +1010,12 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                     const isCore = CORE_MEMORY_IDS.has(entry.id);
                     
                     return (
-                      <div key={entry.id} className={`rounded border flex flex-col transition-all overflow-hidden ${cardHighlightBg} ${!entry.isActive ? 'opacity-80' : ''}`}>
-                          <div className={`flex items-center justify-between p-3 cursor-pointer ${isDarkMode ? 'hover:bg-white/4' : 'hover:bg-black/[0.02]'}`} onClick={() => toggleEntryExpansion(entry.id)}>
-                            {/* 
-                                OPTIMIZATION FOR MOBILE LAYOUT:
-                                1. min-w-0 on the left container is CRITICAL for flex truncation to work properly.
-                                2. truncate added to title span to cut off long text.
-                                3. flex-shrink-0 and whitespace-nowrap on CORE badge prevents it from stacking vertically.
-                            */}
+                      <div key={entry.id} className={`relative rounded border flex flex-col transition-all overflow-hidden ${isDarkMode ? 'bg-[#1c1a20] border-[#2a2830]/60' : 'bg-[#fcfaff] border-[#e0d8ec]'} ${!entry.isActive ? 'opacity-80' : ''}`}>
+                          <div className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l bg-gradient-to-b from-[#b0a0d0] to-[#8a7ab5]" />
+                          <div className={`flex items-center justify-between p-3 pl-4 cursor-pointer ${isDarkMode ? 'hover:bg-white/4' : 'hover:bg-black/[0.02]'}`} onClick={() => toggleEntryExpansion(entry.id)}>
                             <div className="flex items-center gap-2 flex-1 mr-2 min-w-0">
                                 <Lock size={12} className="opacity-50 flex-shrink-0" />
-                                <span className={`ka-label font-semibold uppercase truncate flex-1 ${isDarkMode ? 'text-[#d8b98b]' : 'text-[#9d7230]'} ${!entry.isActive ? 'line-through opacity-50' : ''}`}>{entry.title || 'Untitled'}</span>
+                                <span className={`ka-label font-semibold uppercase truncate flex-1 ${isDarkMode ? 'text-[#b0a0d0]' : 'text-[#7a5fb5]'} ${!entry.isActive ? 'line-through opacity-50' : ''}`}>{entry.title || 'Untitled'}</span>
                                 {isCore && (
                                     <span className={`ml-1 px-1.5 py-0.5 rounded-[2px] text-[8px] md:text-[9px] font-bold font-mono flex items-center gap-1 shadow-sm animate-pulse flex-shrink-0 whitespace-nowrap ${isDarkMode ? 'bg-[#d7bb88] text-[#20160b]' : 'bg-[#e8d3ae] text-[#6b4c1d]'}`}>
                                         <Star size={8} fill="black" /> {t.coreBadge}
@@ -976,7 +1023,6 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                                 )}
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
-                              {/* TOGGLE BUTTON LOGIC: If Active -> Green Power. If Inactive -> Search Icon (RAG Mode) */}
                               <button 
                                 onClick={(e) => { e.stopPropagation(); updateEntry(entry.id, 'isActive', !entry.isActive); }} 
                                 className={`p-1.5 rounded-full transition-all flex items-center gap-1 ${entry.isActive ? 'bg-green-500/10 text-green-500 hover:bg-green-500/20' : 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'}`} 
@@ -988,9 +1034,9 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                               {isExpanded ? <ChevronUp size={14} className="opacity-50" /> : <ChevronDown size={14} className="opacity-50" />}
                             </div>
                           </div>
-                          {isExpanded && <div className="p-3 pt-0 animate-in slide-in-from-top-1 duration-150">
-                              {/* NEW: Full Title Display for Mobile Readability */}
-                              <div className={`mb-2 font-mincho font-semibold text-sm break-words leading-tight ${isDarkMode ? 'text-[#f0e5d8]' : 'text-[#453629]'}`}>
+                          <Collapse isOpen={isExpanded} duration={180}>
+                            <div className="p-3 pl-4 pt-0">
+                              <div className={`mb-2 font-mincho font-semibold text-sm break-words leading-tight ${isDarkMode ? 'text-[#e8e0f0]' : 'text-[#3a3248]'}`}>
                                   {entry.title}
                               </div>
 
@@ -1000,18 +1046,16 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                                       <p>{t.coreRecommendation}</p>
                                   </div>
                               )}
-                              <textarea 
-                                value={entry.content} 
-                                readOnly={true} 
-                                className={`w-full h-48 p-2 rounded text-base md:text-sm ka-input-copy resize-y scrollbar-thin outline-none ${isDarkMode ? 'bg-[#15110d] text-[#dbcab7]' : 'bg-[#f7f4ef] text-[#625244]'} cursor-default`} 
-                                placeholder={t.contentPlaceholder} 
-                              />
-                          </div>}
+                              <div className={`w-full max-h-48 p-2 rounded text-base md:text-sm ka-input-copy overflow-y-auto scrollbar-thin whitespace-pre-wrap ${isDarkMode ? 'bg-[#16141a] text-[#cfc4db]' : 'bg-[#f5f2f8] text-[#524866]'}`}>
+                                {entry.content || t.contentPlaceholder}
+                              </div>
+                            </div>
+                          </Collapse>
                       </div>
                     );
                   })}
                 </div>
-              )}
+              </Collapse>
             </div>
 
             {/* Section 6: Custom World Book */}
@@ -1030,7 +1074,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                   </div>
                   <div className="min-w-0 text-left">
                     <div className="truncate">{t.customLore}</div>
-                    <div className={`ka-micro font-medium tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#95b6f0]' : 'text-[#5d82cf]'}`}>{memorySectionMeta.custom.note}</div>
+                    <div className={`ka-micro font-medium tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#8eaac8]' : 'text-[#6882a8]'}`}>{memorySectionMeta.custom.note}</div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
@@ -1039,21 +1083,21 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                 </div>
               </button>
 
-              {isCustomBookOpen && (
-                <div className="p-3 flex flex-col gap-3 animate-in slide-in-from-top-2 duration-200">
+              <Collapse isOpen={isCustomBookOpen}>
+                <div className="p-3 flex flex-col gap-3">
                   <p className={`ka-copy-sm opacity-70 ${textClass}`}>{t.customLoreHelp}</p>
-                  {customEntries.length === 0 && <div className={`text-center py-4 ka-copy-sm border border-dashed rounded ${isDarkMode ? 'border-gray-700 text-gray-400' : 'border-gray-300 text-gray-600'}`}>{t.noCustomEntries}</div>}
+                  {customEntries.length === 0 && <div className={`text-center py-4 ka-copy-sm border border-dashed rounded ${isDarkMode ? 'border-[#252a34] text-[#8eaac8]/50' : 'border-[#d5e0ec] text-[#6882a8]/60'}`}>{t.noCustomEntries}</div>}
                   {customEntries.map((entry) => {
                     const isExpanded = expandedEntryIds.has(entry.id);
                     return (
-                      <div key={entry.id} className={`rounded border flex flex-col transition-all overflow-hidden ${isDarkMode ? 'bg-blue-900/5 border-blue-500/30' : 'bg-blue-50 border-blue-200'} ${!entry.isActive ? 'opacity-80' : ''}`}>
-                          <div className={`flex items-center justify-between p-3 cursor-pointer ${isDarkMode ? 'hover:bg-white/4' : 'hover:bg-black/[0.02]'}`} onClick={() => toggleEntryExpansion(entry.id)}>
+                      <div key={entry.id} className={`relative rounded border flex flex-col transition-all overflow-hidden ${isDarkMode ? 'bg-[#14161c] border-[#252a34]/50' : 'bg-[#f7f9fc] border-[#d5e0ec]'} ${!entry.isActive ? 'opacity-80' : ''}`}>
+                          <div className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l bg-gradient-to-b from-[#8eaac8] to-[#6882a8]" />
+                          <div className={`flex items-center justify-between p-3 pl-4 cursor-pointer ${isDarkMode ? 'hover:bg-white/4' : 'hover:bg-black/[0.02]'}`} onClick={() => toggleEntryExpansion(entry.id)}>
                             <div className="flex items-center gap-2 flex-1 mr-2">
                                {entry.isHighPriority ? <Zap size={12} className="text-yellow-500 fill-yellow-500" /> : <Bookmark size={12} className="opacity-50" />}
-                               <input value={entry.title} onChange={(e) => updateEntry(entry.id, 'title', e.target.value)} onClick={(e) => e.stopPropagation()} className={`bg-transparent border-b border-transparent focus:border-blue-500 outline-none ka-label font-semibold uppercase truncate ${isDarkMode ? 'text-blue-200' : 'text-blue-800'} ${!entry.isActive ? 'line-through opacity-50' : ''}`} placeholder="Title" />
+                               <input value={entry.title} onChange={(e) => updateEntry(entry.id, 'title', e.target.value)} onClick={(e) => e.stopPropagation()} className={`bg-transparent border-b border-transparent focus:border-[#6882a8] outline-none ka-label font-semibold uppercase truncate ${isDarkMode ? 'text-[#8eaac8]' : 'text-[#4a6080]'} ${!entry.isActive ? 'line-through opacity-50' : ''}`} placeholder="Title" />
                             </div>
                             <div className="flex items-center gap-2">
-                              {/* TOGGLE BUTTON: RAG MODE */}
                               <button 
                                 onClick={(e) => { e.stopPropagation(); updateEntry(entry.id, 'isActive', !entry.isActive); }} 
                                 className={`p-1.5 rounded-full transition-all flex items-center gap-1 ${entry.isActive ? 'bg-green-500/10 text-green-500 hover:bg-green-500/20' : 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'}`} 
@@ -1067,17 +1111,16 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                               {isExpanded ? <ChevronUp size={14} className="opacity-50" /> : <ChevronDown size={14} className="opacity-50" />}
                             </div>
                           </div>
-                          {isExpanded && <div className="p-3 pt-0 animate-in slide-in-from-top-1 duration-150"><textarea value={entry.content} onChange={(e) => updateEntry(entry.id, 'content', e.target.value)} className={`w-full h-32 p-2 rounded text-base md:text-sm ka-input-copy resize-y scrollbar-thin outline-none focus:ring-1 focus:ring-blue-500/50 ${inputBgClass} ${textClass}`} placeholder={t.contentPlaceholder} /></div>}
+                          <Collapse isOpen={isExpanded} duration={180}><div className="p-3 pl-4 pt-0"><textarea value={entry.content} onChange={(e) => updateEntry(entry.id, 'content', e.target.value)} className={`w-full h-32 p-2 rounded text-base md:text-sm ka-input-copy resize-y scrollbar-thin outline-none focus:ring-1 focus:ring-[#6882a8]/40 ${isDarkMode ? 'bg-[#12141a] border-[#252a34]' : 'bg-[#f5f7fb] border-[#d5e0ec]'} border ${textClass}`} placeholder={t.contentPlaceholder} /></div></Collapse>
                       </div>
                     );
                   })}
-                  <button onClick={handleAddCustomEntry} className={`w-full py-2 border-2 border-dashed rounded text-xs font-bold transition-all flex items-center justify-center gap-2 ${isDarkMode ? 'border-gray-700 text-gray-400 hover:border-blue-500 hover:text-blue-500' : 'border-gray-300 text-gray-500 hover:border-blue-500 hover:text-blue-600'}`}><Plus size={14} /> {t.addCustomEntry}</button>
+                  <button onClick={handleAddCustomEntry} className={`w-full py-2 border-2 border-dashed rounded text-xs font-bold transition-all flex items-center justify-center gap-2 ${isDarkMode ? 'border-[#252a34] text-[#8eaac8]/60 hover:border-[#6882a8] hover:text-[#8eaac8]' : 'border-[#d5e0ec] text-[#6882a8]/60 hover:border-[#6882a8] hover:text-[#6882a8]'}`}><Plus size={14} /> {t.addCustomEntry}</button>
                 </div>
-              )}
+              </Collapse>
             </div>
 
           </div>
-          )}
         </div>
 
         {/* Footer Status Bar */}
@@ -1099,7 +1142,38 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
         </div>
 
       </div>
-      <PinnedModal />
+      <PinnedModal
+        isOpen={isPinnedModalOpen}
+        onCloseModal={() => setIsPinnedModalOpen(false)}
+        onClosePanel={onClose}
+        pinnedMessages={pinnedMessages}
+        sortedMessages={sortedMessages}
+        onJumpToMessage={onJumpToMessage}
+        onTogglePin={onTogglePin}
+        isDarkMode={isDarkMode}
+        t={t}
+      />
+      {showArchiveConfirm && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowArchiveConfirm(false)}>
+          <div className={`mx-4 max-w-sm w-full rounded-2xl p-5 shadow-2xl border ${isDarkMode ? 'bg-[#1e1a15] border-[#4f3926] text-[#eadfce]' : 'bg-white border-[#e8ddcf] text-[#4b3a2a]'}`} onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-3">
+              <RefreshCw size={16} className={isDarkMode ? 'text-[#d7bb88]' : 'text-[#b08957]'} />
+              <h3 className="font-semibold text-sm">{language === 'zh' ? '确认归档' : 'Confirm Archive'}</h3>
+            </div>
+            <p className={`text-xs leading-relaxed mb-4 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              {language === 'zh' ? '将当前未归档的对话总结并写入记忆系统。此操作会影响：核心记忆缓冲、久美子笔记本、RAG 记忆块。需要消耗一次 LLM 调用。' : 'Summarize and archive the current unsaved conversation. This will update: core memory buffer, Kumiko\'s notebook, and RAG memory chunks. Requires one LLM call.'}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setShowArchiveConfirm(false)} className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${isDarkMode ? 'text-gray-400 hover:bg-white/5' : 'text-gray-500 hover:bg-black/5'}`}>
+                {language === 'zh' ? '取消' : 'Cancel'}
+              </button>
+              <button onClick={async () => { setShowArchiveConfirm(false); if (onManualSummary) await onManualSummary(); }} className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors ${isDarkMode ? 'bg-[#d7bb88]/20 text-[#d7bb88] hover:bg-[#d7bb88]/30' : 'bg-[#c9983f]/15 text-[#b08957] hover:bg-[#c9983f]/30'}`}>
+                {language === 'zh' ? '确认归档' : 'Archive'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { useModalKeyboard } from '../../hooks/useModalKeyboard';
 
 interface CustomDialogProps {
   isOpen: boolean;
@@ -28,6 +29,13 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
   language = 'en'
 }) => {
   const [inputValue, setInputValue] = useState('');
+
+  // P2 #42: close on Esc. Also reset the input each time the dialog opens
+  // so stale text from a previous invocation doesn't carry over.
+  useModalKeyboard({ isOpen, onClose: onCancel });
+  useEffect(() => {
+    if (isOpen) setInputValue('');
+  }, [isOpen]);
 
   if (!isOpen) return null;
 
@@ -76,7 +84,7 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
               onConfirm(type === 'prompt' ? inputValue : undefined);
               setInputValue('');
             }}
-            className={`px-4 py-2 rounded text-sm font-medium transition-colors ${isDarkMode ? 'bg-[linear-gradient(180deg,#9f7449,#7e5c3b)] text-[#fffaf2] hover:brightness-105' : 'bg-teal-600 text-white hover:bg-teal-700'}`}
+            className={`px-4 py-2 rounded text-sm font-medium transition-colors ${isDarkMode ? 'bg-[linear-gradient(180deg,#9f7449,#7e5c3b)] text-[#fffaf2] hover:brightness-105' : 'bg-[#785A42] text-white hover:bg-[#6a4e39]'}`}
           >
             {finalConfirmText}
           </button>

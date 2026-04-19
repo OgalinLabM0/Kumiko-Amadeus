@@ -9,6 +9,7 @@ const outputPath = path.join(releaseDir, 'kumiko-assets.zip');
 const ASSETS = [
   { src: 'public/images/emotions', dir: true },
   { src: 'public/ringtones', dir: true },
+  { src: 'public/sovits-ref', dir: true },
   { src: 'public/images/logo.png' },
   { src: 'public/CCA-P2.png' },
   { src: 'public/favicon-KA.ico' },

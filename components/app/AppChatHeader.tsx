@@ -1,16 +1,9 @@
 import React from 'react';
 import { BellRing, BrainCircuit, CheckSquare, Clock3, Maximize, Minimize, Moon, Settings, Sun, Trash2, User, BookOpen } from 'lucide-react';
 import { ExtendedSyncStatus, RagStatusIndicator, SyncStatusIndicator } from '../SyncStatus';
-import { Language } from '../../types';
+import { useAppStore } from '../../store';
 
 interface AppChatHeaderProps {
-  isDarkMode: boolean;
-  isTalking: boolean;
-  language: Language;
-  isFullscreen: boolean;
-  isSelectionMode: boolean;
-  unreadMessageCount: number;
-  activeTaskCount: number;
   ragStatus: 'IDLE' | 'RECALLING' | 'INDEXING' | 'ERROR' | 'OFF' | 'STALE';
   syncStatus: ExtendedSyncStatus;
   headerBg: string;
@@ -21,24 +14,11 @@ interface AppChatHeaderProps {
   isLocalEnabled: boolean;
   onToggleFullscreen: () => void;
   onToggleSelectionMode: () => void;
-  onOpenMemory: () => void;
-  onOpenDiary: () => void;
-  onToggleTheme: () => void;
-  onOpenProfile: () => void;
-  onOpenInbox: () => void;
-  onOpenTasks: () => void;
+  onToggleTheme: (e?: React.MouseEvent) => void;
   onSyncClick: () => void;
-  onOpenSettings: () => void;
 }
 
 export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
-  isDarkMode,
-  isTalking,
-  language,
-  isFullscreen,
-  isSelectionMode,
-  unreadMessageCount,
-  activeTaskCount,
   ragStatus,
   syncStatus,
   headerBg,
@@ -49,15 +29,28 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
   isLocalEnabled,
   onToggleFullscreen,
   onToggleSelectionMode,
-  onOpenMemory,
-  onOpenDiary,
   onToggleTheme,
-  onOpenProfile,
-  onOpenInbox,
-  onOpenTasks,
-  onSyncClick,
-  onOpenSettings
+  onSyncClick
 }) => {
+  const isDarkMode = useAppStore(s => s.isDarkMode);
+  const isTalking = useAppStore(s => s.isTalking);
+  const language = useAppStore(s => s.language);
+  const isFullscreen = useAppStore(s => s.isFullscreen);
+  const isSelectionMode = useAppStore(s => s.isSelectionMode);
+  const isMessageCenterOpen = useAppStore(s => s.isMessageCenterOpen);
+  const isTaskPanelOpen = useAppStore(s => s.isTaskPanelOpen);
+  const setIsMemoryPanelOpen = useAppStore(s => s.setIsMemoryPanelOpen);
+  const setIsDiaryOpen = useAppStore(s => s.setIsDiaryOpen);
+  const setIsProfileOpen = useAppStore(s => s.setIsProfileOpen);
+  const setIsSettingsOpen = useAppStore(s => s.setIsSettingsOpen);
+  const setIsMessageCenterOpen = useAppStore(s => s.setIsMessageCenterOpen);
+  const setIsTaskPanelOpen = useAppStore(s => s.setIsTaskPanelOpen);
+  const messageAlerts = useAppStore(s => s.messageAlerts);
+  const relativeReminders = useAppStore(s => s.relativeReminders);
+  const dailyReminders = useAppStore(s => s.dailyReminders);
+
+  const unreadMessageCount = React.useMemo(() => messageAlerts.filter(a => !a.isRead).length, [messageAlerts]);
+  const activeTaskCount = relativeReminders.length + dailyReminders.length;
   const containerRef = React.useRef<HTMLDivElement | null>(null);
   const identityRef = React.useRef<HTMLDivElement | null>(null);
   const controlsRef = React.useRef<HTMLDivElement | null>(null);
@@ -78,17 +71,25 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
         return;
       }
 
-      const nextScale = Math.max(0.72, Math.min(1, availableWidth / requiredWidth));
+      const nextScale = Math.max(0.58, Math.min(1, availableWidth / requiredWidth));
       setHeaderScale(prev => Math.abs(prev - nextScale) < 0.005 ? prev : nextScale);
     };
 
-    const resizeObserver = new ResizeObserver(updateScale);
+    let rafId = 0;
+    const resizeObserver = new ResizeObserver(() => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(() => {
+        if (document.documentElement.hasAttribute('data-resizing')) return;
+        updateScale();
+      });
+    });
     resizeObserver.observe(container);
     resizeObserver.observe(identity);
     resizeObserver.observe(controls);
     updateScale();
 
     return () => {
+      cancelAnimationFrame(rafId);
       resizeObserver.disconnect();
     };
   }, [
@@ -133,19 +134,19 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
             <button onClick={onToggleSelectionMode} className={`inline-flex hover:text-red-500 transition-colors ${isSelectionMode ? 'text-red-500 animate-pulse' : ''}`} title={language === 'zh' ? '消息管理' : 'Manage Messages'}>
               {isSelectionMode ? <CheckSquare size={17} /> : <Trash2 size={17} />}
             </button>
-            <button onClick={onOpenMemory} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '记忆系统' : 'Core Memory Bank'}>
+            <button onClick={() => setIsMemoryPanelOpen(true)} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '记忆系统' : 'Core Memory Bank'}>
               <BrainCircuit size={17} />
             </button>
-            <button onClick={onOpenDiary} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '久美子的日记' : 'Kumiko\'s Diary'}>
+            <button onClick={() => setIsDiaryOpen(true)} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '久美子的日记' : 'Kumiko\'s Diary'}>
               <BookOpen size={17} />
             </button>
             <button onClick={onToggleTheme} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '切换主题' : 'Toggle Theme'}>
               {isDarkMode ? <Sun size={17} /> : <Moon size={17} />}
             </button>
-            <button onClick={onOpenProfile} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '角色档案' : 'Character Profile'}>
+            <button onClick={() => setIsProfileOpen(true)} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '角色档案' : 'Character Profile'}>
               <User size={17} />
             </button>
-            <button onClick={onOpenInbox} className="relative inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '消息中心' : 'Message Center'}>
+            <button onClick={() => { setIsTaskPanelOpen(false); setIsMessageCenterOpen(!isMessageCenterOpen); }} className="relative inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '消息中心' : 'Message Center'}>
               <BellRing size={17} />
               {unreadMessageCount > 0 && (
                 <span className="absolute -top-2 -right-2 min-w-[1rem] h-4 px-1 rounded-full bg-[#c75a1d] ka-micro leading-4 text-white text-center">
@@ -153,7 +154,7 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
                 </span>
               )}
             </button>
-            <button onClick={onOpenTasks} className="relative inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '定时任务' : 'Scheduled Tasks'}>
+            <button onClick={() => { setIsMessageCenterOpen(false); setIsTaskPanelOpen(!isTaskPanelOpen); }} className="relative inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '定时任务' : 'Scheduled Tasks'}>
               <Clock3 size={17} />
               {activeTaskCount > 0 && (
                 <span className="absolute -top-2 -right-2 min-w-[1rem] h-4 px-1 rounded-full bg-red-500 ka-micro leading-4 text-white text-center">
@@ -172,7 +173,7 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
               isLocalEnabled={isLocalEnabled}
               onClick={onSyncClick}
             />
-            <button onClick={onOpenSettings} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '系统设置' : 'System Settings'}>
+            <button onClick={() => setIsSettingsOpen(true)} className="inline-flex hover:text-yellow-500 transition-colors" title={language === 'zh' ? '系统设置' : 'System Settings'}>
               <Settings size={17} />
             </button>
           </div>

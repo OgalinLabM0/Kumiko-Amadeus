@@ -1,9 +1,10 @@
 
 import React, { useState, useEffect } from 'react';
-import { Settings, Key, Zap, Brain, CheckCircle, RefreshCw, AlertTriangle, Check, ShieldCheck, Activity, Power, Globe, Save, Languages } from 'lucide-react';
-import { AIConfig, Language } from '../types';
+import { Settings, Key, Zap, Brain, CheckCircle, RefreshCw, AlertTriangle, Check, ShieldCheck, Activity, Power, Globe, Save, Languages, Eye } from 'lucide-react';
+import { AIConfig, AIProvider, Language } from '../types';
+import { Collapse } from './Collapse';
 import { getCurrentAIConfig, validateAIConnection, validateModels, validateSearchCapability } from '../services/geminiService';
-import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel } from '../services/appConfig';
+import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel, getDefaultEndpoint } from '../services/appConfig';
 
 interface AIConfigScreenProps {
   onComplete: () => void;
@@ -15,12 +16,9 @@ const CONFIG_TRANSLATIONS = {
         title: "神经网路配置",
         subtitle: "AMADEUS 系统 // 核心设定",
         security: "安全凭证",
-        provider: "API 提供商",
-        provider_gemini: "Google Gemini (默认)",
-        provider_openai: "OpenAI",
-        provider_anthropic: "Anthropic Claude",
-        provider_deepseek: "DeepSeek",
-        provider_grok: "xAI Grok",
+        provider: "API 供应商",
+        providerGroup_intl: "── 国际平台 ──",
+        providerGroup_cn: "── 中国平台 ──",
         keyLabel: "主 API KEY (PRIMARY)",
         keyLabel_backup: "备用 API KEY (BACKUP)",
         useCustomEndpoint: "使用自定义接口",
@@ -64,11 +62,8 @@ const CONFIG_TRANSLATIONS = {
         subtitle: "AMADEUS SYSTEM // CORE SETUP",
         security: "SECURITY CREDENTIALS",
         provider: "API Provider",
-        provider_gemini: "Google Gemini (Default)",
-        provider_openai: "OpenAI",
-        provider_anthropic: "Anthropic Claude",
-        provider_deepseek: "DeepSeek",
-        provider_grok: "xAI Grok",
+        providerGroup_intl: "── International ──",
+        providerGroup_cn: "── China Platforms ──",
         keyLabel: "PRIMARY API KEY",
         keyLabel_backup: "BACKUP API KEY",
         useCustomEndpoint: "Use Custom Endpoint",
@@ -115,6 +110,23 @@ const SLOT_ACCENTS: Record<string, string> = {
     translator: '#9e2a2b',
     vision: '#4a7c7c',
 };
+
+const PROVIDER_OPTIONS: { value: AIProvider; label: string; group: 'intl' | 'cn' }[] = [
+  { value: 'gemini', label: 'Google Gemini', group: 'intl' },
+  { value: 'openai', label: 'OpenAI', group: 'intl' },
+  { value: 'anthropic', label: 'Anthropic Claude', group: 'intl' },
+  { value: 'deepseek', label: 'DeepSeek', group: 'intl' },
+  { value: 'grok', label: 'xAI Grok', group: 'intl' },
+  { value: 'openrouter', label: 'OpenRouter', group: 'intl' },
+  { value: 'volcengine', label: '火山方舟 (Volcengine)', group: 'cn' },
+  { value: 'dashscope', label: '阿里百炼 (DashScope)', group: 'cn' },
+  { value: 'zhipu', label: '智谱 GLM (Zhipu)', group: 'cn' },
+  { value: 'moonshot', label: 'Moonshot / Kimi', group: 'cn' },
+  { value: 'qianfan', label: '百度千帆 (Qianfan)', group: 'cn' },
+  { value: 'hunyuan', label: '腾讯混元 (Hunyuan)', group: 'cn' },
+  { value: 'spark', label: '讯飞星火 (Spark)', group: 'cn' },
+  { value: 'minimax', label: 'MiniMax', group: 'cn' },
+];
 
 interface ModelCardProps {
     title: string;
@@ -316,7 +328,8 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
   const updateConfig = (key: keyof AIConfig, value: any) => {
       setConfig(prev => ({ ...prev, [key]: value }));
       if (statusType !== 'neutral') { setStatus(''); setStatusType('neutral'); }
-      if (key === 'model_main' || key === 'model_summary') setModelValidationResult({ main: null, summary: null });
+      if (key === 'model_main' || key === 'model_summary') setModelValidationResult(prev => ({ ...prev, main: null, summary: null }));
+      if (key === 'model_vision' || key === 'visionProvider') setModelValidationResult(prev => ({ ...prev, vision: null }));
       setSearchStatus(''); setSearchStatusType('neutral');
   };
 
@@ -367,17 +380,31 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
             {/* Security */}
             <div className="space-y-[clamp(6px,1vw,10px)]">
                 <SectionHeader label={t.security} icon={Key} isOpen={isSecurityOpen} onToggle={() => setIsSecurityOpen(!isSecurityOpen)} />
-                {isSecurityOpen && (
-                <div className="cfg-glass rounded-xl p-[clamp(14px,2vw,22px)] animate-in slide-in-from-top-2 duration-200 space-y-[clamp(12px,1.6vw,18px)]">
+                <Collapse isOpen={isSecurityOpen} duration={180}>
+                <div className="cfg-glass rounded-xl p-[clamp(14px,2vw,22px)] space-y-[clamp(12px,1.6vw,18px)]">
                     <div>
                         <label className="block ka-label text-[#785A42]/70 mb-[clamp(4px,0.6vw,6px)]">{t.provider}</label>
-                        <select value={config.provider || 'gemini'} onChange={(e) => updateConfig('provider', e.target.value)} className={selectCls}>
-                            <option value="gemini">{t.provider_gemini}</option>
-                            <option value="openai">{t.provider_openai}</option>
-                            <option value="anthropic">{t.provider_anthropic}</option>
-                            <option value="deepseek">{t.provider_deepseek}</option>
-                            <option value="grok">{t.provider_grok}</option>
-                            <option value="openrouter">OpenRouter.ai</option>
+                        <select value={config.provider || 'gemini'} onChange={(e) => {
+                            const p = e.target.value as AIProvider;
+                            updateConfig('provider', p);
+                            if (p === 'gemini') {
+                                updateConfig('useCustomEndpoint', false);
+                                updateConfig('customEndpoint', '');
+                            } else {
+                                updateConfig('useCustomEndpoint', true);
+                                updateConfig('customEndpoint', getDefaultEndpoint(p));
+                            }
+                        }} className={selectCls}>
+                            <optgroup label={t.providerGroup_intl}>
+                                {PROVIDER_OPTIONS.filter(p => p.group === 'intl').map(p => (
+                                    <option key={p.value} value={p.value}>{p.label}</option>
+                                ))}
+                            </optgroup>
+                            <optgroup label={t.providerGroup_cn}>
+                                {PROVIDER_OPTIONS.filter(p => p.group === 'cn').map(p => (
+                                    <option key={p.value} value={p.value}>{p.label}</option>
+                                ))}
+                            </optgroup>
                         </select>
                     </div>
                     <label className="ka-kicker text-[#785A42]/70">API KEYS</label>
@@ -404,28 +431,29 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                         )}
                     </div>
                 </div>
-                )}
+                </Collapse>
             </div>
 
             {/* Cortex Allocation */}
             <div className="space-y-[clamp(6px,1vw,10px)]">
                 <SectionHeader label={t.allocation} icon={Brain} isOpen={isAllocationOpen} onToggle={() => setIsAllocationOpen(!isAllocationOpen)} />
-                {isAllocationOpen && (
-                <div className="space-y-[clamp(6px,1vw,10px)] animate-in slide-in-from-top-2 duration-200">
+                <Collapse isOpen={isAllocationOpen} duration={180}>
+                <div className="space-y-[clamp(6px,1vw,10px)]">
                     <ModelCard title={t.slotA} slotKey="model_main" icon={Brain} desc={t.slotA_desc} defaultModel={getDefaultMainModel(config.provider)} validationResult={modelValidationResult.main} value={config.model_main as string} onChange={(v) => updateConfig('model_main', v)} onReset={() => updateConfig('model_main', getDefaultMainModel(config.provider))} t={t} language={language} accentColor={SLOT_ACCENTS.main} />
                     <ModelCard title={t.slotB} slotKey="model_summary" icon={Zap} desc={t.slotB_desc} defaultModel={getDefaultSummaryModel(config.provider)} validationResult={modelValidationResult.summary} value={config.model_summary as string} onChange={(v) => updateConfig('model_summary', v)} onReset={() => updateConfig('model_summary', getDefaultSummaryModel(config.provider))} t={t} language={language} accentColor={SLOT_ACCENTS.summary} />
                     <ModelCard title={t.slotC || 'Slot C · TTS Translation'} slotKey="model_translator" icon={Languages} desc={t.slotC_desc || ''} defaultModel="" validationResult={null} value={(config as any).model_translator || ''} onChange={(v) => updateConfig('model_translator' as any, v)} onReset={() => updateConfig('model_translator' as any, '')} t={t} language={language} accentColor={SLOT_ACCENTS.translator} />
                 </div>
-                )}
+                </Collapse>
             </div>
 
             {/* Vision Helper */}
             <div className="space-y-[clamp(6px,1vw,10px)]">
-                <SectionHeader label={t.visionHelper} icon={Globe} isOpen={isVisionOpen} onToggle={() => setIsVisionOpen(!isVisionOpen)} />
-                {isVisionOpen && (
-                <div className="cfg-glass rounded-xl p-[clamp(14px,2vw,22px)] animate-in slide-in-from-top-2 duration-200 space-y-[clamp(10px,1.4vw,16px)]">
+                <SectionHeader label={t.visionHelper} icon={Eye} isOpen={isVisionOpen} onToggle={() => setIsVisionOpen(!isVisionOpen)} />
+                {!isVisionOpen && <p className="ka-copy-sm text-[#785A42]/55 mt-[clamp(2px,0.4vw,4px)] ml-[clamp(22px,2.6vw,30px)]">{t.visionHelperDesc}</p>}
+                <Collapse isOpen={isVisionOpen} duration={180}>
+                <div className="cfg-glass rounded-xl p-[clamp(14px,2vw,22px)] space-y-[clamp(10px,1.4vw,16px)]">
                     <div className="flex items-center justify-between">
-                        <label className="ka-label text-[#785A42]/70">{t.useVisionHelper}</label>
+                        <label className="ka-label text-[#785A42]/90">{t.useVisionHelper}</label>
                         <ToggleCheck checked={config.useVisionHelper} onClick={() => updateConfig('useVisionHelper', !config.useVisionHelper)} label="" />
                     </div>
                     {config.useVisionHelper && (
@@ -434,12 +462,16 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                             <div>
                                 <label className="block ka-label text-[#785A42]/70 mb-[clamp(4px,0.6vw,6px)]">{t.provider}</label>
                                 <select value={config.visionProvider || config.provider || 'gemini'} onChange={(e) => updateConfig('visionProvider', e.target.value)} className={selectCls}>
-                                    <option value="gemini">{t.provider_gemini}</option>
-                                    <option value="openai">{t.provider_openai}</option>
-                                    <option value="anthropic">{t.provider_anthropic}</option>
-                                    <option value="deepseek">{t.provider_deepseek}</option>
-                                    <option value="grok">{t.provider_grok}</option>
-                                    <option value="openrouter">OpenRouter.ai</option>
+                                    <optgroup label={t.providerGroup_intl}>
+                                        {PROVIDER_OPTIONS.filter(p => p.group === 'intl').map(p => (
+                                            <option key={p.value} value={p.value}>{p.label}</option>
+                                        ))}
+                                    </optgroup>
+                                    <optgroup label={t.providerGroup_cn}>
+                                        {PROVIDER_OPTIONS.filter(p => p.group === 'cn').map(p => (
+                                            <option key={p.value} value={p.value}>{p.label}</option>
+                                        ))}
+                                    </optgroup>
                                 </select>
                             </div>
                             <div>
@@ -457,11 +489,11 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                                     <div className="ka-copy-sm text-[#785A42]/55 italic bg-[#785A42]/5 p-[clamp(8px,1.2vw,12px)] rounded-lg">{t.useCustomEndpointDesc}</div>
                                 )}
                             </div>
-                            <ModelCard title={t.visionModelLabel} slotKey="model_vision" icon={Globe} desc={""} defaultModel={getDefaultVisionModel(config.visionProvider || config.provider)} validationResult={modelValidationResult.vision} value={config.model_vision as string || ''} onChange={(v) => updateConfig('model_vision', v)} onReset={() => updateConfig('model_vision', getDefaultVisionModel(config.visionProvider || config.provider))} t={t} language={language} accentColor={SLOT_ACCENTS.vision} />
+                            <ModelCard title={t.visionModelLabel} slotKey="model_vision" icon={Eye} desc={""} defaultModel={getDefaultVisionModel(config.visionProvider || config.provider)} validationResult={modelValidationResult.vision} value={config.model_vision as string || ''} onChange={(v) => updateConfig('model_vision', v)} onReset={() => updateConfig('model_vision', getDefaultVisionModel(config.visionProvider || config.provider))} t={t} language={language} accentColor={SLOT_ACCENTS.vision} />
                         </div>
                     )}
                 </div>
-                )}
+                </Collapse>
             </div>
         </div>
       </div>

@@ -56,9 +56,7 @@ export const MessageCenterPanel: React.FC<MessageCenterPanelProps> = ({
   onDismissAlert,
   onClearAlerts
 }) => {
-  if (!isOpen) return null;
-
-  const bgClass = isDarkMode ? 'bg-black/95 border-yellow-900/50' : 'bg-white/95 border-yellow-500/30';
+  const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-white/95 border-yellow-500/30';
   const textClass = isDarkMode ? 'text-yellow-100' : 'text-gray-800';
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]';
   const labelClass = isDarkMode ? 'text-yellow-700' : 'text-yellow-600/80';
@@ -75,7 +73,7 @@ export const MessageCenterPanel: React.FC<MessageCenterPanelProps> = ({
     : 'hover:bg-red-500/10 hover:text-red-500';
 
   return (
-    <div className={`absolute top-[4.45rem] right-3 z-40 w-[min(94vw,24rem)] max-h-[72vh] rounded-lg border shadow-2xl flex flex-col overflow-hidden animate-[breathe_0.25s_ease-out] ${bgClass}`}>
+    <div className={`absolute top-[4.45rem] right-3 z-40 w-[min(94vw,24rem)] max-h-[72vh] rounded-lg border shadow-2xl flex flex-col overflow-hidden ${bgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'scale(1)' : 'scale(0.96)', pointerEvents: isOpen ? 'auto' as const : 'none' as const, visibility: isOpen ? 'visible' as const : 'hidden' as const, transformOrigin: 'top right', transition: isOpen ? 'opacity 250ms ease-out, transform 250ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, transform 180ms ease-in, visibility 0s 180ms', willChange: 'opacity, transform' as const }}>
       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-600 to-transparent opacity-50"></div>
 
       <div className={`flex items-center justify-between px-4 py-3 border-b ${borderClass}`}>
@@ -116,7 +114,7 @@ export const MessageCenterPanel: React.FC<MessageCenterPanelProps> = ({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3 scrollbar-thin">
+      <div data-resize-heavy className="flex-1 overflow-y-auto p-3 flex flex-col gap-3 scrollbar-thin">
         {alerts.length === 0 ? (
           <div className={`rounded border p-4 ${cardClass}`}>
             <div className="flex items-center gap-2 ka-setting-item-title">

@@ -1,13 +1,19 @@
 import type { TtsConfig, EmotionType } from '../types';
 import type { TtsSynthesisResult } from './fishAudioService';
 import { EMOTION_TO_SOVITS_REF } from '../constants';
+import type { SovitsRefVariant } from '../constants';
 
-let lastRefEmotion: string | null = null;
+let lastRefFile: string | null = null;
 
 export async function checkGenieHealth(baseUrl: string): Promise<boolean> {
   try {
     const res = await fetch(`${baseUrl}/tts`, { method: 'GET', signal: AbortSignal.timeout(3000) });
-    return res.status === 422 || res.status === 200 || res.status === 405;
+    // P1 #18: previously we returned `!!res.status`, which was *always* truthy for any
+    // HTTP response (including 404 / 500), so "healthy" showed even when the server
+    // was up but the TTS route was unreachable. `GET /tts` without args returns 405
+    // Method Not Allowed on a live GPT-SoVITS server, which is also an acceptable
+    // signal of liveness — accept 2xx or 405, treat anything else as down.
+    return res.ok || res.status === 405;
   } catch {
     return false;
   }
@@ -74,6 +80,7 @@ export async function synthesizeWithSovits(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(90000),
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
@@ -88,14 +95,29 @@ export async function synthesizeWithSovits(
 
 export async function genieTtsWithEmotion(
   text: string, emotion: EmotionType, ttsConfig: TtsConfig,
+  voiceVariant?: string,
 ): Promise<TtsSynthesisResult> {
   const baseUrl = `http://127.0.0.1:${ttsConfig.sovitsPort || 9880}`;
   const refDir = ttsConfig.sovitsRefAudioDir || '';
-  const refKey = EMOTION_TO_SOVITS_REF[emotion] || 'neutral';
+
+  const variants: SovitsRefVariant[] = EMOTION_TO_SOVITS_REF[emotion] || EMOTION_TO_SOVITS_REF['neutral'];
+
+  let pick: SovitsRefVariant;
+  if (voiceVariant) {
+    const allVariants = Object.values(EMOTION_TO_SOVITS_REF).flat();
+    const specified = allVariants.find(v => v.file === voiceVariant);
+    pick = specified || variants[Math.floor(Math.random() * variants.length)];
+  } else {
+    pick = variants[Math.floor(Math.random() * variants.length)];
+    if (variants.length > 1 && lastRefFile === pick.file) {
+      pick = variants[(variants.indexOf(pick) + 1) % variants.length];
+    }
+  }
+  lastRefFile = pick.file;
 
   const separator = refDir.includes('/') ? '/' : '\\';
-  const refAudioPath = refDir ? `${refDir}${separator}${refKey}.wav` : '';
-  const promptText = '';
+  const refAudioPath = refDir ? `${refDir}${separator}${pick.file}.wav` : '';
+  const promptText = pick.promptText;
 
   return synthesizeWithSovits(text, baseUrl, refAudioPath, promptText, {
     speed: ttsConfig.speed,

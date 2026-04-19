@@ -1,8 +1,9 @@
 import React from 'react';
-import { Brain, Zap, Languages } from 'lucide-react';
+import { Brain, Zap, Languages, ChevronDown, ChevronUp } from 'lucide-react';
 import { AIConfig } from '../../types';
 import { getDefaultMainModel, getDefaultSummaryModel } from '../../services/appConfig';
 import { ModelCard } from './ModelCard';
+import { Collapse } from '../Collapse';
 
 interface AllocationValidationResult {
   main: boolean | null;
@@ -37,19 +38,19 @@ export const ModelAllocationSection: React.FC<ModelAllocationSectionProps> = ({
   return (
     <div className={innerCardClass}>
       <button onClick={onToggle} className="w-full flex items-center justify-between mb-2">
-        <h4 className={`ka-label flex items-center gap-2 ${isDarkMode ? 'text-teal-400' : 'text-teal-600'}`}>
-          <Brain size={12} /> {t_local.allocation}
+        <h4 className={`ka-label font-bold flex items-center gap-2 ${isDarkMode ? 'text-teal-300' : 'text-teal-700'}`}>
+          <Brain size={13} /> {t_local.allocation}
         </h4>
-        <span className="ka-micro opacity-50">{isOpen ? '▼' : '▲'}</span>
+        {isOpen ? <ChevronUp size={14} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} /> : <ChevronDown size={14} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} />}
       </button>
       {t_local.allocation_desc && (
-        <p className={`ka-micro mb-3 leading-relaxed ${isDarkMode ? 'text-[#b9c8c7]' : 'text-[#5d7f7b]'}`}>
+        <p className={`ka-micro mb-3 leading-relaxed ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
           {t_local.allocation_desc}
         </p>
       )}
 
-      {isOpen && (
-        <div className="space-y-3 animate-in slide-in-from-top-2">
+      <Collapse isOpen={isOpen} duration={180}>
+        <div className="space-y-3">
           <ModelCard
             title={t_local.slotA}
             slotKey="model_main"
@@ -96,7 +97,7 @@ export const ModelAllocationSection: React.FC<ModelAllocationSectionProps> = ({
             labelClass={labelClass}
           />
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

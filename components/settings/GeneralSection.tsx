@@ -1,5 +1,6 @@
 import React from 'react';
 import { ChevronDown, ChevronUp, Settings } from 'lucide-react';
+import { Collapse } from '../Collapse';
 import { SettingsToggle } from './SettingsToggle';
 
 interface GeneralSectionProps {
@@ -65,8 +66,8 @@ export const GeneralSection: React.FC<GeneralSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      {isOpen && (
-        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2">
+      <Collapse isOpen={isOpen}>
+        <div className="px-4 pb-4 pt-0">
           <div className={innerCardClass}>
             <p className={`ka-copy-sm mb-4 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{desc}</p>
             <div className="flex flex-col gap-4">
@@ -121,7 +122,7 @@ export const GeneralSection: React.FC<GeneralSectionProps> = ({
             )}
           </div>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

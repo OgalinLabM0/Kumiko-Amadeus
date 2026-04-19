@@ -1,7 +1,7 @@
 {
   "name": "kumiko-ai-amadeus",
   "private": true,
-  "version": "2.3.75",
+  "version": "2.9.2",
   "description": "Kumiko Amadeus desktop companion focused on long-term memory and natural character interaction.",
   "author": "Kitauji Fan Project",
   "type": "module",
@@ -38,7 +38,8 @@
     "onnxruntime-node": "^1.24.3",
     "onnxruntime-web": "^1.14.0",
     "react": "^19.2.1",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@capacitor/cli": "^7.2.0",
@@ -55,6 +56,15 @@
     "wait-on": "^9.0.4",
     "workbox-precaching": "^7.4.0"
   },
+  "optionalDependencies": {
+    "@img/sharp-linux-arm64": "0.34.5",
+    "@img/sharp-linux-x64": "0.34.5",
+    "@img/sharp-win32-arm64": "^0.34.5",
+    "@img/sharp-win32-x64": "0.34.5"
+  },
+  "overrides": {
+    "sharp": "^0.34.5"
+  },
   "build": {
     "appId": "com.kumiko.ai",
     "productName": "Kumiko·Amadeus",
@@ -68,13 +78,13 @@
       }
     ],
     "nsis": {
-      "artifactName": "Kumiko-Amadeus-Setup.exe",
+      "artifactName": "Kumiko-Amadeus-Setup-${arch}.exe",
       "uninstallDisplayName": "Kumiko·Amadeus",
       "oneClick": false,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
       "perMachine": true,
-      "createDesktopShortcut": "always",
+      "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "installerIcon": "public/favicon-KA.ico",
       "uninstallerIcon": "public/favicon-KA.ico",
@@ -89,12 +99,14 @@
     },
     "files": [
       "dist/**/*",
+      "!dist/sovits-ref/**",
       "electron-main.cjs",
       "preload.cjs",
       "electron-rag.cjs",
       "rag-worker.cjs",
       "services/ragRebuildCore.js",
-      "public/**/*"
+      "public/**/*",
+      "!public/sovits-ref/**"
     ],
     "asarUnpack": [
       "node_modules/better-sqlite3/**",
@@ -119,9 +131,41 @@
     ],
     "win": {
       "target": [
-        "nsis"
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "icon": "public/favicon-KA.ico"
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "public/favicon-KA.png",
+      "category": "Utility",
+      "synopsis": "Long-term memory desktop companion for natural character interaction.",
+      "description": "Kumiko·Amadeus is a desktop AI companion focused on long-term memory and natural character interaction. Supports optional GPT-SoVITS with your own Python runtime.",
+      "executableName": "Kumiko-Amadeus",
+      "artifactName": "Kumiko-Amadeus-${arch}.AppImage",
+      "desktop": {
+        "entry": {
+          "Name": "Kumiko-Amadeus",
+          "GenericName": "AI Companion",
+          "Comment": "Kumiko·Amadeus desktop companion",
+          "StartupWMClass": "Kumiko-Amadeus",
+          "Keywords": "chat;ai;companion;memory;kumiko;amadeus;"
+        }
+      }
     }
   }
 }

@@ -77,6 +77,24 @@ const formatDailyTime = (hour: number, minute: number) => {
   return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
 };
 
+// P2 #52: previously this (and the list row below) hard-coded "JST" as the
+// trailing timezone label even though the logic honors `reminder.timeZone`. If
+// a user switched to e.g. Asia/Shanghai the label would lie to them. Derive
+// the real short zone name via Intl.DateTimeFormat so the displayed string
+// matches the timezone the reminder is actually scheduled in.
+const formatTimezoneAbbr = (timeZone: string, language: Language): string => {
+  try {
+    const parts = new Intl.DateTimeFormat(language === 'zh' ? 'zh-CN' : 'en-US', {
+      timeZone,
+      timeZoneName: 'short',
+    }).formatToParts(new Date());
+    const tz = parts.find(p => p.type === 'timeZoneName');
+    return tz ? tz.value : timeZone;
+  } catch {
+    return timeZone;
+  }
+};
+
 const formatNextDailyLabel = (hour: number, minute: number, paused: boolean | undefined, timeZone: string, language: Language) => {
   if (paused) {
     return language === 'zh' ? '已暂停' : 'Paused';
@@ -87,9 +105,10 @@ const formatNextDailyLabel = (hour: number, minute: number, paused: boolean | un
   const dayLabel = language === 'zh'
     ? (isLaterToday ? '今天' : '明天')
     : (isLaterToday ? 'Today' : 'Tomorrow');
+  const tzAbbr = formatTimezoneAbbr(timeZone, language);
   return language === 'zh'
-    ? `下次：${dayLabel} ${formatDailyTime(hour, minute)} JST`
-    : `Next: ${dayLabel} ${formatDailyTime(hour, minute)} JST`;
+    ? `下次：${dayLabel} ${formatDailyTime(hour, minute)} ${tzAbbr}`
+    : `Next: ${dayLabel} ${formatDailyTime(hour, minute)} ${tzAbbr}`;
 };
 
 export const TaskPanel: React.FC<TaskPanelProps> = ({
@@ -103,11 +122,9 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
   onDeleteDailyReminder,
   onToggleDailyReminderPaused,
 }) => {
-  if (!isOpen) return null;
-
   const totalTasks = relativeReminders.length + dailyReminders.length;
   const nextOneTime = relativeReminders.slice().sort((a, b) => a.dueAt - b.dueAt)[0];
-  const bgClass = isDarkMode ? 'bg-black/95 border-yellow-900/50' : 'bg-white/95 border-yellow-500/30';
+  const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-white/95 border-yellow-500/30';
   const textClass = isDarkMode ? 'text-yellow-100' : 'text-gray-800';
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]';
   const labelClass = isDarkMode ? 'text-yellow-700' : 'text-yellow-600/80';
@@ -127,7 +144,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
     : 'border-yellow-300 bg-yellow-100 text-yellow-800';
 
   return (
-    <div className={`absolute top-[4.45rem] right-3 z-40 w-[min(94vw,24rem)] max-h-[74vh] rounded-lg border shadow-2xl flex flex-col overflow-hidden animate-[breathe_0.25s_ease-out] ${bgClass}`}>
+    <div className={`absolute top-[4.45rem] right-3 z-40 w-[min(94vw,24rem)] max-h-[74vh] rounded-lg border shadow-2xl flex flex-col overflow-hidden ${bgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'scale(1)' : 'scale(0.96)', pointerEvents: isOpen ? 'auto' as const : 'none' as const, visibility: isOpen ? 'visible' as const : 'hidden' as const, transformOrigin: 'top right', transition: isOpen ? 'opacity 250ms ease-out, transform 250ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, transform 180ms ease-in, visibility 0s 180ms', willChange: 'opacity, transform' as const }}>
       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-600 to-transparent opacity-50"></div>
 
       <div className={`flex items-center justify-between px-4 py-3 border-b ${borderClass}`}>
@@ -152,7 +169,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-thin">
+      <div data-resize-heavy className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-thin">
         <div className="grid grid-cols-3 gap-2">
           <div className={`rounded border p-3 ${cardClass}`}>
             <div className={`ka-kicker ${labelClass}`}>
@@ -255,7 +272,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
                         )}
                       </div>
                       <div className={`mt-2 ka-copy-sm ${textClass} opacity-70`}>
-                        <div>{formatDailyTime(reminder.hour, reminder.minute)} JST</div>
+                        <div>{formatDailyTime(reminder.hour, reminder.minute)} {formatTimezoneAbbr(reminder.timeZone, language)}</div>
                         <div>{formatNextDailyLabel(reminder.hour, reminder.minute, reminder.paused, reminder.timeZone, language)}</div>
                       </div>
                     </div>

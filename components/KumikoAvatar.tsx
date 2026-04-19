@@ -15,6 +15,7 @@ export const KumikoAvatar: React.FC<KumikoAvatarProps> = memo(({ isTalking, emot
 
   useEffect(() => {
     const checkMobile = () => {
+        if (document.documentElement.hasAttribute('data-resizing')) return;
         setIsMobile(window.innerWidth < 768);
     };
     checkMobile();
@@ -25,7 +26,7 @@ export const KumikoAvatar: React.FC<KumikoAvatarProps> = memo(({ isTalking, emot
   const getBodyAnimation = (emo: EmotionType) => {
      if (isMobile) return 'animate-fake-live2d';
      if (['happy', 'smug', 'surprised'].includes(emo)) return 'animate-[bounce_2s_infinite]';
-     if (['angry', 'confused', 'worried'].includes(emo)) return 'animate-[shake_0.5s_infinite]';
+     if (['angry', 'confused', 'confused_2', 'worried', 'worried_2'].includes(emo)) return 'animate-[shake_0.5s_infinite]';
      return 'animate-fake-live2d';
   };
   

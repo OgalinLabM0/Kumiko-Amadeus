@@ -5,32 +5,63 @@ const crypto = require('crypto');
 const projectRoot = path.resolve(__dirname, '..');
 const packageJsonPath = path.join(projectRoot, 'package.json');
 const releaseDir = path.join(projectRoot, 'release');
-const latestYmlPath = path.join(releaseDir, 'latest.yml');
+
+// electron-updater channel file naming conventions (see electron-userland/electron-builder):
+//   Windows:
+//     x64   -> latest.yml          (historical default, no arch suffix)
+//     arm64 -> latest-arm64.yml
+//   Linux:
+//     x64   -> latest-linux.yml
+//     arm64 -> latest-linux-arm64.yml
+const PLATFORMS = [
+  {
+    id: 'win',
+    pattern: /^Kumiko-Amadeus-Setup-(x64|arm64)\.exe$/,
+    channelFile: {
+      x64: 'latest.yml',
+      arm64: 'latest-arm64.yml',
+    },
+  },
+  {
+    id: 'linux',
+    pattern: /^Kumiko-Amadeus-(x64|arm64)\.AppImage$/,
+    channelFile: {
+      x64: 'latest-linux.yml',
+      arm64: 'latest-linux-arm64.yml',
+    },
+  },
+];
 
 function yamlQuote(value) {
   return `'${String(value).replace(/'/g, "''")}'`;
 }
 
-function resolveInstallerName(pkg) {
-  const configuredName = pkg?.build?.nsis?.artifactName;
-  if (typeof configuredName === 'string' && configuredName.trim()) {
-    return configuredName.trim();
+function findArtifactsFor(platform) {
+  const found = {};
+  for (const entry of fs.readdirSync(releaseDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const match = entry.name.match(platform.pattern);
+    if (match) {
+      found[match[1]] = entry.name;
+    }
   }
+  return found;
+}
 
-  const candidates = fs
-    .readdirSync(releaseDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
-    .filter((name) => name.toLowerCase().endsWith('.exe'))
-    .filter((name) => !name.includes('__uninstaller'));
-
-  if (candidates.length === 1) {
-    return candidates[0];
-  }
-
-  throw new Error(
-    `Unable to determine installer artifact in ${releaseDir}. Found: ${candidates.join(', ') || 'none'}`
-  );
+function buildYaml(version, artifactName, buffer, stat) {
+  const sha512 = crypto.createHash('sha512').update(buffer).digest('base64');
+  const releaseDate = new Date(stat.mtimeMs).toISOString();
+  return [
+    `version: ${yamlQuote(version)}`,
+    'files:',
+    `  - url: ${yamlQuote(artifactName)}`,
+    `    sha512: ${yamlQuote(sha512)}`,
+    `    size: ${stat.size}`,
+    `path: ${yamlQuote(artifactName)}`,
+    `sha512: ${yamlQuote(sha512)}`,
+    `releaseDate: ${yamlQuote(releaseDate)}`,
+    '',
+  ].join('\n');
 }
 
 function main() {
@@ -40,32 +71,50 @@ function main() {
 
   const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
   const version = pkg.version;
-  const installerName = resolveInstallerName(pkg);
-  const installerPath = path.join(releaseDir, installerName);
 
-  if (!fs.existsSync(installerPath)) {
-    throw new Error(`Installer artifact not found: ${installerPath}`);
+  let totalGenerated = 0;
+  const perPlatformReport = [];
+  for (const platform of PLATFORMS) {
+    const artifacts = findArtifactsFor(platform);
+    const archs = Object.keys(artifacts);
+    if (archs.length === 0) {
+      perPlatformReport.push(`  [${platform.id}] no artifacts found, skipping`);
+      continue;
+    }
+
+    for (const arch of archs) {
+      const artifactName = artifacts[arch];
+      const channelFile = platform.channelFile[arch];
+      if (!channelFile) {
+        throw new Error(`Unsupported arch "${arch}" for platform "${platform.id}" — no channel file mapping`);
+      }
+
+      const artifactPath = path.join(releaseDir, artifactName);
+      const buffer = fs.readFileSync(artifactPath);
+      const stat = fs.statSync(artifactPath);
+      const content = buildYaml(version, artifactName, buffer, stat);
+      const outputPath = path.join(releaseDir, channelFile);
+      fs.writeFileSync(outputPath, content, 'utf8');
+      console.log(`Generated ${path.relative(projectRoot, outputPath)} for ${artifactName}`);
+      totalGenerated += 1;
+    }
   }
 
-  const buffer = fs.readFileSync(installerPath);
-  const sha512 = crypto.createHash('sha512').update(buffer).digest('base64');
-  const stat = fs.statSync(installerPath);
-  const releaseDate = new Date(stat.mtimeMs).toISOString();
+  if (totalGenerated === 0) {
+    const entries = fs
+      .readdirSync(releaseDir)
+      .filter((n) => /\.(exe|AppImage)$/i.test(n))
+      .join(', ');
+    throw new Error(
+      `No Kumiko-Amadeus installer/AppImage artifacts found in ${releaseDir}.\n` +
+        `Expected one of: Kumiko-Amadeus-Setup-<arch>.exe or Kumiko-Amadeus-<arch>.AppImage.\n` +
+        `Found: ${entries || 'none'}`
+    );
+  }
 
-  const content = [
-    `version: ${yamlQuote(version)}`,
-    'files:',
-    `  - url: ${yamlQuote(installerName)}`,
-    `    sha512: ${yamlQuote(sha512)}`,
-    `    size: ${stat.size}`,
-    `path: ${yamlQuote(installerName)}`,
-    `sha512: ${yamlQuote(sha512)}`,
-    `releaseDate: ${yamlQuote(releaseDate)}`,
-    '',
-  ].join('\n');
-
-  fs.writeFileSync(latestYmlPath, content, 'utf8');
-  console.log(`Generated ${path.relative(projectRoot, latestYmlPath)} for ${installerName}`);
+  if (perPlatformReport.length) {
+    console.log(perPlatformReport.join('\n'));
+  }
 }
 
 main();

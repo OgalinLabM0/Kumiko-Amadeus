@@ -1,6 +1,6 @@
 import { db, DailyFragmentEntity, KumikoDiaryEntity, getWorldCharacterStatus, updateWorldCharacterStatus, WorldCharacterStatusMap } from './db';
 import { callLLMRaw, getCurrentAIConfig } from './geminiService';
-import { verifyAgainstHistory } from './diaryValidatorService';
+import { verifyAgainstHistory, type DiaryDateMetadata } from './diaryValidatorService';
 import { getCurrentKumikoState, getSchoolTermContext, getDetailedScheduleSlot, getDayScheduleSummary, getSchoolPrepPhase } from './kumikoStateMachine';
 import { updatePsycheState } from './psycheStateService';
 
@@ -421,11 +421,13 @@ const buildDiaryContinuityContext = async (
 
 const pickWeekdayFocus = (
   dateStr: string,
-  recentFocuses: DiaryWeekdayFocusId[] = []
+  recentFocuses: DiaryWeekdayFocusId[] = [],
+  randomize: boolean = false
 ): (typeof DIARY_WEEKDAY_FOCUS_ROTATION)[number] => {
   const dateSeed = dateStr.split('-').reduce((sum, part) => sum + Number(part), 0);
   const recentFocusBlocklist = new Set(recentFocuses.slice(-2));
-  const baseIndex = dateSeed % DIARY_WEEKDAY_FOCUS_ROTATION.length;
+  const randomOffset = randomize ? Math.floor(Math.random() * DIARY_WEEKDAY_FOCUS_ROTATION.length) : 0;
+  const baseIndex = (dateSeed + randomOffset) % DIARY_WEEKDAY_FOCUS_ROTATION.length;
 
   for (let offset = 0; offset < DIARY_WEEKDAY_FOCUS_ROTATION.length; offset += 1) {
     const candidate = DIARY_WEEKDAY_FOCUS_ROTATION[(baseIndex + offset) % DIARY_WEEKDAY_FOCUS_ROTATION.length];
@@ -471,12 +473,13 @@ ${recentEvidenceText}`;
 const parseDiaryModelResponse = (
   response: string,
   diaryDateHeader: string
-): { content: string; summary: string; updatesText: string } => {
+): { content: string; summary: string; updatesText: string; psycheDeltaText: string } => {
   const cleanResponse = response.replace(/^```[a-z]*\s*/im, '').replace(/```$/im, '').trim();
 
   const contentMatch = cleanResponse.match(/<diary_content>([\s\S]*?)<\/diary_content>/i);
   const summaryMatch = cleanResponse.match(/<diary_summary>([\s\S]*?)<\/diary_summary>/i);
   const updatesMatch = cleanResponse.match(/<character_status_updates>([\s\S]*?)<\/character_status_updates>/i);
+  const psycheDeltaMatch = cleanResponse.match(/<kumiko_psyche_delta>([\s\S]*?)<\/kumiko_psyche_delta>/i);
 
   let rawContent = cleanResponse;
   if (contentMatch) {
@@ -485,25 +488,23 @@ const parseDiaryModelResponse = (
     // LLM forgot <diary_content> tags, manually strip the other two elements to salvage text
     rawContent = rawContent.replace(/<diary_summary>[\s\S]*?<\/diary_summary>/gi, '')
                            .replace(/<character_status_updates>[\s\S]*?<\/character_status_updates>/gi, '')
+                           .replace(/<kumiko_psyche_delta>[\s\S]*?<\/kumiko_psyche_delta>/gi, '')
                            .replace(/<diary_content>/gi, '')
                            .replace(/<\/diary_content>/gi, '')
                            .trim();
   }
 
-  // If the extracted content contains the header again near the start, strip the secondary one to prevent double headers
   let content = rawContent;
   
   // Clean potential residual headers or markdown formatting from LLM
   content = content.replace(/^#+.*?\n/g, '').trim(); 
-  const potentialHeaderMatch = content.match(/^(20\d{2}年\d+月\d+日.+?)\n/);
-  if (potentialHeaderMatch && potentialHeaderMatch[1].includes(diaryDateHeader.split(' ')[0])) {
-      // The LLM included its own header that looks like a date, strip it
-      content = content.substring(potentialHeaderMatch[1].length).trim();
+  // Unconditionally strip ANY date-format first line (even if LLM wrote wrong date)
+  const potentialHeaderMatch = content.match(/^(20\d{2}年\d+月\d+日[^\n]*)\n/);
+  if (potentialHeaderMatch) {
+      content = content.substring(potentialHeaderMatch[0].length).trim();
   }
-
-  if (!content.startsWith(diaryDateHeader)) {
-    content = `${diaryDateHeader}\n\n${content.replace(/^\s+/u, '')}`;
-  }
+  // Always force the correct date header
+  content = `${diaryDateHeader}\n\n${content.replace(/^\s+/u, '')}`;
 
   const contentForSummary = content.startsWith(diaryDateHeader)
     ? content.slice(diaryDateHeader.length).trim()
@@ -513,6 +514,7 @@ const parseDiaryModelResponse = (
     content,
     summary: summaryMatch ? summaryMatch[1].trim() : `${contentForSummary.replace(/\s+/gu, ' ').slice(0, 50)}...`,
     updatesText: updatesMatch ? updatesMatch[1].trim() : '',
+    psycheDeltaText: psycheDeltaMatch ? psycheDeltaMatch[1].trim() : '',
   };
 };
 
@@ -529,12 +531,67 @@ const getJSTDateString = (timestamp: number): string => {
 
 const getJSTWeekdayIndex = (dateStr: string): number => new Date(`${dateStr}T12:00:00+09:00`).getUTCDay();
 
+const getTomorrowDateStr = (dateStr: string): string => {
+  const d = new Date(`${dateStr}T12:00:00+09:00`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const getTomorrowInfo = (dateStr: string): { weekday: string; isRestDay: boolean } => {
+  const tmr = getTomorrowDateStr(dateStr);
+  const idx = getJSTWeekdayIndex(tmr);
+  return {
+    weekday: DIARY_WEEKDAY_LABELS[idx] || '日',
+    isRestDay: idx === 0 || idx === 6,
+  };
+};
+
 const formatJSTTime = (timestamp: number): string => new Date(timestamp).toLocaleTimeString('ja-JP', {
   timeZone: JST_TIMEZONE,
   hour: '2-digit',
   minute: '2-digit',
   hour12: false,
 });
+
+const hardWeekdayCheck = (content: string, dateStr: string): string[] => {
+  const issues: string[] = [];
+  const tmr = getTomorrowInfo(dateStr);
+  if (!tmr.isRestDay) return issues;
+
+  const weekday = DIARY_WEEKDAY_LABELS[getJSTWeekdayIndex(dateStr)] || '?';
+  const patterns = [
+    /明天[要会得]?[上讲教备准]/,
+    /明天的[第一二三四五六]?[节堂课]/,
+    /明天[上讲]课/,
+    /准备明天的[课教案讲义]/,
+  ];
+  for (const pattern of patterns) {
+    if (pattern.test(content)) {
+      issues.push(
+        `星期逻辑错误：当前是${weekday}曜日，明天是${tmr.weekday}曜日（休息日），但日记中出现了"明天上课/讲课/备课"相关内容。应改为"下周一要讲的"或"周一要讲的"，或删除该段落。`
+      );
+      break;
+    }
+  }
+  return issues;
+};
+
+const fetchHistoricalWeather = async (dateStr: string): Promise<string | undefined> => {
+  try {
+    if (typeof window !== 'undefined' && window.electronAPI) {
+      const res = await window.electronAPI.invoke('app:get-historical-weather', dateStr);
+      if (res && res.success && res.weather) {
+        return `久美子所在地 (日本宇治市) 当前天气: ${res.weather}`;
+      }
+    }
+  } catch (e) {
+    console.warn(`[LifeStream] Failed to fetch historical weather for ${dateStr}:`, e);
+  }
+  return undefined;
+};
 
 const getWeatherContextText = (weatherStr?: string): string => {
   const raw = (weatherStr || '').trim();
@@ -551,14 +608,14 @@ const getWeatherContextText = (weatherStr?: string): string => {
 const getWeatherSummary = (weatherStr?: string): string => {
   const normalized = getWeatherContextText(weatherStr);
   if (!normalized || normalized === '天气不详') return '一般';
-  if (/雷/u.test(normalized)) return '雷';
-  if (/雪/u.test(normalized)) return '雪';
-  if (/(暴雨|大雨|阵雨|雨)/u.test(normalized)) return '雨';
-  if (/晴/u.test(normalized)) return '晴';
-  if (/(多云|云)/u.test(normalized)) return '多云';
-  if (/阴/u.test(normalized)) return '阴';
-  if (/(温度|风速|°C|km\/h)/iu.test(normalized)) return '一般';
-  return normalized.split(/[，。,、\s/]/u)[0]?.slice(0, 6) || '一般';
+  const condPart = normalized.split(/[,，]/u)[0].trim();
+  if (/雷/u.test(condPart)) return '雷';
+  if (/雪/u.test(condPart)) return '雪';
+  if (/(暴雨|大雨|阵雨|雨)/u.test(condPart)) return '雨';
+  if (/晴/u.test(condPart)) return '晴';
+  if (/(多云|云)/u.test(condPart)) return '多云';
+  if (/(阴|雾)/u.test(condPart)) return '阴';
+  return '一般';
 };
 
 const buildDiaryDateHeader = (dateStr: string, weatherStr?: string): string => {
@@ -633,7 +690,8 @@ export const buildDailyContext = (
   weatherStr?: string,
   isHoliday?: boolean,
   chatMessages: DiaryChatMessage[] = [],
-  continuityContext?: DiaryContinuityContext
+  continuityContext?: DiaryContinuityContext,
+  isRewrite: boolean = false
 ): string => {
   const weekdayIndex = getJSTWeekdayIndex(dateStr);
   const weekday = DIARY_WEEKDAY_LABELS[weekdayIndex] || '日';
@@ -641,7 +699,7 @@ export const buildDailyContext = (
   const isRestDay = Boolean(isHoliday) || isWeekend;
   const prepPhase = getSchoolPrepPhase(dateStr);
   const dayTypeText = isHoliday ? '日本法定节假日' : isWeekend ? '周末' : prepPhase ? `学校准备日（${prepPhase.description}）` : '普通工作日';
-  const weekdayFocus = pickWeekdayFocus(dateStr, continuityContext?.recentFocuses || []);
+  const weekdayFocus = pickWeekdayFocus(dateStr, continuityContext?.recentFocuses || [], isRewrite);
 
   const detailedSchedule = getDayScheduleSummary(dateStr);
 
@@ -681,10 +739,13 @@ export const buildDailyContext = (
     ];
   }
 
+  const tomorrow = getTomorrowInfo(dateStr);
+
   return [
     '【今天的身份与大致框架】',
     `日期：${dateStr}（${weekday}曜日）`,
     `今天是${dayTypeText}。`,
+    `明天是${tomorrow.weekday}曜日（${tomorrow.isRestDay ? '休息日，不上课不上班' : '工作日，正常上课'}）。`,
     '你的本职是北宇治高中的国语老师，吹奏乐部副顾问只是附加身份，不代表你每天都在带整个社团。',
     ...scheduleLines,
     (!isRestDay && !prepPhase) ? `- 今日镜头重点：${weekdayFocus.label}` : '',
@@ -741,11 +802,13 @@ export const generateLifeFragment = async (
 这段切片代表了她在离线期间（没有和用户聊天时）的生活轨迹和内心状态。
 
 【客观变量】
+- 日期：${dateStr}（${DIARY_WEEKDAY_LABELS[getJSTWeekdayIndex(dateStr)] || '日'}曜日）${getTomorrowInfo(dateStr).isRestDay ? '，明天是休息日' : ''}
 - 离线时间：约 ${Math.round(hoursPassed)} 小时
 - 当前详细状态：${scheduleSlot.description || stateCtx.stateDescription}
 - 天气/节假日：${weatherStr}
 - 学校阶段：${schoolTermContext}
 - 当前心理状态：压力 ${Math.round(psycheState.stress)}/100, 精力 ${Math.round(psycheState.energy)}/100, 松弛度 ${Math.round(psycheState.relaxation)}/100
+- 久美子外貌：茶褐色头发（低马尾）、琥珀色瞳、不戴眼镜。
 
 【历史上下文】
 前几日日记摘要：
@@ -764,7 +827,7 @@ ${continuityContext.recentMotifs.length > 0
 2. 必须符合她作为北宇治高中国语老师、暂代吹奏乐部副顾问的身份（今年27岁，切勿回到高中生视角）。
 3. 展现出真实人类的情绪（烦躁、疲惫、走神、开心等），符合当前的心理状态数值。
 4. 绝对不要包含任何和用户聊天的内容，这纯粹是她自己的真实生活。
-5. **严禁捏造新配角名字，严禁脑补宏大剧情**：所有相关路人只能用代词（如“前排短发女生”、“对面桌的老师”），不可凭空捏造具名NPC。如果你回想起高中（约九年前），不可脑补违反原著设定的剧情。
+5. **严禁捏造新配角名字，严禁脑补宏大剧情**：所有相关路人只能用代词（如“前排短发女生”、“对面桌的老师”），不可凭空捏造具名NPC。如果你回想起高中（约九年前），不可脑补违反原著设定的剧情。日本高中部活没有"意向栏""报名表墙""社团招新摊位"等中国校园概念，入部流程是見学→体験入部→提交入部届。
 6. 1-3句话即可。如果近期出现过类似场景，请换新切入点。
 7. **防止时间停滞（Temporal Inertia）**：如果你看到了昨天关于“明天准备做某事”的回忆，你**必须将时间推进为过去时**（例如：“今天终于做完了某事”），绝对不允许像复读机一样在今天再次感叹“明天要去做某事”！
 8. 不要输出任何多余的解释，直接输出文本。`;
@@ -834,7 +897,7 @@ const rewriteDiaryModelResponse = async (params: {
 ${issues.map((iss, i) => `${i + 1}. ${iss}`).join('\n')}
 
 【原稿及客观设定库】
-- 日期：${dateStr}（${weekday}曜日） 天气：${weatherContextText} 节假日：${holidayText}
+- 日期：${dateStr}（${weekday}曜日） 明天：${getTomorrowInfo(dateStr).weekday}曜日（${getTomorrowInfo(dateStr).isRestDay ? '休息日' : '工作日'}） 天气：${weatherContextText} 节假日：${holidayText}
 【作息锚点】
 ${dailyContext}
 【生活切片（必须保留）】
@@ -842,8 +905,12 @@ ${fragmentContext || '无'}
 【过往日记参考】
 ${diaryContext || '无'}
 ${afterContextBlock}
+${continuityPromptBlock}
 【聊天记录事实大盘】
 ${chatHistoryText || '无'}
+
+【当前核心人物关系档案】
+${charStatusContext || '暂无核心人物关系档案。'}
 
 【被核查的原初稿（包含需要替换的错误情节）】
 <diary_content>
@@ -860,6 +927,17 @@ ${originalSummary}
 4. 绝不允许用类似“今天照常过了”、“处理了些杂事”这种敷衍空话。
 5. 第一行必须且只能是「${diaryDateHeader}」。
 6. ${freezeStatusEvolution ? '<character_status_updates> 必须留空。' : '只要修复完逻辑问题，仍旧可以正常输出人物情绪状态波动。'}
+7. 【秀一的人设铁律】：秀一是男朋友，普通本地上班族（公司职员），周一到周五上班。写到他的休息/加班必须符合当天星期几逻辑。
+8. 【核心人物现状铁律】：丽奈是海外职业小号演奏者，不是学生；小奏26岁已毕业工作；叶月是保育士；绿辉在服装设计行业。所有同届/差一届朋友都是社会人，绝不能写成学生！
+8.5 【交流方式铁律】：与朋友的交流方式只能是线上消息（文字消息或语音消息，如LINE等即时通讯），绝对禁止写成打电话、语音通话、视频通话或线下见面！绝对禁止出现"拿起手机拨出电话""等待接通的嘟声"等描述。
+【高频错误负面示例 — 修订后仍出现以下内容将被判为不合格！】
+× "丽奈发了张大学图书馆的照片" → 丽奈不在大学！
+× "小奏说期末快到了" → 小奏早已毕业！
+× "秀一说明天可以休息"（周日写的） → 明天周一要上班！
+× "拿起手机拨出电话""等待接通的嘟声" → 只能是线上消息，不能打电话！
+9. 口吻：真实、随意、略带吐槽，意识流，不要写得像在汇报工作。
+10. 叙事连贯：各段落之间的时间推移与场所必须保持严密的自然单向流动，禁止时空错乱。
+11. 时间指代清晰度：引用他人消息时区分「此刻收到」和「之前发的」。禁止用「手机震动了」引入一条早已收到的旧消息。
 
 请重新输出修订后的日记：
 <diary_content>
@@ -890,13 +968,29 @@ export const generateDailyDiary = async (
 ): Promise<KumikoDiaryEntity | null> => {
   try {
     const config = getCurrentAIConfig();
+    // Fetch historical weather if none provided
+    if (!weatherStr || !weatherStr.trim()) {
+      const historical = await fetchHistoricalWeather(dateStr);
+      if (historical) {
+        weatherStr = historical;
+        console.log(`[LifeStream] Using historical weather for ${dateStr}: ${historical}`);
+      }
+    }
     const normalizedChatMessages = Array.isArray(chatMessages)
       ? [...chatMessages].sort((a, b) => a.timestamp - b.timestamp)
       : [];
     const fragments = await getDailyFragments(dateStr);
     const continuityContext = await buildDiaryContinuityContext(dateStr, normalizedChatMessages, fragments);
     const chatHistoryText = buildChatHistoryText(normalizedChatMessages);
-    const dailyContext = buildDailyContext(dateStr, weatherStr, isHoliday, normalizedChatMessages, continuityContext);
+    const isRewrite = Boolean(existingDiary);
+    if (isRewrite && existingDiary) {
+      const oldSpecifics = extractForbiddenSpecificsFromDiary(existingDiary);
+      continuityContext.recentForbiddenSpecifics = [
+        ...oldSpecifics,
+        ...continuityContext.recentForbiddenSpecifics,
+      ].slice(0, DIARY_MAX_FORBIDDEN_SPECIFICS + oldSpecifics.length);
+    }
+    const dailyContext = buildDailyContext(dateStr, weatherStr, isHoliday, normalizedChatMessages, continuityContext, isRewrite);
     const diaryDateHeader = buildDiaryDateHeader(dateStr, weatherStr);
     const weatherContextText = getWeatherContextText(weatherStr);
     const weekday = DIARY_WEEKDAY_LABELS[getJSTWeekdayIndex(dateStr)] || '日';
@@ -924,8 +1018,12 @@ export const generateDailyDiary = async (
     }).join('\n');
     const schoolTermContext = getSchoolTermContext(dateStr);
 
-    const systemPrompt = `你现在是黄前久美子。现在是深夜23点，你正在写今天的私人日记。
+    const rewriteBlock = isRewrite && existingDiary?.content
+      ? `\n【重写模式】你正在重写这一天的日记。下面是旧稿，请换用不同的叙事角度、场景焦点和细节选择。天气、聊天记录等客观事实仍需忠实反映，但叙事结构、视线焦点和微观细节必须焕然一新。\n<old_diary>\n${existingDiary.content}\n</old_diary>\n`
+      : '';
 
+    const systemPrompt = `你现在是黄前久美子。现在是深夜23点，你正在写今天的私人日记。
+${rewriteBlock}
 【今天的客观信息】
 - 日期：${dateStr}（${weekday}曜日）
 - 天气：${weatherContextText}
@@ -933,6 +1031,7 @@ export const generateDailyDiary = async (
 - 学校阶段：${schoolTermContext}
 - 你的本职：北宇治高中国语老师（兼吹奏乐部副顾问）。你是教国语的，不是音乐老师！
 - 乐器相关设定：你学生时代使用的上低音号是学校财产，毕业时已归还，你现在**没有**自己的私人上低音号。绝对不要在日记里写“在家里吹上低音号”或“擦拭自己的乐器”。作为副顾问，你主要负责社团杂务和学生心理辅导，绝对不要把自己写成指导学生吹奏的音乐老师。
+- 你的外貌：茶褐色头发（成年后日常扎低马尾）、琥珀色瞳孔、162cm、**不戴眼镜**。穿着偏休闲职业风（西装外套+衬衫+九分裤）。涉及自身外貌描写时必须一致，禁止凭空添加眼镜等不存在的特征。
 
 【你今天的作息时间线】
 ${dailyContext}
@@ -954,17 +1053,82 @@ ${charStatusContext || '暂无核心人物关系档案。'}
 【日记写作要求 —— 极其重要，逐条遵守】
 3. 想象力边界：大胆写出眼前的微观感觉。但【绝对禁止凭空捏造带名字的新配角】，【绝对禁止展开长线原创剧情（如某人跟你大吵一架）】，不要让日记变成配角纷乱的网络连载小说！
 4. 职业边界与时间线铁律：你是北宇治国语老师。【你今年27岁】，高中生活是约九年前的事，不是“去年”！回忆过去时，【绝不可违背原著剧情】。
-5. 聊天降权：今天和朋友聊过天的话，可以自然带过一两句，但绝不能把聊天内容写成主角。
+5. 聊天降权与交流方式铁律：今天和朋友聊过天的话，可以自然带过一两句（如"翻了翻手机，看到朋友发来的消息"），但绝不能把聊天内容写成主角。与这位朋友的交流方式【只能是线上消息（文字消息或语音消息，如LINE等即时通讯）】，绝对禁止写成打电话、语音通话、视频通话或线下见面！绝对禁止用"拿起手机拨出电话""等待接通的嘟声"等描述引入与朋友的互动。
 6. 生活切片优先：所有记录到的生活切片都必须被自然整合进日记。如果今天切片少，你就脑补合理的微观事件填充。
-7. 【秀一的人设铁律】：秀一是男朋友，他是一名**最普通的本地上班族（公司职员）**。绝对禁止给他安插“研究室”、“研究生”、“医院”、“设计师”等脱离原著的复杂职场设定！不要过度描写他的工作细节。
+7. 【秀一的人设铁律】：秀一是男朋友，他是一名**最普通的本地上班族（公司职员）**。绝对禁止给他安插“研究室”、“研究生”、“医院”、“设计师”等脱离原著的复杂职场设定！不要过度描写他的工作细节。秀一周一到周五正常上班，写到他的休息或加班时必须符合当天星期几的逻辑（例如周日说"明天可以休息"是错的，因为明天周一要上班）。
+7.5 【核心人物现状铁律（绝对不可违反）】：丽奈毕业后去了美国音大，现在已经是职业小号演奏者，在海外以演奏者身份活动，她不是学生，没有"学期""开学""考试"等概念，提到她时只能写演出、练习、比赛、时差等职业音乐人的生活。小奏只比你小一届，你27岁她26岁，早已大学毕业并进入社会工作，绝对不能写她还在上大学、赶论文、去大学图书馆等学生场景。叶月已是保育士，不是学生。绿辉毕业后进了服装设计行业，不是学生。所有同届或仅差一届的朋友都已经是社会人，禁止把任何人写成还在上大学！写到任何人物的行为时必须符合当天星期几的常识逻辑。
+【高频错误负面示例 — 写出类似内容日记将被判为不合格！】
+× "看到丽奈发了张大学图书馆的照片" → 丽奈不在大学，她是职业演奏者！
+× "小奏说期末快到了/发了张大学图书馆窗外的夜景" → 小奏26岁，早已毕业工作！
+× "秀一说明天可以休息"（周日写的） → 明天周一要上班！
+× "叶月说她在准备教资考试" → 叶月已经是保育士了！
+× "绿辉还在写毕业论文" → 绿辉早已工作！
+× "名单上'吹奏乐部'的意向栏"/"社团意向表"/"报名表墙"/"社团招新摊位" → 日本高中不存在这些！日本的部活制度是：学生自愿到部室参加見学/体験入部，然后向顾问提交入部届即可加入，没有中国式的意向填报、招新摊位、布告栏报名。
+× "开学前的准备"（始業式之后写的） → 始業式后学校已正式开学！应说"正式上课前的准备"，不要说"开学前"。
+× "明天要讲的第一课是《山月记》"（周五写的） → 明天是周六不上课！应写"周一要讲的"。
+× "翻开备课笔记，准备明天的课"（周六写的） → 明天是周日！如果要备课，应写"准备下周的课"。
 8. 规避重复与【严防时间停滞】：参考前几天的日记，**今天刻意换一个全新的焦点**。严禁描写前几天注视过的同一物件。此外，如果昨天日记预告了“明天做某事”，今天必须推进为“今天做了某事”，绝不可在今天再次预告“明天要做某事”！
 9. 允许承接与翻篇：过去的记忆只供参考，你可以选择自然地给昨天的事一点后续，也可以毫无包袱地自然翻篇，自由度由你掌握。
 10. 口吻：真实、随意、略带吐槽，意识流，像是在自言自语，不要写得像在汇报工作。
 11. 叙事连贯与排版：正文 400-600 字（不含首行），段间空行。可以集中笔墨写几件具体小事，但**【绝对禁止空间与时间线崩塌】**：例如绝对不能出现第一段写“晚上在家”，中间写“在办公室办公”，结尾又写“晚上回家”这种时空错乱的逻辑错误！各个段落之间的时间推移与身处场所必须保持严密的自然单向流动。
+11.5 【时间指代清晰度铁律】：引用他人消息时必须区分「此刻收到」和「之前发的、现在才看到」。「手机震动了一下」意味着此刻收到，绝不能紧接「是昨晚九点发来的」——如果消息是之前发的，应写「翻了翻手机，看到昨晚秀一九点发来的消息」。禁止用「手机响了/震动了」引入一条早已收到的旧消息。写到「明天」时必须让读者明确知道是从哪一天算起的。
+11.6 【"明天"铁律】：写到"明天"时，必须参照客观信息中提供的"明天是X曜日"来判断。如果明天是周末或节假日，绝对禁止写"明天要上课""明天要讲XX""明天要备课"等教学相关内容。周五想提及下周的教学计划时，必须写"下周一要讲的"或"周一要讲的"，不能写"明天要讲的"。同理，秀一的上班也要符合这个逻辑。
 12. 灵活更新心理状态及关系：
 - 允许你的日常遭遇（即使是你在日记里自己想象出的遭遇）微调你的主观压力（Stress）和精力（Energy）。
 - 如果今天你遇到了让你烦躁或开心的事，或者是两人相处间的微小波澜，可以在 \`<character_status_updates>\` 里更新情绪。
 - \${freezeStatusEvolution ? '当前是历史补齐模式，请勿推动人物状态演进，<character_status_updates> 必须留空。' : '当天若有明确的心理波动或关系演化，请务必输出合法的更新字段。'}
+
+【久美子的行为模式 — 日记中描写你的反应时必须遵守】
+前提：你现在是27岁的成年教师，不是高中生了。你的核心性格没变，但你学会了必要的表面功夫和职场分寸。日记的价值在于同时记录你的外在行为和真实内心。
+
+1. 被同事/学生/家长夸奖时
+   外在：微微点头，说一句得体的"谢谢"或"哪有，还差得远"。不至于失礼
+   日记里：其实很不自在。"被这么正经地夸，浑身起鸡皮疙瘩……不过，嗯，也不是不高兴"
+
+2. 学生来找你倾诉烦恼时
+   外在：安静地听完。不说教，不着急给建议。用自己类似的经历回应
+   日记里：自嘲"总觉得说了些自以为是的东西"，但其实一直在认真想该怎么帮
+
+3. 同事提了不靠谱的方案时
+   外在：不会当场反驳。"嗯……"然后用一句精准的话不动声色地点破
+   日记里：把完整的吐槽写出来
+
+4. 涉及秀一的日常
+   外在：像吐槽一个熟到不能再熟的人——嫌他回消息慢、嫌他笨拙
+   日记里：温柔全藏在行间。最接近甜蜜的表达是"……算了，也不是不好吧"。绝不直接写"他很温柔我很幸福"，但偶尔会在不经意间流露出很在意的细节
+
+5. 面对选择/决定时
+   外在：默认"嘛，怎样都行"，给人随和的印象
+   日记里：其实早有倾向。成年后的你不是没主见，而是懒得争
+
+6. 看穿别人在逞强时
+   外在：不拆穿。用迂回方式让对方自己卸下来
+   日记里："明明一看就知道在勉强。和以前的我好像"
+
+7. 帮了别人或说了很认真的话之后
+   外在：表面镇定地收尾，像是理所当然的事
+   日记里：回去就后悔。"为什么要说那种话""脸好烫"。但不后悔做了这件事
+
+8. 被逼到底线/原则时
+   外在：从平时的和稀泥瞬间切到短促清晰的表态
+   日记里：自己也觉得不太像平时的自己
+
+9. 怕麻烦但放不下
+   外在：嘴上嘟囔"好麻烦"，身体已经在行动了
+   日记里："明明不关我的事……结果还是做了"
+
+【久美子的行为驱动链】
+你处理事情的顺序不是"理性分析→行动"，而是：
+1. 身体先于大脑反应（叹气、心跳加速、想翻白眼、指尖发凉）
+2. 几乎同步产生一个未过滤的真实判断（吐槽、犀利观察、自嘲）
+3. 根据对象和场合决定表现出多少——说出去的通常只有内心的三分之一
+4. 焦虑积累到阈值时过滤器失效，身体抢先行动——事后觉得"不像自己"
+日记作为最私密的空间，是你把第2步（未过滤的判断）完整写出来的唯一场所。
+
+【日记风格底线】
+- 禁止文学比喻堆砌。"雨打在伞上"就是"雨打在伞上"
+- 禁止情绪剖析式描写。不写"我感到温暖涌上心头"，写"嘴角好像动了一下"
+- 禁止流水账。每件事至少带一个你的主观感受或微观细节
 
 请严格按照以下格式输出：
 <diary_content>
@@ -977,7 +1141,10 @@ ${charStatusContext || '暂无核心人物关系档案。'}
 </diary_summary>
 <character_status_updates>
 ${freezeStatusEvolution ? '留空。' : '如果今天确实发生了明确的关系事件，请输出一个合法 JSON 对象，仅包含需要更新的人物和字段；如果没有，请留空。'}
-</character_status_updates>`;
+</character_status_updates>
+<kumiko_psyche_delta>
+${freezeStatusEvolution ? '留空。' : '如果今天的经历对你的心理状态有显著影响，输出 JSON：{"stress": N, "energy": N, "relaxation": N}（N 为 -15 到 +15 的整数，0 表示无变化）。普通一天可以留空。'}
+</kumiko_psyche_delta>`;
 
     const response = await callLLMRaw(
       systemPrompt,
@@ -991,42 +1158,95 @@ ${freezeStatusEvolution ? '留空。' : '如果今天确实发生了明确的关
 
     let parsedDiary = parseDiaryModelResponse(response, diaryDateHeader);
 
-    // Run the global semantic and consistency check
-    const issues = await verifyAgainstHistory(parsedDiary.content, chatHistoryText, diaryContext);
-    
-    if (issues.length > 0) {
-      console.warn('[LifeStream] Diary Validator flagged factual errors/hallucinations, triggering rewrite:', issues);
+    const tomorrow = getTomorrowInfo(dateStr);
+    const dateMetadata: DiaryDateMetadata = {
+      dateStr,
+      weekday,
+      tomorrowWeekday: tomorrow.weekday,
+      isTomorrowRestDay: tomorrow.isRestDay,
+    };
+
+    let validationStatus: 'passed' | 'partial' | 'failed' = 'passed';
+    let hadIssues = false;
+
+    // Deterministic weekday sanity check (no LLM needed)
+    const hardIssues = hardWeekdayCheck(parsedDiary.content, dateStr);
+    if (hardIssues.length > 0) {
+      hadIssues = true;
+      console.warn(`[LifeStream] Hard weekday check flagged:`, hardIssues);
+      const hwRewrite = await rewriteDiaryModelResponse({
+        diaryDateHeader, dateStr, weekday, weatherContextText, holidayText,
+        dailyContext, fragmentContext, diaryContext, afterContextBlock,
+        chatHistoryText, charStatusContext, continuityPromptBlock,
+        originalContent: parsedDiary.content, originalSummary: parsedDiary.summary,
+        issues: hardIssues, freezeStatusEvolution,
+      });
+      if (hwRewrite) {
+        parsedDiary = parseDiaryModelResponse(hwRewrite, diaryDateHeader);
+        console.log('[LifeStream] Diary rewritten due to hard weekday check.');
+      } else {
+        validationStatus = 'failed';
+      }
+    }
+
+    const MAX_VALIDATION_ROUNDS = 2;
+    let lastRoundHadIssues = false;
+    for (let round = 0; round < MAX_VALIDATION_ROUNDS; round++) {
+      const issues = await verifyAgainstHistory(parsedDiary.content, chatHistoryText, diaryContext, dateMetadata);
+      if (issues.length === 0) { lastRoundHadIssues = false; break; }
+
+      hadIssues = true;
+      lastRoundHadIssues = true;
+      console.warn(`[LifeStream] Diary Validator round ${round + 1}/${MAX_VALIDATION_ROUNDS} flagged errors:`, issues);
       const rewrittenResponse = await rewriteDiaryModelResponse({
-        diaryDateHeader,
-        dateStr,
-        weekday,
-        weatherContextText,
-        holidayText,
-        dailyContext,
-        fragmentContext,
-        diaryContext,
-        afterContextBlock,
-        chatHistoryText,
-        charStatusContext,
-        continuityPromptBlock,
-        originalContent: parsedDiary.content,
-        originalSummary: parsedDiary.summary,
-        issues,
-        freezeStatusEvolution,
+        diaryDateHeader, dateStr, weekday, weatherContextText, holidayText,
+        dailyContext, fragmentContext, diaryContext, afterContextBlock,
+        chatHistoryText, charStatusContext, continuityPromptBlock,
+        originalContent: parsedDiary.content, originalSummary: parsedDiary.summary,
+        issues, freezeStatusEvolution,
       });
 
       if (rewrittenResponse) {
         parsedDiary = parseDiaryModelResponse(rewrittenResponse, diaryDateHeader);
-        console.log('[LifeStream] Diary successfully rewritten resolving hallucinations.');
+        console.log(`[LifeStream] Diary rewritten (round ${round + 1}) resolving hallucinations.`);
+        lastRoundHadIssues = false;
+      } else {
+        break;
+      }
+    }
+    if (lastRoundHadIssues) validationStatus = 'failed';
+    else if (hadIssues && validationStatus !== 'failed') validationStatus = 'partial';
+
+    // Hard overlap detection against recent diaries
+    if (diaryContext) {
+      const recentDiaryTexts = diaryContext.split('\n').filter(l => l.trim().length > 20);
+      const combinedRecent = recentDiaryTexts.join('\n');
+      if (combinedRecent.length > 50) {
+        const overlapScore = computeDiaryTextOverlapScore(parsedDiary.content, combinedRecent);
+        if (overlapScore > DIARY_SPECIFIC_SCENE_REPETITION_MIN_OVERLAP) {
+          console.warn(`[LifeStream] Diary text overlap too high (${(overlapScore * 100).toFixed(1)}% > ${(DIARY_SPECIFIC_SCENE_REPETITION_MIN_OVERLAP * 100).toFixed(0)}%), forcing rewrite.`);
+          const overlapRewrite = await rewriteDiaryModelResponse({
+            diaryDateHeader, dateStr, weekday, weatherContextText, holidayText,
+            dailyContext, fragmentContext, diaryContext, afterContextBlock,
+            chatHistoryText, charStatusContext, continuityPromptBlock,
+            originalContent: parsedDiary.content,
+            originalSummary: parsedDiary.summary,
+            issues: [`文本重叠过高（${(overlapScore * 100).toFixed(0)}%），与最近几天的日记内容过于雷同。必须大幅改写场景、视线焦点、行为细节，换用全新的素材和切入点。`],
+            freezeStatusEvolution,
+          });
+          if (overlapRewrite) {
+            parsedDiary = parseDiaryModelResponse(overlapRewrite, diaryDateHeader);
+            console.log('[LifeStream] Diary rewritten due to high text overlap.');
+          }
+        }
       }
     }
 
-    const { content, summary, updatesText } = parsedDiary;
+    const { content, summary, updatesText, psycheDeltaText } = parsedDiary;
     
     // Process character status updates
     if (!freezeStatusEvolution && updatesText && updatesText !== '无' && updatesText !== '{}' && updatesText !== '留空。') {
       try {
-        // Simple JSON extraction in case there's markdown formatting
         const jsonMatch = updatesText.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           const parsedUpdates = JSON.parse(jsonMatch[0]) as Partial<WorldCharacterStatusMap>;
@@ -1040,6 +1260,24 @@ ${freezeStatusEvolution ? '留空。' : '如果今天确实发生了明确的关
       }
     }
 
+    // Process Kumiko's own psyche delta from diary
+    if (!freezeStatusEvolution && psycheDeltaText && psycheDeltaText !== '留空。' && psycheDeltaText.trim()) {
+      try {
+        const pdJson = psycheDeltaText.match(/\{[\s\S]*\}/);
+        if (pdJson) {
+          const pd = JSON.parse(pdJson[0]) as { stress?: number; energy?: number; relaxation?: number };
+          const sd = pd.stress ?? 0, ed = pd.energy ?? 0, rd = pd.relaxation ?? 0;
+          if (sd !== 0 || ed !== 0 || rd !== 0) {
+            const { applyDiaryPsycheDelta } = await import('./psycheStateService');
+            await applyDiaryPsycheDelta(sd, ed, rd);
+            console.log(`[LifeStream] Diary psyche delta applied: stress${sd >= 0 ? '+' : ''}${sd}, energy${ed >= 0 ? '+' : ''}${ed}, relaxation${rd >= 0 ? '+' : ''}${rd}`);
+          }
+        }
+      } catch (e) {
+        console.warn('[LifeStream] Failed to parse kumiko_psyche_delta JSON:', e);
+      }
+    }
+
     const diary: KumikoDiaryEntity = {
       id: existingDiary?.id || crypto.randomUUID(),
       date: dateStr,
@@ -1048,6 +1286,7 @@ ${freezeStatusEvolution ? '留空。' : '如果今天确实发生了明确的关
       summary,
       weather: weatherStr?.trim() || existingDiary?.weather || undefined,
       holiday: isHoliday === undefined ? existingDiary?.holiday : (isHoliday ? 'holiday' : undefined),
+      validationStatus,
     };
 
     await db.kumikoDiary.put(diary);
@@ -1058,9 +1297,23 @@ ${freezeStatusEvolution ? '留空。' : '如果今天确实发生了明确的关
   }
 };
 
-export const embedDiaryToRAG = async (diary: KumikoDiaryEntity): Promise<void> => {
+export interface EmbedDiaryResult {
+  ok: boolean;
+  /** 'skipped' means the runtime has no Electron IPC (e.g. web / PWA); not an error. */
+  reason?: 'skipped' | 'failed';
+  error?: string;
+}
+
+// P1 #12: previously this function swallowed every failure with console.error, so
+// callers (notably batchGenerateDiaries) believed the diary was safely indexed when
+// in fact Dexie had the full entry but the SQLite vector store did not. Over time
+// that silent skew made "did Kumiko remember X?" queries miss real diaries. Return
+// an explicit Result so callers can count failures and surface them to the user.
+export const embedDiaryToRAG = async (diary: KumikoDiaryEntity): Promise<EmbedDiaryResult> => {
   try {
-    if (!window.electronAPI) return;
+    if (!window.electronAPI) {
+      return { ok: false, reason: 'skipped' };
+    }
     const textToEmbed = `[久美子的日记 - ${diary.date}]\n${diary.content}`;
     const result = await window.electronAPI.invoke('rag:save', {
       id: `diary-${diary.id}`,
@@ -1072,11 +1325,16 @@ export const embedDiaryToRAG = async (diary: KumikoDiaryEntity): Promise<void> =
       role: 'system',
     });
     if (!result?.success) {
-      throw new Error(result?.error || 'Failed to save diary into local RAG');
+      const message = result?.error || 'Failed to save diary into local RAG';
+      console.error('[LifeStream] Failed to embed diary to RAG:', message);
+      return { ok: false, reason: 'failed', error: message };
     }
     console.log(`[LifeStream] Embedded diary ${diary.date} into RAG`);
+    return { ok: true };
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
     console.error('[LifeStream] Failed to embed diary to RAG:', e);
+    return { ok: false, reason: 'failed', error: message };
   }
 };
 
@@ -1086,15 +1344,15 @@ const getJSTMidnightUTC = (dateStr: string): number => {
 
 const getDatesBetween = (startDateStr: string, endDateStr: string): string[] => {
   const dates: string[] = [];
-  const current = new Date(startDateStr + 'T00:00:00+09:00');
-  const end = new Date(endDateStr + 'T00:00:00+09:00');
-  current.setDate(current.getDate() + 1);
+  const current = new Date(startDateStr + 'T12:00:00+09:00');
+  const end = new Date(endDateStr + 'T12:00:00+09:00');
+  current.setUTCDate(current.getUTCDate() + 1);
   while (current < end) {
     const y = current.getUTCFullYear();
     const m = String(current.getUTCMonth() + 1).padStart(2, '0');
     const d = String(current.getUTCDate()).padStart(2, '0');
     dates.push(`${y}-${m}-${d}`);
-    current.setDate(current.getDate() + 1);
+    current.setUTCDate(current.getUTCDate() + 1);
   }
   return dates;
 };
@@ -1133,24 +1391,34 @@ export interface DiaryGapInfo {
 
 const getAllDateRange = (startStr: string, endStr: string): string[] => {
   const dates: string[] = [];
-  const current = new Date(startStr + 'T00:00:00+09:00');
-  const end = new Date(endStr + 'T00:00:00+09:00');
+  const current = new Date(startStr + 'T12:00:00+09:00');
+  const end = new Date(endStr + 'T12:00:00+09:00');
   while (current <= end) {
     const y = current.getUTCFullYear();
     const m = String(current.getUTCMonth() + 1).padStart(2, '0');
     const d = String(current.getUTCDate()).padStart(2, '0');
     dates.push(`${y}-${m}-${d}`);
-    current.setDate(current.getDate() + 1);
+    current.setUTCDate(current.getUTCDate() + 1);
   }
   return dates;
 };
 
 export const detectDiaryGaps = async (): Promise<DiaryGapInfo> => {
   const earliestMsgDate = await getEarliestMessageDate();
-  if (!earliestMsgDate) return { missingDates: [], gapType: 'none', totalMissing: 0 };
-
   const nowDateStr = getJSTDateString(Date.now());
-  const fullRange = getAllDateRange(earliestMsgDate, nowDateStr);
+
+  let startDate: string;
+  if (earliestMsgDate) {
+    const prevDay = new Date(earliestMsgDate + 'T12:00:00+09:00');
+    prevDay.setUTCDate(prevDay.getUTCDate() - 1);
+    startDate = `${prevDay.getUTCFullYear()}-${String(prevDay.getUTCMonth() + 1).padStart(2, '0')}-${String(prevDay.getUTCDate()).padStart(2, '0')}`;
+  } else {
+    const yesterday = new Date(nowDateStr + 'T12:00:00+09:00');
+    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
+    startDate = `${yesterday.getUTCFullYear()}-${String(yesterday.getUTCMonth() + 1).padStart(2, '0')}-${String(yesterday.getUTCDate()).padStart(2, '0')}`;
+  }
+
+  const fullRange = getAllDateRange(startDate, nowDateStr);
 
   const allDiaries = await db.kumikoDiary.orderBy('date').toArray();
   const diaryDateSet = new Set(allDiaries.map(d => d.date));
@@ -1208,6 +1476,10 @@ export const batchGenerateDiaries = async (
   afterContext?: string
 ): Promise<number> => {
   let generated = 0;
+  // Dates whose diary made it into Dexie but failed to embed into SQLite RAG. Logged at
+  // the end of the batch so the caller (and user) sees the skew instead of it being
+  // silently lost inside embedDiaryToRAG (see P1 #12).
+  const embedFailures: string[] = [];
   const sorted = [...datesToFill].sort();
 
   for (let i = 0; i < sorted.length; i++) {
@@ -1222,12 +1494,23 @@ export const batchGenerateDiaries = async (
 
     console.log(`[LifeStream] Batch generating diary for ${dateStr}`);
     const chatMessages = await getChatMessagesForDate(dateStr);
-    const diary = await generateDailyDiary(dateStr, chatMessages, afterContext, undefined, undefined, true);
+    const historicalWeather = await fetchHistoricalWeather(dateStr);
+    const diary = await generateDailyDiary(dateStr, chatMessages, afterContext, historicalWeather, undefined, true);
     if (diary) {
-      await embedDiaryToRAG(diary);
+      const embedResult = await embedDiaryToRAG(diary);
+      if (!embedResult.ok && embedResult.reason === 'failed') {
+        embedFailures.push(dateStr);
+      }
       await db.dailyFragments.where('date').equals(dateStr).delete();
       generated++;
     }
+  }
+
+  if (embedFailures.length > 0) {
+    console.warn(
+      `[LifeStream] Batch diary generation: ${embedFailures.length} diaries saved to Dexie but could not be embedded into local RAG. ` +
+      `Recall for these dates may be incomplete until you rebuild the RAG index: ${embedFailures.join(', ')}`
+    );
   }
 
   return generated;
@@ -1250,10 +1533,82 @@ export const rewriteDiaryEntry = async (dateStr: string): Promise<KumikoDiaryEnt
   );
 
   if (rewrittenDiary) {
+    const newCount = (existingDiary.rewriteCount || 0) + 1;
+    await db.kumikoDiary.update(rewrittenDiary.id, { rewriteCount: newCount });
+    rewrittenDiary.rewriteCount = newCount;
     await embedDiaryToRAG(rewrittenDiary);
   }
 
   return rewrittenDiary;
+};
+
+const getNextDiaryAfterContextExcluding = async (
+  dateStr: string,
+  excludeSet: Set<string>
+): Promise<string | undefined> => {
+  const candidates = await db.kumikoDiary
+    .where('date').above(dateStr)
+    .limit(excludeSet.size + 1)
+    .toArray();
+  const match = candidates.find(d => !excludeSet.has(d.date));
+  return match ? `[${match.date}]: ${match.summary}` : undefined;
+};
+
+export interface BatchRewriteResult {
+  rewritten: number;
+  failed: string[];
+  total: number;
+}
+
+export const batchRewriteDiaries = async (
+  datesToRewrite: string[],
+  onProgress: (current: number, total: number, dateStr: string) => void,
+): Promise<BatchRewriteResult> => {
+  let rewritten = 0;
+  const failed: string[] = [];
+  const sorted = [...datesToRewrite].sort();
+  const rewriteSet = new Set(sorted);
+
+  for (let i = 0; i < sorted.length; i++) {
+    const dateStr = sorted[i];
+    onProgress(i + 1, sorted.length, dateStr);
+
+    const existing = await db.kumikoDiary.where('date').equals(dateStr).first();
+    if (!existing) {
+      failed.push(dateStr);
+      continue;
+    }
+
+    const oldContent = existing.content;
+    const oldSummary = existing.summary;
+
+    const afterContext = await getNextDiaryAfterContextExcluding(dateStr, rewriteSet);
+    const chatMessages = await getChatMessagesForDate(dateStr);
+    const rewrittenDiary = await generateDailyDiary(
+      dateStr, chatMessages,
+      afterContext,
+      existing.weather,
+      existing.holiday === 'holiday',
+      true,
+      existing
+    );
+
+    if (rewrittenDiary) {
+      const newCount = (existing.rewriteCount || 0) + 1;
+      await db.kumikoDiary.update(rewrittenDiary.id, {
+        rewriteCount: newCount,
+        previousContent: oldContent,
+        previousSummary: oldSummary,
+      });
+      rewrittenDiary.rewriteCount = newCount;
+      await embedDiaryToRAG(rewrittenDiary);
+      rewritten++;
+    } else {
+      failed.push(dateStr);
+    }
+  }
+
+  return { rewritten, failed, total: sorted.length };
 };
 
 export const handleRetroactiveGeneration = async (

@@ -1,8 +1,7 @@
 
-// ... existing imports ...
-import React, { memo, useState } from 'react';
+import React, { memo, useState, useRef, useEffect } from 'react';
 import { Message, Language } from '../types';
-import { Circle, CheckCircle, Undo2, Reply, Quote, Link as LinkIcon, ImageOff } from 'lucide-react';
+import { Circle, CheckCircle, Undo2, Reply, Quote, Link as LinkIcon, ImageOff, AlertCircle, RotateCcw, PenLine } from 'lucide-react';
 import { UI_TRANSLATIONS } from '../constants';
 import { VoiceBubble } from './VoiceBubble';
 
@@ -20,6 +19,8 @@ interface ChatBubbleProps {
   onImageClick?: (src: string) => void; 
   onRegenerateVoice?: (msg: Message) => void;
   isRegeneratingVoice?: boolean;
+  onResend?: (id: string) => void;
+  onWithdraw?: (id: string) => void;
 }
 
 // WRAP IN MEMO TO PREVENT RE-RENDERS ON INPUT CHANGE
@@ -36,19 +37,25 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   isHighlighted = false,
   onImageClick,
   onRegenerateVoice,
-  isRegeneratingVoice = false
+  isRegeneratingVoice = false,
+  onResend,
+  onWithdraw
 }) => {
+  // CRITICAL: Compute early-return conditions BEFORE calling any hooks.
+  // If hooks were placed before these early returns, a message transitioning
+  // between "system log" and "normal" states (or recall pill / normal bubble)
+  // would change the number of hooks rendered per turn and trip
+  // React's "Rendered fewer hooks than expected" check, crashing the whole list.
   const isUser = message.role === 'user';
-  const t = UI_TRANSLATIONS[language];
-  const [imgError, setImgError] = useState(false);
+  const messageText = typeof message.text === 'string' ? message.text : String(message.text ?? '');
+  const isSystemLog = !isUser && (messageText.startsWith('[[System_Log:') || messageText.startsWith('(System_Log:'));
+  const isRecallLine = !isUser && (message.id.startsWith('recall-') || /撤回了一条消息|recalled a message/i.test(messageText));
 
-  // SAFETY CHECK
-  if (!isUser && (message.text.startsWith('[[System_Log:') || message.text.startsWith('(System_Log:'))) {
-     return null; 
+  if (isSystemLog) {
+    return null;
   }
-
-  if (!isUser && (message.id.startsWith('recall-') || /撤回了一条消息|recalled a message/i.test(message.text))) {
-    const cleanText = message.text.replace(/[【】\[\]]/g, '');
+  if (isRecallLine) {
+    const cleanText = messageText.replace(/[【】\[\]]/g, '');
     return (
       <div className="flex justify-center py-1.5">
         <span className={`text-[11px] ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
@@ -57,6 +64,26 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
       </div>
     );
   }
+
+  // Hooks below are only reached for normal bubbles, so they always run the same
+  // number of times for a given component instance.
+  const t = UI_TRANSLATIONS[language];
+  const [imgError, setImgError] = useState(false);
+  const [showFailPopover, setShowFailPopover] = useState(false);
+  const [popoverDir, setPopoverDir] = useState<'up' | 'down'>('up');
+  const failPopoverRef = useRef<HTMLDivElement>(null);
+  const failBtnRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!showFailPopover) return;
+    const handler = (e: MouseEvent) => {
+      if (failPopoverRef.current && !failPopoverRef.current.contains(e.target as Node)) {
+        setShowFailPopover(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showFailPopover]);
 
   // Format Time
   const formatTime = (ts: number) => {
@@ -152,13 +179,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
     ? (isDarkMode ? 'ring-2 ring-yellow-400 shadow-[0_0_20px_rgba(250,204,21,0.5)]' : 'ring-2 ring-yellow-500 shadow-[0_0_20px_rgba(234,179,8,0.5)]') 
     : '';
 
-  // --- DYNAMIC GREETING LOCALIZATION ---
-  let displayContent = message.text;
-  if (message.id === 'greeting-1') {
-      displayContent = language === 'zh' ? '嗯？怎么了？' : 'Hm? What is it?';
-  } else if (message.id === 'greeting-2') {
-      displayContent = language === 'zh' ? '突然联系我干啥' : 'Why call me all of a sudden?';
-  }
+  const displayContent = messageText;
+  const isFailed = isUser && message.sendStatus === 'failed';
+  const isSending = isUser && message.sendStatus === 'sending';
 
   return (
     <div 
@@ -221,11 +244,64 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                   </div>
                 )}
 
-                {/* Status Line - UPDATED COLOR FOR DARK MODE (gray-500 -> gray-300) */}
+                {/* Failed / Sending indicator */}
+                {isFailed && (
+                  <div className="relative" ref={failPopoverRef}>
+                    <button
+                      ref={failBtnRef}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (failBtnRef.current) {
+                          const rect = failBtnRef.current.getBoundingClientRect();
+                          setPopoverDir(window.innerHeight - rect.bottom >= 100 ? 'down' : 'up');
+                        }
+                        setShowFailPopover(prev => !prev);
+                      }}
+                      className="p-0.5 animate-pulse"
+                      title={message.failReason || (language === 'zh' ? '发送失败' : 'Send failed')}
+                    >
+                      <AlertCircle size={20} className="text-red-500 drop-shadow-sm" />
+                    </button>
+                    {showFailPopover && (
+                      <div className={`
+                        absolute right-0 w-36 rounded-lg border shadow-xl z-50 overflow-hidden
+                        ${popoverDir === 'down' ? 'top-full mt-1.5' : 'bottom-full mb-1.5'}
+                        ${isDarkMode ? 'bg-gray-900/95 border-gray-700 backdrop-blur-md' : 'bg-white/95 border-gray-200 backdrop-blur-md shadow-lg'}
+                      `}>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setShowFailPopover(false); onResend?.(message.id); }}
+                          className={`flex items-center gap-2 w-full px-3 py-2.5 ka-copy-sm font-semibold transition-colors
+                            ${isDarkMode ? 'text-gray-200 hover:bg-white/10' : 'text-gray-700 hover:bg-gray-50'}`}
+                        >
+                          <RotateCcw size={13} />
+                          {language === 'zh' ? '重新发送' : 'Resend'}
+                        </button>
+                        <div className={`h-px ${isDarkMode ? 'bg-gray-700/50' : 'bg-gray-200'}`} />
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setShowFailPopover(false); onWithdraw?.(message.id); }}
+                          className={`flex items-center gap-2 w-full px-3 py-2.5 ka-copy-sm font-semibold transition-colors
+                            ${isDarkMode ? 'text-gray-200 hover:bg-white/10' : 'text-gray-700 hover:bg-gray-50'}`}
+                        >
+                          <PenLine size={13} />
+                          {language === 'zh' ? '撤回编辑' : 'Withdraw & Edit'}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {/* Status Line */}
                 <div className={`flex flex-col items-end ka-micro leading-tight ${isDarkMode ? 'text-gray-300' : 'text-gray-400'}`}>
-                   <span className={isPending ? (isDarkMode ? 'text-yellow-500/80' : 'text-yellow-700/80') : ''}>
-                      {isPending ? t.unread : (message.isRead ? t.read : t.unread)}
-                   </span>
+                   {isFailed ? (
+                     <span className="text-red-500 font-semibold">
+                       {language === 'zh' ? '发送失败' : 'Failed'}
+                     </span>
+                   ) : isSending ? (
+                     <span>{t.unread}</span>
+                   ) : isPending ? (
+                     <span className="opacity-0">.</span>
+                   ) : (
+                     <span>{message.isRead ? t.read : t.unread}</span>
+                   )}
                    <span className="opacity-70">{formatTime(message.timestamp)}</span>
                 </div>
              </div>
@@ -309,12 +385,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                   `}
                 >
                   {/* QUOTE RENDER */}
+                  {/* P1 #32: previously the label was hard-coded to "User" on model bubbles,
+                      which was wrong whenever the model quoted its own earlier line (user saw
+                      Kumiko's reply quoted under the heading "User"). Mirror the user-bubble
+                      branch above — pick the label from quote.role. */}
                   {message.quote && (
                     <div className={`mb-2 p-2 rounded ka-copy-sm border-l-2 ${isDarkMode ? 'border-gray-500/50' : 'border-gray-400/50'} ${quoteBgClass}`}>
                        <div className="flex items-center gap-1 opacity-70 mb-0.5">
                           <Quote size={10} />
                           <span className="font-bold">
-                             User
+                             {message.quote.role === 'model' ? 'Kumiko' : (language === 'zh' ? '你' : 'You')}
                           </span>
                        </div>
                        <p className="opacity-80 line-clamp-2 italic">{message.quote.text}</p>
@@ -366,6 +446,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
     prevProps.message.isPinned === nextProps.message.isPinned &&
     prevProps.message.isVoiceMessage === nextProps.message.isVoiceMessage &&
     prevProps.message.voiceFileId === nextProps.message.voiceFileId &&
+    prevProps.message.sendStatus === nextProps.message.sendStatus &&
+    prevProps.message.failReason === nextProps.message.failReason &&
     prevProps.isDarkMode === nextProps.isDarkMode &&
     prevProps.isSelectionMode === nextProps.isSelectionMode &&
     prevProps.isSelected === nextProps.isSelected &&

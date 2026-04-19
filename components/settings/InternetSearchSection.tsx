@@ -1,5 +1,6 @@
 import React, { useCallback } from 'react';
 import { Activity, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, ExternalLink, Globe, Loader2, RefreshCw } from 'lucide-react';
+import { Collapse } from '../Collapse';
 import { SettingsToggle } from './SettingsToggle';
 
 interface InternetSearchTranslations {
@@ -73,8 +74,8 @@ export const InternetSearchSection: React.FC<InternetSearchSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      {isOpen && (
-        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 space-y-4">
+      <Collapse isOpen={isOpen}>
+        <div className="px-4 pb-4 pt-0 space-y-4">
           {t.internetSearchDesc && <p className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.internetSearchDesc}</p>}
           <div className={innerCardClass}>
             <div className="flex items-center justify-between mb-4">
@@ -141,7 +142,7 @@ export const InternetSearchSection: React.FC<InternetSearchSectionProps> = ({
             </div>
           </div>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

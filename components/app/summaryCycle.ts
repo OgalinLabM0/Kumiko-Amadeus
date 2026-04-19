@@ -185,6 +185,7 @@ export const normalizeSummaryArchiveState = (raw: unknown, turnCount: number): S
     'sleep_transition',
     'wrap_up',
     'hard_limit',
+    'manual',
   ].includes(parsed.lastBoundaryReason)
     ? parsed.lastBoundaryReason
     : null;

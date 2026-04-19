@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Database, HardDrive, Image, Power, RotateCcw, T
 import { Language } from '../../types';
 import { getVoiceStorageInfo, openVoiceFolder, isVoiceServiceAvailable } from '../../services/voiceFileService';
 import { db } from '../../services/db';
+import { Collapse } from '../Collapse';
 
 export interface DataDirectoryInfo {
   success: boolean;
@@ -85,12 +86,30 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     if (voiceAvailable) getVoiceStorageInfo().then(setVoiceStorage);
-    db.images.count().then(async (count) => {
+
+    // Images now live on the filesystem (userData/images/) with Dexie holding
+    // only metadata rows. On desktop we ask the main process for the authoritative
+    // byte count; on web we fall back to the old Dexie-base64 reading path.
+    (async () => {
+      const ipc = (window as any).electronAPI;
+      if (ipc && typeof ipc.invoke === 'function') {
+        try {
+          const result = await ipc.invoke('images:get-storage-info');
+          if (result && result.success !== false) {
+            setImageStorage({ count: result.count || 0, totalBytes: result.totalBytes || 0 });
+            return;
+          }
+        } catch {
+          // Fall through to Dexie path below.
+        }
+      }
+      const count = await db.images.count();
       if (count === 0) { setImageStorage({ count: 0, totalBytes: 0 }); return; }
       const imgs = await db.images.toArray();
       const totalBytes = imgs.reduce((sum, img) => sum + (img.base64Data?.length || 0), 0);
       setImageStorage({ count, totalBytes });
-    });
+    })();
+
     refreshRingtoneInfo();
 
     const handleRingtoneStorageChanged = () => {
@@ -108,9 +127,18 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
     ? { info: '语音文件', desc: '删除语音文件不影响消息文字，仅无法再次播放语音。', open: '打开语音文件夹' }
     : { info: 'Voice Files', desc: 'Deleting voice files does not affect message text; only playback is lost.', open: 'Open Voice Folder' };
 
-  const imageT = language === 'zh'
-    ? { info: '图片文件', desc: '图片存储在本地 IndexedDB 中，清理旧图片可释放空间。', clean: '清理旧图片 (保留最近50张)' }
-    : { info: 'Image Files', desc: 'Images are stored in local IndexedDB. Cleaning old images frees space.', clean: 'Clear Old Images (Keep last 50)' };
+  // P1 #36 follow-up: text and button updated. Images now live under
+  // userData/images/ as real files; the IndexedDB line was stale, and
+  // "Clear Old Images" is superseded by an "Open Folder" affordance matching
+  // the ringtone/voice sections (so users can inspect or manually clean up
+  // their images via the OS file manager).
+  const imageT = isDesktopElectron
+    ? (language === 'zh'
+      ? { info: '图片文件', desc: '用户发给 Kumiko 的图片以真实文件形式存放在本机「图片」文件夹内，可直接查看或手动清理。', open: '打开图片文件夹' }
+      : { info: 'Image Files', desc: 'Images you send to Kumiko are stored as real files under the local images folder — you can browse or clean them up directly.', open: 'Open Image Folder' })
+    : (language === 'zh'
+      ? { info: '图片文件', desc: '网页环境下图片仍缓存在浏览器 IndexedDB 中；桌面版已切换为文件系统存储。', open: null }
+      : { info: 'Image Files', desc: 'In the web build, images remain in the browser IndexedDB; the desktop build uses the filesystem instead.', open: null });
 
   const ringtoneT = language === 'zh'
     ? { info: '用户铃声', desc: '定时来电提醒播放的自定义铃声。', open: '打开铃声文件夹', none: '未上传自定义铃声', uploaded: '已上传' }
@@ -119,6 +147,11 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
   const handleOpenRingtoneFolder = () => {
     const ipc = (window as any).electronAPI;
     if (ipc) ipc.invoke('ringtone:open-folder');
+  };
+
+  const handleOpenImageFolder = () => {
+    const ipc = (window as any).electronAPI;
+    if (ipc) ipc.invoke('images:open-folder');
   };
 
   return (
@@ -136,8 +169,8 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
         {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      {isOpen && (
-        <div className="px-4 pb-4 pt-0 animate-in slide-in-from-top-2 space-y-4">
+      <Collapse isOpen={isOpen}>
+        <div className="px-4 pb-4 pt-0 space-y-4">
           <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.dataManagementManageLocal}</p>
 
           {storageUsage && (() => {
@@ -196,10 +229,12 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
               <p className={`ka-copy-sm mb-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                 {imageT.desc}
               </p>
-              <button onClick={onClearOldImages}
-                className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-orange-500/50 text-orange-400 hover:bg-orange-500/10' : 'border-orange-600/50 text-orange-600 hover:bg-orange-600/10'}`}>
-                <Trash2 size={13} /> {imageT.clean}
-              </button>
+              {imageT.open && (
+                <button onClick={handleOpenImageFolder}
+                  className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-sky-500/50 text-sky-400 hover:bg-sky-500/10' : 'border-sky-600/50 text-sky-600 hover:bg-sky-600/10'}`}>
+                  <FolderOpen size={13} /> {imageT.open}
+                </button>
+              )}
             </div>
           )}
 
@@ -308,7 +343,7 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
             </button>
           </div>
         </div>
-      )}
+      </Collapse>
     </div>
   );
 };

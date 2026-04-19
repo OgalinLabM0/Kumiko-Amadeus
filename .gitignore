@@ -42,6 +42,8 @@ ios/**/DerivedData
 # See README "Build from Source" section for instructions
 public/images/emotions/*.png
 public/ringtones/*.mp3
+public/sovits-ref/*.wav
+public/sovits-ref/*.txt
 public/images/logo.png
 public/CCA-P2.png
 public/favicon-KA.ico
