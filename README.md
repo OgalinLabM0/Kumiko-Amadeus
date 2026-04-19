@@ -177,6 +177,7 @@ sudo apt install -y nodejs
 
 ```bash
 npm install
+npm run fetch-assets                                 # 下载角色资源包（必需）
 npm run build                                        # 前端产物
 npx electron-builder --linux AppImage --x64 --arm64 --publish never
 node scripts/generate-latest-yml.cjs                 # 生成 latest-linux*.yml
@@ -298,8 +299,8 @@ All character-specific assets (artwork, voice ringtones, story data) are distrib
 1. **克隆仓库 / Clone**
 
    ```bash
-   git clone https://github.com/xxx/kumiko-amadeus.git
-   cd kumiko-amadeus
+   git clone https://github.com/OgalinLabM0/Kumiko-Amadeus.git
+   cd Kumiko-Amadeus
    ```
 
 2. **安装依赖 / Install dependencies**
@@ -310,9 +311,18 @@ All character-specific assets (artwork, voice ringtones, story data) are distrib
 
 3. **下载角色资源包 / Download character asset pack**
 
-   从 [GitHub Releases](https://github.com/xxx/kumiko-amadeus/releases) 下载最新的 `kumiko-assets.zip`。
+   ```bash
+   npm run fetch-assets
+   ```
 
-   解压到项目根目录（会自动放入正确的子目录）：
+   脚本会从 [GitHub Releases](https://github.com/OgalinLabM0/Kumiko-Amadeus/releases/latest) 自动下载 `kumiko-assets.zip`（约 135 MB）并解压到项目根目录；再次运行是幂等的，已有资源时自动跳过。需要换源可以用环境变量覆盖：
+
+   ```bash
+   # 私有镜像 / 未发布的 draft release
+   ASSETS_URL=https://example.com/kumiko-assets.zip npm run fetch-assets
+   ```
+
+   也可以手动下载后自行解压（效果完全等价）：
 
    ```bash
    # Windows (PowerShell)

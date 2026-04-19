@@ -53,14 +53,19 @@ echo $env:PROCESSOR_ARCHITECTURE
 - 卸载流程里会询问你：是否同时删除聊天记录、语音文件和设置。
 - 如果你选择删除，当前设备上的本地数据会一起被清掉。
 
-## 四、从源码自己构建时，为什么还要补模型
+## 四、从源码自己构建时，为什么还要补两套文件
 
-GitHub 仓库目前没有直接提交 `model_int8.onnx`，原因很简单：
+GitHub 仓库目前**既不包含 ONNX 模型权重，也不包含角色资源**（立绘、铃声、图标、加密的世界书/剧情数据）。原因分别是：
 
-- 这个文件体积太大，不适合直接放进普通 Git 仓库。
-- 但项目在本地记忆检索时又确实需要它。
+- `model_int8.onnx`（约 568 MB）体积太大，不适合直接放进普通 Git 仓库。
+- 角色资源是版权素材，不在源码仓库里托管，只能通过 GitHub Release 附件分发。
 
-所以如果你是“从源码自己打包”，你需要手动把这个文件补回项目目录。
+所以如果你是"从源码自己打包"，需要补两样东西：
+
+| 类别 | 获取方式 | 放置位置 |
+| --- | --- | --- |
+| `model_int8.onnx` | 手动从 HuggingFace / 国内镜像下载（见下一节） | `models/bge-m3-onnx/model_int8.onnx` |
+| 角色资源包 | `npm run fetch-assets`（自动下载并解压） | `public/` 和 `assets/` 下的若干子目录 |
 
 仓库里已经有：
 
@@ -70,6 +75,7 @@ GitHub 仓库目前没有直接提交 `model_int8.onnx`，原因很简单：
 你还需要补的只有：
 
 - `models/bge-m3-onnx/model_int8.onnx`
+- 通过 `npm run fetch-assets` 拿到的角色资源包（约 135 MB）
 
 ## 五、模型下载链接
 
@@ -107,10 +113,11 @@ models/
 
 ```bash
 npm install
+npm run fetch-assets          # 下载并解压 kumiko-assets.zip
 npm run desktop:build
 ```
 
-打包完成后，安装器会自动把这个模型一起带进桌面程序。
+打包完成后，安装器会自动把模型和角色资源一起带进桌面程序。
 
 ### 2. 你已经安装好了软件，但拿到的包缺模型
 
@@ -159,6 +166,6 @@ x64 用户双击 `Setup-x64.exe`，ARM64 用户双击 `Setup-arm64.exe`。两个
 
 ## 八、最简结论
 
-- 普通用户先确认机型架构，再下载对应的 `Kumiko-Amadeus-Setup-x64.exe` 或 `Kumiko-Amadeus-Setup-arm64.exe`。通常直接安装就行，不需要自己单独处理模型。
-- 只有“从源码自构建”时，才需要手动下载并放置 `model_int8.onnx`。
-- 模型位置固定为 `models/bge-m3-onnx/model_int8.onnx`。
+- 普通用户先确认机型架构，再下载对应的 `Kumiko-Amadeus-Setup-x64.exe` 或 `Kumiko-Amadeus-Setup-arm64.exe`。通常直接安装就行，不需要自己单独处理模型和资源包。
+- 只有"从源码自构建"时，才需要手动下载并放置 `model_int8.onnx`，并跑一次 `npm run fetch-assets` 把角色资源拉下来。
+- 模型位置固定为 `models/bge-m3-onnx/model_int8.onnx`；角色资源由脚本自动解压到 `public/` 和 `assets/`。
