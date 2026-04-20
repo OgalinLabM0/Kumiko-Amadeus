@@ -20,7 +20,6 @@ import {
   getSummarySegmentMessages,
   getSummarySemanticWindowPayload,
   getTurnsInActiveSummarySegment,
-  normalizeSummaryArchiveState,
   SUMMARY_SOFT_THRESHOLD,
   SummarySemanticSignal,
 } from './app/summaryCycle';
@@ -34,7 +33,7 @@ import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
 import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, normalizeReminderEvent, type RelativeReminder, type DailyReminder } from '../store/slices/reminderSlice';
 import { LoadingDataScreen } from './app/AppStatusOverlays';
 import { Message, AppState, EmotionType, WorldBookEntry, Language, LocationConfig, BackupConfig, AnchorEntry, AIConfig, ChatResponse, SummaryArchiveState, SummaryBoundaryReason, MemoryQuerySession, TemporalQueryPrecision, TemporalQuerySource, TemporalQueryDiagnosticsStatus, TemporalQueryConfidence, SummarySegmentMetadata, TtsConfig, VoiceMode, MissedMessageAlert, MessageAlertKind } from '../types';
-import { sendMessageToGemini, startChat, summarizeConversation, searchRagMemory, saveRagMemory, uploadImageToBackend, getCurrentAIConfig, validateAIConnection, analyzeTemporalQueryDetailed, getTemporalSearchRoleFromQuery, rewriteHistoricalRecallQueryDetailed, callLLMRaw, type HistoricalQueryRewrite, type HistoricalSearchStrategy, type TemporalQueryAnalysis, type TemporalQueryDiagnostics } from '../services/geminiService';
+import { sendMessageToGemini, startChat, summarizeConversation, searchRagMemory, saveRagMemory, uploadImageToBackend, getCurrentAIConfig, analyzeTemporalQueryDetailed, getTemporalSearchRoleFromQuery, rewriteHistoricalRecallQueryDetailed, callLLMRaw, type HistoricalQueryRewrite, type HistoricalSearchStrategy, type TemporalQueryAnalysis, type TemporalQueryDiagnostics } from '../services/geminiService';
 import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK, EMOTION_TO_FISH_AUDIO_TAGS, EMOTION_TTS_TEMPERATURE } from '../constants';
 import { synthesizeSpeech, TtsError } from '../services/fishAudioService';
 import { saveVoiceFile, isVoiceServiceAvailable } from '../services/voiceFileService';
@@ -78,7 +77,6 @@ import {
   buildHistoryEvidenceMessages,
 } from './app/rawHistorySync';
 import {
-  recalculateTurnCountFromMessages,
   parseRelativeReminderRequest,
   parseDailyReminderRequest,
   sanitizeWorldCharacterStatusRecord,
@@ -145,6 +143,7 @@ import { useAppUpdater } from './app/useAppUpdater';
 import { useLocalFileBackup } from './app/useLocalFileBackup';
 import { useAppPreferencesSync } from './app/useAppPreferencesSync';
 import { useScheduledReminders } from './app/useScheduledReminders';
+import { useMessageHistoryOperations } from './app/useMessageHistoryOperations';
 
 
 export const App = () => {
@@ -1498,94 +1497,11 @@ export const App = () => {
   // handleCloudConnect removed with cloud sync (P0 #6).
 
   // ... (Rest of event handlers like selection, etc) ...
-  const applyMessagesWithDerivedState = useCallback((nextMessages: Message[]) => {
-    setMessages(nextMessages);
-    const recalculatedTurnCount = recalculateTurnCountFromMessages(nextMessages);
-    setTurnCount(recalculatedTurnCount);
-    setSummaryArchiveState(prev => normalizeSummaryArchiveState(prev, recalculatedTurnCount));
-  }, []);
-  const applyVisualHistoryMutation = useCallback((nextMessages: Message[]) => {
-    skipNextRawHistorySyncRef.current = true;
-    setMessages(nextMessages);
-  }, []);
-  const markRagHistoryDirty = useCallback((reason: string) => {
-    if (!backupConfig.ragEnabled) return;
-    const shouldNotify = !isRagHistoryDirty && !ragDirtyNoticeShown;
-    setIsRagHistoryDirty(true);
-    if (shouldNotify) {
-      setRagDirtyNoticeShown(true);
-      alert(language === 'zh'
-        ? '你刚刚修改了真实历史内容，本地 RAG 记忆索引建议重建。'
-        : 'You just changed real message history. Rebuilding the local RAG index is recommended.');
-    }
-    console.warn(`[LOCAL RAG] Manual history edit marked the current message-linked recall index as stale. Rebuild recommended. reason=${reason}`);
-  }, [backupConfig.ragEnabled, isRagHistoryDirty, language]);
-  const applyManualHistoryMutation = useCallback((nextMessages: Message[], reason: string) => {
-    applyMessagesWithDerivedState(nextMessages);
-    updateMemoryQuerySession(null);
-    markRagHistoryDirty(reason);
-  }, [applyMessagesWithDerivedState, markRagHistoryDirty, updateMemoryQuerySession]);
   const toggleSelectionMode = () => { setIsSelectionMode(!isSelectionMode); setSelectedIds(new Set()); };
   const handleSelectMessage = (id: string) => { setSelectedIds(prev => { const newSet = new Set(prev); if (newSet.has(id)) { newSet.delete(id); } else { newSet.add(id); } return newSet; }); };
   const initiateDeleteSelected = () => { if (selectedIds.size === 0) return; setShowDeleteConfirm(true); };
-  const confirmDeleteSelected = () => {
-    const nextMessages = messagesRef.current.filter(msg => !selectedIds.has(msg.id));
-    applyManualHistoryMutation(nextMessages, 'batch_hard_delete');
-    setShowDeleteConfirm(false);
-    setIsSelectionMode(false);
-    setSelectedIds(new Set());
-  };
   const initiateClearAll = () => { setShowClearFlow(true); };
-  const handleClearAll = () => { 
-      const nextMessages = messagesRef.current.map(msg => ({ ...msg, isHidden: true }));
-      applyVisualHistoryMutation(nextMessages);
-      setShowClearFlow(false); 
-      setIsSelectionMode(false); 
-      pendingTextRef.current = ""; 
-      pendingImageRef.current = null; 
-      pendingMessageIdsRef.current.clear(); 
-      pendingImageMessageIdRef.current = null; 
-  };
-  const handleInsertMessage = useCallback((afterId: string | null, role: 'user' | 'model') => {
-    const newMessages = [...messagesRef.current].sort((a, b) => a.timestamp - b.timestamp);
-    let newTimestamp = Date.now();
-    if (afterId) {
-      const index = newMessages.findIndex(m => m.id === afterId);
-      if (index !== -1) {
-        const currentMsg = newMessages[index];
-        newTimestamp = currentMsg.timestamp + 1;
-      }
-    } else if (newMessages.length > 0) {
-      newTimestamp = newMessages[newMessages.length - 1].timestamp + 1;
-    }
 
-    const newMessage: Message = {
-      id: Date.now().toString() + Math.random().toString(),
-      role,
-      text: "...",
-      timestamp: newTimestamp,
-      isRead: true
-    };
-
-    const nextMessages = [...messagesRef.current, newMessage];
-    applyManualHistoryMutation(nextMessages, 'insert_message');
-  }, [applyManualHistoryMutation]);
-  const handleReorderMessages = useCallback((dragIndex: number, hoverIndex: number) => {
-    const newMessages = [...messagesRef.current].sort((a, b) => a.timestamp - b.timestamp);
-    const draggedMessage = newMessages[dragIndex];
-    newMessages.splice(dragIndex, 1);
-    newMessages.splice(hoverIndex, 0, draggedMessage);
-    const startIdx = Math.min(dragIndex, hoverIndex);
-    let baseTime = startIdx > 0 ? newMessages[startIdx - 1].timestamp : newMessages[0].timestamp - 1000;
-    for (let i = startIdx; i < newMessages.length; i++) {
-      if (newMessages[i].timestamp <= baseTime) {
-        newMessages[i] = { ...newMessages[i], timestamp: baseTime + 1 };
-      }
-      baseTime = newMessages[i].timestamp;
-    }
-    applyManualHistoryMutation(newMessages, 'reorder_messages');
-  }, [applyManualHistoryMutation]);
-  
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -1602,30 +1518,6 @@ export const App = () => {
       }
     }
   };
-
-  const handleUpdateMessage = useCallback((id: string, update: string | Partial<Message>) => {
-    const nextMessages = messagesRef.current.map(msg => {
-      if (msg.id === id) {
-        if (typeof update === 'string') return { ...msg, text: update };
-        return { ...msg, ...update };
-      }
-      if (typeof update === 'string' && msg.quote && msg.quote.id === id) {
-        return { ...msg, quote: { ...msg.quote, text: update } };
-      }
-      return msg;
-    });
-    applyManualHistoryMutation(nextMessages, 'update_message');
-  }, [applyManualHistoryMutation]);
-  const handleDeleteMessage = useCallback((id: string) => {
-    const nextMessages = messagesRef.current.filter(msg => msg.id !== id);
-    applyManualHistoryMutation(nextMessages, 'hard_delete_message');
-  }, [applyManualHistoryMutation]);
-  const handleToggleHidden = useCallback((id: string) => {
-    const nextMessages = messagesRef.current.map(msg => msg.id === id ? { ...msg, isHidden: !msg.isHidden } : msg);
-    applyVisualHistoryMutation(nextMessages);
-  }, [applyVisualHistoryMutation]);
-  const handleTogglePin = useCallback((id: string) => { setMessages(prev => prev.map(msg => msg.id === id ? { ...msg, isPinned: !msg.isPinned } : msg)); }, []);
-  const handleJumpToMessage = useCallback((id: string) => { setIsMemoryPanelOpen(false); setIsProfileOpen(false); setIsSettingsOpen(false); setIsTaskPanelOpen(false); setIsMessageCenterOpen(false); setHighlightedMessageId(id); setTimeout(() => { const element = document.getElementById(`message-${id}`); if (element) { element.scrollIntoView({ behavior: 'smooth', block: 'center' }); } setTimeout(() => { setHighlightedMessageId(null); }, 2000); }, 300); }, []);
 
   const triggerAutoSummary = useCallback(async (params: Parameters<typeof triggerAutoSummaryAction>[2]) => {
     return triggerAutoSummaryAction(
@@ -1671,138 +1563,63 @@ export const App = () => {
     return executeSendAction(chatRefs, executeSendHelpers);
   }, [coreMemory, worldBook, contextLimit, triggerAutoSummary, locationConfig, backupConfig, anchors, kumikoNotebook, turnCount, language, showBackgroundMessageNotification, summaryArchiveState]);
 
-  const handleResendMessage = useCallback(async (messageId: string) => {
-    const msg = messagesRef.current.find(m => m.id === messageId);
-    if (!msg || msg.sendStatus !== 'failed') return;
-
-    const config = getCurrentAIConfig();
-    try {
-      const isValid = await validateAIConnection(config);
-      if (!isValid) {
-        setSystemNotice(language === 'zh' ? '连接仍不可用，请检查 API 配置' : 'Connection still unavailable, check API config');
-        return;
-      }
-    } catch {
-      setSystemNotice(language === 'zh' ? '连接仍不可用，请检查 API 配置' : 'Connection still unavailable, check API config');
-      return;
-    }
-
-    setIsDisconnected(false);
-    setMessages(prev => prev.map(m =>
-      m.id === messageId ? { ...m, sendStatus: 'sending' as const, failReason: undefined } : m
-    ));
-
-    pendingTextRef.current = msg.text;
-    // P2 #6 Phase 1: prefer the legacy inline `image` when still present
-    // (pre-migration rows); otherwise hydrate from `imageId` via IPC so resend
-    // works for already-migrated messages too. This keeps resend compatible
-    // across both shapes until Phase 2 retires the inline field entirely.
-    if (msg.image) {
-      pendingImageRef.current = msg.image;
-      pendingImageMessageIdRef.current = msg.id;
-    } else if (msg.imageId) {
-      try {
-        const hydrated = await getImageBase64(msg.imageId);
-        if (hydrated) {
-          pendingImageRef.current = hydrated;
-          pendingImageMessageIdRef.current = msg.id;
-        }
-      } catch (imgErr) {
-        console.warn('[handleResend] Failed to hydrate image from imageId:', msg.imageId, imgErr);
-      }
-    }
-    pendingMessageIdsRef.current.add(msg.id);
-    generationIdRef.current += 1;
-    executeSend();
-  }, [executeSend, language]);
-
-  const handleWithdrawMessage = useCallback((messageId: string) => {
-    const msg = messagesRef.current.find(m => m.id === messageId);
-    if (!msg || msg.sendStatus !== 'failed') return;
-
-    setMessages(prev => prev.filter(m => m.id !== messageId));
-    setInputValue(prev => prev ? prev + '\n' + msg.text : msg.text);
-
-    const remaining = messagesRef.current.filter(m => m.id !== messageId && m.sendStatus === 'failed');
-    if (remaining.length === 0) setIsDisconnected(false);
-  }, []);
-
-  // FIX: Clear pendingImageMessageIdRef on Recall if the recalled message was the one with the image
-  const handleRecall = useCallback((id: string) => { 
-      const msgToRecall = messagesRef.current.find(m => m.id === id); 
-      if (!msgToRecall) return; 
-      
-      setMessages(prev => prev.filter(m => m.id !== id)); 
-      
-      if (pendingMessageIdsRef.current.has(id)) pendingMessageIdsRef.current.delete(id); 
-      
-      // CRITICAL FIX: If we recall the image message, clear the tracking ref
-      if (id === pendingImageMessageIdRef.current) {
-          pendingImageRef.current = null;
-          pendingImageMessageIdRef.current = null;
-      }
-
-      setInputValue(prev => prev ? prev + '\n' + msgToRecall.text : msgToRecall.text); 
-      const remainingPendingMessages = messagesRef.current.filter(m => pendingMessageIdsRef.current.has(m.id) && m.id !== id); 
-      pendingTextRef.current = remainingPendingMessages.map(m => m.text).join('\n'); 
-      if (remainingPendingMessages.length === 0) { 
-          if (sendTimerRef.current) clearTimeout(sendTimerRef.current); 
-          if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current); 
-          setTimeLeft(0); 
-          setIsListening(false); 
-      } 
-  }, []); 
-  
-  const handleReply = useCallback((msg: Message) => { setReplyingToMsg(msg); inputRef.current?.focus(); }, []);
-  const handleCancelReply = useCallback(() => { setReplyingToMsg(null); }, []);
-  
-  const handleSend = useCallback(() => {
-    handleSendAction(chatRefs);
-  }, [inputValue, selectedImage, isThinking, isTalking, executeSend, replyingToMsg, locationConfig, language, messages, t.autoReplyText]);
-  
   const regeneratingVoiceIds = useAppStore(s => s.regeneratingVoiceIds);
   const setRegeneratingVoiceIds = useAppStore(s => s.setRegeneratingVoiceIds);
 
-  const handleRegenerateVoice = useCallback(async (msg: Message) => {
-    if (!msg.isVoiceMessage || !msg.id) return;
-    
-    setRegeneratingVoiceIds(prev => {
-      const next = new Set(prev);
-      next.add(msg.id);
-      return next;
-    });
+  const {
+    applyMessagesWithDerivedState,
+    applyVisualHistoryMutation,
+    markRagHistoryDirty,
+    applyManualHistoryMutation,
+    handleInsertMessage,
+    handleReorderMessages,
+    handleUpdateMessage,
+    handleDeleteMessage,
+    handleToggleHidden,
+    handleTogglePin,
+    handleJumpToMessage,
+    handleResendMessage,
+    handleWithdrawMessage,
+    handleRecall,
+    handleRegenerateVoice,
+    handleReply,
+    handleCancelReply,
+  } = useMessageHistoryOperations({
+    messagesRef, ttsConfigRef, inputRef,
+    pendingMessageIdsRef, pendingTextRef, pendingImageRef, pendingImageMessageIdRef,
+    sendTimerRef, countdownIntervalRef, generationIdRef, skipNextRawHistorySyncRef,
+    setMessages, setTurnCount, setSummaryArchiveState,
+    setIsRagHistoryDirty, setRagDirtyNoticeShown,
+    setReplyingToMsg, setHighlightedMessageId, setInputValue,
+    setIsDisconnected, setIsListening, setTimeLeft, setSystemNotice,
+    setRegeneratingVoiceIds,
+    setIsMemoryPanelOpen, setIsProfileOpen, setIsSettingsOpen,
+    setIsTaskPanelOpen, setIsMessageCenterOpen,
+    executeSend, updateMemoryQuerySession,
+    backupConfig, isRagHistoryDirty, ragDirtyNoticeShown, language,
+  });
 
-    try {
-      const textToSpeak = msg.japaneseText || msg.text;
-      const emotion = msg.storedEmotion || 'neutral';
-      
-      const ttsConfigToUse = { ...ttsConfigRef.current };
-      if (!ttsConfigToUse.fishAudioApiKey) {
-        throw new Error('No API key');
-      }
+  const confirmDeleteSelected = () => {
+    const nextMessages = messagesRef.current.filter(msg => !selectedIds.has(msg.id));
+    applyManualHistoryMutation(nextMessages, 'batch_hard_delete');
+    setShowDeleteConfirm(false);
+    setIsSelectionMode(false);
+    setSelectedIds(new Set());
+  };
+  const handleClearAll = () => {
+      const nextMessages = messagesRef.current.map(msg => ({ ...msg, isHidden: true }));
+      applyVisualHistoryMutation(nextMessages);
+      setShowClearFlow(false);
+      setIsSelectionMode(false);
+      pendingTextRef.current = "";
+      pendingImageRef.current = null;
+      pendingMessageIdsRef.current.clear();
+      pendingImageMessageIdRef.current = null;
+  };
 
-      const result = await synthesizeSpeech(textToSpeak, ttsConfigToUse);
-
-      if (result.audio) {
-        const fileId = msg.voiceFileId || msg.id;
-        const saveSuccess = await saveVoiceFile(fileId, result.audio);
-        if (saveSuccess) {
-          handleUpdateMessage(msg.id, {
-            voiceFileId: fileId,
-            voiceDuration: result.durationEstimate
-          });
-        }
-      }
-    } catch (e) {
-      console.error('[TTS] Failed to regenerate voice:', e);
-    } finally {
-      setRegeneratingVoiceIds(prev => {
-        const next = new Set(prev);
-        next.delete(msg.id);
-        return next;
-      });
-    }
-  }, [handleUpdateMessage]);
+  const handleSend = useCallback(() => {
+    handleSendAction(chatRefs);
+  }, [inputValue, selectedImage, isThinking, isTalking, executeSend, replyingToMsg, locationConfig, language, messages, t.autoReplyText]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter') handleSend(); };
   const toggleTheme = (e?: React.MouseEvent) => {
