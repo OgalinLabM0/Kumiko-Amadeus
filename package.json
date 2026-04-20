@@ -24,6 +24,10 @@
   },
   "dependencies": {
     "@capacitor/core": "^7.2.0",
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "^9.1.1",
+    "@fastify/websocket": "^11.2.0",
     "@google/genai": "^1.31.0",
     "@tanstack/react-virtual": "^3.13.23",
     "@xenova/transformers": "^2.17.2",
@@ -32,6 +36,7 @@
     "dexie": "^4.3.0",
     "dexie-react-hooks": "^4.4.0",
     "electron-updater": "^6.8.3",
+    "fastify": "^5.8.5",
     "file-saver": "^2.0.5",
     "framer-motion": "^11.0.0",
     "hnswlib-node": "^3.0.0",
@@ -106,6 +111,7 @@
       "preload.cjs",
       "electron-rag.cjs",
       "rag-worker.cjs",
+      "electron/**/*",
       "services/ragRebuildCore.js",
       "public/**/*",
       "!public/sovits-ref/**"

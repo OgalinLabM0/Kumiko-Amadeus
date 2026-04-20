@@ -1,6 +1,6 @@
 
 import React, { startTransition, useState, useEffect, useRef, useMemo, useLayoutEffect, useCallback } from 'react';
-import { X, Save, RotateCcw, Settings, Edit2, Eye, EyeOff, Cloud, HardDrive, Upload, Download, RefreshCw, Check, Globe, ChevronUp, ChevronDown, MapPin, Clock, FileJson, AlertTriangle, Link as LinkIcon, UserCircle, Key, Menu, Brain, Paperclip, CheckSquare, Zap, Send, Database, Image, Watch, AlertCircle, Lock, Activity, ShieldCheck, Power, CheckCircle, Volume2, Maximize2, Minimize2, BookOpen } from 'lucide-react';
+import { X, Save, RotateCcw, Settings, Edit2, Eye, EyeOff, Cloud, HardDrive, Upload, Download, RefreshCw, Check, Globe, ChevronUp, ChevronDown, MapPin, Clock, FileJson, AlertTriangle, Link as LinkIcon, UserCircle, Key, Menu, Brain, Paperclip, CheckSquare, Zap, Send, Database, Image, Watch, AlertCircle, Lock, Activity, ShieldCheck, Power, CheckCircle, Volume2, Maximize2, Minimize2, BookOpen, Smartphone } from 'lucide-react';
 import { Language, LocationConfig, BackupConfig, AIConfig } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
 import { useAppStore } from '../store';
@@ -10,6 +10,7 @@ import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel } fr
 import { db } from '../services/db';
 import { deleteRingtoneFile, deleteVoiceFile, isVoiceServiceAvailable, listVoiceFiles } from '../services/voiceFileService';
 import { DataManagementSection } from './settings/DataManagementSection';
+import { MobileAccessSection } from './settings/MobileAccessSection';
 import { AccountSection } from './settings/AccountSection';
 import { ApiConfigSection } from './settings/ApiConfigSection';
 import { AppUpdateSection } from './settings/AppUpdateSection';
@@ -72,6 +73,7 @@ type SettingsSectionId =
   | 'media'
   | 'backup'
   | 'data'
+  | 'mobileAccess'
   | 'update'
   | 'account'
   | 'guide'
@@ -135,6 +137,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [isInternetSearchOpen, setIsInternetSearchOpen] = useState(true);
   const [isTtsOpen, setIsTtsOpen] = useState(true);
   const [isDataManagementOpen, setIsDataManagementOpen] = useState(true);
+  const [isMobileAccessOpen, setIsMobileAccessOpen] = useState(false);
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
   const [isExpandedView, setIsExpandedView] = useState(true);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
@@ -728,6 +731,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       { id: 'media', label: t.mediaTitle, desc: t.mediaDesc, icon: Image, active: activeSectionId === 'media', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'backup', label: t.backupTitle, desc: t.backupDesc, icon: HardDrive, active: activeSectionId === 'backup', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'data', label: t.dataManagementTitle, desc: t.dataManagementDesc, icon: Database, active: activeSectionId === 'data', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      isDesktopElectron ? { id: 'mobileAccess', label: language === 'zh' ? '手机远程访问' : 'Mobile Remote Access', desc: language === 'zh' ? '通过 Tailscale 让手机访问桌面版。' : 'Reach the desktop from your phone via Tailscale.', icon: Smartphone, active: activeSectionId === 'mobileAccess', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' } : null,
       { id: 'update', label: t.updateSection, desc: t.updateSectionDesc, icon: Zap, active: activeSectionId === 'update', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'account', label: t.accountSettings, desc: t.accountDesc, icon: UserCircle, active: activeSectionId === 'account', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'guide', label: t.guideTitle, desc: t.guideDesc, icon: BookOpen, active: activeSectionId === 'guide', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
@@ -739,7 +743,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     t.ttsSection, t.ttsSectionDesc, t.internetSearchConfig, t.internetSearchDesc, t.generalSettings, t.generalDesc,
     t.locationTitle, t.locationDesc, t.backupTitle, t.backupDesc, t.dataManagementTitle, t.dataManagementDesc,
     t.updateSection, t.updateSectionDesc, t.accountSettings, t.accountDesc, t.guideTitle, t.guideDesc,
-    ttsConfig, onTtsConfigChange, activeSectionId, isDarkMode
+    ttsConfig, onTtsConfigChange, activeSectionId, isDarkMode, isDesktopElectron, language
   ]);
 
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#9c7425]';
@@ -823,6 +827,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       case 'data':
         setIsDataManagementOpen(prev => !prev);
         break;
+      case 'mobileAccess':
+        setIsMobileAccessOpen(prev => !prev);
+        break;
       case 'update':
         setIsUpdateOpen(prev => !prev);
         break;
@@ -869,6 +876,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         break;
       case 'data':
         setIsDataManagementOpen(true);
+        break;
+      case 'mobileAccess':
+        setIsMobileAccessOpen(true);
         break;
       case 'update':
         setIsUpdateOpen(true);
@@ -1399,6 +1409,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           onQuitAppCompletely={handleQuitAppCompletely}
           onClearOldImages={handleClearOldImages}
           onClearAllData={handleClearAllData}
+        />
+      </div>
+      )}
+
+      {isDesktopElectron && shouldRenderSection('mobileAccess') && (
+      <div id="settings-section-mobileAccess" >
+        <MobileAccessSection
+          isOpen={isMobileAccessOpen}
+          onToggle={() => handleSectionToggle('mobileAccess', isMobileAccessOpen)}
+          isDarkMode={isDarkMode}
+          language={language}
         />
       </div>
       )}

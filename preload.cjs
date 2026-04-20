@@ -72,7 +72,13 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'genie:status',
       'genie:pick-sovits-dir',
       'genie:pick-sovits-python',
-      'genie:test-sovits-python'
+      'genie:test-sovits-python',
+      'mobile-access:get-state',
+      'mobile-access:get-pairing-token',
+      'mobile-access:enable',
+      'mobile-access:disable',
+      'mobile-access:rotate-token',
+      'mobile-access:revoke-sessions'
       // Note: 'app:set-bg-color' intentionally omitted here — it's a fire-and-forget
       // one-way signal handled by ipcMain.on in the main process, NOT a request/response
       // handler. Calling electronAPI.invoke('app:set-bg-color', ...) used to land here but
@@ -90,7 +96,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:send-notification',
       'app:send-call-notification',
       'app:close-call-notification',
-      'app:set-bg-color'
+      'app:set-bg-color',
+      // Renderer → main reply for mobile HTTP bridge. Phase 1 pair: the
+      // renderer listens on 'mobile-api-proxy' (see on() below), does the
+      // work locally via existing services, and sends the result back
+      // through this channel. See electron/server/ipc-bridge.cjs.
+      'mobile-api-proxy-reply'
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.send(channel, data);
@@ -105,7 +116,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'rag:rebuild:error',
       'app:auto-zip-progress',
       'app:update-status',
-      'genie:status-changed'
+      'genie:status-changed',
+      'mobile-api-proxy'
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.on(channel, listener);
@@ -119,10 +131,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'rag:rebuild:error',
       'app:auto-zip-progress',
       'app:update-status',
-      'genie:status-changed'
+      'genie:status-changed',
+      'mobile-api-proxy'
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.removeListener(channel, listener);
     }
   }
+});
+
+// Separate bridge for a tiny runtime environment flag. The renderer uses
+// this to decide whether to call `window.electronAPI` directly (desktop
+// Electron) or fall back to HTTP via services/httpApi.ts (mobile PWA).
+// Keeping it off electronAPI avoids suggesting anything else lives here.
+contextBridge.exposeInMainWorld('__KUMIKO_ENV__', {
+  runtime: 'electron',
+  platform: process.platform,
 });

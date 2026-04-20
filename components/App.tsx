@@ -30,6 +30,7 @@ import { useInitialLoadBootstrap } from '../hooks/useInitialLoadBootstrap';
 import { useVoicePipeline } from '../hooks/useVoicePipeline';
 import { useProactiveLifeCycle } from '../hooks/useProactiveLifeCycle';
 import { useBackupWorkflow } from '../hooks/useBackupWorkflow';
+import { useMobileApiProxy } from './app/useMobileApiProxy';
 import { useUnreadAlertsChrome } from '../hooks/useUnreadAlertsChrome';
 import { usePreferencesPersistence } from '../hooks/usePreferencesPersistence';
 import { useWorldBookLocalization } from '../hooks/useWorldBookLocalization';
@@ -137,6 +138,11 @@ import { useMessageHistoryOperations } from './app/useMessageHistoryOperations';
 
 
 export const App = () => {
+  // Mount the Phase 1 mobile remote-access IPC listener before any other
+  // state hook so the desktop renderer immediately handles phone HTTP
+  // requests once the Fastify server comes up. Safe no-op in non-Electron
+  // contexts (web / PWA). See docs/mobile-remote-access.md.
+  useMobileApiProxy();
   const { devLogs, setDevLogs } = useDevLogs();
   const isBulkRestoreInProgressRef = useRef(false);
   const rawHistorySyncedIdsRef = useRef<Set<string>>(new Set());

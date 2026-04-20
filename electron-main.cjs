@@ -92,6 +92,8 @@ const {
   handleRefocusWebcontents,
   handleOpenExternal,
 } = require('./electron/window-manager.cjs');
+const mobileAccessIpc = require('./electron/server/mobile-access-ipc.cjs');
+const mobileAccessAuth = require('./electron/server/auth.cjs');
 
 // Platform detection. Used throughout this file to branch registry/PowerShell
 // (Windows-only) vs JSON config store (Linux), drive-letter preference (Windows)
@@ -269,6 +271,18 @@ if (!singleInstanceLock) {
   ipcMain.handle('app:set-auto-zip-backup', handleSetAutoZip);
   ipcMain.handle('app:get-auto-zip-backup', handleGetAutoZip);
 
+  // ── Mobile remote-access IPC (Phase 1) ────────────────────────
+  // The handler bodies live in electron/server/mobile-access-ipc.cjs so
+  // electron-main.cjs stays free of Fastify + Tailscale awareness. See
+  // docs/mobile-remote-access.md for the architectural overview.
+  mobileAccessIpc.bind({ getMainWindow });
+  ipcMain.handle('mobile-access:get-state', mobileAccessIpc.handleGetState);
+  ipcMain.handle('mobile-access:get-pairing-token', mobileAccessIpc.handleGetPairingToken);
+  ipcMain.handle('mobile-access:enable', mobileAccessIpc.handleEnable);
+  ipcMain.handle('mobile-access:disable', mobileAccessIpc.handleDisable);
+  ipcMain.handle('mobile-access:rotate-token', mobileAccessIpc.handleRotateToken);
+  ipcMain.handle('mobile-access:revoke-sessions', mobileAccessIpc.handleRevokeSessions);
+
   app.whenReady().then(async () => {
     // Restore persisted backup path + SoVITS authorization registries (paths the user
     // previously picked via native dialogs). Must happen before any backup:* or genie:*
@@ -314,6 +328,23 @@ if (!singleInstanceLock) {
     }
     applyUnreadShellState();
     setupAutoUpdater();
+
+    // If the user previously enabled Mobile Access, restart the Fastify
+    // server on launch so the phone PWA survives a desktop reboot without
+    // the user having to re-open Settings. A failure here (e.g. Tailscale
+    // not yet running because it launches after Electron) is swallowed —
+    // the Settings UI will surface it on the next state refresh.
+    try {
+      if (mobileAccessAuth.getState().enabled) {
+        const startResult = await mobileAccessIpc.handleEnable();
+        if (!startResult.ok) {
+          console.warn('[MOBILE-ACCESS] Auto-start failed:', startResult.error, startResult.code);
+        }
+      }
+    } catch (e) {
+      console.warn('[MOBILE-ACCESS] Auto-start exception:', e && e.message);
+    }
+
     setTimeout(() => {
       checkForAppUpdates('startup').catch((error) => {
         console.warn('[UPDATER] Startup check failed:', error);
@@ -347,5 +378,12 @@ if (!singleInstanceLock) {
   app.on('will-quit', () => {
     closeRag();
     terminateGenieProcess();
+    // Fire-and-forget: Fastify close() is async but fast (<500ms) and
+    // resolves against the Electron shutdown timer just fine. Awaiting
+    // here would require event.preventDefault which we can't cleanly
+    // thread through the legacy synchronous will-quit cleanups above.
+    mobileAccessIpc.stopOnQuit().catch((e) => {
+      console.warn('[MOBILE-ACCESS] stopOnQuit raised:', e && e.message);
+    });
   });
 }

@@ -1,6 +1,8 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './components/App';
+import { MobilePhase1App } from './components/MobilePhase1App';
+import { isMobilePwa } from './services/environment';
 
 // PWA service worker registration.
 // Kept intentionally even though desktop Electron never hits this branch
@@ -76,10 +78,16 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
+
+// Phase 1 split entry: phone PWAs served by the desktop Fastify tunnel
+// render a lightweight `MobilePhase1App`. The full desktop experience
+// (App.tsx + full store + Dexie wiring) remains untouched in Electron /
+// local dev contexts. Phase 2-5 will land responsive changes inside App
+// itself and retire this fork. See docs/mobile-remote-access.md.
+const RenderedShell = isMobilePwa() ? <MobilePhase1App /> : <App />;
+
 root.render(
   <React.StrictMode>
-    <AppErrorBoundary>
-      <App />
-    </AppErrorBoundary>
+    <AppErrorBoundary>{RenderedShell}</AppErrorBoundary>
   </React.StrictMode>
 );
