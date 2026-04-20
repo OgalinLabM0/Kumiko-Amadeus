@@ -23,10 +23,53 @@
 const crypto = require('crypto');
 const { ipcMain } = require('electron');
 
+// Channel whitelist. Anything the mobile PWA might plausibly call goes
+// here; everything else rejects with E_CHANNEL before we even consider
+// dispatching to the renderer. Categories:
+//
+//   Synthetic Dexie-backed (renderer-only, never passes through
+//   electronAPI.invoke):
+//     ping, chat, messages:recent, messages:search, messages:load-older
+//
+//   Read-mostly passthrough to existing renderer invoke channels:
+//     app:get-weather, app:get-historical-weather, app:get-japan-holidays
+//     images:list, voice:list
+//     rag:search, rag:get-messages, rag:stats, rag:status,
+//     rag:rebuild:status
+//
+//   Write passthrough (binary payloads arrive as base64; handler decodes
+//   before forwarding):
+//     images:save, images:delete, voice:save, voice:delete,
+//     rag:sync-messages
+//
+// Intentionally NOT in the list: backup:*, genie:*, app:update:*,
+// app:*-directory-*, app:open-external, ringtone:*, mobile-access:*,
+// images:open-folder, voice:open-folder, images:load, voice:load
+// (the last two go through /media/{images,voices}/:id instead of JSON).
 const ALLOWED_CHANNELS = new Set([
+  // --- Synthetic Dexie ------------------------------------------------
   'ping',
   'chat',
   'messages:recent',
+  'messages:search',
+  'messages:load-older',
+  // --- Passthrough reads ---------------------------------------------
+  'app:get-weather',
+  'app:get-historical-weather',
+  'app:get-japan-holidays',
+  'images:list',
+  'voice:list',
+  'rag:search',
+  'rag:get-messages',
+  'rag:stats',
+  'rag:status',
+  'rag:rebuild:status',
+  // --- Passthrough writes --------------------------------------------
+  'images:save',
+  'images:delete',
+  'voice:save',
+  'voice:delete',
+  'rag:sync-messages',
 ]);
 
 const DEFAULT_TIMEOUT_MS = 60000; // chat responses can stream for a while

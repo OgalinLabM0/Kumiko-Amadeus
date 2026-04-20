@@ -167,6 +167,21 @@ function findImageFile(imageId) {
   return null;
 }
 
+// Voice counterpart of findImageFile. Used by the mobile media route so
+// the phone can stream voice clips over HTTP instead of shipping them as
+// base64 through the IPC JSON bridge. Voice files are always .mp3
+// (handleVoiceSave enforces this), so we don't bother probing extensions.
+function findVoiceFile(messageId) {
+  if (typeof messageId !== 'string' || !SAFE_VOICE_ID.test(messageId)) return null;
+  try {
+    const candidate = resolveVoicePath(messageId);
+    if (!fs.existsSync(candidate)) return null;
+    return { path: candidate, ext: 'mp3', mimeType: 'audio/mpeg' };
+  } catch {
+    return null;
+  }
+}
+
 // ── Image IPC handlers ────────────────────────────────────────────
 
 function handleImagesSave(_event, payload = {}) {
@@ -407,9 +422,11 @@ function handleRingtoneOpenFolder() {
 
 module.exports = {
   SAFE_IMAGE_ID,
+  SAFE_VOICE_ID,
   IMAGE_EXT_WHITELIST,
   RINGTONE_AUDIO_EXTENSIONS,
   findImageFile,
+  findVoiceFile,
   handleImagesSave,
   handleImagesLoad,
   handleImagesDelete,

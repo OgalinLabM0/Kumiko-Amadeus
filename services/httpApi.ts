@@ -6,12 +6,11 @@
 // cookie-based session handling and a consistent error surface so
 // higher-level services/* code can treat remote and local the same.
 //
-// Phase 1 ALLOWED_CHANNELS (mirror the ipc-bridge.cjs whitelist):
-//   - ping
-//   - chat
-//   - messages:recent
-// Anything else rejects with HttpApiError(code='E_CHANNEL'). Phase 2
-// broadens this alongside the main-side list.
+// Phase 2 grew the allowlist from 3 to ~20 phone-safe channels. The
+// source of truth is `electron/server/ipc-bridge.cjs`'s ALLOWED_CHANNELS;
+// this set must stay in lockstep with it or the phone will get E_CHANNEL
+// before the fastify layer even sees the request. Anything not here
+// rejects locally with HttpApiError(code='E_CHANNEL').
 
 import { getApiBaseUrl, isMobilePwa } from './environment';
 
@@ -30,9 +29,29 @@ export class HttpApiError extends Error {
 }
 
 export const PWA_ALLOWED_CHANNELS: ReadonlySet<string> = new Set([
+  // Synthetic Dexie-backed channels (served by useMobileApiProxy).
   'ping',
   'chat',
   'messages:recent',
+  'messages:search',
+  'messages:load-older',
+  // Read-mostly passthrough to renderer IPC.
+  'app:get-weather',
+  'app:get-historical-weather',
+  'app:get-japan-holidays',
+  'images:list',
+  'voice:list',
+  'rag:search',
+  'rag:get-messages',
+  'rag:stats',
+  'rag:status',
+  'rag:rebuild:status',
+  // Write passthrough (base64 payloads decoded in renderer).
+  'images:save',
+  'images:delete',
+  'voice:save',
+  'voice:delete',
+  'rag:sync-messages',
 ]);
 
 const DEFAULT_FETCH_TIMEOUT_MS = 60_000;
@@ -186,4 +205,12 @@ export async function httpCheckSession(): Promise<boolean> {
 export function getHttpImageUrl(imageId: string): string {
   assertMobileContext();
   return `${getApiBaseUrl()}/media/images/${encodeURIComponent(imageId)}`;
+}
+
+// Voice counterpart of getHttpImageUrl. The desktop side reaches voice
+// clips via ipcRenderer.invoke('voice:load', ...); the PWA uses this
+// directly against an <audio> element.
+export function getHttpVoiceUrl(voiceFileId: string): string {
+  assertMobileContext();
+  return `${getApiBaseUrl()}/media/voices/${encodeURIComponent(voiceFileId)}`;
 }
