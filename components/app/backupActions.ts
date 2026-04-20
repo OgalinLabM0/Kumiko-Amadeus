@@ -36,7 +36,7 @@ import {
 } from './summaryCycle';
 import { syncRawHistoryMessages } from './rawHistorySync';
 import { yieldToMainThread } from './appUtils';
-import { buildBackupData, validateBackupData } from './backupData';
+import { buildBackupData, validateBackupData, type AutoZipMeta } from './backupData';
 import {
   db,
   INITIAL_WORLD_CHARACTER_STATUS,
@@ -581,6 +581,33 @@ export async function handleImportBackup(
     await yieldToMainThread();
     const json = parsedJson ?? JSON.parse(jsonStr);
 
+    // P0 #2 (Plan 2): detect degraded auto-backups. _autoZipMeta is stamped at
+    // the root of data.json by electron-main's before-quit handler. Manual
+    // exports and pre-Plan-2 auto-backups do not include it; absence is treated
+    // as "assume fully complete" to stay backward-compatible.
+    const autoZipMeta = json?._autoZipMeta as AutoZipMeta | undefined;
+    let autoZipDegradedMessage: string | null = null;
+    if (autoZipMeta && typeof autoZipMeta === 'object') {
+      const {
+        hasImages,
+        imagesIncludedCount,
+        imagesTotalCount,
+        imagesErrorReason,
+      } = autoZipMeta;
+      const isPartial =
+        typeof imagesIncludedCount === 'number' &&
+        typeof imagesTotalCount === 'number' &&
+        imagesIncludedCount < imagesTotalCount;
+      if (hasImages === false || isPartial) {
+        const reasonSuffix = imagesErrorReason ? `（${imagesErrorReason}）` : '';
+        const reasonSuffixEn = imagesErrorReason ? ` (${imagesErrorReason})` : '';
+        autoZipDegradedMessage = language === 'zh'
+          ? `已导入降级自动备份：图片不完整${reasonSuffix}，其余数据已恢复。`
+          : `Imported a degraded auto-backup: images are incomplete${reasonSuffixEn}; other data was restored.`;
+        console.warn('[IMPORT] Auto-backup ZIP is degraded:', autoZipMeta);
+      }
+    }
+
     if (!file.name.endsWith('.zip') && !desktopFilePath?.endsWith('.zip')) {
       const dataToRestore = json.data || json;
       const msgs = dataToRestore.messages || [];
@@ -616,6 +643,9 @@ export async function handleImportBackup(
       deps.updateBaseline(json.timestamp || Date.now(), restoredData);
       if (flowState === 'APP') {
         alert('Backup restored successfully!');
+      }
+      if (autoZipDegradedMessage) {
+        state.setSystemNotice(autoZipDegradedMessage);
       }
       return true;
     } else {

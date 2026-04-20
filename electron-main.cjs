@@ -2440,7 +2440,57 @@ function writeRingtoneMetadata(dir, originalName) {
       }
 
       const zip = new JSZip();
-      zip.file('data.json', fs.readFileSync(latestJson));
+
+      // P0 #2 (Plan 2): attach images/ snapshot and stamp _autoZipMeta so the
+      // importer can detect degraded auto-backups. Images live as real files
+      // under userData/images/{id}.{ext} (see imageService.ts + images:save
+      // handler above), so we can just read the folder directly from the main
+      // process — no IPC round-trip needed. The manual-export path does the
+      // equivalent from renderer-side Dexie; for the auto-backup path,
+      // filesystem is the source of truth.
+      const autoZipMeta = {
+        autoZipGeneratedAt: new Date().toISOString(),
+        hasImages: false,
+        imagesIncludedCount: 0,
+        imagesTotalCount: 0,
+      };
+      try {
+        const imagesDir = path.join(app.getPath('userData'), 'images');
+        if (fs.existsSync(imagesDir)) {
+          const imageEntries = fs.readdirSync(imagesDir)
+            .filter((f) => /^[\w-]+\.(jpg|jpeg|png|webp|gif)$/i.test(f));
+          autoZipMeta.imagesTotalCount = imageEntries.length;
+          if (imageEntries.length > 0) {
+            const imagesFolder = zip.folder('images');
+            for (const fileName of imageEntries) {
+              try {
+                imagesFolder.file(fileName, fs.readFileSync(path.join(imagesDir, fileName)));
+                autoZipMeta.imagesIncludedCount += 1;
+              } catch (imgErr) {
+                console.warn('[AUTO BACKUP] Skipped image', fileName, imgErr);
+              }
+            }
+            autoZipMeta.hasImages = autoZipMeta.imagesIncludedCount > 0;
+          }
+        }
+      } catch (imgListErr) {
+        autoZipMeta.imagesErrorReason = imgListErr && imgListErr.message ? imgListErr.message : String(imgListErr);
+        console.warn('[AUTO BACKUP] Images snapshot failed:', imgListErr);
+      }
+
+      // Stamp _autoZipMeta into data.json by re-parsing + re-serializing. If
+      // the latest JSON is malformed, fall back to writing the raw bytes
+      // untouched so the core backup is never lost to a cosmetic metadata
+      // patch.
+      let dataJsonPayload;
+      try {
+        const parsedBackup = JSON.parse(fs.readFileSync(latestJson, 'utf-8'));
+        dataJsonPayload = JSON.stringify({ ...parsedBackup, _autoZipMeta: autoZipMeta }, null, 2);
+      } catch (patchErr) {
+        console.warn('[AUTO BACKUP] Failed to stamp _autoZipMeta into data.json; writing raw bytes:', patchErr);
+        dataJsonPayload = fs.readFileSync(latestJson);
+      }
+      zip.file('data.json', dataJsonPayload);
 
       const voiceDir = path.join(app.getPath('userData'), 'voice');
       if (fs.existsSync(voiceDir)) {

@@ -23,6 +23,20 @@ export interface DailyReminderBackup {
   retryAt?: number;
 }
 
+// P0 #2 (Plan 2): marker stamped at the root of data.json (NOT inside
+// BackupPayload) by electron-main's before-quit auto-backup handler. Lets the
+// importer detect degraded auto-backups (e.g. images/ folder scan failed) and
+// warn the user without blocking restore. Absent on manual exports and on any
+// backup created before this feature shipped — absence means "assume fully
+// complete", which matches historical behaviour.
+export interface AutoZipMeta {
+  autoZipGeneratedAt: string;
+  hasImages: boolean;
+  imagesIncludedCount: number;
+  imagesTotalCount: number;
+  imagesErrorReason?: string;
+}
+
 export interface BackupPayload {
   messages: Message[];
   coreMemory: string;
