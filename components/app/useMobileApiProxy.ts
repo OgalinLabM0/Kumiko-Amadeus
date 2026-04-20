@@ -27,7 +27,8 @@
 
 import { useEffect } from 'react';
 import { db, type MessageEntity } from '../../services/db';
-import { callLLMRaw, getCurrentAIConfig } from '../../services/llmCore';
+import { getCurrentAIConfig } from '../../services/llmCore';
+import { sendUserMessageFromMobile } from './chatActions';
 
 interface ProxyRequest {
   requestId: string;
@@ -171,6 +172,18 @@ async function handleMessagesSearch(args: unknown) {
   };
 }
 
+// Phase 2 Part D: handoff to the real pipeline. sendUserMessageFromMobile
+// persists the user row, runs the full sendMessageToGemini (worldBook /
+// coreMemory / RAG / anchors / kumikoNotebook), persists every part the
+// model returned, and mutates the zustand store — which the Part C
+// WebSocket broadcaster then fans out to the phone for live updates.
+//
+// The HTTP reply retains the Phase 1 shape ({userMessage, modelMessage})
+// for backwards compatibility with the current PWA UI. When the model
+// returns multiple textParts we concatenate them into a single reply
+// row echoed back synchronously, but each part is persisted as its
+// own message — the broadcaster and the next `messages:recent` call
+// will see all of them individually.
 async function handleChat(args: unknown) {
   const payload = argsAsObject(args);
   const message = typeof payload.message === 'string' ? payload.message.trim() : '';
@@ -184,49 +197,41 @@ async function handleChat(args: unknown) {
     return { error: 'No API key configured on desktop', code: 'E_NO_KEY' };
   }
 
-  const nowUser = Date.now();
-  const userRow: MessageEntity = {
-    id: `m-${nowUser}-${Math.random().toString(36).slice(2, 8)}`,
-    role: 'user',
-    text: message,
-    timestamp: nowUser,
-  };
-  try {
-    await db.messages.put(userRow);
-  } catch (e) {
-    return { error: `DB write failed: ${(e as Error).message}`, code: 'E_DB' };
+  const imageId = typeof payload.imageId === 'string' ? payload.imageId : undefined;
+  const voiceFileId = typeof payload.voiceFileId === 'string' ? payload.voiceFileId : undefined;
+
+  const result = await sendUserMessageFromMobile(message, { imageId, voiceFileId });
+  if (result.error) {
+    return { error: result.error, code: result.code ?? 'E_CHAT' };
   }
 
-  // Phase 1 fallback: plain `callLLMRaw` with a minimal system prompt.
-  // Phase D (still TODO as of this writing) will swap this for the real
-  // sendMessageToGemini pipeline so RAG / worldBook / anchors apply.
-  let replyText = '';
-  try {
-    replyText = await callLLMRaw(
-      'You are responding to a user from their phone, connected to the desktop Kumiko·Amadeus over a private Tailscale tunnel. Reply concisely in the language the user wrote in.',
-      message,
-    );
-  } catch (e) {
-    return { error: `LLM call failed: ${(e as Error).message}`, code: 'E_LLM' };
+  // Re-read the freshly written rows so the HTTP reply carries exactly
+  // the same shape as Phase 1 (and exactly the same slim projection as
+  // every other messages:* handler). We could synthesize the reply from
+  // the result IDs alone, but round-tripping through Dexie means any
+  // downstream hydration (e.g. emotion / grounding) shows up in the
+  // phone's first render without waiting on the WS broadcast.
+  const userRow = await db.messages.get(result.userMessageId);
+  const modelRows: MessageEntity[] = [];
+  for (const id of result.modelMessageIds) {
+    const row = await db.messages.get(id);
+    if (row) modelRows.push(row);
   }
-  const trimmedReply = (replyText || '').trim() || '…';
 
-  const nowModel = Date.now();
-  const modelRow: MessageEntity = {
-    id: `m-${nowModel}-${Math.random().toString(36).slice(2, 8)}`,
-    role: 'model',
-    text: trimmedReply,
-    timestamp: nowModel,
-  };
-  try {
-    await db.messages.put(modelRow);
-  } catch (e) {
-    return { error: `DB write failed: ${(e as Error).message}`, code: 'E_DB' };
+  if (!userRow || modelRows.length === 0) {
+    // Shouldn't happen unless Dexie was cleared mid-turn; fall back to
+    // an explicit error so the phone can surface something meaningful.
+    return { error: 'Chat completed but messages missing from DB', code: 'E_CHAT_STATE' };
   }
 
   return {
     userMessage: slimMessage(userRow),
-    modelMessage: slimMessage(modelRow),
+    // Keep legacy single-message shape for older PWA builds. When the
+    // model sent multiple parts we expose the first (the rest arrive
+    // via the WS broadcaster), and also ship the full list for new
+    // clients that know how to consume it.
+    modelMessage: slimMessage(modelRows[0]),
+    modelMessages: modelRows.map(slimMessage),
   };
 }
 

@@ -54,6 +54,7 @@ import {
 import { evaluateRagMemoryCandidate, hasRecentRagDuplicate } from '../../services/ragMemoryFilter';
 import { loadTemporalEpisodesForRange } from '../../services/temporalEpisodeService';
 import { db } from '../../services/db';
+import { mapMessageToEntity } from './messageMappers';
 import { getAmbientEnvironmentContext } from './ambientContext';
 import { yieldToMainThread } from './appUtils';
 import {
@@ -1719,4 +1720,236 @@ async function calculateSummaryContinuationSignalStandalone(
     console.warn('[AUTO-SUMMARY] Continuation check unavailable, skipping carryover stitching.', error);
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// sendUserMessageFromMobile — Phase 2 Part D
+// ---------------------------------------------------------------------------
+//
+// Streamlined chat pipeline for phone-originated messages. The desktop
+// executeSend() is 900+ lines because it owns UI timers, pending-ref
+// bookkeeping, countdown coordination, and retroactive lifestream
+// integration. None of that applies when the phone sends a message —
+// the phone has no timers on desktop, no pending state in our refs,
+// and the retroactive generation can happen on the NEXT desktop-
+// originated turn without losing anything.
+//
+// What this DOES keep from executeSend:
+//   - full sendMessageToGemini call with coreMemory, worldBook, history
+//     slice (pinned + recent, capped at contextLimit), RAG context,
+//     anchors, kumikoNotebook (psyche state), locationConfig, language
+//   - anchor add/delete action from the model reply
+//   - turnCount increment (so summary cycle keeps ticking)
+//   - currentEmotion update (so the WS broadcaster pushes the right
+//     mood dot to the phone)
+//
+// What this DOES NOT do:
+//   - busy-state interception (schedule-driven short replies)
+//   - retroactive life stream regeneration
+//   - reminder parsing (phone users can trigger reminders via the
+//     regular chat flow; parsing is kept desktop-only for now so we
+//     don't accidentally create cross-device duplicates while the
+//     scheduler is still only watched by the desktop renderer)
+//   - memory query session threading
+//   - sleep-mode auto-reply
+//
+// The caller (useMobileApiProxy's handleChat) awaits this and returns
+// { userMessageId, modelMessageIds } so the phone can show a progress
+// marker. The actual UI update for new messages arrives via the Phase
+// 2 Part C WebSocket broadcaster picking up the Zustand mutations.
+
+export interface SendUserMessageFromMobileOptions {
+  imageId?: string;
+  voiceFileId?: string;
+}
+
+export interface SendUserMessageFromMobileResult {
+  userMessageId: string;
+  modelMessageIds: string[];
+  error?: string;
+  code?: string;
+}
+
+export async function sendUserMessageFromMobile(
+  text: string,
+  options: SendUserMessageFromMobileOptions = {},
+): Promise<SendUserMessageFromMobileResult> {
+  const trimmed = typeof text === 'string' ? text.trim() : '';
+  if (!trimmed) {
+    return { userMessageId: '', modelMessageIds: [], error: 'Empty message', code: 'E_EMPTY' };
+  }
+
+  const state = useAppStore.getState();
+  const {
+    coreMemory,
+    worldBook,
+    contextLimit,
+    locationConfig,
+    anchors,
+    kumikoNotebook,
+    language,
+    turnCount,
+  } = state;
+
+  // 1. Persist the user message. We go through addMessageToStore so the
+  // Zustand store sees it immediately (and the WS broadcaster pushes a
+  // message:added to the phone), then mirror into Dexie for durability.
+  const nowUser = Date.now();
+  const userMessageId = `m-${nowUser}-${Math.random().toString(36).slice(2, 8)}`;
+  const userMessage: Message = {
+    id: userMessageId,
+    role: 'user',
+    text: trimmed,
+    timestamp: nowUser,
+    imageId: options.imageId,
+    voiceFileId: options.voiceFileId,
+    isVoiceMessage: options.voiceFileId ? true : undefined,
+  };
+  try {
+    await db.messages.put(mapMessageToEntity(userMessage));
+  } catch (e) {
+    return {
+      userMessageId: '',
+      modelMessageIds: [],
+      error: `DB write failed: ${(e as Error).message}`,
+      code: 'E_DB',
+    };
+  }
+  useAppStore.getState().setMessages((prev) => [...prev, userMessage]);
+
+  // 2. Build the history slice the same way executeSend does: pinned
+  // always-in plus the most recent `contextLimit` messages (excluding
+  // the one we just wrote so the model's own turn doesn't appear as
+  // "previous" context).
+  const latest = useAppStore.getState().messages;
+  const others = latest.filter((m) => m.id !== userMessageId);
+  const recentMessages = others.slice(-contextLimit);
+  const pinnedMessages = others.filter((m) => m.isPinned);
+  const historyMap = new Map<string, Message>();
+  [...pinnedMessages, ...recentMessages].forEach((m) => historyMap.set(m.id, m));
+  const historySlice = Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+
+  // 3. RAG recall. Phone-originated turns don't track the memory-query
+  // session, so we take the simple fuzzy-RAG path (same default the
+  // desktop uses when no historical intent is detected).
+  let ragContext: string[] = [];
+  try {
+    const result = await searchLocalRagMemoryDetailed(trimmed, 3);
+    ragContext = result?.blocks ?? [];
+  } catch (e) {
+    // RAG failures are non-fatal — we just skip the context block.
+    console.warn('[MOBILE-CHAT] RAG search failed, continuing without context:', e);
+  }
+
+  // 4. Call the full pipeline. We pass `extraSystemPrompt` so the model
+  // knows this turn came from the phone — lets Kumiko adjust voice
+  // length / formatting slightly without us having to do that policy
+  // here.
+  let chatResponse: ChatResponse;
+  try {
+    chatResponse = await sendMessageToGemini(
+      trimmed,
+      coreMemory,
+      worldBook,
+      historySlice,
+      locationConfig,
+      undefined, // imageBase64 - phone images travel via imageId + media route
+      undefined, // mimeType
+      0, // retryCount
+      undefined, // previousContextLog
+      ragContext,
+      undefined, // exactHistoryLookup
+      [], // activeReminders - not re-evaluated on the mobile path
+      anchors,
+      kumikoNotebook,
+      undefined, // modelOverride
+      language,
+      'The most recent user turn came in from the phone PWA over Tailscale. Reply concisely and in the same language as the user.',
+    );
+  } catch (e) {
+    return {
+      userMessageId,
+      modelMessageIds: [],
+      error: `LLM call failed: ${(e as Error).message}`,
+      code: 'E_LLM',
+    };
+  }
+
+  // 5. Persist model reply(ies). textParts is a list of chat bubbles the
+  // model wants Kumiko to send; most turns yield 1-3 parts. We persist
+  // each as its own MessageEntity so the desktop's message list + the
+  // phone's list stay byte-identical.
+  const parts = Array.isArray(chatResponse?.textParts) ? chatResponse.textParts : [];
+  const nonEmptyParts = parts.map((p) => (typeof p === 'string' ? p.trim() : '')).filter(Boolean);
+  if (nonEmptyParts.length === 0) {
+    // Defensive: models occasionally return an empty textParts array
+    // when tools fire without text. Drop a single ellipsis rather than
+    // returning a zero-reply state that confuses the phone UI.
+    nonEmptyParts.push('…');
+  }
+
+  const emotion: EmotionType | undefined = chatResponse?.emotion;
+  const groundingSources = chatResponse?.groundingSources;
+  const modelMessageIds: string[] = [];
+  const writePromises: Promise<unknown>[] = [];
+  for (const part of nonEmptyParts) {
+    const ts = Date.now();
+    const id = `m-${ts}-${Math.random().toString(36).slice(2, 8)}`;
+    const modelMessage: Message = {
+      id,
+      role: 'model',
+      text: part,
+      timestamp: ts,
+      storedEmotion: emotion,
+      groundingSources: groundingSources && groundingSources.length > 0 ? groundingSources : undefined,
+    };
+    writePromises.push(db.messages.put(mapMessageToEntity(modelMessage)));
+    useAppStore.getState().setMessages((prev) => [...prev, modelMessage]);
+    modelMessageIds.push(id);
+  }
+  try {
+    await Promise.all(writePromises);
+  } catch (e) {
+    // Reply is already in the store so the phone sees it; a Dexie
+    // write failure just means the reply won't survive a reload. We
+    // surface this as a non-fatal warning.
+    console.warn('[MOBILE-CHAT] Persist model reply failed:', e);
+  }
+
+  // 6. Side effects that the WS broadcaster relies on. We intentionally
+  // do these AFTER the message writes so the phone sees messages first
+  // (more visible to the user), then the status changes.
+  if (emotion) {
+    useAppStore.getState().setCurrentEmotion(emotion);
+  }
+
+  if (chatResponse?.anchorAction) {
+    const { type, content } = chatResponse.anchorAction;
+    if (type === 'add' && typeof content === 'string' && content.trim()) {
+      const nextAnchor: AnchorEntry = {
+        id: `anchor-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        content: content.trim(),
+        timestamp: Date.now(),
+        emotion: emotion ?? 'neutral',
+      };
+      useAppStore.getState().setAnchors((prev) => [nextAnchor, ...prev]);
+    } else if (type === 'delete' && typeof content === 'string' && content.trim()) {
+      const target = content.trim();
+      // Mirror the executeSend semantic: substring match, not exact —
+      // the model frequently sends a distinctive phrase rather than
+      // the full anchor text when requesting deletion.
+      useAppStore.getState().setAnchors((prev) => prev.filter((a) => !a.content.includes(target)));
+    }
+  }
+
+  // Turn count tracks summary cadence. Bumping it here keeps the auto-
+  // summary cycle ticking regardless of whether messages originated
+  // from desktop or phone. summaryArchiveState boundary detection is
+  // intentionally NOT run from mobile — that 300-line block in
+  // executeSend guards against re-entrancy via refs that only exist
+  // in the desktop render tree. The next desktop-originated turn will
+  // pick up wherever mobile left off via turnCount alone.
+  useAppStore.getState().setTurnCount(turnCount + 1);
+
+  return { userMessageId, modelMessageIds };
 }

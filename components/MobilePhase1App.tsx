@@ -56,6 +56,7 @@ interface MessagesRecentResponse {
 interface ChatResponse {
   userMessage?: SlimMessage;
   modelMessage?: SlimMessage;
+  modelMessages?: SlimMessage[];
   error?: string;
   code?: string;
 }
@@ -334,7 +335,28 @@ function ChatScreen({ hostname }: { hostname: string | null }) {
       if (result.error || !result.userMessage || !result.modelMessage) {
         setSendError(result.error || 'Chat call returned no reply.');
       } else {
-        setMessages((prev) => [...prev, result.userMessage!, result.modelMessage!]);
+        // Part D server now returns modelMessages[] when the model
+        // produced multiple reply parts. Fall back to the legacy single
+        // modelMessage field so the UI stays compatible if the desktop
+        // ever emits an older-shape response.
+        //
+        // The WS broadcaster also fires message:added for each of these
+        // rows. We rely on the dedupe-by-id fold in the effect above to
+        // drop duplicates, so paining them here optimistically gives
+        // the sender instant feedback without double-rendering.
+        const replyRows = result.modelMessages && result.modelMessages.length > 0
+          ? result.modelMessages
+          : [result.modelMessage!];
+        setMessages((prev) => {
+          const byId = new Map<string, SlimMessage>();
+          for (const row of prev) byId.set(row.id, row);
+          // Merge in any rows the broadcaster hasn't shipped yet; keeps
+          // the "send → see it immediately" guarantee without doubling
+          // up if the WS beat us to it.
+          byId.set(result.userMessage!.id, result.userMessage!);
+          for (const row of replyRows) byId.set(row.id, row);
+          return Array.from(byId.values()).sort((a, b) => a.timestamp - b.timestamp);
+        });
         setDraft('');
       }
     } catch (e) {
