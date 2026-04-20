@@ -1630,7 +1630,7 @@ async function getCachedSummaryEmbeddingStandalone(
   const cached = cache.get(normalized);
   if (cached) return cached;
 
-  const vector = await generateEmbedding(normalized, getCurrentAIConfig(), 0);
+  const vector = await generateEmbedding(normalized, 0);
   cache.set(normalized, vector);
 
   if (cache.size > SUMMARY_SEMANTIC_CACHE_LIMIT) {

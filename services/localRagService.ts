@@ -304,7 +304,7 @@ export const syncRawHistoryMessagesToMain = async (
 // ==========================================
 // EMBEDDING GENERATION
 // ==========================================
-export const generateEmbedding = async (text: string, aiConfig: AIConfig, retries = 5, backoff = 2000): Promise<Float32Array> => {
+export const generateEmbedding = async (text: string, retries = 5, backoff = 2000): Promise<Float32Array> => {
   // Try local ONNX first (via IPC)
   const ipc = getIpcRenderer();
   if (ipc) {
@@ -318,7 +318,7 @@ export const generateEmbedding = async (text: string, aiConfig: AIConfig, retrie
           if (retries > 0) {
             console.warn(`[LOCAL RAG] Local embedding failed, retrying in ${backoff}ms... (${retries} retries left)`, e);
             await new Promise(resolve => setTimeout(resolve, backoff));
-            return generateEmbedding(text, aiConfig, retries - 1, backoff * 2);
+            return generateEmbedding(text, retries - 1, backoff * 2);
           }
           throw e;
       }
