@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { X, BrainCircuit, ChevronDown, ChevronUp, Plus, Trash2, ArrowUp, ArrowDown, BookOpen, RotateCcw, Lock, History, Bookmark, Edit2, Check, Clock, ListPlus, GripVertical, EyeOff, Eye, Quote, Pin, StickyNote, Image as ImageIcon, LocateFixed, NotebookPen, Zap, RefreshCw, AlertTriangle, Search, Power, Star, Code2 } from 'lucide-react';
 import { WorldBookEntry, Message, AnchorEntry } from '../types';
+import { resolveMessageImageSync } from './app/useMessageImage';
 import { Collapse } from './Collapse';
 import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, KUMIKO_EMOTION_IMAGES, LOCALIZED_WORLD_BOOK } from '../constants';
 import { useAppStore } from '../store';
@@ -948,7 +949,15 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                                             ) : (
                                                 <div className="relative group/bubble" onClick={(e) => toggleMobileMenu(e, msg.id)}>
                                                     {msg.quote && <div className={`mb-1 p-1 rounded ka-micro border-l-2 opacity-70 ${isDarkMode ? 'bg-black/20 border-white/30' : 'bg-black/5 border-black/20'}`}><div className="flex items-center gap-1 font-semibold"><Quote size={8} /><span>{msg.quote.role === 'model' ? 'Kumiko' : 'You'}</span></div><p className="truncate italic">{msg.quote.text}</p></div>}
-                                                    {msg.image && <button onClick={(e) => { e.stopPropagation(); if (onImageClick) onImageClick(msg.image!); }} className={`mb-1 p-1 rounded ka-micro border flex items-center gap-1 overflow-hidden cursor-pointer hover:opacity-80 transition-opacity w-full text-left ${isDarkMode ? 'bg-blue-900/20 border-blue-500/30 text-blue-300' : 'bg-blue-50 border-blue-200 text-blue-700'}`} title={language === 'zh' ? '查看图片' : 'View Image'}><ImageIcon size={10} className="flex-shrink-0" /><span className="truncate opacity-80 underline decoration-dotted">{msg.image}</span></button>}
+                                                    {(() => {
+                                                      // P2 #6 Phase 1: route through shared resolver so imageId-based
+                                                      // messages (post-migration) render the same button.
+                                                      const msgImageUrl = resolveMessageImageSync(msg);
+                                                      if (!msgImageUrl) return null;
+                                                      return (
+                                                        <button onClick={(e) => { e.stopPropagation(); if (onImageClick) onImageClick(msgImageUrl); }} className={`mb-1 p-1 rounded ka-micro border flex items-center gap-1 overflow-hidden cursor-pointer hover:opacity-80 transition-opacity w-full text-left ${isDarkMode ? 'bg-blue-900/20 border-blue-500/30 text-blue-300' : 'bg-blue-50 border-blue-200 text-blue-700'}`} title={language === 'zh' ? '查看图片' : 'View Image'}><ImageIcon size={10} className="flex-shrink-0" /><span className="truncate opacity-80 underline decoration-dotted">{msgImageUrl}</span></button>
+                                                      );
+                                                    })()}
                                                     <p className="whitespace-pre-wrap leading-relaxed break-words">{msg.text}</p>
                                                     <div className={`absolute -top-9 ${isUser ? '-left-2' : '-right-2'} gap-1 bg-black/90 rounded px-2 py-1.5 shadow-xl z-20 border border-white/10 ${isMenuOpen ? 'flex animate-in zoom-in-95 duration-200' : 'hidden'} md:hidden md:group-hover/bubble:flex after:content-[''] after:absolute after:-bottom-4 after:left-0 after:w-full after:h-4`}>
                                                         {onJumpToMessage && <button onClick={(e) => { e.stopPropagation(); onJumpToMessage(msg.id); }} className="p-1 text-purple-400 hover:text-purple-300 transition-colors" title={t.jumpToContext}><LocateFixed size={12} /></button>}

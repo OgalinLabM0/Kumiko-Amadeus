@@ -631,6 +631,37 @@ export async function handleImportBackup(
 
     const restoredData = await deps.restoreParsedBackupPayload(json, importedImages);
     if (restoredData) {
+      // P2 #6 Phase 1: hydrate legacy inline `message.image` (pre-migration
+      // backups) into the `imageId` + file-store pipeline so all downstream
+      // code sees a single shape. Non-blocking: a failed row keeps its inline
+      // `image` as fallback, which useMessageImage still renders correctly.
+      try {
+        const legacyInlineMessages = Array.isArray(restoredData.messages)
+          ? restoredData.messages.filter((m: any) => m?.image && !m?.imageId)
+          : [];
+        if (legacyInlineMessages.length > 0) {
+          const hydratedIds = new Map<string, string>();
+          for (const m of legacyInlineMessages) {
+            try {
+              const newId = `img_legacy_${m.id}`;
+              await imageService.saveImageWithId(newId, m.image);
+              hydratedIds.set(m.id, newId);
+            } catch (err) {
+              console.warn('[IMPORT] Inline image hydrate failed for', m.id, err);
+            }
+          }
+          if (hydratedIds.size > 0) {
+            state.setMessages(prev => prev.map(m => {
+              const newId = hydratedIds.get(m.id);
+              return newId ? { ...m, imageId: newId, image: undefined } : m;
+            }));
+            console.log(`[IMPORT] Hydrated ${hydratedIds.size} legacy inline image(s) into imageId.`);
+          }
+        }
+      } catch (hydrateErr) {
+        console.warn('[IMPORT] Inline image hydrate pass failed:', hydrateErr);
+      }
+
       if (json.vectors) {
         await yieldToMainThread();
         // P1 #13 follow-up (Plan 4): restoreVectors now returns a structured

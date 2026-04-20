@@ -149,6 +149,7 @@ import {
   type ChatActionRefs,
   type ExecuteSendHelpers,
 } from './app/chatActions';
+import { migrateLegacyMessageImages } from './app/legacyImageMigration';
 
 
 export const App = () => {
@@ -986,6 +987,21 @@ export const App = () => {
   useEffect(() => {
     const loadData = async () => {
       try {
+        // P2 #6 Phase 1: run the legacy `message.image` -> `imageId` migration
+        // BEFORE loading messages into state, so the UI only ever sees the
+        // post-migration shape. Idempotent across reboots via the
+        // `image && !imageId` pending filter; no-op on fresh installs. Failures
+        // here are logged but non-fatal: legacy inline `image` is still a valid
+        // fallback that the UI layer understands via useMessageImage.
+        try {
+          const migrationResult = await migrateLegacyMessageImages();
+          if (migrationResult.pending > 0) {
+            console.log('[LegacyImageMigration]', migrationResult);
+          }
+        } catch (migrateErr) {
+          console.warn('[LegacyImageMigration] failed (continuing load):', migrateErr);
+        }
+
         const loadedMessages = await loadRawHistoryMessages();
         const loadedTurnCount = recalculateTurnCountFromMessages(loadedMessages);
         const loadedSummaryArchiveState = normalizeSummaryArchiveState(
@@ -2452,9 +2468,23 @@ export const App = () => {
     ));
 
     pendingTextRef.current = msg.text;
+    // P2 #6 Phase 1: prefer the legacy inline `image` when still present
+    // (pre-migration rows); otherwise hydrate from `imageId` via IPC so resend
+    // works for already-migrated messages too. This keeps resend compatible
+    // across both shapes until Phase 2 retires the inline field entirely.
     if (msg.image) {
       pendingImageRef.current = msg.image;
       pendingImageMessageIdRef.current = msg.id;
+    } else if (msg.imageId) {
+      try {
+        const hydrated = await getImageBase64(msg.imageId);
+        if (hydrated) {
+          pendingImageRef.current = hydrated;
+          pendingImageMessageIdRef.current = msg.id;
+        }
+      } catch (imgErr) {
+        console.warn('[handleResend] Failed to hydrate image from imageId:', msg.imageId, imgErr);
+      }
     }
     pendingMessageIdsRef.current.add(msg.id);
     generationIdRef.current += 1;

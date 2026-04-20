@@ -4,6 +4,7 @@ import { Message, Language } from '../types';
 import { Circle, CheckCircle, Undo2, Reply, Quote, Link as LinkIcon, ImageOff, AlertCircle, RotateCcw, PenLine } from 'lucide-react';
 import { UI_TRANSLATIONS } from '../constants';
 import { VoiceBubble } from './VoiceBubble';
+import { useMessageImage } from './app/useMessageImage';
 
 interface ChatBubbleProps {
   message: Message;
@@ -73,6 +74,10 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   const [popoverDir, setPopoverDir] = useState<'up' | 'down'>('up');
   const failPopoverRef = useRef<HTMLDivElement>(null);
   const failBtnRef = useRef<HTMLButtonElement>(null);
+  // P2 #6 Phase 1: single source of truth for the message image URL. Handles
+  // legacy inline `message.image` and the new `imageId` uniformly; desktop
+  // returns `kumiko-image://<id>` synchronously with no first-paint flicker.
+  const displayUrl = useMessageImage(message);
 
   useEffect(() => {
     if (!showFailPopover) return;
@@ -308,16 +313,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
 
              {/* The Bubble */}
              <div className="flex flex-col items-end max-w-[85%] md:max-w-[75%]">
-                {message.image && (
+                {displayUrl && (
                   <div className={`mb-1 w-full rounded-lg overflow-hidden border ${imageBorderClass} cursor-pointer hover:opacity-90 transition-opacity bg-black/10`}>
                     {!imgError ? (
                         <img 
-                            src={message.image} 
+                            src={displayUrl} 
                             alt="uploaded" 
                             className="w-full h-auto object-cover" 
                             onClick={(e) => {
                                 e.stopPropagation();
-                                onImageClick && onImageClick(message.image!);
+                                onImageClick && onImageClick(displayUrl);
                             }}
                             onError={() => setImgError(true)}
                         />
@@ -440,7 +445,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   return (
     prevProps.message.id === nextProps.message.id &&
     prevProps.message.text === nextProps.message.text && // Check if text changed (edit)
-    prevProps.message.image === nextProps.message.image && // CRITICAL: Check if image URL changed
+    prevProps.message.image === nextProps.message.image && // Check if legacy inline image URL changed
+    prevProps.message.imageId === nextProps.message.imageId && // P2 #6: imageId also drives displayUrl
     prevProps.message.isRead === nextProps.message.isRead && // Check if read status changed
     prevProps.message.isHidden === nextProps.message.isHidden &&
     prevProps.message.isPinned === nextProps.message.isPinned &&
