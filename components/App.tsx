@@ -34,9 +34,9 @@ import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, normalizeRem
 import { LoadingDataScreen } from './app/AppStatusOverlays';
 import { Message, AppState, EmotionType, WorldBookEntry, Language, LocationConfig, BackupConfig, AnchorEntry, AIConfig, ChatResponse, SummaryArchiveState, SummaryBoundaryReason, MemoryQuerySession, TemporalQueryPrecision, TemporalQuerySource, TemporalQueryDiagnosticsStatus, TemporalQueryConfidence, SummarySegmentMetadata, TtsConfig, VoiceMode, MissedMessageAlert, MessageAlertKind } from '../types';
 import { sendMessageToGemini, startChat, summarizeConversation, searchRagMemory, saveRagMemory, uploadImageToBackend, getCurrentAIConfig, validateAIConnection, analyzeTemporalQueryDetailed, getTemporalSearchRoleFromQuery, rewriteHistoricalRecallQueryDetailed, callLLMRaw, type HistoricalQueryRewrite, type HistoricalSearchStrategy, type TemporalQueryAnalysis, type TemporalQueryDiagnostics } from '../services/geminiService';
-import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK, EMOTION_TO_FISH_AUDIO_TAGS, EMOTION_TTS_TEMPERATURE, DEFAULT_TTS_CONFIG } from '../constants';
+import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK, EMOTION_TO_FISH_AUDIO_TAGS, EMOTION_TTS_TEMPERATURE } from '../constants';
 import { synthesizeSpeech, TtsError } from '../services/fishAudioService';
-import { saveVoiceFile, isVoiceServiceAvailable, isBuiltInRingtoneId, isCustomRingtoneId } from '../services/voiceFileService';
+import { saveVoiceFile, isVoiceServiceAvailable } from '../services/voiceFileService';
 import { VoiceCallOverlay } from './VoiceCallOverlay';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -149,6 +149,7 @@ import {
 import { migrateLegacyMessageImages } from './app/legacyImageMigration';
 import { useAppUpdater } from './app/useAppUpdater';
 import { useLocalFileBackup } from './app/useLocalFileBackup';
+import { useAppPreferencesSync } from './app/useAppPreferencesSync';
 
 
 export const App = () => {
@@ -519,58 +520,17 @@ export const App = () => {
   const currentEmotion = useAppStore(s => s.currentEmotion);
   const setCurrentEmotion = useAppStore(s => s.setCurrentEmotion);
 
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_current_emotion', currentEmotion);
-  }, [currentEmotion, isDataLoaded]);
-
   const backupConfig = useAppStore(s => s.backupConfig);
   const setBackupConfig = useAppStore(s => s.setBackupConfig);
   const autoZipEnabled = useAppStore(s => s.autoZipEnabled);
   const setAutoZipEnabled = useAppStore(s => s.setAutoZipEnabled);
 
-  useEffect(() => {
-    if (isDesktopElectron()) {
-      window.electronAPI.invoke('app:get-auto-zip-backup').then((result: any) => {
-        setAutoZipEnabled(result?.enabled === true);
-      });
-    }
-  }, []);
-
-  const handleToggleAutoZip = () => {
-    const newValue = !autoZipEnabled;
-    setAutoZipEnabled(newValue);
-    if (isDesktopElectron()) {
-      window.electronAPI.invoke('app:set-auto-zip-backup', { enabled: newValue });
-    }
-  };
-
   const handleBackupConfigChange = useCallback((nextConfig: BackupConfig) => {
     setBackupConfig(normalizeBackupConfig(nextConfig));
   }, []);
 
-  const sanitizeTtsConfig = useCallback((value: unknown): TtsConfig => {
-    const merged = {
-      ...DEFAULT_TTS_CONFIG,
-      ...(value && typeof value === 'object' ? value as Partial<TtsConfig> : {})
-    };
-
-    if (!isBuiltInRingtoneId(merged.ringtoneFileId) && !isCustomRingtoneId(merged.ringtoneFileId)) {
-      merged.ringtoneFileId = DEFAULT_TTS_CONFIG.ringtoneFileId;
-    }
-
-    return merged as TtsConfig;
-  }, []);
-
   const ttsConfig = useAppStore(s => s.ttsConfig);
   const setTtsConfig = useAppStore(s => s.setTtsConfig);
-  const ttsConfigRef = useRef(ttsConfig);
-  useEffect(() => { ttsConfigRef.current = ttsConfig; }, [ttsConfig]);
-  const handleTtsConfigChange = useCallback((next: TtsConfig) => {
-    const sanitized = sanitizeTtsConfig(next);
-    setTtsConfig(sanitized);
-    localStorage.setItem('kumiko_tts_config', JSON.stringify(sanitized));
-  }, [sanitizeTtsConfig]);
 
   const ragStatus = useAppStore(s => s.ragStatus);
   const setRagStatus = useAppStore(s => s.setRagStatus);
@@ -581,38 +541,13 @@ export const App = () => {
   const ragDirtyNoticeShown = useAppStore(s => s.ragDirtyNoticeShown);
   const setRagDirtyNoticeShown = useAppStore(s => s.setRagDirtyNoticeShown);
 
-  useEffect(() => {
-    if (ragStatus !== 'RECALLING' && ragStatus !== 'INDEXING') {
-      setRagProgressLabel(null);
-    }
-  }, [ragStatus]);
-
-  useEffect(() => {
-    const ragEnabled = backupConfig.ragEnabled ?? false;
-    if (ragEnabled) {
-      setRagStatus(prev => prev === 'OFF' ? 'IDLE' : prev);
-    } else {
-      setRagStatus('OFF');
-    }
-  }, [backupConfig.ragEnabled]);
-
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal(RAG_HISTORY_DIRTY_STORAGE_KEY, isRagHistoryDirty);
-  }, [isRagHistoryDirty, isDataLoaded]);
-
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_backup_config', backupConfig);
-  }, [backupConfig, isDataLoaded]);
-
   const autoBackupInterval = useAppStore(s => s.autoBackupInterval);
   const setAutoBackupInterval = useAppStore(s => s.setAutoBackupInterval);
   const connectedFileName = useAppStore(s => s.connectedFileName);
   const setConnectedFileName = useAppStore(s => s.setConnectedFileName);
   const lastBackupTime = useAppStore(s => s.lastBackupTime);
   const setLastBackupTime = useAppStore(s => s.setLastBackupTime);
-  
+
   const syncErrorMessage = useAppStore(s => s.syncErrorMessage);
   const setSyncErrorMessage = useAppStore(s => s.setSyncErrorMessage);
   const showSyncErrorModal = useAppStore(s => s.showSyncErrorModal);
@@ -623,9 +558,26 @@ export const App = () => {
   const isDisconnected = useAppStore(s => s.isDisconnected);
   const setIsDisconnected = useAppStore(s => s.setIsDisconnected);
 
-  useEffect(() => {
-    setStatusText(t.signalConnected);
-  }, [language]);
+  const {
+    handleTtsConfigChange,
+    handleToggleAutoZip,
+    ttsConfigRef,
+  } = useAppPreferencesSync({
+    isDataLoaded,
+    isBulkRestoreInProgressRef,
+    currentEmotion,
+    autoZipEnabled,
+    setAutoZipEnabled,
+    ttsConfig,
+    setTtsConfig,
+    backupConfig,
+    ragStatus,
+    setRagStatus,
+    setRagProgressLabel,
+    isRagHistoryDirty,
+    language,
+    setStatusText,
+  });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);

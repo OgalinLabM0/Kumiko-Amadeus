@@ -2,7 +2,7 @@ import type { StateCreator } from 'zustand';
 
 export const RAG_HISTORY_DIRTY_STORAGE_KEY = 'kumiko_rag_history_dirty';
 
-type RagStatusValue = 'IDLE' | 'RECALLING' | 'INDEXING' | 'ERROR' | 'OFF';
+export type RagStatusValue = 'IDLE' | 'RECALLING' | 'INDEXING' | 'ERROR' | 'OFF';
 
 export interface RagSlice {
   ragStatus: RagStatusValue;
