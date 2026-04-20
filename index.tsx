@@ -2,6 +2,14 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './components/App';
 
+// PWA service worker registration.
+// Kept intentionally even though desktop Electron never hits this branch
+// (no `serviceWorker` in Electron's navigator on our current config) and
+// Capacitor iOS uses a WebView with its own offline policy. Reserved for
+// a future web-build target where offline cache and install-to-homescreen
+// actually matter. Do NOT remove as "dead code" without first confirming
+// the web build has been abandoned. See also vite.config.ts VitePWA block
+// and the `vite-plugin-pwa` / `workbox-precaching` devDeps in package.json.
 if ('serviceWorker' in navigator) {
   import('virtual:pwa-register').then(({ registerSW }) => {
     registerSW({ immediate: true });

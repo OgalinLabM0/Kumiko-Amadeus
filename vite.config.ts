@@ -12,6 +12,13 @@ export default defineConfig(({ mode }) => {
       },
       plugins: [
         react(),
+        // VitePWA config + the `vite-plugin-pwa` / `workbox-precaching` devDeps
+        // are kept intentionally for a future web-build target. Desktop Electron
+        // ignores the generated service worker and manifest; Capacitor iOS uses
+        // its own WebView offline policy, so neither current distribution channel
+        // depends on this plugin. See also the matching comment above the
+        // serviceWorker registration in index.tsx. Do NOT remove as "dead
+        // dependencies" without first confirming the web build has been abandoned.
         VitePWA({
           strategies: 'injectManifest',
           srcDir: '',
