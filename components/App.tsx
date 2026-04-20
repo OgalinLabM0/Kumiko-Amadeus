@@ -81,7 +81,6 @@ import {
   recalculateTurnCountFromMessages,
   parseRelativeReminderRequest,
   parseDailyReminderRequest,
-  getTimePartsInTimezone,
   sanitizeWorldCharacterStatusRecord,
   sanitizeKumikoDiaryRecord,
   sanitizeDailyFragmentRecord,
@@ -139,13 +138,13 @@ import {
   executeSend as executeSendAction,
   handleSendAction,
   triggerNativeProactiveMessage as triggerNativeProactiveMessageAction,
-  triggerTimedReminderMessage as triggerTimedReminderMessageAction,
   type ChatActionRefs,
   type ExecuteSendHelpers,
 } from './app/chatActions';
 import { useAppUpdater } from './app/useAppUpdater';
 import { useLocalFileBackup } from './app/useLocalFileBackup';
 import { useAppPreferencesSync } from './app/useAppPreferencesSync';
+import { useScheduledReminders } from './app/useScheduledReminders';
 
 
 export const App = () => {
@@ -604,7 +603,6 @@ export const App = () => {
 
   // --- NEW: SESSION LOCK (ANTI-RACE CONDITION) ---
   const welcomeTriggeredRef = useRef<boolean>(false);
-  const reminderDispatchingRef = useRef<boolean>(false);
 
   // FIX: Restore truncated ragBufferRef logic with try-catch
   const ragBufferRef = useRef<string[]>([]);
@@ -1261,14 +1259,6 @@ export const App = () => {
     );
   }, [messages, coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, isTalking, isThinking, language, backupConfig, addMessage, showBackgroundMessageNotification]);
 
-  const triggerTimedReminderMessage = useCallback(async (reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>): Promise<boolean> => {
-    return triggerTimedReminderMessageAction(
-      { messagesRef, ttsConfigRef },
-      { runVoicePipeline },
-      reminder,
-    );
-  }, [language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook, addMessage, showBackgroundMessageNotification]);
-
   useEffect(() => {
       // Cloud sync was removed from the product; proactive checks used to wait for the
       // initial cloud pull to finish first. Now we proceed directly.
@@ -1451,70 +1441,29 @@ export const App = () => {
       };
   }, [messages, flowState, locationConfig, isTalking, isThinking, triggerNativeProactiveMessage]);
 
-  useEffect(() => {
-      if (flowState !== 'APP') return;
-
-      const checkScheduledReminders = async () => {
-          if (reminderDispatchingRef.current || isTalking || isThinking) return;
-
-          reminderDispatchingRef.current = true;
-          try {
-              const now = Date.now();
-              const relativeReminder = (await getRelativeReminders())
-                  .filter(reminder => reminder.dueAt <= now && (!reminder.retryAt || reminder.retryAt <= now))
-                  .sort((a, b) => a.dueAt - b.dueAt)[0];
-
-              if (relativeReminder) {
-                  const delivered = await triggerTimedReminderMessage(relativeReminder);
-                  if (delivered) {
-                      await removeRelativeReminder(relativeReminder.id);
-                  } else {
-                      await markRelativeReminderRetry(relativeReminder.id);
-                  }
-                  return;
-              }
-
-              const dueDailyReminder = (await getDailyReminders())
-                  .filter(reminder =>
-                      !reminder.paused &&
-                      (() => {
-                          const timeParts = getTimePartsInTimezone(new Date(now), reminder.timeZone || 'Asia/Tokyo');
-                          return (
-                              reminder.hour === timeParts.hour &&
-                              reminder.minute === timeParts.minute &&
-                              reminder.lastTriggeredDate !== timeParts.dateKey &&
-                              (!reminder.retryAt || reminder.retryAt <= now)
-                          );
-                      })()
-                  )
-                  .sort((a, b) => a.createdAt - b.createdAt)[0];
-
-              if (!dueDailyReminder) return;
-
-              const delivered = await triggerTimedReminderMessage(dueDailyReminder);
-              if (delivered) {
-                  const timeParts = getTimePartsInTimezone(new Date(now), dueDailyReminder.timeZone || 'Asia/Tokyo');
-                  await markDailyReminderTriggered(dueDailyReminder.id, timeParts.dateKey);
-              } else {
-                  await markDailyReminderRetry(dueDailyReminder.id);
-              }
-          } finally {
-              reminderDispatchingRef.current = false;
-          }
-      };
-
-      const intervalId = setInterval(() => {
-          void checkScheduledReminders();
-      }, 1000);
-      const timeoutId = setTimeout(() => {
-          void checkScheduledReminders();
-      }, 1500);
-
-      return () => {
-          clearInterval(intervalId);
-          clearTimeout(timeoutId);
-      };
-  }, [flowState, isTalking, isThinking, getRelativeReminders, getDailyReminders, triggerTimedReminderMessage, removeRelativeReminder, markRelativeReminderRetry, markDailyReminderTriggered, markDailyReminderRetry]);
+  useScheduledReminders({
+    flowState,
+    isTalking,
+    isThinking,
+    messagesRef,
+    ttsConfigRef,
+    runVoicePipeline,
+    getRelativeReminders,
+    getDailyReminders,
+    removeRelativeReminder,
+    markRelativeReminderRetry,
+    markDailyReminderTriggered,
+    markDailyReminderRetry,
+    language,
+    contextLimit,
+    coreMemory,
+    worldBook,
+    locationConfig,
+    anchors,
+    kumikoNotebook,
+    addMessage,
+    showBackgroundMessageNotification,
+  });
 
   // WRAPPED IN USECALLBACK
   const handleSaveMemory = useCallback((newCoreMemory: string, newWorldBook: WorldBookEntry[], newContextLimit: number) => {
