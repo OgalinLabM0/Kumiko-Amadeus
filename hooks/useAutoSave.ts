@@ -14,22 +14,9 @@ interface UseAutoSaveProps {
   validate?: (data: any) => boolean; // NEW: Validation callback
 }
 
-// Helper: Fetch with Timeout
-const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout = 15000) => {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), timeout);
-    try {
-        const response = await fetch(url, {
-            ...options,
-            signal: controller.signal
-        });
-        clearTimeout(id);
-        return response;
-    } catch (error) {
-        clearTimeout(id);
-        throw error;
-    }
-};
+// Note: cloud sync was removed (P0 #6). The `fetchWithTimeout` helper and its
+// remote-save path were retired at the same time; only local file-handle /
+// desktop IPC writes remain.
 
 export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, validate }: UseAutoSaveProps) => {
   const [status, setStatus] = useState<SyncStatus>('IDLE');
