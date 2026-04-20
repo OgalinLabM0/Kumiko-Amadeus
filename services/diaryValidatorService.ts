@@ -45,7 +45,7 @@ ${draftContent}
   let ragContext = "";
   for (const claim of claims) {
       if (claim.length > 3) {
-          const results = await searchLocalRagMemory(claim, config, 3, undefined, 'semantic_recall');
+          const results = await searchLocalRagMemory(claim, 3, undefined, 'semantic_recall');
           if (results && results.length > 0) {
               ragContext += `【关于 "${claim}" 的历史记忆片段】:\n${results.join('\n')}\n\n`;
           }

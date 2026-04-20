@@ -805,7 +805,6 @@ export async function executeSend(
                 : undefined);
           const semanticRecall = await searchLocalRagMemoryDetailed(
             semanticSearchQuery,
-            getCurrentAIConfig(),
             3,
             semanticRoleConstraint !== 'any' ? { role: semanticRoleConstraint } : undefined,
             'semantic_recall',
@@ -1320,7 +1319,7 @@ export async function executeSend(
         rememberRecentRagDedupeKeyRef(refs, memoryDecision.dedupeKey);
 
         useAppStore.getState().setRagStatus('INDEXING');
-        saveLocalRagMemory(ragEntry, getCurrentAIConfig(), undefined, {
+        saveLocalRagMemory(ragEntry, undefined, {
           tier: mapRagDecisionTierToStorageTier(memoryDecision.tier),
           source: 'turn_pair',
           score: memoryDecision.score,

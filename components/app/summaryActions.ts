@@ -187,7 +187,7 @@ export async function triggerAutoSummary(
           if (typeof chunk === 'string' && chunk.trim().length > 0) {
             const ragPayload = `【MEMORY CHUNK (${timeRangeStr})】\n${chunk}`;
             const memoryDecision = evaluateRagMemoryCandidate(ragPayload, 'memory_chunk');
-            await saveLocalRagMemory(ragPayload, getCurrentAIConfig(), undefined, {
+            await saveLocalRagMemory(ragPayload, undefined, {
               tier: mapRagDecisionTierToStorageTier(memoryDecision.tier),
               source: 'memory_chunk',
               score: memoryDecision.score,

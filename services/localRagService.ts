@@ -1,5 +1,5 @@
 import { db } from './db';
-import { AIConfig, Message } from '../types';
+import { Message } from '../types';
 
 // --- Electron IPC Bridge ---
 // In Electron, embedding generation and vector search run in the main process (bge-m3 ONNX + SQLite).
@@ -196,30 +196,6 @@ const normalizeLocalRagRebuildSnapshot = (payload: any): LocalRagRebuildSnapshot
   finalStats: payload?.finalStats ? normalizeLocalRagStats(payload.finalStats) : null,
 });
 
-/** True only in contexts where the local RAG model pipeline is actually reachable
- * (i.e. the Electron main process is present). Web/PWA builds have no RAG. */
-export const isLocalRagAvailable = (): boolean => !!getIpcRenderer();
-
-export const initRagModel = async (): Promise<boolean> => {
-  const ipc = getIpcRenderer();
-  if (ipc) {
-    // Model loading is handled by the main process (electron-rag.cjs); just check status.
-    try {
-      const status = await ipc.invoke('rag:status');
-      console.log('[LOCAL RAG] Status:', status);
-      return !!status?.modelLoaded;
-    } catch (e) {
-      console.warn('[LOCAL RAG] rag:status IPC failed:', e);
-      return false;
-    }
-  }
-  // P1 #19: previously this returned `true` outside Electron, which was a
-  // lie — `generateEmbedding` would then immediately throw. Return `false`
-  // so the caller can see that local RAG is unavailable and choose whether
-  // to degrade gracefully. Use `isLocalRagAvailable()` for a pure check.
-  return false;
-};
-
 const mapMainRawMessageToMessage = (raw: any): Message | null => {
   if (!raw || typeof raw !== 'object') return null;
   if (typeof raw.id !== 'string' || typeof raw.text !== 'string' || !Number.isFinite(raw.timestamp)) return null;
@@ -332,7 +308,6 @@ export const generateEmbedding = async (text: string, retries = 5, backoff = 200
 // ==========================================
 export const saveLocalRagMemory = async (
   text: string,
-  aiConfig: AIConfig,
   messageId?: string,
   metadata: LocalRagMemoryMetadata = {}
 ) => {
@@ -374,16 +349,24 @@ export const saveLocalRagMemory = async (
 // GET ALL VECTORS (for backup/export)
 // ==========================================
 export const getAllVectors = async () => {
-  try {
-    const ipc = getIpcRenderer();
-    if (ipc) {
-      const result = await ipc.invoke('rag:get-all');
-      if (result.success) {
-        return result.vectors;
-      }
+  const ipc = getIpcRenderer();
+  if (ipc) {
+    // P1 #13 follow-up (Plan 4): on desktop, SQLite is the real source of
+    // RAG vectors — Dexie `vectors` is basically empty because `rag:save`
+    // writes straight to SQLite. If the IPC fails we must NOT silently fall
+    // back to Dexie and hand back an empty array, because the backup caller
+    // would then write a structurally-valid but content-empty `vectors: []`
+    // and the user would see "backup succeeded" with no RAG payload. Surface
+    // the failure so handleExportBackup can alert the user.
+    const result = await ipc.invoke('rag:get-all');
+    if (!result?.success) {
+      throw new Error(result?.error || 'Failed to read RAG vectors from main process.');
     }
+    return result.vectors;
+  }
 
-    // Fallback: IndexedDB
+  // Web/PWA build: Dexie is the real source of truth.
+  try {
     const allVectors = await db.vectors.toArray();
     return allVectors.map(v => ({
       id: v.id,
@@ -397,8 +380,8 @@ export const getAllVectors = async () => {
       canonicalKey: v.canonicalKey,
     }));
   } catch (e) {
-    console.error("Failed to get all vectors", e);
-    return [];
+    console.error("Failed to get all vectors from IndexedDB", e);
+    throw e instanceof Error ? e : new Error(String(e));
   }
 };
 
@@ -473,41 +456,28 @@ export const restoreVectors = async (vectorsData: any[]): Promise<RestoreVectors
 // CLEAR ALL VECTORS
 // ==========================================
 export const clearAllLocalRagMemory = async () => {
-  try {
-    const ipc = getIpcRenderer();
-    if (ipc) {
-      const result = await ipc.invoke('rag:clear-all');
-      if (result.success) {
-        console.log('[LOCAL RAG] Cleared all SQLite vectors.');
-        return;
-      }
-      console.warn('[LOCAL RAG] SQLite clear failed, falling back to IndexedDB:', result.error);
+  const ipc = getIpcRenderer();
+  if (ipc) {
+    // P1 #13 follow-up (Plan 4): on desktop, clearing is SQLite-only because
+    // that's where `rag:save` actually writes. Silently falling back to
+    // `db.vectors.clear()` was a data-consistency trap — Dexie is almost
+    // empty on desktop, so "Dexie cleared successfully" returned OK while
+    // SQLite (the real RAG store) still held every vector. Surface the
+    // failure instead so the user can retry or rebuild.
+    const result = await ipc.invoke('rag:clear-all');
+    if (!result?.success) {
+      throw new Error(result?.error || 'Failed to clear RAG vectors in main process.');
     }
+    console.log('[LOCAL RAG] Cleared all SQLite vectors.');
+    return;
+  }
 
+  // Web/PWA build: Dexie is the real source of truth.
+  try {
     await db.vectors.clear();
     console.log('[LOCAL RAG] Cleared all IndexedDB vectors.');
   } catch (e) {
-    console.error('Failed to clear local RAG memory', e);
-    throw e;
-  }
-};
-
-export const clearMessageLinkedLocalRagMemory = async () => {
-  try {
-    const ipc = getIpcRenderer();
-    if (ipc) {
-      const result = await ipc.invoke('rag:clear-message-vectors');
-      if (result.success) {
-        console.log(`[LOCAL RAG] Cleared ${result.count || 0} message-linked SQLite vectors.`);
-        return;
-      }
-      console.warn('[LOCAL RAG] SQLite message-vector clear failed, falling back to IndexedDB:', result.error);
-    }
-
-    await db.vectors.filter(v => !!v.messageId).delete();
-    console.log('[LOCAL RAG] Cleared message-linked IndexedDB vectors.');
-  } catch (e) {
-    console.error('Failed to clear message-linked local RAG memory', e);
+    console.error('Failed to clear local RAG memory (IndexedDB)', e);
     throw e;
   }
 };
@@ -526,23 +496,6 @@ export const startLocalRagRebuild = async () => {
   return {
     started: !!result.started,
     alreadyRunning: !!result.alreadyRunning,
-    snapshot: result.snapshot ? normalizeLocalRagRebuildSnapshot(result.snapshot) : null,
-  };
-};
-
-export const getLocalRagRebuildStatus = async () => {
-  const ipc = getIpcRenderer();
-  if (!ipc) {
-    return { active: false, snapshot: null as LocalRagRebuildSnapshot | null };
-  }
-
-  const result = await ipc.invoke('rag:rebuild:status');
-  if (!result?.success) {
-    throw new Error(result?.error || 'Failed to read local RAG rebuild status.');
-  }
-
-  return {
-    active: !!result.active,
     snapshot: result.snapshot ? normalizeLocalRagRebuildSnapshot(result.snapshot) : null,
   };
 };
@@ -592,40 +545,6 @@ export const subscribeLocalRagRebuild = (
     ipc.removeListener(RAG_REBUILD_PROGRESS_CHANNEL, handleProgress);
     ipc.removeListener(RAG_REBUILD_DONE_CHANNEL, handleDone);
     ipc.removeListener(RAG_REBUILD_ERROR_CHANNEL, handleError);
-  };
-};
-
-export const getLocalRagStats = async (): Promise<LocalRagStats> => {
-  const ipc = getIpcRenderer();
-  if (ipc) {
-    const result = await ipc.invoke('rag:stats');
-    if (result?.success && result.stats) {
-      return normalizeLocalRagStats(result.stats);
-    }
-    throw new Error(result?.error || 'Failed to read local RAG stats.');
-  }
-
-  const allVectors = await db.vectors.toArray();
-  const sourceCounts = allVectors.reduce<Record<string, number>>((acc, item) => {
-    const key = item.source || 'unknown';
-    acc[key] = (acc[key] || 0) + 1;
-    return acc;
-  }, {});
-
-  return {
-    vectorCount: allVectors.length,
-    coreCount: allVectors.filter(item => item.tier === 'core').length,
-    episodicCount: allVectors.filter(item => item.tier === 'episodic').length,
-    backgroundCount: allVectors.filter(item => item.tier === 'background').length,
-    messageLinkedCount: allVectors.filter(item => !!item.messageId).length,
-    messageCount: await db.messages.count(),
-    groupedCount: sourceCounts.rebuild_fragment || 0,
-    mergedCount: sourceCounts.episodic_merge || 0,
-    sourceCounts,
-    hnswIndexed: 0,
-    coreIndexed: 0,
-    episodicIndexed: 0,
-    backgroundIndexed: 0,
   };
 };
 
@@ -817,20 +736,18 @@ function formatContextBlock(msgs: RagMessage[]): string {
 // SEARCH (IPC to main process + context expansion + LLM re-ranking in renderer)
 // ==========================================
 export const searchLocalRagMemory = async (
-    query: string, 
-    aiConfig: AIConfig, 
+    query: string,
     topK: number = 3,
     temporalFilters?: { startTime?: number | null, endTime?: number | null, role?: string },
     memoryIntent: LocalRagSearchIntent = 'default',
     keywords?: string[]
 ): Promise<string[]> => {
-  const result = await searchLocalRagMemoryDetailed(query, aiConfig, topK, temporalFilters, memoryIntent, keywords);
+  const result = await searchLocalRagMemoryDetailed(query, topK, temporalFilters, memoryIntent, keywords);
   return result.blocks;
 };
 
 export const searchLocalRagMemoryDetailed = async (
-    query: string, 
-    aiConfig: AIConfig, 
+    query: string,
     topK: number = 3,
     temporalFilters?: { startTime?: number | null, endTime?: number | null, role?: string },
     memoryIntent: LocalRagSearchIntent = 'default',
