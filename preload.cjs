@@ -50,6 +50,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'rag:get-all',
       'rag:restore',
       'rag:clear-all',
+      // `rag:clear-message-vectors` has no renderer wrapper in
+      // services/localRagService.ts as of Plan 4 — the main-process handler
+      // and this allowlist entry are kept as a latent capability for a
+      // future per-message RAG cleanup feature. Do not remove without
+      // also removing the handler in electron-rag.cjs.
       'rag:clear-message-vectors',
       'rag:rebuild:start',
       'rag:rebuild:status',

@@ -41,7 +41,6 @@ import { VoiceCallOverlay } from './VoiceCallOverlay';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { imageService, compressAndSaveImage, getImageBase64 } from '../services/imageService';
-import { getAllVectors, loadRawHistoryMessagesFromMain, saveLocalRagMemory, restoreVectors, searchLocalRagMemory, searchLocalRagMemoryDetailed, startLocalRagRebuild, subscribeLocalRagRebuild, syncRawHistoryMessagesToMain, type LocalRagEntryKind, type LocalRagEvidenceStrength, type LocalRagRebuildEvent } from '../services/localRagService';
 import { evaluateRagMemoryCandidate, hasRecentRagDuplicate } from '../services/ragMemoryFilter';
 
 import {
