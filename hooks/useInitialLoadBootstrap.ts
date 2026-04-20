@@ -1,5 +1,4 @@
 import { useEffect, type MutableRefObject } from 'react';
-import { migrateLegacyMessageImages } from '../components/app/legacyImageMigration';
 import { loadRawHistoryMessages } from '../components/app/rawHistorySync';
 import { recalculateTurnCountFromMessages, sanitizeRelativeReminderRecord, sanitizeDailyReminderRecord, sanitizeMessageAlertRecord, sanitizeWorldCharacterStatusRecord, sanitizeKumikoDiaryRecord, sanitizeDailyFragmentRecord, sanitizePsycheStateRecord } from '../components/app/backupHelpers';
 import { normalizeSummaryArchiveState, resolveCoreMemoryFromSummaryArchive } from '../components/app/summaryCycle';
@@ -77,12 +76,11 @@ export interface UseInitialLoadBootstrapParams {
  * Runs the one-shot data hydration that used to live inline at App.tsx L688.
  *
  * Flow:
- *   1. Runs the legacy image -> imageId migration (non-fatal).
- *   2. Loads messages via raw history sync; derives turn count + summary
+ *   1. Loads messages via raw history sync; derives turn count + summary
  *      archive state + core memory; hydrates memory-query session.
- *   3. Pulls ~20 keys out of Dexie into the store, with defensive
+ *   2. Pulls ~20 keys out of Dexie into the store, with defensive
  *      normalisation for rows that may legacy-corrupt.
- *   4. On failure, records `dataLoadError` so `useAutoSave` can block writes
+ *   3. On failure, records `dataLoadError` so `useAutoSave` can block writes
  *      and surfaces a bilingual notice before still flipping `isDataLoaded`
  *      so the UI can render the error screen.
  *
@@ -127,21 +125,6 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
   useEffect(() => {
     const loadData = async () => {
       try {
-        // P2 #6 Phase 1: run the legacy `message.image` -> `imageId` migration
-        // BEFORE loading messages into state, so the UI only ever sees the
-        // post-migration shape. Idempotent across reboots via the
-        // `image && !imageId` pending filter; no-op on fresh installs. Failures
-        // here are logged but non-fatal: legacy inline `image` is still a valid
-        // fallback that the UI layer understands via useMessageImage.
-        try {
-          const migrationResult = await migrateLegacyMessageImages();
-          if (migrationResult.pending > 0) {
-            console.log('[LegacyImageMigration]', migrationResult);
-          }
-        } catch (migrateErr) {
-          console.warn('[LegacyImageMigration] failed (continuing load):', migrateErr);
-        }
-
         const loadedMessages = await loadRawHistoryMessages();
         const loadedTurnCount = recalculateTurnCountFromMessages(loadedMessages);
         const loadedSummaryArchiveState = normalizeSummaryArchiveState(

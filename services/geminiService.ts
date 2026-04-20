@@ -1657,8 +1657,8 @@ ${extraSystemPrompt ?? ''}`;
           content += language === 'zh' ? `\n[系统记忆：内部状态情绪="${msg.storedEmotion}"]` : `\n[System_Memory: Internal_State_Emotion="${msg.storedEmotion}"]`;
       }
 
-      if (msg.imageId || msg.image) {
-          const idStr = msg.imageId ? ` (ID: ${msg.imageId})` : '';
+      if (msg.imageId) {
+          const idStr = ` (ID: ${msg.imageId})`;
           if (msg.imageCaption) {
               content += language === 'zh' ? `\n\n[系统：用户发送了一张图片${idStr}。隐藏描述：${msg.imageCaption}]` : `\n\n[SYSTEM: User sent an image${idStr}. Hidden Description: ${msg.imageCaption}]`;
           } else {

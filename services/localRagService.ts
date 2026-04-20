@@ -253,7 +253,6 @@ export const syncRawHistoryMessagesToMain = async (
     role: message.role,
     text: message.text,
     timestamp: message.timestamp,
-    image: message.image,
     imageId: message.imageId,
     imageCaption: message.imageCaption,
     groundingSources: message.groundingSources,

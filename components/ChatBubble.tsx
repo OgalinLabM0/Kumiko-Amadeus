@@ -74,9 +74,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   const [popoverDir, setPopoverDir] = useState<'up' | 'down'>('up');
   const failPopoverRef = useRef<HTMLDivElement>(null);
   const failBtnRef = useRef<HTMLButtonElement>(null);
-  // P2 #6 Phase 1: single source of truth for the message image URL. Handles
-  // legacy inline `message.image` and the new `imageId` uniformly; desktop
-  // returns `kumiko-image://<id>` synchronously with no first-paint flicker.
+  // Single source of truth for the message image URL. Desktop returns
+  // `kumiko-image://<id>` synchronously with no first-paint flicker; web
+  // resolves the imageId via an async Dexie read inside the hook.
   const displayUrl = useMessageImage(message);
 
   useEffect(() => {
@@ -445,8 +445,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   return (
     prevProps.message.id === nextProps.message.id &&
     prevProps.message.text === nextProps.message.text && // Check if text changed (edit)
-    prevProps.message.image === nextProps.message.image && // Check if legacy inline image URL changed
-    prevProps.message.imageId === nextProps.message.imageId && // P2 #6: imageId also drives displayUrl
+    prevProps.message.imageId === nextProps.message.imageId && // imageId drives displayUrl
     prevProps.message.isRead === nextProps.message.isRead && // Check if read status changed
     prevProps.message.isHidden === nextProps.message.isHidden &&
     prevProps.message.isPinned === nextProps.message.isPinned &&

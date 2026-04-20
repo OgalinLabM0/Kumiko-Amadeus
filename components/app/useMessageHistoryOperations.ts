@@ -275,14 +275,9 @@ export const useMessageHistoryOperations = (
     ));
 
     pendingTextRef.current = msg.text;
-    // P2 #6 Phase 1: prefer the legacy inline `image` when still present
-    // (pre-migration rows); otherwise hydrate from `imageId` via IPC so resend
-    // works for already-migrated messages too. This keeps resend compatible
-    // across both shapes until Phase 2 retires the inline field entirely.
-    if (msg.image) {
-      pendingImageRef.current = msg.image;
-      pendingImageMessageIdRef.current = msg.id;
-    } else if (msg.imageId) {
+    // Hydrate the resend payload from `imageId` via IPC. Inline `msg.image`
+    // was retired in Plan 14 Phase A; messages only carry `imageId` now.
+    if (msg.imageId) {
       try {
         const hydrated = await getImageBase64(msg.imageId);
         if (hydrated) {

@@ -4,8 +4,14 @@ export interface Message {
   role: 'user' | 'model';
   text: string;
   timestamp: number;
-  image?: string; // URL for persistence, Base64 temporarily during send
-  imageId?: string; // Local DB ID for the image
+  // Transient base64 data URL. Used only briefly during send (before the
+  // image is written to userData + assigned an `imageId`) and during backup
+  // JSON import hydration (see backupActions — legacy backups still ship
+  // inline `image`; we convert them to `imageId` at import time and clear
+  // this field before it reaches persistent storage). MessageEntity no
+  // longer carries `image` (retired in Plan 14 Phase A, Dexie V11).
+  image?: string;
+  imageId?: string; // Authoritative reference to the persisted image
   imageCaption?: string; // New: Description of the image for retrieval
   groundingSources?: { title: string; uri: string }[]; 
   isRead?: boolean; 

@@ -47,10 +47,7 @@ const estimateMessageHeight = (message: Message): number => {
   const normalizedLength = text.replace(/\s+/g, '').length;
   const estimatedLines = Math.max(1, Math.ceil(normalizedLength / 18));
   const quoteHeight = message.quote ? 58 : 0;
-  // P2 #6 Phase 1: estimate height from either legacy inline image or the
-  // new imageId reference, so the virtualized list reserves the same slot
-  // before and after legacy images are migrated to imageId-only form.
-  const imageHeight = (message.image || message.imageId) ? 220 : 0;
+  const imageHeight = message.imageId ? 220 : 0;
   const metaHeight = message.role === 'user' ? 16 : 10;
   const estimated = 46 + (estimatedLines * 24) + quoteHeight + imageHeight + metaHeight;
   return clamp(estimated, MIN_ESTIMATED_HEIGHT, MAX_ESTIMATED_HEIGHT);

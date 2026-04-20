@@ -631,10 +631,19 @@ export async function handleImportBackup(
 
     const restoredData = await deps.restoreParsedBackupPayload(json, importedImages);
     if (restoredData) {
-      // P2 #6 Phase 1: hydrate legacy inline `message.image` (pre-migration
-      // backups) into the `imageId` + file-store pipeline so all downstream
-      // code sees a single shape. Non-blocking: a failed row keeps its inline
-      // `image` as fallback, which useMessageImage still renders correctly.
+      // Plan 14 Phase A (P2 #6 Phase 2 finale): hydrate any legacy inline
+      // `message.image` that still ships in an older backup JSON into the
+      // `imageId` + file-store pipeline. Runtime code no longer reads
+      // `message.image` at all (MessageEntity dropped the field in Dexie
+      // V11), so this pass is the only place that legacy inline data can
+      // survive an import — and it must run before autosave or
+      // mapMessageToEntity sees the messages, otherwise the inline payload
+      // is silently discarded with no image rendered.
+      //
+      // Failure mode on individual hydrate errors: the message loses its
+      // image entirely (no imageId, no inline). This is acceptable because
+      // the alternative — keeping the inline field alive just for the UI —
+      // reintroduces exactly the dual-shape problem Phase 2 just removed.
       try {
         const legacyInlineMessages = Array.isArray(restoredData.messages)
           ? restoredData.messages.filter((m: any) => m?.image && !m?.imageId)
@@ -650,11 +659,17 @@ export async function handleImportBackup(
               console.warn('[IMPORT] Inline image hydrate failed for', m.id, err);
             }
           }
+          // Clear `image` on every legacy row (hydrated or not) so nothing
+          // downstream ever observes the transient shape.
+          const legacyIds = new Set(legacyInlineMessages.map((m: any) => m.id));
+          state.setMessages(prev => prev.map(m => {
+            if (!legacyIds.has(m.id)) return m;
+            const newId = hydratedIds.get(m.id);
+            return newId
+              ? { ...m, imageId: newId, image: undefined }
+              : { ...m, image: undefined };
+          }));
           if (hydratedIds.size > 0) {
-            state.setMessages(prev => prev.map(m => {
-              const newId = hydratedIds.get(m.id);
-              return newId ? { ...m, imageId: newId, image: undefined } : m;
-            }));
             console.log(`[IMPORT] Hydrated ${hydratedIds.size} legacy inline image(s) into imageId.`);
           }
         }

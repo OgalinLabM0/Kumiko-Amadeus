@@ -12,7 +12,6 @@ export interface MessageEntity {
   isRead?: boolean;
   quote?: { id: string; text: string; role: 'user' | 'model' };
   emotion?: string;
-  image?: string; // Legacy base64 string
   groundingSources?: any[];
   isVoiceMessage?: boolean;
   voiceFileId?: string;
@@ -214,13 +213,9 @@ export class AppDatabase extends Dexie {
       psycheState: 'id'
     });
 
-    // V10: add imageId index on messages so the P2 #6 Phase 1 boot-time
-    // migration can cheaply find messages that still carry legacy inline
-    // `image` (base64 data URL) without scanning the entire table. The real
-    // migration (reading the base64, writing userData/images/{id}.{ext} via
-    // IPC, patching the row) runs in components/app/legacyImageMigration.ts
-    // during App.tsx:loadData — NOT here — because calling images:save IPC
-    // from inside a Dexie upgrade transaction risks long-held schema locks.
+    // V10: add imageId index on messages. V10 (alongside the now-deleted
+    // legacyImageMigration boot pass) was Phase 1 of retiring the inline
+    // MessageEntity.image field; Phase 2 (this removal) ships in V11.
     this.version(10).stores({
       messages: 'id, timestamp, role, isPinned, imageId',
       images: 'id, timestamp',
@@ -230,6 +225,30 @@ export class AppDatabase extends Dexie {
       dailyFragments: 'id, date, timestamp',
       kumikoDiary: 'id, date, timestamp',
       psycheState: 'id'
+    });
+
+    // V11: Phase 2 of the legacy image retirement. The schema itself doesn't
+    // change (Dexie / IndexedDB object stores are schemaless at the row level —
+    // dropping a field from the TypeScript interface is enough for new writes),
+    // but we run a defensive upgrade pass that nukes any residual `image`
+    // property from existing rows. On a single-user install where Phase 1's
+    // boot migration already ran, this is a no-op; it exists as belt-and-
+    // suspenders for any row Phase 1 somehow missed (partial runs, crashes).
+    this.version(11).stores({
+      messages: 'id, timestamp, role, isPinned, imageId',
+      images: 'id, timestamp',
+      vectors: 'id, timestamp, tier, source, canonicalKey, *tags',
+      episodes: 'id, startTimestamp, endTimestamp, startMessageId, endMessageId, roleScope',
+      keyval: 'key',
+      dailyFragments: 'id, date, timestamp',
+      kumikoDiary: 'id, date, timestamp',
+      psycheState: 'id'
+    }).upgrade(async tx => {
+      await tx.table('messages').toCollection().modify((m: any) => {
+        if (m && 'image' in m) {
+          delete m.image;
+        }
+      });
     });
   }
 
