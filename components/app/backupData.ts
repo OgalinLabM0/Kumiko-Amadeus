@@ -145,5 +145,48 @@ export const validateBackupData = (
     return false;
   }
 
+  // Structural sanity checks: if a field is present, it must have the right
+  // shape. Missing fields are tolerated to avoid false-positives on fresh
+  // installs / first-run empty state. The goal is to catch the case where a
+  // code bug overwrites a field with a wrong-typed value before autosave
+  // silently commits the corruption to disk.
+  if (data.messages !== undefined && !Array.isArray(data.messages)) {
+    console.warn('[Save Validation] messages present but not an array. Write blocked.');
+    return false;
+  }
+
+  if (data.relativeReminders !== undefined && !Array.isArray(data.relativeReminders)) {
+    console.warn('[Save Validation] relativeReminders present but not an array. Write blocked.');
+    return false;
+  }
+
+  if (data.dailyReminders !== undefined && !Array.isArray(data.dailyReminders)) {
+    console.warn('[Save Validation] dailyReminders present but not an array. Write blocked.');
+    return false;
+  }
+
+  if (data.kumikoDiary !== undefined && !Array.isArray(data.kumikoDiary)) {
+    console.warn('[Save Validation] kumikoDiary present but not an array. Write blocked.');
+    return false;
+  }
+
+  if (
+    data.worldCharacterStatus !== undefined &&
+    data.worldCharacterStatus !== null &&
+    (typeof data.worldCharacterStatus !== 'object' || Array.isArray(data.worldCharacterStatus))
+  ) {
+    console.warn('[Save Validation] worldCharacterStatus present but not a plain object. Write blocked.');
+    return false;
+  }
+
+  if (
+    data.summaryArchiveState !== undefined &&
+    data.summaryArchiveState !== null &&
+    typeof data.summaryArchiveState !== 'object'
+  ) {
+    console.warn('[Save Validation] summaryArchiveState present but not an object. Write blocked.');
+    return false;
+  }
+
   return true;
 };
