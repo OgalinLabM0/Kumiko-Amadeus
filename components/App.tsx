@@ -748,36 +748,6 @@ export const App = () => {
   // --- LIVE STATUS UPDATE LOGIC (schedule-aware) ---
   useKumikoStatusLine({ flowState, locationConfig, language, setStatusText });
 
-  const saveScheduleEvent = useCallback(async (event: string, daysOffset: number) => {
-      try {
-          const targetDate = new Date();
-          targetDate.setDate(targetDate.getDate() + daysOffset);
-          const dateKey = targetDate.toISOString().slice(0, 10);
-          const existingEvents = await db.getVal('kumiko_schedule_events', []);
-          existingEvents.push({ event, date: dateKey });
-          await db.setVal('kumiko_schedule_events', existingEvents);
-          console.log(`[SCHEDULE] Saved event: ${event} for ${dateKey}`);
-      } catch (e) {
-          console.error("[SCHEDULE] Failed to save event", e);
-      }
-  }, []);
-
-  const checkActiveReminders = useCallback(async (): Promise<string[]> => {
-      try {
-          const today = new Date().toISOString().slice(0, 10);
-          const existingEvents = await db.getVal('kumiko_schedule_events', []);
-          const active = existingEvents.filter((e: any) => e.date === today);
-          if (active.length > 0) {
-              console.log(`[SCHEDULE] Active reminders for today (${today}):`, active);
-              return active.map((e: any) => e.event);
-          }
-          return [];
-      } catch (e) {
-          console.error("[SCHEDULE] Failed to check events", e);
-          return [];
-      }
-  }, []);
-
   const addMessage = addMessageToStore;
 
   const { translateToJapaneseWithEmotion, translateForGenie, runVoicePipeline } = useVoicePipeline({ ttsConfigRef });
