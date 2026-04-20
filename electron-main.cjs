@@ -10,15 +10,7 @@ const {
 } = require('./electron/user-config.cjs');
 const {
   loadAllAuthorizedPaths,
-  authorizeBackupPath,
 } = require('./electron/authorized-paths.cjs');
-const {
-  writeBackupFile,
-  readBackupFile,
-  getBackupFileInfo,
-  parseBackupImportFile,
-  getDefaultBackupFilePath,
-} = require('./electron/backup-files.cjs');
 const {
   findImageFile,
   handleImagesSave,
@@ -75,6 +67,16 @@ const {
   handleGetHistoricalWeather,
   handleGetJapanHolidays,
 } = require('./electron/weather-calendar.cjs');
+const {
+  setBackupDialogParent,
+  getLastWrittenBackupPath,
+  handlePickSaveFile,
+  handlePickOpenFile,
+  handleWriteFile,
+  handleReadFile,
+  handleGetFileInfo,
+  handleParseImportFile,
+} = require('./electron/backup-ipc.cjs');
 
 // Platform detection. Used throughout this file to branch registry/PowerShell
 // (Windows-only) vs JSON config store (Linux), drive-letter preference (Windows)
@@ -107,8 +109,6 @@ app.commandLine.appendSwitch('enable-features', 'UseSkiaRenderer,CanvasOopRaster
 let mainWindow;
 let tray = null;
 let unreadMessageCount = 0;
-let lastWrittenBackupPath = null;
-
 const isDev = !app.isPackaged;
 let isAutoBackupDone = false;
 
@@ -177,6 +177,7 @@ function createWindow() {
 
   setAppUpdaterWindow(mainWindow);
   setGenieDialogParent(mainWindow);
+  setBackupDialogParent(mainWindow);
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
@@ -504,114 +505,12 @@ if (!singleInstanceLock) {
 
   // ── Backup file IPC ────────────────────────────────────────────
 
-  ipcMain.handle('backup:pick-save-file', async (_event, payload = {}) => {
-    try {
-      const result = await dialog.showSaveDialog(mainWindow || undefined, {
-        title: '选择本地同步文件',
-        defaultPath: getDefaultBackupFilePath(payload.defaultFileName),
-        filters: [
-          { name: 'JSON Backup File', extensions: ['json'] }
-        ]
-      });
-
-      if (result.canceled || !result.filePath) {
-        return { canceled: true };
-      }
-
-      const filePath = path.resolve(result.filePath);
-      // The user just approved this path via the native dialog — authorize it for
-      // subsequent write/read/parse IPC calls (persisted across restarts).
-      authorizeBackupPath(filePath);
-      return {
-        success: true,
-        canceled: false,
-        filePath,
-        fileName: path.basename(filePath)
-      };
-    } catch (error) {
-      console.error('[LOCAL BACKUP] Failed to select save file:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  });
-
-  ipcMain.handle('backup:pick-open-file', async () => {
-    try {
-      const result = await dialog.showOpenDialog(mainWindow || undefined, {
-        title: '选择本地同步文件',
-        properties: ['openFile'],
-        filters: [
-          { name: 'JSON Backup File', extensions: ['json'] }
-        ],
-        defaultPath: app.getPath('documents')
-      });
-
-      if (result.canceled || result.filePaths.length === 0) {
-        return { canceled: true };
-      }
-
-      const pickedPath = path.resolve(result.filePaths[0]);
-      authorizeBackupPath(pickedPath);
-      return readBackupFile(pickedPath);
-    } catch (error) {
-      console.error('[LOCAL BACKUP] Failed to open backup file:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  });
-
-  ipcMain.handle('backup:write-file', (_event, payload = {}) => {
-    try {
-      if (payload.filePath) lastWrittenBackupPath = payload.filePath;
-      return writeBackupFile(payload.filePath, payload.content);
-    } catch (error) {
-      console.error('[LOCAL BACKUP] Failed to write backup file:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  });
-
-  ipcMain.handle('backup:read-file', (_event, payload = {}) => {
-    try {
-      return readBackupFile(payload.filePath);
-    } catch (error) {
-      console.error('[LOCAL BACKUP] Failed to read backup file:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  });
-
-  ipcMain.handle('backup:get-file-info', (_event, payload = {}) => {
-    try {
-      return getBackupFileInfo(payload.filePath);
-    } catch (error) {
-      console.error('[LOCAL BACKUP] Failed to inspect backup file:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  });
-
-  ipcMain.handle('backup:parse-import-file', async (_event, payload = {}) => {
-    try {
-      return await parseBackupImportFile(payload.filePath);
-    } catch (error) {
-      console.error('[LOCAL BACKUP] Failed to parse backup import file:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  });
+  ipcMain.handle('backup:pick-save-file', handlePickSaveFile);
+  ipcMain.handle('backup:pick-open-file', handlePickOpenFile);
+  ipcMain.handle('backup:write-file', handleWriteFile);
+  ipcMain.handle('backup:read-file', handleReadFile);
+  ipcMain.handle('backup:get-file-info', handleGetFileInfo);
+  ipcMain.handle('backup:parse-import-file', handleParseImportFile);
 
   ipcMain.handle('app:set-auto-zip-backup', (_event, payload = {}) => {
     try {
@@ -719,8 +618,9 @@ if (!singleInstanceLock) {
 
       let latestJson = null;
 
-      if (lastWrittenBackupPath && fs.existsSync(lastWrittenBackupPath)) {
-        latestJson = lastWrittenBackupPath;
+      const lastWritten = getLastWrittenBackupPath();
+      if (lastWritten && fs.existsSync(lastWritten)) {
+        latestJson = lastWritten;
       } else {
         const searchDirs = [app.getPath('documents'), app.getPath('userData')];
         let latestMtime = 0;
