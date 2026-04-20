@@ -8,7 +8,6 @@ import { AppMainView } from './app/AppMainView';
 import { DiaryBackfillDialog as DiaryBackfillDialogLazy } from './DiaryBackfillDialog';
 import { buildAppMainViewProps } from './app/buildAppMainViewProps';
 import { getAppShellStyles } from './app/appShellStyles';
-import { buildBackupData, validateBackupData } from './app/backupData';
 import {
   appendRecentSummarySegment,
   buildSummarySegmentId,
@@ -30,6 +29,7 @@ import { useKumikoStatusLine } from '../hooks/useKumikoStatusLine';
 import { useInitialLoadBootstrap } from '../hooks/useInitialLoadBootstrap';
 import { useVoicePipeline } from '../hooks/useVoicePipeline';
 import { useProactiveLifeCycle } from '../hooks/useProactiveLifeCycle';
+import { useBackupWorkflow } from '../hooks/useBackupWorkflow';
 import { useDevLogs } from '../hooks/useDevLogs';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
 import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, normalizeReminderEvent, type RelativeReminder, type DailyReminder } from '../store/slices/reminderSlice';
@@ -40,7 +40,7 @@ import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, DEFAULT_LOCATION_CONFIG, LOCALIZED
 import { VoiceCallOverlay } from './VoiceCallOverlay';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import { imageService, compressAndSaveImage, getImageBase64 } from '../services/imageService';
+import { compressAndSaveImage, getImageBase64 } from '../services/imageService';
 import { evaluateRagMemoryCandidate, hasRecentRagDuplicate } from '../services/ragMemoryFilter';
 
 import {
@@ -56,14 +56,11 @@ import {
 import { normalizeBackupConfig } from '../services/appConfig';
 import { loadTemporalEpisodesForRange, syncTemporalEpisodes } from '../services/temporalEpisodeService';
 import {
-  getDesktopBackupFileInfo,
   isDesktopElectron,
   setDesktopBackgroundThrottling,
   refocusDesktopWebContents,
-  writeDesktopBackupFile
 } from '../services/desktopBackupService';
 import {
-  LOCAL_BACKUP_PATH_STORAGE_KEY,
   MESSAGE_ALERTS_STORAGE_KEY,
   SUMMARY_ARCHIVE_STATE_STORAGE_KEY,
   MEMORY_QUERY_SESSION_STORAGE_KEY,
@@ -117,11 +114,7 @@ import {
   type MemoryEvidenceAnswerMode,
   type MemoryEvidenceResponseStrategy,
 } from './app/ragRecallHelpers';
-import { yieldToMainThread } from './app/appUtils';
 import {
-  normalizeBackupData as normalizeBackupDataAction,
-  persistNormalizedBackupData as persistNormalizedBackupDataAction,
-  restoreBackupData as restoreBackupDataAction,
   handleExportBackup as handleExportBackupAction,
   handleImportBackup as handleImportBackupAction,
 } from './app/backupActions';
@@ -735,95 +728,43 @@ export const App = () => {
   const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const preValidationActiveRef = useRef(false);
 
-  const backupData = useMemo(() => buildBackupData({
-    messages,
-    coreMemory,
-    worldBook,
-    contextLimit,
-    turnCount,
-    summaryArchiveState,
-    currentEmotion,
-    locationConfig,
-    language,
-    anchors,
-    kumikoNotebook,
-    relativeReminders,
-    dailyReminders,
-    worldCharacterStatus,
-    kumikoDiary: autoSavedKumikoDiary,
-    dailyFragments: autoSavedDailyFragments,
-    psycheState: autoSavedPsycheState,
-    defaultWorldBook: DEFAULT_WORLD_BOOK,
-    localizedWorldBook: LOCALIZED_WORLD_BOOK,
-  }), [
-    messages,
-    coreMemory,
-    worldBook,
-    contextLimit,
-    turnCount,
-    summaryArchiveState,
-    currentEmotion,
-    locationConfig,
-    language,
-    anchors,
-    kumikoNotebook,
-    relativeReminders,
-    dailyReminders,
+  const {
+    backupData,
+    validateSaveData,
+    clearLocalFileConnection,
+    performFileSave,
+    restoreBackupData,
+    restoreParsedBackupPayload,
+  } = useBackupWorkflow({
+    rawHistorySyncedIdsRef,
+    forceRawHistoryResyncRef,
+    isBulkRestoreInProgressRef,
+    fileHandleRef,
+    isDataLoaded,
+    updateMemoryQuerySession,
+    setConnectedFileName,
+    setWorldCharacterStatus,
+    setAutoSavedKumikoDiary,
+    setAutoSavedDailyFragments,
+    setAutoSavedPsycheState,
     worldCharacterStatus,
     autoSavedKumikoDiary,
     autoSavedDailyFragments,
     autoSavedPsycheState,
-  ]);
-
-  const validateSaveData = useCallback((data: typeof backupData): boolean => (
-    validateBackupData(data, language, LOCALIZED_WORLD_BOOK, DEFAULT_WORLD_BOOK)
-  ), [language]);
-
-  const clearLocalFileConnection = useCallback(() => {
-    setConnectedFileName(null);
-    fileHandleRef.current = null;
-
-    try {
-      localStorage.removeItem(LOCAL_BACKUP_PATH_STORAGE_KEY);
-    } catch {
-      // Ignore storage cleanup failures.
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!isDataLoaded || !isDesktopElectron()) return;
-
-    let isCancelled = false;
-
-    const restoreDesktopBackupConnection = async () => {
-      try {
-        const savedPath = localStorage.getItem(LOCAL_BACKUP_PATH_STORAGE_KEY);
-        if (!savedPath) return;
-
-        const result = await getDesktopBackupFileInfo(savedPath);
-        if (isCancelled) return;
-
-        if (result.success && result.exists && result.filePath) {
-          fileHandleRef.current = result.filePath;
-          setConnectedFileName(result.fileName || result.filePath.split(/[\\/]/).pop() || result.filePath);
-          return;
-        }
-
-        clearLocalFileConnection();
-      } catch (error) {
-        console.warn('[LOCAL BACKUP] Failed to restore desktop backup connection:', error);
-        if (!isCancelled) {
-          clearLocalFileConnection();
-        }
-      }
-    };
-
-    restoreDesktopBackupConnection();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [clearLocalFileConnection, isDataLoaded]);
+    messages,
+    coreMemory,
+    worldBook,
+    contextLimit,
+    turnCount,
+    summaryArchiveState,
+    currentEmotion,
+    locationConfig,
+    language,
+    anchors,
+    kumikoNotebook,
+    relativeReminders,
+    dailyReminders,
+  });
 
   const { syncStatus, manualRetry, updateBaseline, triggerManualSave, flushIfDirty } = useAutoSave({
     data: backupData,
@@ -868,16 +809,6 @@ export const App = () => {
 
   // --- LIVE STATUS UPDATE LOGIC (schedule-aware) ---
   useKumikoStatusLine({ flowState, locationConfig, language, setStatusText });
-
-  // --- REFINED DATA NORMALIZATION (Business Logic for Restore) ---
-  // Implements "Smart Merge" logic:
-  // 1. Always fetches fresh official lore from code (Baseline).
-  // 2. Merges user settings (Active/Priority) from backup if available.
-  // 3. If backup is empty or missing an item, keeps the default official item intact.
-  // 4. Preserves custom user entries.
-  const normalizeBackupData = useCallback((source: any) => {
-    return normalizeBackupDataAction(source);
-  }, [language]);
 
   const saveScheduleEvent = useCallback(async (event: string, daysOffset: number) => {
       try {
@@ -928,82 +859,9 @@ export const App = () => {
     return () => { window.electronAPI?.removeListener?.('app:auto-zip-progress', handler); };
   }, []);
 
-  const performFileSave = async (handle: any, data: any) => {
-    try {
-      const backupContent = { timestamp: Date.now(), version: "1.3", data };
-      const serializedContent = JSON.stringify(backupContent, null, 2);
-
-      if (isDesktopElectron() && typeof handle === 'string') {
-        const result = await writeDesktopBackupFile(handle, serializedContent);
-        if (!result.success) {
-          throw new Error(result.error || 'Failed to write desktop backup file.');
-        }
-      } else {
-        const writable = await handle.createWritable();
-        await writable.write(serializedContent);
-        await writable.close();
-      }
-
-      return true;
-    } catch (e) {
-      console.warn("Manual save write failed:", e);
-      clearLocalFileConnection();
-      return false;
-    }
-  };
-
   // Cloud sync removed from the product. `performCloudSync`, `handleCloudRestore`,
   // `handleCloudPush`, `handleCloudConnect` used to live here and POST/GET /api/sync.
   // They are intentionally deleted — see P0 #6 notes in the audit plan.
-
-  const persistNormalizedBackupData = useCallback(async (normalizedData: any) => {
-    return persistNormalizedBackupDataAction(normalizedData, { rawHistorySyncedIdsRef, forceRawHistoryResyncRef });
-  }, []);
-
-  const restoreBackupData = useCallback(async (backup: any) => {
-    return restoreBackupDataAction(backup, {
-      isBulkRestoreInProgressRef,
-      rawHistorySyncedIdsRef,
-      forceRawHistoryResyncRef,
-      updateMemoryQuerySession,
-      setWorldCharacterStatus,
-      setAutoSavedKumikoDiary,
-      setAutoSavedDailyFragments,
-      setAutoSavedPsycheState,
-      worldCharacterStatus,
-      autoSavedKumikoDiary,
-      autoSavedDailyFragments,
-      autoSavedPsycheState,
-    });
-  }, [
-    normalizeBackupData,
-    persistNormalizedBackupData,
-    worldCharacterStatus,
-    autoSavedKumikoDiary,
-    autoSavedDailyFragments,
-    autoSavedPsycheState,
-  ]);
-
-  const restoreParsedBackupPayload = useCallback(async (
-    backupJson: any,
-    importedImages: Array<{ id: string; dataUrl: string }> = []
-  ) => {
-    if (!backupJson) return null;
-
-    if (importedImages.length > 0) {
-      for (let imageIndex = 0; imageIndex < importedImages.length; imageIndex += 1) {
-        const image = importedImages[imageIndex];
-        await imageService.saveImageWithId(image.id, image.dataUrl);
-
-        if ((imageIndex + 1) % 8 === 0) {
-          await yieldToMainThread();
-        }
-      }
-    }
-
-    return restoreBackupData(backupJson);
-  }, [restoreBackupData]);
-
 
   const {
     handleCreateNewLocalFile,
