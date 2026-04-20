@@ -1,5 +1,6 @@
 // Auto-ZIP backup at app-quit. Extracted from electron-main.cjs
-// (Plan 9 SubPhase 3.3).
+// (Plan 9 SubPhase 3.3); delegates ZIP assembly to backup-zip-builder.cjs
+// (Plan 14 Phase B).
 //
 // Owns the "roll the most recent JSON backup + userData media into
 // kumiko_backup_auto.zip before the app actually exits" flow, plus the
@@ -19,17 +20,18 @@
 //     Electron tear down normally.
 //   - `app:auto-zip-progress` message to the renderer is best-effort;
 //     if the window is gone we swallow the send error.
-//   - Media (images / voice / ringtone) snapshots match the exact same
-//     file filters used by the main backup pipeline (images regex,
-//     voice .mp3 only, ringtone custom.* + whitelisted audio exts).
+//   - Media snapshots (images / voice / ringtone file filters) and the
+//     `_autoZipMeta` stamp live inside backup-zip-builder.cjs now; this
+//     module only locates the latest data.json, computes the output
+//     path, and drives the shared builder.
 
 const fs = require('fs');
 const path = require('path');
-const JSZip = require('jszip');
 const { app } = require('electron');
 const { readConfigValue, writeConfigValue } = require('./user-config.cjs');
 const { getLastWrittenBackupPath } = require('./backup-ipc.cjs');
 const { isUpdateInstalling } = require('./app-updater.cjs');
+const { buildBackupZip } = require('./backup-zip-builder.cjs');
 
 // Renderer target for `app:auto-zip-progress` progress messages.
 // Injected via setAutoZipProgressTarget(mainWindow) from electron-main.cjs
@@ -114,91 +116,37 @@ function runAutoZipBeforeQuit(event) {
       return;
     }
 
-    const zip = new JSZip();
-
-    // P0 #2 (Plan 2): attach images/ snapshot and stamp _autoZipMeta so the
-    // importer can detect degraded auto-backups. Images live as real files
-    // under userData/images/{id}.{ext} (see imageService.ts + images:save
-    // handler above), so we can just read the folder directly from the main
-    // process — no IPC round-trip needed. The manual-export path does the
-    // equivalent from renderer-side Dexie; for the auto-backup path,
-    // filesystem is the source of truth.
-    const autoZipMeta = {
-      autoZipGeneratedAt: new Date().toISOString(),
-      hasImages: false,
-      imagesIncludedCount: 0,
-      imagesTotalCount: 0,
-    };
+    // Read the live JSON backup and hand everything else (media folders,
+    // _autoZipMeta stamp, zip assembly, fs write) to the shared builder.
+    let dataJsonString;
     try {
-      const imagesDir = path.join(app.getPath('userData'), 'images');
-      if (fs.existsSync(imagesDir)) {
-        const imageEntries = fs.readdirSync(imagesDir)
-          .filter((f) => /^[\w-]+\.(jpg|jpeg|png|webp|gif)$/i.test(f));
-        autoZipMeta.imagesTotalCount = imageEntries.length;
-        if (imageEntries.length > 0) {
-          const imagesFolder = zip.folder('images');
-          for (const fileName of imageEntries) {
-            try {
-              imagesFolder.file(fileName, fs.readFileSync(path.join(imagesDir, fileName)));
-              autoZipMeta.imagesIncludedCount += 1;
-            } catch (imgErr) {
-              console.warn('[AUTO BACKUP] Skipped image', fileName, imgErr);
-            }
-          }
-          autoZipMeta.hasImages = autoZipMeta.imagesIncludedCount > 0;
-        }
-      }
-    } catch (imgListErr) {
-      autoZipMeta.imagesErrorReason = imgListErr && imgListErr.message ? imgListErr.message : String(imgListErr);
-      console.warn('[AUTO BACKUP] Images snapshot failed:', imgListErr);
-    }
-
-    // Stamp _autoZipMeta into data.json by re-parsing + re-serializing. If
-    // the latest JSON is malformed, fall back to writing the raw bytes
-    // untouched so the core backup is never lost to a cosmetic metadata
-    // patch.
-    let dataJsonPayload;
-    try {
-      const parsedBackup = JSON.parse(fs.readFileSync(latestJson, 'utf-8'));
-      dataJsonPayload = JSON.stringify({ ...parsedBackup, _autoZipMeta: autoZipMeta }, null, 2);
-    } catch (patchErr) {
-      console.warn('[AUTO BACKUP] Failed to stamp _autoZipMeta into data.json; writing raw bytes:', patchErr);
-      dataJsonPayload = fs.readFileSync(latestJson);
-    }
-    zip.file('data.json', dataJsonPayload);
-
-    const voiceDir = path.join(app.getPath('userData'), 'voice');
-    if (fs.existsSync(voiceDir)) {
-      const voiceFolder = zip.folder('voice');
-      const vFiles = fs.readdirSync(voiceDir);
-      for (const f of vFiles) {
-        if (f.endsWith('.mp3')) {
-          voiceFolder.file(f, fs.readFileSync(path.join(voiceDir, f)));
-        }
-      }
-    }
-
-    const ringtoneDir = path.join(app.getPath('userData'), 'ringtone');
-    if (fs.existsSync(ringtoneDir)) {
-      const ringtoneFolder = zip.folder('ringtone');
-      const audioExts = ['.mp3', '.wav', '.ogg', '.m4a', '.flac'];
-      const rFiles = fs.readdirSync(ringtoneDir).filter(f => f.startsWith('custom.') && audioExts.some(ext => f.endsWith(ext)));
-      for (const f of rFiles) {
-        ringtoneFolder.file(f, fs.readFileSync(path.join(ringtoneDir, f)));
-      }
-    }
-
-    zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }).then((zipContent) => {
-      const zipName = 'kumiko_backup_auto.zip';
-      const zipPath = path.join(path.dirname(latestJson), zipName);
-      fs.writeFileSync(zipPath, zipContent);
-      console.log('[AUTO BACKUP] Auto ZIP backup created:', zipName);
-    }).catch((err) => {
-      console.error('[AUTO BACKUP] ZIP generation failed:', err);
-    }).finally(() => {
+      dataJsonString = fs.readFileSync(latestJson, 'utf-8');
+    } catch (readErr) {
+      console.error('[AUTO BACKUP] Failed to read latest JSON backup:', readErr);
       isAutoBackupDone = true;
       app.quit();
-    });
+      return;
+    }
+
+    const outputPath = path.join(path.dirname(latestJson), 'kumiko_backup_auto.zip');
+    buildBackupZip({ dataJsonString, mode: 'auto', outputPath })
+      .then((result) => {
+        if (result.success) {
+          console.log('[AUTO BACKUP] Auto ZIP backup created:', path.basename(outputPath), {
+            imagesIncluded: result.imagesIncluded,
+            imagesTotal: result.imagesTotal,
+          });
+        } else {
+          console.error('[AUTO BACKUP] ZIP generation failed:', result.error);
+        }
+      })
+      .catch((err) => {
+        console.error('[AUTO BACKUP] Unexpected builder failure:', err);
+      })
+      .finally(() => {
+        isAutoBackupDone = true;
+        app.quit();
+      });
   } catch (e) {
     console.error('[AUTO BACKUP] Failed during before-quit:', e);
     isAutoBackupDone = true;
