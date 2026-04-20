@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useAppStore } from '../store';
 import { SystemToast } from './SystemToast';
@@ -27,6 +27,7 @@ import {
 } from './app/summaryCycle';
 import { ExtendedSyncStatus } from './SyncStatus'; 
 import { useAutoSave } from '../hooks/useAutoSave'; 
+import { useAppViewport } from '../hooks/useAppViewport';
 import { useDevLogs } from '../hooks/useDevLogs';
 import { DEFAULT_APP_UPDATE_STATE } from '../store/slices/updaterSlice';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
@@ -165,26 +166,6 @@ export const App = () => {
     void db.setVal(MEMORY_QUERY_SESSION_STORAGE_KEY, normalizedSession);
   }, []);
 
-  // --- iOS PWA BODY LOCK CLEANUP ---
-  useEffect(() => {
-      // Body is now permanently fixed in index.html, no need to clear locks
-      
-      // Fix for iOS Safari PWA keyboard pushing app up and not restoring
-      const handleFocusOut = () => {
-        setTimeout(() => {
-          if (!document.activeElement || (document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA')) {
-            window.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
-          }
-        }, 100);
-      };
-
-      window.addEventListener('focusout', handleFocusOut);
-      
-      return () => {
-        window.removeEventListener('focusout', handleFocusOut);
-      };
-  }, []);
-
   // --- PERSISTENCE LOGIC START ---
   const isDataLoaded = useAppStore(s => s.isDataLoaded);
   const setIsDataLoaded = useAppStore(s => s.setIsDataLoaded);
@@ -230,209 +211,19 @@ export const App = () => {
   const setIsDarkMode = useAppStore(s => s.setIsDarkMode);
   const isFullscreen = useAppStore(s => s.isFullscreen);
   const setIsFullscreen = useAppStore(s => s.setIsFullscreen);
-  
+
+  const { appShellRef, isIOS, toggleFullscreen } = useAppViewport({
+    flowState,
+    isDarkMode,
+    setIsFullscreen,
+  });
+
   const replyingToMsg = useAppStore(s => s.replyingToMsg);
   const setReplyingToMsg = useAppStore(s => s.setReplyingToMsg);
   const highlightedMessageId = useAppStore(s => s.highlightedMessageId);
   const setHighlightedMessageId = useAppStore(s => s.setHighlightedMessageId);
   const systemNotice = useAppStore(s => s.systemNotice);
   const setSystemNotice = useAppStore(s => s.setSystemNotice);
-
-  // --- NEW: iOS DETECTION FOR PERFORMANCE OPTIMIZATION ---
-  const isIOS = useMemo(() => {
-      // Standard check for iOS devices
-      return /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
-  }, []);
-  
-  useLayoutEffect(() => {
-    const applyViewportFix = () => {
-      const vv = window.visualViewport;
-      const isStandalone =
-        (window.navigator as any).standalone === true ||
-        window.matchMedia('(display-mode: standalone)').matches;
-
-      let h = window.innerHeight || 0;
-
-      if (vv) {
-        h = Math.max(h, Math.round(vv.height + vv.offsetTop));
-      }
-
-      if (isStandalone) {
-        h = Math.max(h, document.documentElement.clientHeight || 0);
-      }
-
-      const isIOSDevice = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
-      const topOffset = (isStandalone && isIOSDevice) ? 'env(safe-area-inset-top)' : '0';
-
-      let hpx = (isStandalone && isIOSDevice) ? `calc(${h}px - env(safe-area-inset-top))` : `${h}px`;
-      if (isStandalone && typeof CSS !== 'undefined' && CSS.supports('height: 100dvh')) {
-        hpx = isIOSDevice ? 'calc(100dvh - env(safe-area-inset-top))' : '100dvh';
-      }
-      const bg = flowState === 'APP'
-        ? (isDarkMode ? '#121212' : '#ffffff')
-        : '#f9f7f2';
-
-      if (isDesktopElectron()) {
-        document.documentElement.style.setProperty('--app-height', '100vh');
-        document.documentElement.style.overflow = 'hidden';
-        document.documentElement.style.backgroundColor = bg;
-
-        Object.assign(document.body.style, {
-          margin: '0',
-          padding: '0',
-          height: '100vh',
-          overflow: 'hidden',
-          backgroundColor: bg,
-        });
-
-        const root = document.getElementById('root');
-        if (root) root.style.backgroundColor = bg;
-
-        if (window.electronAPI?.setBgColor) {
-          window.electronAPI.setBgColor(bg);
-        }
-        return;
-      }
-
-      hpx = hpx || `${h}px`;
-
-      document.documentElement.style.setProperty('--app-height', hpx);
-
-      Object.assign(document.documentElement.style, {
-        height: hpx,
-        minHeight: hpx,
-        overflow: 'hidden',
-        backgroundColor: bg,
-      });
-
-      Object.assign(document.body.style, {
-        position: 'fixed',
-        top: topOffset,
-        left: '0',
-        right: '0',
-        bottom: '0',
-        width: '100%',
-        height: hpx,
-        minHeight: hpx,
-        margin: '0',
-        padding: '0',
-        overflow: 'hidden',
-        backgroundColor: bg,
-        transform: 'translateZ(0)',
-      });
-
-      const root = document.getElementById('root');
-      if (root) {
-        Object.assign(root.style, {
-          position: 'absolute',
-          top: '0',
-          left: '0',
-          right: '0',
-          bottom: '0',
-          width: '100%',
-          height: '100%',
-          overflow: 'hidden',
-          backgroundColor: bg,
-        });
-      }
-
-      if (appShellRef.current) {
-        Object.assign(appShellRef.current.style, {
-          position: 'absolute',
-          top: '0',
-          left: '0',
-          right: '0',
-          bottom: '0',
-          width: '100%',
-          height: '100%',
-          minHeight: '0',
-          maxHeight: 'none',
-          overflow: 'hidden',
-          backgroundColor: bg,
-        });
-      }
-
-    };
-
-    const onResize = () => requestAnimationFrame(applyViewportFix);
-    const onVisible = () => {
-      if (!document.hidden) {
-        setTimeout(applyViewportFix, 50);
-        setTimeout(applyViewportFix, 250);
-        setTimeout(applyViewportFix, 600);
-      }
-    };
-
-    applyViewportFix();
-
-    if (!isDesktopElectron()) {
-      window.addEventListener('resize', onResize, { passive: true });
-      window.addEventListener('orientationchange', onResize, { passive: true });
-      window.addEventListener('pageshow', onResize, { passive: true });
-
-      if (window.visualViewport) {
-        window.visualViewport.addEventListener('resize', onResize, { passive: true });
-        window.visualViewport.addEventListener('scroll', onResize, { passive: true });
-      }
-
-      document.addEventListener('visibilitychange', onVisible);
-    }
-
-    setTimeout(applyViewportFix, 0);
-    setTimeout(applyViewportFix, 100);
-    setTimeout(applyViewportFix, 400);
-
-    return () => {
-      if (!isDesktopElectron()) {
-        window.removeEventListener('resize', onResize);
-        window.removeEventListener('orientationchange', onResize);
-        window.removeEventListener('pageshow', onResize);
-
-        if (window.visualViewport) {
-          window.visualViewport.removeEventListener('resize', onResize);
-          window.visualViewport.removeEventListener('scroll', onResize);
-        }
-
-        document.removeEventListener('visibilitychange', onVisible);
-      }
-    };
-  }, [isDarkMode, flowState]);
-
-  // --- iOS WAKE LOCK OPTIMIZATION ---
-  useEffect(() => {
-    let wakeLock: any = null;
-
-    const requestWakeLock = async () => {
-      try {
-        if ('wakeLock' in navigator && flowState === 'APP') {
-          // @ts-ignore
-          wakeLock = await navigator.wakeLock.request('screen');
-          console.log("[iOS Optimization] Screen Wake Lock acquired.");
-        }
-      } catch (err) {
-        console.warn("[iOS Optimization] Wake Lock failed:", err);
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        // Re-acquire lock when coming back to app
-        requestWakeLock();
-      }
-    };
-
-    // Request initially if in APP mode
-    if (flowState === 'APP') {
-      requestWakeLock();
-    }
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      if (wakeLock) wakeLock.release();
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [flowState]);
 
   const language = useAppStore(s => s.language);
   const setLanguage = useAppStore(s => s.setLanguage);
@@ -881,7 +672,6 @@ export const App = () => {
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef(messages);
-  const appShellRef = useRef<HTMLDivElement>(null);
 
   const summarySemanticEmbeddingCacheRef = useRef<Map<string, Float32Array>>(new Map());
   const recentRagDedupeKeysRef = useRef<string[]>([]);
@@ -1895,72 +1685,6 @@ export const App = () => {
           alert("Failed to reload data.");
       }
   }, [restoreBackupData, updateBaseline]);
-
-  // ... (Other effects and toggleFullscreen) ...
-  useEffect(() => {
-    const handleFullscreenChange = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
-
-  const toggleFullscreen = () => {
-    if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(err =>
-        console.error(`Error: ${err.message}`)
-      );
-    } else if (document.exitFullscreen) {
-      document.exitFullscreen();
-    }
-  };
-
-  useEffect(() => {
-    if (flowState !== 'APP') return;
-    // NOTE: must match `containerBg` in components/app/appShellStyles.ts so the
-    // BrowserWindow fill color painted during window resize is indistinguishable
-    // from the app's own background. Previously #f0f0f0 (light) was a slightly
-    // darker gray than the #ffffff container and left a visible seam when the
-    // renderer reflow lagged behind DWM during rapid resize.
-    const themeColor = isDarkMode ? '#121212' : '#ffffff';
-    document.body.style.backgroundColor = themeColor;
-    document.documentElement.style.backgroundColor = themeColor;
-    let metaThemeColor = document.querySelector("meta[name='theme-color']");
-    if (!metaThemeColor) {
-      metaThemeColor = document.createElement('meta');
-      metaThemeColor.setAttribute('name', 'theme-color');
-      document.head.appendChild(metaThemeColor);
-    }
-    metaThemeColor.setAttribute('content', themeColor);
-    // Sync to Electron main: BrowserWindow.backgroundColor covers the "gap" that
-    // appears during window resize before Chromium finishes painting. Matching it
-    // to the current theme means when the backdrop-filter freeze CSS briefly lets
-    // through the native window background, it stays indistinguishable from the app.
-    try { window.electronAPI?.setBgColor?.(themeColor); } catch { /* non-Electron env */ }
-  }, [isDarkMode, flowState]);
-
-  // Flag `data-resizing` on <html> during window resize so global CSS can freeze
-  // expensive effects (backdrop-filter, transitions, animations) plus skip
-  // reflow+paint on elements tagged `data-resize-heavy` (chat virtual list,
-  // panel inner content). Released 200ms after the last resize tick -- this
-  // covers the observed 200~500ms renderer reflow window on APP page so the
-  // heavy subtrees do not un-freeze before their reflow completes and flash
-  // back onto a still-changing layout. See plan: app_page_resize_catchup.
-  useEffect(() => {
-    let timer: number | null = null;
-    const onResize = () => {
-      document.documentElement.setAttribute('data-resizing', '');
-      if (timer !== null) window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        document.documentElement.removeAttribute('data-resizing');
-        timer = null;
-      }, 200);
-    };
-    window.addEventListener('resize', onResize, { passive: true });
-    return () => {
-      window.removeEventListener('resize', onResize);
-      if (timer !== null) window.clearTimeout(timer);
-      document.documentElement.removeAttribute('data-resizing');
-    };
-  }, []);
 
   useEffect(() => {
     const init = async () => {
