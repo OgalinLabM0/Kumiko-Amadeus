@@ -161,46 +161,14 @@ export class AppDatabase extends Dexie {
       // Episode payload now carries messageIds/topicHint metadata for temporal evidence.
     });
 
-    this.version(6).stores({
-      messages: 'id, timestamp, role, isPinned',
-      images: 'id, timestamp',
-      vectors: 'id, timestamp, tier, source, canonicalKey, *tags',
-      episodes: 'id, startTimestamp, endTimestamp, startMessageId, endMessageId, roleScope',
-      keyval: 'key',
-      graphEntities: 'id, name, type, firstSeen, lastSeen',
-      graphRelations: 'id, fromId, toId, relationType, timestamp'
-    }).upgrade(() => {
-      // GraphRAG: entity-relation graph for structured memory.
-    });
-
-    this.version(7).stores({
-      messages: 'id, timestamp, role, isPinned',
-      images: 'id, timestamp',
-      vectors: 'id, timestamp, tier, source, canonicalKey, *tags',
-      episodes: 'id, startTimestamp, endTimestamp, startMessageId, endMessageId, roleScope',
-      keyval: 'key',
-      graphEntities: 'id, name, type, firstSeen, lastSeen',
-      graphRelations: 'id, fromId, toId, relationType, timestamp, [fromId+toId+relationType]'
-    }).upgrade(async tx => {
-      await tx.table('graphEntities').toCollection().modify((entity: any) => {
-        entity.name = (entity.name || '').trim().toLowerCase();
-      });
-      await tx.table('graphRelations').toCollection().modify((relation: any) => {
-        relation.fromId = (relation.fromId || '').trim().toLowerCase();
-        relation.toId = (relation.toId || '').trim().toLowerCase();
-        relation.relationType = (relation.relationType || '').trim().toLowerCase().replace(/\s+/g, '_');
-      });
-    });
-
-    this.version(8).stores({
-      messages: 'id, timestamp, role, isPinned',
-      images: 'id, timestamp',
-      vectors: 'id, timestamp, tier, source, canonicalKey, *tags',
-      episodes: 'id, startTimestamp, endTimestamp, startMessageId, endMessageId, roleScope',
-      keyval: 'key',
-      graphEntities: null,
-      graphRelations: null,
-    });
+    // V6-V8 were the GraphRAG experiment (graphEntities / graphRelations
+    // entity-relation tables). V6 built them, V7 normalised data in-place,
+    // V8 dropped them with `null`. The feature was removed and no runtime
+    // code has referenced either table since. Dexie allows non-contiguous
+    // version numbers, so we jump straight to V9; Dexie DBs that already
+    // ran V6-V8 are at >= V8 locally and skip this span, and any hypothetical
+    // DB still on V5 (or earlier) will migrate directly to the post-GraphRAG
+    // shape at V9 without ever creating the dead tables.
 
     this.version(9).stores({
       messages: 'id, timestamp, role, isPinned',
