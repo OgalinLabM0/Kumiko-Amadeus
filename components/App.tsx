@@ -32,12 +32,13 @@ import { useProactiveLifeCycle } from '../hooks/useProactiveLifeCycle';
 import { useBackupWorkflow } from '../hooks/useBackupWorkflow';
 import { useUnreadAlertsChrome } from '../hooks/useUnreadAlertsChrome';
 import { usePreferencesPersistence } from '../hooks/usePreferencesPersistence';
+import { useWorldBookLocalization } from '../hooks/useWorldBookLocalization';
 import { useDevLogs } from '../hooks/useDevLogs';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
 import { LoadingDataScreen } from './app/AppStatusOverlays';
 import { Message, AppState, EmotionType, WorldBookEntry, Language, LocationConfig, BackupConfig, AnchorEntry, AIConfig, ChatResponse, SummaryArchiveState, SummaryBoundaryReason, MemoryQuerySession, TemporalQueryPrecision, TemporalQuerySource, TemporalQueryDiagnosticsStatus, TemporalQueryConfidence, SummarySegmentMetadata, TtsConfig, VoiceMode } from '../types';
 import { sendMessageToGemini, startChat, summarizeConversation, searchRagMemory, saveRagMemory, uploadImageToBackend, analyzeTemporalQueryDetailed, getTemporalSearchRoleFromQuery, rewriteHistoricalRecallQueryDetailed, type HistoricalQueryRewrite, type HistoricalSearchStrategy, type TemporalQueryAnalysis, type TemporalQueryDiagnostics } from '../services/geminiService';
-import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK } from '../constants';
+import { UI_TRANSLATIONS, DEFAULT_LOCATION_CONFIG } from '../constants';
 import { VoiceCallOverlay } from './VoiceCallOverlay';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -233,51 +234,7 @@ export const App = () => {
   const worldBook = useAppStore(s => s.worldBook);
   const setWorldBook = useAppStore(s => s.setWorldBook);
 
-  // This effect ensures the official lore content is always up-to-date with the code
-  useEffect(() => {
-      const officialLore = LOCALIZED_WORLD_BOOK[language] || DEFAULT_WORLD_BOOK;
-      const officialLoreMap = new Map(officialLore.map(e => [e.id, e]));
-      
-      setWorldBook(prevBook => {
-          let hasChanged = false;
-          // Get only custom entries from the current state
-          const customEntries = prevBook.filter(e => !officialLoreMap.has(e.id));
-          
-          // Rebuild official entries from code, preserving user settings from prev state
-          const newOfficialEntries = officialLore.map(officialEntry => {
-              const userSettings = prevBook.find(e => e.id === officialEntry.id);
-              if (userSettings) {
-                  // If content differs, it means code was updated. Mark change.
-                  if (userSettings.content !== officialEntry.content || userSettings.title !== officialEntry.title) {
-                      hasChanged = true;
-                  }
-                  // Preserve user settings, but take content from code
-                  return {
-                      ...officialEntry, // Fresh content from code
-                      isActive: userSettings.isActive, // User setting
-                      isHighPriority: userSettings.isHighPriority // User setting
-                  };
-              }
-              return officialEntry; // This is a new entry from code
-          });
-
-          // FIX: Explicitly check if we are initializing from an empty state or missing entries
-          const prevOfficialCount = prevBook.filter(e => officialLoreMap.has(e.id)).length;
-          
-          // If counts mismatch (e.g. 0 vs 15), we MUST update
-          if (prevOfficialCount !== newOfficialEntries.length) {
-              hasChanged = true;
-          }
-
-          // If no changes, return the original state to avoid re-render
-          if (!hasChanged && customEntries.length === (prevBook.length - prevOfficialCount)) {
-              return prevBook;
-          }
-          
-          return [...newOfficialEntries, ...customEntries];
-      });
-  }, [language, isDataLoaded]);
-
+  useWorldBookLocalization({ language, isDataLoaded, setWorldBook });
 
   const turnCount = useAppStore(s => s.turnCount);
   const setTurnCount = useAppStore(s => s.setTurnCount);
