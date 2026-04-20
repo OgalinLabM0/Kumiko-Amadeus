@@ -29,11 +29,10 @@ import { ExtendedSyncStatus } from './SyncStatus';
 import { useAutoSave } from '../hooks/useAutoSave'; 
 import { useAppViewport } from '../hooks/useAppViewport';
 import { useDevLogs } from '../hooks/useDevLogs';
-import { DEFAULT_APP_UPDATE_STATE } from '../store/slices/updaterSlice';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
 import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, normalizeReminderEvent, type RelativeReminder, type DailyReminder } from '../store/slices/reminderSlice';
 import { LoadingDataScreen } from './app/AppStatusOverlays';
-import { Message, AppState, AppUpdateState, EmotionType, WorldBookEntry, Language, LocationConfig, BackupConfig, AnchorEntry, AIConfig, ChatResponse, SummaryArchiveState, SummaryBoundaryReason, MemoryQuerySession, TemporalQueryPrecision, TemporalQuerySource, TemporalQueryDiagnosticsStatus, TemporalQueryConfidence, SummarySegmentMetadata, TtsConfig, VoiceMode, MissedMessageAlert, MessageAlertKind } from '../types';
+import { Message, AppState, EmotionType, WorldBookEntry, Language, LocationConfig, BackupConfig, AnchorEntry, AIConfig, ChatResponse, SummaryArchiveState, SummaryBoundaryReason, MemoryQuerySession, TemporalQueryPrecision, TemporalQuerySource, TemporalQueryDiagnosticsStatus, TemporalQueryConfidence, SummarySegmentMetadata, TtsConfig, VoiceMode, MissedMessageAlert, MessageAlertKind } from '../types';
 import { sendMessageToGemini, startChat, summarizeConversation, searchRagMemory, saveRagMemory, uploadImageToBackend, getCurrentAIConfig, validateAIConnection, analyzeTemporalQueryDetailed, getTemporalSearchRoleFromQuery, rewriteHistoricalRecallQueryDetailed, callLLMRaw, type HistoricalQueryRewrite, type HistoricalSearchStrategy, type TemporalQueryAnalysis, type TemporalQueryDiagnostics } from '../services/geminiService';
 import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK, EMOTION_TO_FISH_AUDIO_TAGS, EMOTION_TTS_TEMPERATURE, DEFAULT_TTS_CONFIG } from '../constants';
 import { synthesizeSpeech, TtsError } from '../services/fishAudioService';
@@ -151,6 +150,7 @@ import {
   type ExecuteSendHelpers,
 } from './app/chatActions';
 import { migrateLegacyMessageImages } from './app/legacyImageMigration';
+import { useAppUpdater } from './app/useAppUpdater';
 
 
 export const App = () => {
@@ -510,52 +510,13 @@ export const App = () => {
   const handleDownloadAppUpdate = useAppStore(s => s.handleDownloadAppUpdate);
   const handleInstallAppUpdate = useAppStore(s => s.handleInstallAppUpdate);
 
-  const lastAppUpdateStatusRef = useRef<AppUpdateState['status']>(DEFAULT_APP_UPDATE_STATE.status);
-
-  useEffect(() => {
-    if (!isDesktopElectron() || !window.electronAPI) {
-      setAppUpdateState((prev) => ({ ...prev, status: 'unsupported', isPackaged: false }));
-      return;
-    }
-
-    let cancelled = false;
-
-    const handleUpdateStatus = (_event: any, payload: AppUpdateState) => {
-      if (!payload) return;
-      setAppUpdateState((prev) => ({ ...prev, ...payload }));
-    };
-
-    window.electronAPI.on('app:update-status', handleUpdateStatus);
-    window.electronAPI.invoke('app:update:get-state')
-      .then((result: any) => {
-        if (cancelled || !result?.success || !result.state) return;
-        setAppUpdateState((prev) => ({ ...prev, ...result.state }));
-      })
-      .catch((error) => {
-        console.error('[UPDATER] Failed to read initial updater state:', error);
-      });
-
-    return () => {
-      cancelled = true;
-      window.electronAPI?.removeListener?.('app:update-status', handleUpdateStatus);
-    };
-  }, []);
-
-  useEffect(() => {
-    const previousStatus = lastAppUpdateStatusRef.current;
-
-    if (appUpdateState.status === 'available' && previousStatus !== 'available' && appUpdateState.availableVersion) {
-      const nextText = UI_TRANSLATIONS[language].updateToastAvailable.replace('{0}', `v${appUpdateState.availableVersion}`);
-      setSystemNotice(nextText);
-    }
-
-    if (appUpdateState.status === 'downloaded' && previousStatus !== 'downloaded') {
-      setSystemNotice(UI_TRANSLATIONS[language].updateToastReady);
-      setShowAppUpdateModal(true);
-    }
-
-    lastAppUpdateStatusRef.current = appUpdateState.status;
-  }, [appUpdateState.status, appUpdateState.availableVersion, language]);
+  useAppUpdater({
+    appUpdateState,
+    setAppUpdateState,
+    setShowAppUpdateModal,
+    setSystemNotice,
+    language,
+  });
 
   const currentEmotion = useAppStore(s => s.currentEmotion);
   const setCurrentEmotion = useAppStore(s => s.setCurrentEmotion);
