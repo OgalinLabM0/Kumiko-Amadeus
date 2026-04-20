@@ -1,0 +1,156 @@
+# RAG Architecture
+
+Kumiko·Amadeus runs a local-only semantic memory layer: embeddings and
+vector search execute in the main process (Node + ONNX Runtime + SQLite);
+the renderer never talks to a remote embedding API. This note is the
+source of truth for the IPC boundary, the SQLite schema, and the
+`vectors` table evolution across Dexie versions.
+
+Scope: RAG only. Backup file format / data.json layout is separate — see
+[backup-architecture.md](./backup-architecture.md).
+
+## Process split
+
+```mermaid
+flowchart LR
+    RND["Renderer<br/>localRagService.ts"]
+    IPC["electronAPI.invoke<br/>rag:* channels"]
+    MAIN["Main process<br/>electron-rag.cjs"]
+    ONNX["ONNX Runtime (bge-m3)<br/>via worker"]
+    SQL["better-sqlite3<br/>vectors + messages tables"]
+
+    RND --> IPC
+    IPC --> MAIN
+    MAIN --> ONNX
+    MAIN --> SQL
+```
+
+The renderer holds app state (Zustand store + Dexie `db.vectors` mirror);
+the main process holds the authoritative vector index (SQLite) and the
+ONNX session. Every recall query round-trips through IPC.
+
+## IPC surface (`rag:*` channels)
+
+Registered in [`electron-rag.cjs`]; all exposed to the renderer through the
+allowlist in [`preload.cjs`].
+
+| Channel                          | Direction  | Purpose                                                                                              |
+| -------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------- |
+| `rag:embed`                      | RND → MAIN | Generate a bge-m3 embedding for a single string. Used by the live-chat turn-pair recall path.        |
+| `rag:save`                       | RND → MAIN | Persist one or more `VectorEntity` rows (text + vector + metadata) to SQLite.                        |
+| `rag:search`                     | RND → MAIN | Grouped recall. Accepts `{ query, topK, startTime?, endTime?, role?, memoryIntent?, keywords? }`.    |
+| `rag:expand-context`             | RND → MAIN | Temporal neighborhood fetch around a given timestamp.                                                |
+| `rag:sync-messages`              | RND → MAIN | Mirror the renderer's Dexie `messages` table into SQLite. Used as evidence source during rebuild.    |
+| `rag:get-messages`               | RND → MAIN | Read back the SQLite mirror. Merged with Dexie in `rawHistorySync.loadRawHistoryMessages`.           |
+| `rag:get-all`                    | RND → MAIN | Full vector dump; used by `handleExportBackup` to stamp `vectors` into `data.json`.                  |
+| `rag:restore`                    | RND → MAIN | Bulk-write vectors from a backup. Returns a structured result surfacing partial failures.            |
+| `rag:clear-all`                  | RND → MAIN | Wipe the vectors table. Used by the "rebuild" path before repopulating.                              |
+| `rag:clear-message-vectors`      | RND → MAIN | Latent per-message cleanup; no renderer wrapper yet (see comment in `preload.cjs`).                  |
+| `rag:rebuild:start`              | RND → MAIN | Kick off the background rebuild worker.                                                              |
+| `rag:rebuild:status`             | RND → MAIN | Poll current rebuild progress (stage + processed/total + counts).                                    |
+| `rag:rebuild:{started,progress,done,error}` | MAIN → RND | Progress push channels consumed by the memory panel UI.                                 |
+| `rag:stats`                      | RND → MAIN | Snapshot counters: vector count by tier, HNSW index size, grouped / merged counts.                    |
+| `rag:status`                     | RND → MAIN | Lightweight readiness probe (model loaded? DB opened?).                                              |
+
+Renderer side wrappers live in [`services/localRagService.ts`]. Every one
+asserts `window.electronAPI` before invoking and throws a precise error
+when the IPC is unavailable — RAG has no remote fallback on purpose.
+
+## Embedding model
+
+- Runtime: `onnxruntime-node` in a dedicated Worker (see
+  `ensureRagWorker` / `callRagWorker` in [`electron-rag.cjs`]).
+- Model: bge-m3 ONNX. Loaded from `userData/{rag-model}`; the installer
+  stages the model into the user-data dir on first run.
+- Fallback: if the worker fails to boot, `generateEmbeddingInMainProcess`
+  runs the model directly in the main thread. This is slower and blocks
+  the UI more aggressively, but it keeps the app usable on systems with
+  worker-thread constraints.
+- Retry: `localRagService.generateEmbedding(text, retries, backoff)` does
+  an exponential-backoff retry loop in the renderer before giving up.
+  The `aiConfig` parameter that used to precede `retries` was removed in
+  an earlier commit (the RAG path is fully local, so the old remote-provider
+  config surface had no meaning here).
+
+## SQLite schema (`vectors` table)
+
+```sql
+CREATE TABLE IF NOT EXISTS vectors (
+  id TEXT PRIMARY KEY,
+  message_id TEXT,
+  text TEXT,
+  vector BLOB,
+  timestamp INTEGER,
+  tags TEXT,               -- JSON array
+  tier TEXT,               -- 'core' | 'episodic' | 'background' | 'lore'
+  source TEXT,             -- rebuild_message | rebuild_fragment | turn_pair | ...
+  score REAL,
+  canonical_key TEXT,
+  role TEXT                -- 'user' | 'model' | 'system' | 'mixed' | 'unknown'
+);
+CREATE INDEX idx_vectors_timestamp ON vectors(timestamp);
+CREATE INDEX idx_vectors_tier_timestamp ON vectors(tier, timestamp);
+CREATE INDEX idx_vectors_canonical_key ON vectors(canonical_key);
+```
+
+There is also a parallel `messages` table that mirrors the renderer's
+Dexie `messages` rows (see `upsertRawMessages` in [`electron-rag.cjs`]),
+used during rebuild to derive fresh embeddings without round-tripping
+through IndexedDB.
+
+## Dexie `vectors` store evolution
+
+The renderer keeps a Dexie-side mirror of the vector store so that the
+memory panel can render synchronously without IPC. The schema lives in
+[`services/db.ts`]; only the entries relevant to RAG are listed here.
+
+| Dexie version | `vectors` schema                                                    | Notes                                                                 |
+| ------------- | ------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| V1            | `id, timestamp`                                                     | Original minimal shape.                                               |
+| V2            | `id, timestamp, *tags`                                              | Hybrid search: multi-entry `tags` index for keyword pre-filter.       |
+| V3            | `id, timestamp, tier, source, canonicalKey, *tags`                  | `tier` / `source` / `canonicalKey` metadata for the fallback paths.    |
+| V4            | (unchanged)                                                         | V4 added `episodes`; vectors schema frozen.                            |
+| V5            | (unchanged)                                                         | Episode payload shape change; vectors frozen.                          |
+| V9            | (unchanged)                                                         | V9 added diary / fragment / psyche tables; vectors frozen.             |
+| V10 / V11     | (unchanged)                                                         | V10 added `imageId` index on `messages`; V11 dropped legacy `image`.  |
+
+V6 / V7 / V8 were the retired GraphRAG experiment (entity-relation tables,
+nothing to do with vectors) and were cleaned out of the schema history in
+Plan 14 Phase D — Dexie version numbers are now non-contiguous (5 → 9)
+which is supported.
+
+## When to use Dexie direct vs IPC
+
+- **Dexie direct** (`db.vectors.*`): renderer-only reads of the mirrored
+  index. Memory panel rendering, search-result annotations on the client
+  side. Do NOT write vectors directly to Dexie — the SQLite store is
+  authoritative.
+- **IPC** (`rag:*`): anything that generates embeddings, persists new
+  vectors, or drives a search query. Writes always land in SQLite first,
+  then the renderer decides whether to refresh its Dexie mirror.
+
+Writing vectors directly to Dexie from the renderer would desync the
+mirror from SQLite and leak incorrect vectors into subsequent searches
+(since the search still goes through SQLite, but the mirror shows the
+renderer's state). If you need to add a new vector source, extend
+`rag:save` in [`electron-rag.cjs`] rather than growing a second writer.
+
+## Rebuild lifecycle
+
+Triggered by the user from the memory panel, handled by
+`rag:rebuild:start`. Stages push through `rag:rebuild:progress` in this
+order (see `LocalRagRebuildStage` in [`services/localRagService.ts`]):
+
+1. `loading_source_history` — Read messages + fragments from Dexie.
+2. `grouping_fragments` — Canonicalize and deduplicate by `canonicalKey`.
+3. `generating_embeddings` — Run bge-m3 in batches (worker if available).
+4. `writing_sqlite_rows` — Persist new vectors to SQLite.
+5. `building_indexes` — Rebuild the in-memory HNSW accelerator for fast
+   top-K search at query time.
+6. `finalizing_statistics` — Update vector / grouped / merged counts
+   exposed via `rag:stats`.
+
+Partial failures during rebuild (a single row fails to embed, for example)
+do not abort the job; they accumulate in the `filteredCount` /
+`duplicateCount` counters and surface in the final status payload. The
+job ID is random per start so overlapping rebuild requests are detectable.
