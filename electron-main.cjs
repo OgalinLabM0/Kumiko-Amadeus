@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, Notification, protocol } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { initRag, closeRag } = require('./electron-rag.cjs');
@@ -79,6 +79,16 @@ const {
   handleSetAutoZip,
   runAutoZipBeforeQuit,
 } = require('./electron/auto-zip-backup.cjs');
+const {
+  setNotificationWindow,
+  setNotificationTray,
+  applyUnreadShellState,
+  handleShowWindow,
+  handleSendNotification,
+  handleSendCallNotification,
+  handleCloseCallNotification,
+  handleUpdateUnreadState,
+} = require('./electron/notifications.cjs');
 
 // Platform detection. Used throughout this file to branch registry/PowerShell
 // (Windows-only) vs JSON config store (Linux), drive-letter preference (Windows)
@@ -110,7 +120,6 @@ app.commandLine.appendSwitch('enable-features', 'UseSkiaRenderer,CanvasOopRaster
 
 let mainWindow;
 let tray = null;
-let unreadMessageCount = 0;
 const isDev = !app.isPackaged;
 
 // electron-updater side-effects (skip auto-backup + mark quitting intent
@@ -181,6 +190,7 @@ function createWindow() {
   setGenieDialogParent(mainWindow);
   setBackupDialogParent(mainWindow);
   setAutoZipProgressTarget(mainWindow);
+  setNotificationWindow(mainWindow);
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
@@ -250,25 +260,9 @@ function createTray() {
         mainWindow.focus();
       }
     });
+    setNotificationTray(tray);
   } catch (err) {
     console.warn('Tray icon creation failed, maybe icon is missing?', err);
-  }
-}
-
-function applyUnreadShellState() {
-  const baseTitle = 'Kumiko·Amadeus';
-  const nextTitle = unreadMessageCount > 0 ? `(${unreadMessageCount}) ${baseTitle}` : baseTitle;
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.setTitle(nextTitle);
-    mainWindow.flashFrame(unreadMessageCount > 0);
-  }
-
-  if (tray) {
-    const tooltip = unreadMessageCount > 0
-      ? `Kumiko·Amadeus 后台守护中 · ${unreadMessageCount} 条未读来信`
-      : 'Kumiko·Amadeus 后台守护中...';
-    tray.setToolTip(tooltip);
   }
 }
 
@@ -284,99 +278,11 @@ if (!singleInstanceLock) {
     }
   });
 
-  ipcMain.on('show-window', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      if (!mainWindow.isVisible()) mainWindow.show();
-      mainWindow.focus();
-      mainWindow.flashFrame(false);
-    }
-  });
-
-  ipcMain.on('app:send-notification', (_event, payload = {}) => {
-    try {
-      if (Notification.isSupported()) {
-        const notif = new Notification({
-          title: payload.title || 'Kumiko Amadeus',
-          body: payload.body || '',
-          icon: payload.icon || path.join(__dirname, 'public', 'CCA-P2.png'),
-          silent: false,
-          urgency: 'critical'
-        });
-        notif.on('click', () => {
-          if (mainWindow) {
-            if (mainWindow.isMinimized()) mainWindow.restore();
-            if (!mainWindow.isVisible()) mainWindow.show();
-            mainWindow.focus();
-          }
-        });
-        notif.show();
-      }
-    } catch (e) {
-      console.error('[Notification] Failed to show:', e);
-    }
-  });
-
-  let callNotifWindow = null;
-  ipcMain.on('app:send-call-notification', (_event, payload = {}) => {
-    try {
-      if (callNotifWindow && !callNotifWindow.isDestroyed()) callNotifWindow.close();
-      const { screen } = require('electron');
-      const display = screen.getPrimaryDisplay();
-      const { width: sw, height: sh } = display.workAreaSize;
-      const nw = 360, nh = 120;
-      callNotifWindow = new BrowserWindow({
-        width: nw, height: nh,
-        x: sw - nw - 16, y: sh - nh - 16,
-        frame: false, transparent: true, alwaysOnTop: true,
-        resizable: false, skipTaskbar: true, focusable: true,
-        webPreferences: { nodeIntegration: false, contextIsolation: true }
-      });
-      const title = (payload.title || 'Incoming Call').replace(/'/g, "\\'").replace(/\n/g, ' ');
-      const body = (payload.body || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
-      let avatarBase64 = '';
-      try { avatarBase64 = fs.readFileSync(path.join(__dirname, 'public', 'CCA-P2.png')).toString('base64'); } catch(_e) {}
-      const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-        *{margin:0;padding:0;box-sizing:border-box}
-        body{font-family:'Segoe UI',system-ui,sans-serif;background:rgba(20,20,30,0.95);color:#fff;border-radius:14px;overflow:hidden;cursor:pointer;user-select:none;border:1px solid rgba(255,255,255,0.1)}
-        .c{display:flex;align-items:center;gap:14px;padding:18px 20px;height:100%}
-        .avatar{width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#a855f7,#ec4899);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;flex-shrink:0;overflow:hidden}
-        .avatar img{width:100%;height:100%;object-fit:cover}
-        .info{flex:1;min-width:0}
-        .title{font-size:14px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .body{font-size:11px;color:rgba(255,255,255,0.6);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .ring{font-size:11px;color:#a855f7;margin-top:4px;animation:blink 1.2s infinite}
-        @keyframes blink{0%,100%{opacity:1}50%{opacity:0.4}}
-      </style></head><body onclick="window.close()"><div class="c">
-        <div class="avatar"><img src="data:image/png;base64,${avatarBase64}" onerror="this.style.display='none';this.parentElement.innerText='久'"/></div>
-        <div class="info"><div class="title">${title}</div><div class="body">${body}</div><div class="ring">📞 来电中...</div></div>
-      </div></body></html>`;
-      callNotifWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-      callNotifWindow.on('closed', () => {
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          if (mainWindow.isMinimized()) mainWindow.restore();
-          if (!mainWindow.isVisible()) mainWindow.show();
-          mainWindow.focus();
-        }
-        callNotifWindow = null;
-      });
-    } catch (e) {
-      console.error('[CallNotification] Failed:', e);
-    }
-  });
-
-  ipcMain.on('app:close-call-notification', () => {
-    if (callNotifWindow && !callNotifWindow.isDestroyed()) {
-      callNotifWindow.close();
-      callNotifWindow = null;
-    }
-  });
-
-  ipcMain.on('app:update-unread-state', (_event, payload = {}) => {
-    const nextCount = Number(payload.count);
-    unreadMessageCount = Number.isFinite(nextCount) && nextCount > 0 ? Math.floor(nextCount) : 0;
-    applyUnreadShellState();
-  });
+  ipcMain.on('show-window', handleShowWindow);
+  ipcMain.on('app:send-notification', handleSendNotification);
+  ipcMain.on('app:send-call-notification', handleSendCallNotification);
+  ipcMain.on('app:close-call-notification', handleCloseCallNotification);
+  ipcMain.on('app:update-unread-state', handleUpdateUnreadState);
 
   ipcMain.handle('quit-app', () => {
     app.isQuiting = true;
