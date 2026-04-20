@@ -633,7 +633,19 @@ export async function handleImportBackup(
     if (restoredData) {
       if (json.vectors) {
         await yieldToMainThread();
-        await restoreVectors(json.vectors);
+        // P1 #13 follow-up (Plan 4): restoreVectors now returns a structured
+        // result. Surface partial/failed restores via a non-blocking notice so
+        // the user can choose to rebuild the memory bank from the UI. Restore
+        // continues regardless.
+        const restoreResult = await restoreVectors(json.vectors);
+        if (!restoreResult?.ok) {
+          console.warn('[IMPORT] RAG vectors restore was partial or failed:', restoreResult);
+          state.setSystemNotice(
+            language === 'zh'
+              ? 'RAG 向量恢复不完整，可手动重建记忆库以补齐。'
+              : 'RAG vectors restore was partial. You can manually rebuild the memory bank to refill.'
+          );
+        }
         state.setRagDirtyNoticeShown(false);
         state.setIsRagHistoryDirty(false);
       } else if (backupConfig.ragEnabled && Array.isArray(restoredData.messages) && restoredData.messages.length > 0) {
