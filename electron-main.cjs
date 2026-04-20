@@ -15,6 +15,18 @@ const {
   PENDING_SOURCE_VALUE_NAME,
   PENDING_TARGET_VALUE_NAME,
 } = require('./electron/user-config.cjs');
+const {
+  loadAllAuthorizedPaths,
+  isValidSovitsDir,
+  getSovitsDirFingerprintError,
+  authorizeSovitsDir,
+  isAuthorizedSovitsDir,
+  isValidSovitsPython,
+  authorizeSovitsPython,
+  isAuthorizedSovitsPython,
+  authorizeBackupPath,
+  isBackupPathAuthorized,
+} = require('./electron/authorized-paths.cjs');
 
 // Platform detection. Used throughout this file to branch registry/PowerShell
 // (Windows-only) vs JSON config store (Linux), drive-letter preference (Windows)
@@ -50,145 +62,6 @@ let genieProcess = null;
 let unreadMessageCount = 0;
 let lastWrittenBackupPath = null;
 
-// GPT-SoVITS directory authorization: pre-approved install locations. genie:start will
-// only spawn processes from a sovitsDir that the user explicitly picked via the native
-// dialog (genie:pick-sovits-dir), AND that still passes install-fingerprint checks at
-// spawn time. This closes a path-injection → RCE vector where a compromised renderer
-// could otherwise tell the main process to spawn python.exe out of any attacker-controlled
-// directory. Persisted across restarts to keep the "Start server" UX seamless.
-const authorizedSovitsDirs = new Set();
-function getAuthorizedSovitsDirsFile() {
-  return path.join(app.getPath('userData'), 'authorized-sovits-dirs.json');
-}
-function loadAuthorizedSovitsDirs() {
-  try {
-    const file = getAuthorizedSovitsDirsFile();
-    if (!fs.existsSync(file)) return;
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (Array.isArray(parsed)) {
-      for (const entry of parsed) {
-        if (typeof entry === 'string' && entry) {
-          authorizedSovitsDirs.add(path.resolve(entry));
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('[GENIE] Failed to load authorized sovits dirs:', e && e.message);
-  }
-}
-function persistAuthorizedSovitsDirs() {
-  try {
-    const file = getAuthorizedSovitsDirsFile();
-    const dir = path.dirname(file);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(Array.from(authorizedSovitsDirs), null, 2), 'utf8');
-  } catch (e) {
-    console.warn('[GENIE] Failed to persist authorized sovits dirs:', e && e.message);
-  }
-}
-// Install fingerprint: the canonical GPT-SoVITS directory layout the project relies on.
-// If any of these is missing the dir is clearly NOT a legitimate SoVITS install and we
-// refuse to spawn anything from it.
-//
-// Platform notes:
-//   - Windows: requires the bundled `runtime/python.exe`, since genie:start launches
-//     that specific interpreter directly. This is how the Windows SoVITS distribution
-//     is packaged.
-//   - Linux (BYO Python): users are expected to supply their own python interpreter
-//     via the separate authorizedSovitsPythons authorization flow (pick-sovits-python).
-//     So on Linux we only validate that the directory holds SoVITS's own Python code
-//     (api_v2.py + tts_infer.yaml) and do not require any bundled runtime.
-function isValidSovitsDir(sovitsDir) {
-  if (typeof sovitsDir !== 'string' || !sovitsDir) return false;
-  try {
-    const resolved = path.resolve(sovitsDir);
-    const stat = fs.statSync(resolved);
-    if (!stat.isDirectory()) return false;
-    if (IS_WINDOWS && !fs.existsSync(path.join(resolved, 'runtime', 'python.exe'))) return false;
-    if (!fs.existsSync(path.join(resolved, 'api_v2.py'))) return false;
-    if (!fs.existsSync(path.join(resolved, 'GPT_SoVITS', 'configs', 'tts_infer.yaml'))) return false;
-    return true;
-  } catch {
-    return false;
-  }
-}
-function getSovitsDirFingerprintError() {
-  return IS_WINDOWS
-    ? 'The selected directory is not a valid GPT-SoVITS install (missing runtime/python.exe, api_v2.py, or GPT_SoVITS/configs/tts_infer.yaml).'
-    : 'The selected directory is not a valid GPT-SoVITS install (missing api_v2.py or GPT_SoVITS/configs/tts_infer.yaml). On Linux you supply your own Python interpreter separately.';
-}
-function authorizeSovitsDir(resolvedPath) {
-  if (typeof resolvedPath !== 'string' || !resolvedPath) return;
-  if (!authorizedSovitsDirs.has(resolvedPath)) {
-    authorizedSovitsDirs.add(resolvedPath);
-    persistAuthorizedSovitsDirs();
-  }
-}
-
-// Linux/macOS GPT-SoVITS brings its own Python interpreter — the app does not bundle
-// a python runtime for those platforms because packaging SoVITS's full inference
-// stack would inflate the AppImage considerably and is version-sensitive. Instead,
-// the user picks their own python (conda env / venv) through the native file dialog
-// in Settings → TTS → GPT-SoVITS; the selected path lands in authorizedSovitsPythons
-// and gets persisted so the approval survives restarts. genie:start refuses to spawn
-// any python executable that isn't in this set, closing the same path-injection /
-// RCE vector that authorizedSovitsDirs closes for the SoVITS directory itself.
-const authorizedSovitsPythons = new Set();
-function getAuthorizedSovitsPythonsFile() {
-  return path.join(app.getPath('userData'), 'authorized-sovits-pythons.json');
-}
-function loadAuthorizedSovitsPythons() {
-  try {
-    const file = getAuthorizedSovitsPythonsFile();
-    if (!fs.existsSync(file)) return;
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (Array.isArray(parsed)) {
-      for (const entry of parsed) {
-        if (typeof entry === 'string' && entry) {
-          authorizedSovitsPythons.add(path.resolve(entry));
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('[GENIE] Failed to load authorized sovits pythons:', e && e.message);
-  }
-}
-function persistAuthorizedSovitsPythons() {
-  try {
-    const file = getAuthorizedSovitsPythonsFile();
-    const dir = path.dirname(file);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(Array.from(authorizedSovitsPythons), null, 2), 'utf8');
-  } catch (e) {
-    console.warn('[GENIE] Failed to persist authorized sovits pythons:', e && e.message);
-  }
-}
-function authorizeSovitsPython(resolvedPath) {
-  if (typeof resolvedPath !== 'string' || !resolvedPath) return;
-  if (!authorizedSovitsPythons.has(resolvedPath)) {
-    authorizedSovitsPythons.add(resolvedPath);
-    persistAuthorizedSovitsPythons();
-  }
-}
-// Fingerprint an explicit python interpreter path: must be an absolute path to an
-// existing regular file, and on Unix we also require the executable bit. On Windows
-// we don't enforce executable bit because the concept doesn't match (any .exe is
-// executable if the user has read access).
-function isValidSovitsPython(pythonPath) {
-  if (typeof pythonPath !== 'string' || !pythonPath) return false;
-  try {
-    const resolved = path.resolve(pythonPath);
-    const stat = fs.statSync(resolved);
-    if (!stat.isFile()) return false;
-    if (!IS_WINDOWS) {
-      fs.accessSync(resolved, fs.constants.X_OK);
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 // Cross-platform termination of the detached SoVITS server process tree.
 //   - Windows: taskkill with /T walks the process tree (cmd.exe → python.exe →
 //     torch worker) and /F forces; this is the same behaviour the pre-Linux
@@ -222,55 +95,6 @@ function terminateGenieProcess() {
   genieProcess = null;
 }
 
-// Backup path safety: maintain a set of filesystem paths that the user has explicitly
-// approved through a native dialog (backup:pick-save-file / backup:pick-open-file), or
-// that live inside the app's userData directory (our own data). Any backup:* IPC that
-// actually touches disk must resolve its input against this set, blocking renderer-driven
-// writes/reads to arbitrary paths (hardens against a XSS-style attacker who controls the
-// renderer message bus). See assertBackupPathAllowed().
-//
-// Persisted to userData/authorized-backup-paths.json so that after an app restart the
-// existing auto-save connection to the user's previously chosen backup file still works
-// without forcing them to re-authorize. Only paths the user themselves picked via native
-// dialog ever get added; the renderer cannot grow this set.
-const allowedBackupPaths = new Set();
-function getAuthorizedBackupPathsFile() {
-  return path.join(app.getPath('userData'), 'authorized-backup-paths.json');
-}
-function loadAuthorizedBackupPaths() {
-  try {
-    const file = getAuthorizedBackupPathsFile();
-    if (!fs.existsSync(file)) return;
-    const raw = fs.readFileSync(file, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      for (const entry of parsed) {
-        if (typeof entry === 'string' && entry) {
-          allowedBackupPaths.add(path.resolve(entry));
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('[BACKUP] Failed to load authorized backup paths:', e && e.message);
-  }
-}
-function persistAuthorizedBackupPaths() {
-  try {
-    const file = getAuthorizedBackupPathsFile();
-    const dir = path.dirname(file);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify(Array.from(allowedBackupPaths), null, 2), 'utf8');
-  } catch (e) {
-    console.warn('[BACKUP] Failed to persist authorized backup paths:', e && e.message);
-  }
-}
-function authorizeBackupPath(resolvedPath) {
-  if (typeof resolvedPath !== 'string' || !resolvedPath) return;
-  if (!allowedBackupPaths.has(resolvedPath)) {
-    allowedBackupPaths.add(resolvedPath);
-    persistAuthorizedBackupPaths();
-  }
-}
 const isDev = !app.isPackaged;
 let isInstallingUpdate = false;
 let isAutoBackupDone = false;
@@ -433,7 +257,7 @@ function normalizeBackupFilePath(filePath) {
 // Check whether a resolved path is allowed for backup IO. Allowed paths are:
 //   1. Anything under the app's userData directory (our own data, safe to read/write).
 //   2. Anything the user explicitly approved in this session via pick-save / pick-open
-//      (and kept in allowedBackupPaths).
+//      (tracked by the authorized-paths module's allowedBackupPaths Set).
 // This prevents a compromised renderer from asking the main process to read or overwrite
 // arbitrary files on the user's disk (e.g., AppData of other applications, system files).
 function assertBackupPathAllowed(resolvedPath) {
@@ -444,7 +268,7 @@ function assertBackupPathAllowed(resolvedPath) {
   const isInsideUserData = resolvedPath === userDataRoot
     || resolvedPath.startsWith(userDataRoot + path.sep);
   if (isInsideUserData) return;
-  if (allowedBackupPaths.has(resolvedPath)) return;
+  if (isBackupPathAuthorized(resolvedPath)) return;
   throw new Error('Backup path not authorized. Please re-select the file via the native dialog.');
 }
 
@@ -1885,12 +1709,11 @@ function writeRingtoneMetadata(dir, originalName) {
   });
 
   app.whenReady().then(async () => {
-    // Restore persisted backup path authorization (paths the user previously picked
-    // via native dialog). Must happen before any backup:* IPC is serviced so that
-    // auto-save from a pre-existing connection survives restart.
-    loadAuthorizedBackupPaths();
-    loadAuthorizedSovitsDirs();
-    loadAuthorizedSovitsPythons();
+    // Restore persisted backup path + SoVITS authorization registries (paths the user
+    // previously picked via native dialogs). Must happen before any backup:* or genie:*
+    // IPC is serviced so that auto-save from a pre-existing connection and "start SoVITS"
+    // from a previously-approved directory both survive restart.
+    loadAllAuthorizedPaths();
 
     // Register the kumiko-image:// protocol. ChatBubble / MemoryPanel bind <img src>
     // to URLs like `kumiko-image://{imageId}`; we map those to the corresponding file
@@ -2013,7 +1836,7 @@ function writeRingtoneMetadata(dir, originalName) {
           return { success: false, error: 'No python interpreter path provided.' };
         }
         const resolved = path.resolve(pythonPath);
-        if (!authorizedSovitsPythons.has(resolved)) {
+        if (!isAuthorizedSovitsPython(resolved)) {
           return { success: false, error: 'This Python interpreter has not been authorized. Please pick it via the Browse dialog first.' };
         }
         if (!isValidSovitsPython(resolved)) {
@@ -2076,7 +1899,7 @@ function writeRingtoneMetadata(dir, originalName) {
         // dialog (genie:pick-sovits-dir) at least once. This blocks a renderer-side
         // attacker from redirecting spawn to an arbitrary attacker-controlled folder
         // whose runtime/python.exe has been swapped for malware.
-        if (!authorizedSovitsDirs.has(sovitsDir)) {
+        if (!isAuthorizedSovitsDir(sovitsDir)) {
           return {
             success: false,
             error: 'This GPT-SoVITS directory has not been authorized. Please click the "Browse" button and pick the install folder via the system dialog.'
@@ -2150,7 +1973,7 @@ function writeRingtoneMetadata(dir, originalName) {
             };
           }
           const pythonExe = path.resolve(rawPython);
-          if (!authorizedSovitsPythons.has(pythonExe)) {
+          if (!isAuthorizedSovitsPython(pythonExe)) {
             return {
               success: false,
               error: 'Python interpreter has not been authorized. Please re-pick it via the Browse dialog.'
