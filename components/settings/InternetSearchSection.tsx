@@ -1,7 +1,8 @@
-import React, { useCallback } from 'react';
+import React from 'react';
 import { Activity, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, ExternalLink, Globe, Loader2, RefreshCw } from 'lucide-react';
 import { Collapse } from '../Collapse';
 import { SettingsToggle } from './SettingsToggle';
+import { openExternalUrl } from '../../utils/openExternal';
 
 interface InternetSearchTranslations {
   internetSearchConfig: string;
@@ -50,14 +51,6 @@ export const InternetSearchSection: React.FC<InternetSearchSectionProps> = ({
   onTestSearch
 }) => {
   const isTesting = searchStatusType === 'neutral' && !!searchStatus;
-  const openExternalUrl = useCallback(async (url: string) => {
-    const ipc = (window as any)?.electronAPI;
-    if (ipc) {
-      await ipc.invoke('app:open-external', { url });
-      return;
-    }
-    window.open(url, '_blank', 'noopener,noreferrer');
-  }, []);
 
   return (
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>

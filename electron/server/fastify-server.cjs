@@ -282,7 +282,18 @@ async function start({ mainWindow, preferredPort } = {}) {
     await fastify.listen({ port: listenPort, host: '0.0.0.0' });
   } catch (e) {
     try { await fastify.close(); } catch { /* ignore */ }
-    return { ok: false, code: 'E_LISTEN', message: e && e.message };
+    // Classify common listen errors so the UI can display a targeted
+    // remediation card. EADDRINUSE (port conflict) and EACCES
+    // (permission denied by firewall or OS) are both worth distinguishing
+    // from the generic E_LISTEN bucket because their fix steps differ.
+    let listenCode = 'E_LISTEN';
+    const raw = (e && (e.code || e.message)) || '';
+    if (typeof raw === 'string' && raw.toUpperCase().includes('EADDRINUSE')) {
+      listenCode = 'E_LISTEN_EADDRINUSE';
+    } else if (e && e.code === 'EADDRINUSE') {
+      listenCode = 'E_LISTEN_EADDRINUSE';
+    }
+    return { ok: false, code: listenCode, message: e && e.message };
   }
 
   const actualPort = fastify.server.address().port;

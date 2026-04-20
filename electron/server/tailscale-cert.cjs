@@ -13,13 +13,20 @@
 // Error model: every exported function returns `{ ok: true, ... }` on
 // success and `{ ok: false, code, message }` on failure, where `code` is
 // one of:
-//   - 'E_NO_CLI'         tailscale binary not on PATH / not installed
-//   - 'E_NOT_LOGGED_IN'  tailscale status indicates not connected
-//   - 'E_NO_HOSTNAME'    tailscale didn't report a MagicDNS DNSName
-//   - 'E_CERT_FAILED'    `tailscale cert` exited non-zero
-//   - 'E_CERT_READ'      local cert file couldn't be parsed
+//   - 'E_NO_CLI'           tailscale binary not on PATH / not installed
+//   - 'E_NOT_LOGGED_IN'    tailscale status indicates not connected
+//   - 'E_NO_HOSTNAME'      tailscale didn't report a MagicDNS DNSName
+//   - 'E_NO_HTTPS_FEATURE' tailscale account hasn't enabled HTTPS certs
+//                          (specifically: "does not support getting TLS
+//                          certs" from the CLI stderr)
+//   - 'E_CERT_TIMEOUT'     `tailscale cert` timed out (default 90s)
+//   - 'E_CERT_FAILED'      `tailscale cert` exited non-zero for any
+//                          other reason (ACME rate limit, network, etc.)
+//   - 'E_CERT_READ'        local cert file couldn't be parsed
 // The MobileAccessSection UI branches on these so the user sees an
-// actionable message rather than a stack trace.
+// actionable message rather than a stack trace. Every distinct `code`
+// above also has a row in constants/mobileSetupGuideContent.ts so the
+// panel's ErrorCard can deep-link into the right tutorial section.
 
 'use strict';
 
@@ -84,6 +91,39 @@ async function resolveCliPath() {
   return null;
 }
 
+// Scans stderr/err for tell-tale substrings and returns a typed error
+// code. Kept outside runCli so we can also use it on higher-level failures
+// (e.g. the ensureCertificate wrapper) without duplicating the string
+// matching rules. Defaults to 'E_CLI_FAILED' when nothing specific fits.
+function classifyCliError(err, stderrText) {
+  const haystack = [
+    stderrText || '',
+    err && err.message ? String(err.message) : '',
+  ].join('\n').toLowerCase();
+
+  // Tailscale's most common help-your-user errors, in order of specificity.
+  if (haystack.includes('does not support getting tls certs')
+      || haystack.includes('https is not enabled')
+      || haystack.includes('enable https')) {
+    return 'E_NO_HTTPS_FEATURE';
+  }
+  if (haystack.includes('not logged in')
+      || haystack.includes('backend state')
+      || haystack.includes('not connected')
+      || haystack.includes('need to log in')) {
+    return 'E_NOT_LOGGED_IN';
+  }
+  // execFile sets `err.signal === 'SIGTERM'` when the timeout fires on
+  // POSIX. Windows surfaces it differently but the error message still
+  // usually contains the word 'timeout'/'killed'. Treat either as timeout.
+  if ((err && err.killed && (err.signal === 'SIGTERM' || err.signal === null))
+      || haystack.includes('timeout')
+      || haystack.includes('etimedout')) {
+    return 'E_CERT_TIMEOUT';
+  }
+  return 'E_CLI_FAILED';
+}
+
 function runCli(args, { timeoutMs = 20000 } = {}) {
   return new Promise(async (resolve) => {
     const cli = await resolveCliPath();
@@ -93,11 +133,13 @@ function runCli(args, { timeoutMs = 20000 } = {}) {
     }
     execFile(cli, args, { timeout: timeoutMs }, (err, stdout, stderr) => {
       if (err) {
+        const stderrText = stderr ? stderr.toString() : '';
+        const code = classifyCliError(err, stderrText);
         resolve({
           ok: false,
-          code: 'E_CLI_FAILED',
-          message: (stderr && stderr.toString().trim()) || err.message,
-          stderr: stderr ? stderr.toString() : '',
+          code,
+          message: (stderrText && stderrText.trim()) || err.message,
+          stderr: stderrText,
         });
         return;
       }
@@ -115,7 +157,13 @@ async function getStatus() {
   }
   const result = await runCli(['status', '--json']);
   if (!result.ok) {
-    return { ok: false, code: 'E_NOT_LOGGED_IN', message: result.message };
+    // `tailscale status` failures are most often "not logged in"; stick
+    // with that code when classifyCliError couldn't say anything more
+    // specific, but honor the targeted code when it did.
+    const outCode = result.code && result.code !== 'E_CLI_FAILED'
+      ? result.code
+      : 'E_NOT_LOGGED_IN';
+    return { ok: false, code: outCode, message: result.message };
   }
   try {
     const parsed = JSON.parse(result.stdout);
@@ -205,9 +253,15 @@ async function ensureCertificate({ hostname, forceRenew = false } = {}) {
   if (!result.ok) {
     try { fs.existsSync(tmpCertPath) && fs.unlinkSync(tmpCertPath); } catch { /* ignore */ }
     try { fs.existsSync(tmpKeyPath) && fs.unlinkSync(tmpKeyPath); } catch { /* ignore */ }
+    // Preserve the specific code produced by classifyCliError so the UI
+    // can render a targeted ErrorCard; fall back to the legacy
+    // E_CERT_FAILED only when we couldn't classify anything.
+    const outCode = result.code && result.code !== 'E_CLI_FAILED'
+      ? result.code
+      : 'E_CERT_FAILED';
     return {
       ok: false,
-      code: 'E_CERT_FAILED',
+      code: outCode,
       message: result.message || 'tailscale cert failed',
     };
   }

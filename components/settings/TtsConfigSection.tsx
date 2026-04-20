@@ -15,6 +15,7 @@ import {
   getAudioMimeTypeForFileName,
 } from '../../services/voiceFileService';
 import { Collapse } from '../Collapse';
+import { openExternalUrl } from '../../utils/openExternal';
 
 const BUILT_IN_RINGTONES = [
   { id: '01.mp3', displayNum: '01', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '115-man Kilo no Film - Kumiko Oumae' },
@@ -433,15 +434,6 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
         ? ringtoneFileName
         : (language === 'zh' ? `自定义铃声 · ${ringtoneFileName}` : `Custom ringtone · ${ringtoneFileName}`))
       : null);
-
-  const openExternalUrl = useCallback(async (url: string) => {
-    const ipc = (window as any)?.electronAPI;
-    if (ipc) {
-      await ipc.invoke('app:open-external', { url });
-      return;
-    }
-    window.open(url, '_blank', 'noopener,noreferrer');
-  }, []);
 
   const handleVoiceModeChange = useCallback((mode: VoiceMode) => {
     update({ voiceMode: mode });
