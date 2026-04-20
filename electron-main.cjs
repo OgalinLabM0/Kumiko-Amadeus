@@ -1,6 +1,5 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, protocol } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, protocol } = require('electron');
 const path = require('path');
-const fs = require('fs');
 const { initRag, closeRag } = require('./electron-rag.cjs');
 const {
   migrateRegistryToConfigStoreOnce,
@@ -29,10 +28,8 @@ const {
   handleRingtoneOpenFolder,
 } = require('./electron/media-files.cjs');
 const {
-  setAppUpdaterWindow,
   setAppUpdaterLifecycleHooks,
   getUpdateState,
-  emitAppUpdateState,
   checkForAppUpdates,
   downloadAppUpdate,
   quitAndInstallAppUpdate,
@@ -49,7 +46,6 @@ const {
   scheduleUserDataMigration,
 } = require('./electron/user-data-migration.cjs');
 const {
-  setGenieDialogParent,
   terminateGenieProcess,
   handlePickSovitsDir,
   handlePickSovitsPython,
@@ -64,7 +60,6 @@ const {
   handleGetJapanHolidays,
 } = require('./electron/weather-calendar.cjs');
 const {
-  setBackupDialogParent,
   handlePickSaveFile,
   handlePickOpenFile,
   handleWriteFile,
@@ -73,15 +68,12 @@ const {
   handleParseImportFile,
 } = require('./electron/backup-ipc.cjs');
 const {
-  setAutoZipProgressTarget,
   markAutoBackupDone,
   handleGetAutoZip,
   handleSetAutoZip,
   runAutoZipBeforeQuit,
 } = require('./electron/auto-zip-backup.cjs');
 const {
-  setNotificationWindow,
-  setNotificationTray,
   applyUnreadShellState,
   handleShowWindow,
   handleSendNotification,
@@ -89,6 +81,16 @@ const {
   handleCloseCallNotification,
   handleUpdateUnreadState,
 } = require('./electron/notifications.cjs');
+const {
+  createWindow,
+  createTray,
+  getMainWindow,
+  focusMainWindow,
+  handleSetBgColor,
+  handleSetBackgroundThrottling,
+  handleRefocusWebcontents,
+  handleOpenExternal,
+} = require('./electron/window-manager.cjs');
 
 // Platform detection. Used throughout this file to branch registry/PowerShell
 // (Windows-only) vs JSON config store (Linux), drive-letter preference (Windows)
@@ -118,10 +120,6 @@ app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
 app.commandLine.appendSwitch('enable-features', 'UseSkiaRenderer,CanvasOopRasterization');
 
-let mainWindow;
-let tray = null;
-const isDev = !app.isPackaged;
-
 // electron-updater side-effects (skip auto-backup + mark quitting intent
 // for the tray/window-close logic) get invoked by app-updater.cjs via
 // setAppUpdaterLifecycleHooks, registered during app initialization
@@ -136,22 +134,6 @@ setAppUpdaterLifecycleHooks({
     markAutoBackupDone(false);
   },
 });
-
-// App icon resolution. Windows Tray/BrowserWindow strongly prefer .ico (multi-DPI
-// sprite). Linux desktops (GNOME/KDE) only reliably render PNG for StatusNotifier
-// trays, so on Linux we prefer the PNG and fall back to the ICO only if the PNG
-// is missing. macOS also prefers PNG. fs.existsSync is used so a stale build
-// missing one of the assets still starts up cleanly rather than throwing at
-// app startup.
-function resolveAppIconPath() {
-  const icoPath = path.join(__dirname, 'public', 'favicon-KA.ico');
-  const pngPath = path.join(__dirname, 'public', 'favicon-KA.png');
-  if (IS_WINDOWS) {
-    return fs.existsSync(icoPath) ? icoPath : pngPath;
-  }
-  return fs.existsSync(pngPath) ? pngPath : icoPath;
-}
-const iconPath = resolveAppIconPath();
 
 // Initialization order matters: migrate legacy Windows HKCU keys into
 // the JSON config store first, then replay any pending data-directory
@@ -169,114 +151,15 @@ applyConfiguredUserDataPath();
 // Global remove application basic menus
 Menu.setApplicationMenu(null);
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 900,
-    minHeight: 600,
-    icon: iconPath,
-    backgroundColor: '#f9f7f2',
-    autoHideMenuBar: true,
-    webPreferences: {
-      nodeIntegration: false,
-      contextIsolation: true,
-      webSecurity: true,
-      preload: path.join(__dirname, 'preload.cjs')
-    }
-  });
-
-  setAppUpdaterWindow(mainWindow);
-  setGenieDialogParent(mainWindow);
-  setBackupDialogParent(mainWindow);
-  setAutoZipProgressTarget(mainWindow);
-  setNotificationWindow(mainWindow);
-
-  if (isDev) {
-    mainWindow.loadURL('http://localhost:3000');
-  } else {
-    mainWindow.loadFile(path.join(__dirname, 'dist', 'index.html'));
-  }
-
-  mainWindow.on('close', (event) => {
-    if (!app.isQuiting) {
-      event.preventDefault();
-      mainWindow.hide();
-    }
-    return false;
-  });
-
-  mainWindow.webContents.once('did-finish-load', () => {
-    emitAppUpdateState();
-  });
-
-  // Bump renderer frame rate ceiling from 60 to 120 for faster post-resize recovery.
-  try {
-    mainWindow.webContents.setFrameRate(120);
-  } catch { /* older Electron versions may not support this */ }
-}
-
 // Module-level IPC: theme-matched BrowserWindow background color.
 // Placed here (not inside createWindow) so it is registered exactly once.
-ipcMain.on('app:set-bg-color', (_event, color) => {
-  if (mainWindow && !mainWindow.isDestroyed() && typeof color === 'string') {
-    try {
-      mainWindow.setBackgroundColor(color);
-    } catch { /* ignore invalid color strings */ }
-  }
-});
-
-function createTray() {
-  try {
-    tray = new Tray(iconPath);
-    const contextMenu = Menu.buildFromTemplate([
-      {
-        label: '打开/隐藏 界面',
-        click: () => {
-          if (mainWindow && mainWindow.isVisible()) mainWindow.hide();
-          else if (mainWindow) {
-            mainWindow.show();
-            mainWindow.focus();
-          }
-        }
-      },
-      { type: 'separator' },
-      {
-        label: '彻底退出',
-        click: () => {
-          app.isQuiting = true;
-          app.quit();
-        }
-      }
-    ]);
-    tray.setToolTip('Kumiko·Amadeus 后台守护中...');
-    tray.setContextMenu(contextMenu);
-
-    tray.on('click', () => {
-      if (mainWindow.isVisible()) {
-        mainWindow.hide();
-      } else {
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    });
-    setNotificationTray(tray);
-  } catch (err) {
-    console.warn('Tray icon creation failed, maybe icon is missing?', err);
-  }
-}
+ipcMain.on('app:set-bg-color', handleSetBgColor);
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 if (!singleInstanceLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
+  app.on('second-instance', focusMainWindow);
 
   ipcMain.on('show-window', handleShowWindow);
   ipcMain.on('app:send-notification', handleSendNotification);
@@ -312,52 +195,12 @@ if (!singleInstanceLock) {
 
   ipcMain.handle('app:get-data-directory-info', () => getDataDirectoryInfo());
 
-  ipcMain.handle('app:set-background-throttling', (_event, payload = {}) => {
-    try {
-      if (!mainWindow || mainWindow.isDestroyed()) {
-        return { success: false, error: 'Main window is unavailable.' };
-      }
-
-      const allowed = payload.allowed !== false;
-      mainWindow.webContents.setBackgroundThrottling(allowed);
-      return { success: true, allowed };
-    } catch (error) {
-      console.error('[APP] Failed to update background throttling:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  });
-
-  ipcMain.handle('app:refocus-webcontents', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.focus();
-      mainWindow.webContents.focus();
-      return { success: true };
-    }
-    return { success: false };
-  });
-
-  ipcMain.handle('app:open-external', async (_event, payload = {}) => {
-    try {
-      const url = typeof payload.url === 'string' ? payload.url.trim() : '';
-      if (!/^https?:\/\//i.test(url)) {
-        return { success: false, error: 'A valid http(s) URL is required.' };
-      }
-      await shell.openExternal(url);
-      return { success: true };
-    } catch (error) {
-      console.error('[APP] Failed to open external url:', error);
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : String(error)
-      };
-    }
-  });
+  ipcMain.handle('app:set-background-throttling', handleSetBackgroundThrottling);
+  ipcMain.handle('app:refocus-webcontents', handleRefocusWebcontents);
+  ipcMain.handle('app:open-external', handleOpenExternal);
 
   ipcMain.handle('app:pick-data-directory', async () => {
-    const result = await dialog.showOpenDialog(mainWindow || undefined, {
+    const result = await dialog.showOpenDialog(getMainWindow() || undefined, {
       title: 'Select Kumiko·Amadeus data location',
       properties: ['openDirectory', 'createDirectory'],
       defaultPath: path.dirname(app.getPath('userData'))
