@@ -26,12 +26,14 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   HttpApiError,
+  type MobileEvent,
   getHttpImageUrl,
   httpCheckSession,
   httpInvoke,
   httpLogout,
   httpPair,
   httpStatus,
+  subscribeEvents,
 } from '../services/httpApi';
 
 interface SlimMessage {
@@ -263,6 +265,11 @@ function ChatScreen({ hostname }: { hostname: string | null }) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  // Live WS connection status. We surface "offline" to the user rather
+  // than pretending the chat is real-time; otherwise silent drops look
+  // like the desktop is ignoring them.
+  const [liveStatus, setLiveStatus] = useState<'connecting' | 'online' | 'offline'>('connecting');
+  const [statusLine, setStatusLine] = useState<string>('');
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async () => {
@@ -283,6 +290,39 @@ function ChatScreen({ hostname }: { hostname: string | null }) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Phase 2 Part C: live updates. Subscribe to the desktop broadcaster
+  // so we see new messages without polling. Dedupe by id since a message
+  // can arrive via both the WS push (fast) and a chat HTTP response
+  // (deterministic); whoever lands first wins, the second is a no-op.
+  useEffect(() => {
+    const onEvent = (event: MobileEvent) => {
+      if (event.type === 'message:added') {
+        const m = (event as { message?: SlimMessage }).message;
+        if (!m || !m.id) return;
+        setMessages((prev) => (prev.some((p) => p.id === m.id) ? prev : [...prev, m]));
+      } else if (event.type === 'message:updated') {
+        const m = (event as { message?: SlimMessage }).message;
+        if (!m || !m.id) return;
+        setMessages((prev) => prev.map((p) => (p.id === m.id ? m : p)));
+      } else if (event.type === 'message:deleted') {
+        const id = (event as { messageId?: string }).messageId;
+        if (typeof id !== 'string') return;
+        setMessages((prev) => prev.filter((p) => p.id !== id));
+      } else if (event.type === 'status:line') {
+        const text = (event as { text?: unknown }).text;
+        setStatusLine(typeof text === 'string' ? text : '');
+      }
+      // status:emotion / status:unread are intentionally ignored in the
+      // Phase 1 minimal UI — Phase 5 will surface them.
+    };
+    const unsubscribe = subscribeEvents(onEvent, {
+      onOpen: () => setLiveStatus('online'),
+      onClose: () => setLiveStatus('offline'),
+      onError: () => setLiveStatus('offline'),
+    });
+    return unsubscribe;
+  }, []);
 
   const handleSend = useCallback(async () => {
     const message = draft.trim();
@@ -324,9 +364,25 @@ function ChatScreen({ hostname }: { hostname: string | null }) {
         alignItems: 'center',
       }}>
         <div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>Kumiko·Amadeus</div>
+          <div style={{ fontSize: 15, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 8 }}>
+            Kumiko·Amadeus
+            <span
+              aria-label={liveStatus}
+              title={`Live stream: ${liveStatus}`}
+              style={{
+                width: 8,
+                height: 8,
+                borderRadius: 999,
+                background:
+                  liveStatus === 'online' ? '#22c55e'
+                    : liveStatus === 'connecting' ? '#facc15'
+                      : '#ef4444',
+                display: 'inline-block',
+              }}
+            />
+          </div>
           <div style={{ fontSize: 11, color: '#94a3b8' }}>
-            {hostname ? `Connected · ${hostname}` : 'Connected'}
+            {statusLine || (hostname ? `Connected · ${hostname}` : 'Connected')}
           </div>
         </div>
         <button

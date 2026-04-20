@@ -35,6 +35,7 @@ const auth = require('./auth.cjs');
 const ipcBridge = require('./ipc-bridge.cjs');
 const tailscaleCert = require('./tailscale-cert.cjs');
 const { registerMediaRoutes } = require('./media-routes.cjs');
+const wsBroadcast = require('./ws-broadcast.cjs');
 
 let fastifyInstance = null;
 let activeConfig = null; // { port, hostname, certPath, keyPath }
@@ -171,17 +172,20 @@ async function buildApp({ certPath, keyPath }) {
     }
   });
 
-  // Phase 2 will split this into message-update / chat-stream channels.
-  // Phase 1 accepts a connection and pongs so a phone can sanity-check
-  // that the WebSocket handshake (TLS + Tailscale + session cookie) works.
+  // Phase 2 fan-out: every authenticated phone gets added to the
+  // broadcaster's live set and receives every `mobile-event-broadcast`
+  // the renderer emits. We still accept ping frames so phones can do
+  // their own keepalive / health-check; everything else is ignored.
   fastify.register(async function wsScope(scoped) {
     scoped.get('/ws', { websocket: true, preHandler: requireSession }, (socket /* SocketStream */) => {
-      socket.send(JSON.stringify({ type: 'hello', ts: Date.now() }));
+      wsBroadcast.register(socket);
       socket.on('message', (raw) => {
         try {
           const msg = JSON.parse(raw.toString());
           if (msg && msg.type === 'ping') {
-            socket.send(JSON.stringify({ type: 'pong', ts: Date.now(), echo: msg.nonce }));
+            try {
+              socket.send(JSON.stringify({ type: 'pong', ts: Date.now(), echo: msg.nonce }));
+            } catch { /* socket closed between ping/pong */ }
           }
         } catch { /* ignore malformed */ }
       });
@@ -303,6 +307,7 @@ async function start({ mainWindow, preferredPort } = {}) {
     ipcBridge.setRendererTarget(mainWindow.webContents);
     ipcBridge.installIpcListener();
   }
+  wsBroadcast.install();
 
   fastifyInstance = fastify;
   activeConfig = {
@@ -350,6 +355,7 @@ async function stop() {
   }
   ipcBridge.clearRendererTarget();
   ipcBridge.uninstallIpcListener();
+  wsBroadcast.uninstall();
   if (instance) {
     try { await instance.close(); } catch (e) {
       console.warn('[MOBILE-SERVER] Error while closing Fastify:', e && e.message);

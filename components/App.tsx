@@ -31,6 +31,7 @@ import { useVoicePipeline } from '../hooks/useVoicePipeline';
 import { useProactiveLifeCycle } from '../hooks/useProactiveLifeCycle';
 import { useBackupWorkflow } from '../hooks/useBackupWorkflow';
 import { useMobileApiProxy } from './app/useMobileApiProxy';
+import { useMobileBroadcaster } from './app/useMobileBroadcaster';
 import { useUnreadAlertsChrome } from '../hooks/useUnreadAlertsChrome';
 import { usePreferencesPersistence } from '../hooks/usePreferencesPersistence';
 import { useWorldBookLocalization } from '../hooks/useWorldBookLocalization';
@@ -143,6 +144,10 @@ export const App = () => {
   // requests once the Fastify server comes up. Safe no-op in non-Electron
   // contexts (web / PWA). See docs/mobile-remote-access.md.
   useMobileApiProxy();
+  // Phase 2 Part C: broadcast store state changes to connected phones.
+  // Must run after useMobileApiProxy so both hooks share the same
+  // electronAPI-not-available early exit pattern.
+  useMobileBroadcaster();
   const { devLogs, setDevLogs } = useDevLogs();
   const isBulkRestoreInProgressRef = useRef(false);
   const rawHistorySyncedIdsRef = useRef<Set<string>>(new Set());

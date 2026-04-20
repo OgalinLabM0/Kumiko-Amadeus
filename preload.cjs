@@ -101,7 +101,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       // renderer listens on 'mobile-api-proxy' (see on() below), does the
       // work locally via existing services, and sends the result back
       // through this channel. See electron/server/ipc-bridge.cjs.
-      'mobile-api-proxy-reply'
+      'mobile-api-proxy-reply',
+      // Phase 2 fan-out: renderer emits state-change events here and the
+      // main-process ws-broadcast.cjs relays them to every connected
+      // phone websocket. Events are fire-and-forget; if no phone is
+      // connected, the broadcaster drops them silently.
+      'mobile-event-broadcast'
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.send(channel, data);

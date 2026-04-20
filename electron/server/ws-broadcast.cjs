@@ -1,0 +1,129 @@
+// electron/server/ws-broadcast.cjs
+//
+// WebSocket fan-out layer for phone clients.
+//
+// Desktop Kumiko drives one-way events (new message, updated status,
+// model emotion, etc.) into this module via the `mobile-event-broadcast`
+// IPC channel. We maintain the live `Set<SocketStream>` of connected
+// phones and forward every event to every socket. No per-phone
+// addressing, no per-phone filtering — the payload itself carries
+// `{ type, ... }` and the phone decides what to do with it.
+//
+// Phone → desktop is NOT done here; the phone uses normal HTTPS POSTs
+// through the ipc-bridge for that. This keeps the WS path read-only
+// so it's:
+//   - reconnectable without losing state (phone re-fetches /messages
+//     on resume and replays events from the last seen timestamp)
+//   - cheap (no per-socket auth token refresh, cookie already gated
+//     the upgrade request)
+//   - survivable (a dropped socket doesn't lose outgoing commands —
+//     the phone just re-issues the HTTP call)
+//
+// Lifecycle contract (called by fastify-server.cjs):
+//   - install(): wire up the ipcMain listener. Safe to call multiple
+//     times — the second call is a no-op. Must run before any /ws
+//     upgrade is accepted.
+//   - uninstall(): remove the ipcMain listener, close all live
+//     sockets, empty the set. Runs during server stop().
+//   - register(socket): called from the fastify websocket route once
+//     the upgrade is complete and the cookie check passed. We install
+//     close/error handlers, push the socket into the live set, and
+//     optionally send a 'ready' frame so the phone knows it's live.
+//
+// Payload schema (see also services/httpApi.ts subscribeEvents):
+//
+//   { type: 'message:added', message: SlimMessage }
+//   { type: 'message:updated', message: SlimMessage }
+//   { type: 'message:deleted', messageId: string }
+//   { type: 'status:line', text: string }
+//   { type: 'status:emotion', emotion: string }
+//   { type: 'status:unread', count: number }
+//   { type: 'ping', ts: number }           // optional keepalive
+//
+// Type strings are case-sensitive and MUST match useMobileBroadcaster.
+
+'use strict';
+
+const { ipcMain } = require('electron');
+
+const sockets = new Set();
+let ipcListenerInstalled = false;
+
+function safeSend(socket, payload) {
+  try {
+    // Fastify-websocket v11 sockets are the raw `ws` sockets. readyState
+    // === 1 means OPEN; closing/closed sockets will still accept send()
+    // but the message will silently drop, so we check defensively.
+    if (socket && socket.readyState === 1) {
+      socket.send(payload);
+    }
+  } catch {
+    // A send failure usually means the underlying TCP connection went
+    // away between our readyState check and the write. We let the close
+    // handler clean up; no point in throwing here because fan-out must
+    // continue to other sockets.
+  }
+}
+
+function broadcast(event) {
+  if (!event || typeof event !== 'object' || typeof event.type !== 'string') return;
+  if (sockets.size === 0) return;
+  let payload;
+  try {
+    payload = JSON.stringify(event);
+  } catch {
+    // An event with a circular or non-serializable field shouldn't
+    // crash the broadcaster. Drop it loudly (console) but keep going.
+    console.warn('[MOBILE-WS] broadcast: unserializable event, dropped', event && event.type);
+    return;
+  }
+  for (const socket of sockets) {
+    safeSend(socket, payload);
+  }
+}
+
+function handleIpcBroadcast(_event, payload) {
+  broadcast(payload);
+}
+
+function install() {
+  if (ipcListenerInstalled) return;
+  ipcMain.on('mobile-event-broadcast', handleIpcBroadcast);
+  ipcListenerInstalled = true;
+}
+
+function uninstall() {
+  if (ipcListenerInstalled) {
+    ipcMain.removeListener('mobile-event-broadcast', handleIpcBroadcast);
+    ipcListenerInstalled = false;
+  }
+  for (const socket of sockets) {
+    try { socket.close(1001, 'server shutting down'); } catch { /* ignore */ }
+  }
+  sockets.clear();
+}
+
+function register(socket) {
+  if (!socket) return;
+  sockets.add(socket);
+  const drop = () => {
+    sockets.delete(socket);
+  };
+  socket.on('close', drop);
+  socket.on('error', drop);
+  // Greeting frame. The phone's subscribeEvents() uses this as the
+  // "connection is healthy" signal and resets its reconnect backoff.
+  safeSend(socket, JSON.stringify({ type: 'hello', ts: Date.now(), clients: sockets.size }));
+}
+
+function getClientCount() {
+  return sockets.size;
+}
+
+module.exports = {
+  install,
+  uninstall,
+  register,
+  broadcast,
+  getClientCount,
+};

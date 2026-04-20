@@ -214,3 +214,124 @@ export function getHttpVoiceUrl(voiceFileId: string): string {
   assertMobileContext();
   return `${getApiBaseUrl()}/media/voices/${encodeURIComponent(voiceFileId)}`;
 }
+
+// ── WebSocket event subscription (Phase 2) ─────────────────────────
+//
+// Opens wss:// to the desktop and forwards every parsed event to
+// `handler`. Handles reconnect with exponential backoff (1s → 30s cap)
+// and Page Visibility resume. Returns an unsubscribe function that
+// closes the socket and disables reconnection.
+
+export interface MobileEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
+export interface SubscribeOptions {
+  onOpen?: () => void;
+  onClose?: (reason: string) => void;
+  onError?: (err: Error) => void;
+}
+
+export function subscribeEvents(
+  handler: (event: MobileEvent) => void,
+  options: SubscribeOptions = {},
+): () => void {
+  assertMobileContext();
+
+  let socket: WebSocket | null = null;
+  let closed = false;
+  let backoffMs = 1000;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  // Keepalive timer. Some middleboxes idle-kill sockets at 30s; we send
+  // a cheap JSON ping every 20s so both sides remain sure the pipe is
+  // alive and both sides get a chance to notice a drop.
+  let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+
+  const apiBase = getApiBaseUrl();
+  const wsUrl = apiBase.replace(/^http/i, 'ws') + '/ws';
+
+  function scheduleReconnect() {
+    if (closed) return;
+    if (reconnectTimer) return;
+    const delay = backoffMs;
+    backoffMs = Math.min(backoffMs * 2, 30_000);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, delay);
+  }
+
+  function connect() {
+    if (closed) return;
+    try {
+      socket = new WebSocket(wsUrl);
+    } catch (e) {
+      options.onError?.(e as Error);
+      scheduleReconnect();
+      return;
+    }
+    socket.onopen = () => {
+      backoffMs = 1000; // reset on a successful connection
+      options.onOpen?.();
+      if (keepaliveTimer) clearInterval(keepaliveTimer);
+      keepaliveTimer = setInterval(() => {
+        try {
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(JSON.stringify({ type: 'ping', nonce: Date.now() }));
+          }
+        } catch { /* ignore */ }
+      }, 20_000);
+    };
+    socket.onmessage = (ev) => {
+      try {
+        const parsed = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data));
+        if (parsed && typeof parsed === 'object' && typeof (parsed as MobileEvent).type === 'string') {
+          handler(parsed as MobileEvent);
+        }
+      } catch {
+        // non-JSON frames are ignored; server never sends them.
+      }
+    };
+    socket.onerror = (ev) => {
+      options.onError?.(new Error((ev as ErrorEvent).message || 'WebSocket error'));
+    };
+    socket.onclose = (ev) => {
+      options.onClose?.(ev.reason || `code ${ev.code}`);
+      socket = null;
+      if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
+      }
+      scheduleReconnect();
+    };
+  }
+
+  connect();
+
+  // When the page becomes visible again after a long backgrounding,
+  // immediately retry instead of waiting out the current backoff. Phones
+  // often kill background WSS connections silently, so this keeps the
+  // feel-good "pull to refresh is instant" property.
+  const onVisibility = () => {
+    if (document.visibilityState === 'visible') {
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+        backoffMs = 1000;
+        connect();
+      }
+    }
+  };
+  document.addEventListener('visibilitychange', onVisibility);
+
+  return () => {
+    closed = true;
+    document.removeEventListener('visibilitychange', onVisibility);
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
+    if (socket) {
+      try { socket.close(1000, 'client unsubscribe'); } catch { /* ignore */ }
+      socket = null;
+    }
+  };
+}
