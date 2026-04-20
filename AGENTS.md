@@ -160,6 +160,14 @@ that promotes a draft release to GA across both desktop channels.
 
 ## Known gaps
 
+- **Windows dual-arch target side effect**: `package.json#build.win.target.arch`
+  lists both `x64` and `arm64`, so electron-builder produces an extra
+  combined `Kumiko-Amadeus-Setup.exe` (~1.6 GB) next to the
+  arch-specific installers and only emits one `latest.yml` channel
+  file per matrix job. Release cookbook Step 5 covers the manual
+  cleanup + `latest-arm64.yml` synthesis. Longer-term fix is to switch
+  to `electron-builder --win nsis:x64` / `nsis:arm64` target-pinning
+  syntax in the workflow so each matrix job builds exactly one arch.
 - **macOS desktop**: no channel. Not planned until someone volunteers
   a signed-notarised build pipeline on `macos-latest`.
 - **iOS App Store release**: out of scope. The iOS workflow only

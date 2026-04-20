@@ -11,9 +11,14 @@ gh workflow run linux-appimage.yml  -f publish=false   # Step 2
 gh workflow run windows-release.yml -f publish=false   # Step 3
 gh workflow run linux-appimage.yml  -f publish=true    # Step 4a
 gh workflow run windows-release.yml -f publish=true    # Step 4b
-verify draft has 9 assets                              # Step 5
-gh release edit vX.Y.Z --draft=false --latest          # Step 6
+verify 9 assets present + clean stray combined exe     # Step 5
+(optional) gh release edit vX.Y.Z --latest             # Step 6
 ```
+
+`package.json#build.publish.releaseType` is set to `release`, so
+electron-builder uploads directly to a non-draft release and GitHub
+auto-marks the highest semver tag as `latest`. Step 6 is only needed
+if you want to force-pin `latest` to an older tag (rare).
 
 ## Versioning
 
@@ -206,23 +211,29 @@ gh workflow run linux-appimage.yml  -f publish=true
 gh workflow run windows-release.yml -f publish=true
 ```
 
-electron-builder automatically creates `vX.Y.Z` as a **draft release**
-the first time either workflow uploads. Subsequent upload steps
-(including the other workflow, the other matrix job, and the Linux x64
-`kumiko-assets.zip` upload) all attach to the same draft.
+electron-builder creates `vX.Y.Z` **directly as a non-draft release**
+(`publish.releaseType: release` in package.json) the first time either
+workflow uploads. Subsequent upload steps from the other workflow, the
+other matrix job, and the Linux x64 `kumiko-assets.zip` upload all
+attach to the same release. GitHub automatically marks the newest
+semver tag as `latest`, so the release is user-visible the moment the
+first job finishes uploading. Unlike a draft-first flow, this means a
+partial release is already public while later jobs are still running;
+treat Step 5 as a gate before announcing or pushing `2.10.0`, not as a
+gate before user visibility.
 
 Requirement: `GH_TOKEN` secret must be configured (Settings → Secrets →
 Actions → repository secret). Falls back to the built-in `GITHUB_TOKEN`
 if not set, which is fine for same-repo releases.
 
-### Step 5 — Verify draft has 9 assets
+### Step 5 — Verify 9 assets present + clean stray combined installer
 
 ```bash
 gh release view vX.Y.Z --repo OgalinLabM0/Kumiko-Amadeus \
   --json assets --jq '.assets[].name'
 ```
 
-Expected output (order varies):
+Expected minimum (9 required files; order varies):
 
 ```
 Kumiko-Amadeus-Setup-x64.exe
@@ -236,47 +247,94 @@ latest-linux-arm64.yml
 kumiko-assets.zip
 ```
 
-If any file is missing, re-run the failed workflow (the missing side)
-before promoting. Do **not** promote a half-complete draft to latest.
+Also expected but optional (electron-updater uses them for delta
+updates; safe to keep):
+
+```
+Kumiko-Amadeus-Setup-x64.exe.blockmap
+Kumiko-Amadeus-Setup-arm64.exe.blockmap
+```
+
+**Windows workflow currently also uploads a third installer** named
+`Kumiko-Amadeus-Setup.exe` (~1.6 GB, containing both x64 and arm64 in
+one binary) plus its blockmap. This is a side effect of electron-builder
+honouring `package.json#build.win.target.arch = [x64, arm64]` and
+producing a combined NSIS installer alongside the arch-specific ones,
+even when the workflow passes `--x64` or `--arm64`. Delete these to
+avoid confusing users who might download the 1.6 GB file:
+
+```bash
+gh release delete-asset vX.Y.Z "Kumiko-Amadeus-Setup.exe"          --yes --repo OgalinLabM0/Kumiko-Amadeus
+gh release delete-asset vX.Y.Z "Kumiko-Amadeus-Setup.exe.blockmap" --yes --repo OgalinLabM0/Kumiko-Amadeus
+```
+
+#### Patch: `latest-arm64.yml` missing after Windows publish
+
+electron-builder in this dual-arch configuration also sometimes only
+emits one Windows channel file (`latest.yml`) and skips
+`latest-arm64.yml`. If Step 5 shows the arm64 yml missing, patch it by
+hand without re-running the 15-minute arm64 build:
+
+```bash
+mkdir -p release
+gh release download vX.Y.Z --repo OgalinLabM0/Kumiko-Amadeus \
+  --pattern "Kumiko-Amadeus-Setup-arm64.exe" --dir release
+node scripts/generate-latest-yml.cjs        # emits release/latest-arm64.yml
+gh release upload vX.Y.Z release/latest-arm64.yml \
+  --repo OgalinLabM0/Kumiko-Amadeus --clobber
+```
+
+`generate-latest-yml.cjs` only processes the installer files that
+happen to exist in `release/`, so it safely produces just the one yml
+you need. Delete the downloaded exe afterwards (~775 MB).
 
 Optional spot-check: download the x64 installer, install it, boot the
 app, confirm emotion sprites render and RAG search returns results.
 
-### Step 6 — Promote to GA
+### Step 6 — (Optional) pin latest
+
+`publish.releaseType: release` + GitHub's "highest semver = latest"
+default mean the new release is already the latest by the time the
+first job finishes uploading. Run the command below only if you need
+to force-pin `latest` to this specific tag (e.g. to override a GitHub
+classification glitch or temporarily roll back to an older tag):
 
 ```bash
-gh release edit vX.Y.Z --draft=false --latest
+gh release edit vX.Y.Z --latest --repo OgalinLabM0/Kumiko-Amadeus
 ```
 
-The release is now visible on the repository's Releases page,
-electron-updater will start serving it to installed clients, and
-`fetch-assets` will redirect `/releases/latest/download/...` to this
-version's `kumiko-assets.zip`.
+Skip this step in the normal case; the release is already published,
+electron-updater is already serving it, and
+`fetch-assets` already redirects `/releases/latest/download/...` to
+this version's `kumiko-assets.zip`.
 
 ## Rollback
 
-### If a draft is broken but not yet promoted
+Because `publish.releaseType: release`, the release is public the
+moment the first job finishes uploading. There is no draft middle
+state to tear down gently; any rollback revokes a public release.
+
+### Revoke a broken release entirely
 
 ```bash
 gh release delete vX.Y.Z --yes --cleanup-tag \
   --repo OgalinLabM0/Kumiko-Amadeus
 ```
 
-This deletes the draft release **and** the `vX.Y.Z` tag. Fix the
-underlying issue, then restart from Step 0.
+Deletes the release **and** the `vX.Y.Z` tag. Fix the underlying issue,
+bump to `vX.Y.(Z+1)`, and restart from Step 0.
 
-### If a GA release must be revoked
+### Demote a release (keep as history but stop serving)
 
 ```bash
-# 1. Demote the release so it stops being "latest".
+# Demote: mark as draft so it disappears from /releases/latest
 gh release edit vX.Y.Z --draft=true --repo OgalinLabM0/Kumiko-Amadeus
 
-# 2. Or nuke it entirely:
-gh release delete vX.Y.Z --yes --cleanup-tag \
-  --repo OgalinLabM0/Kumiko-Amadeus
+# Or mark an older tag as latest instead:
+gh release edit vX.Y.(Z-1) --latest --repo OgalinLabM0/Kumiko-Amadeus
 ```
 
-If the demoted/deleted version had already rolled out to users via
+If the revoked version had already rolled out to users via
 electron-updater, they keep the binary they installed — just don't get
 prompted to update from it anymore. Push a fixed `vX.Y.(Z+1)` through
 the normal cookbook to move users forward.
@@ -288,9 +346,19 @@ the normal cookbook to move users forward.
 - **`publish=true` but `package.json#version` already matches an
   existing GA release** → electron-builder refuses to overwrite. Bump
   to a new patch version before retrying.
-- **Draft release exists with partial assets and you forget to promote**
-  → users never see it. `gh release edit vX.Y.Z --draft=false --latest`
-  or delete the draft.
+- **Windows arm64 job fails with HTTP 502 mid-upload** → GitHub's
+  asset API is intermittently flaky; `gh run rerun <run-id> --failed`
+  usually succeeds on the second attempt. If two reruns fail the same
+  way, check <https://www.githubstatus.com/>.
+- **After Windows publish: `latest-arm64.yml` missing** → known
+  electron-builder edge case with the dual-arch target config. Follow
+  the "Patch: `latest-arm64.yml` missing" sub-step in Step 5 to
+  synthesise it locally from the released Setup-arm64.exe.
+- **Combined `Kumiko-Amadeus-Setup.exe` (~1.6 GB) appears on a
+  release** → expected side effect of the same dual-arch config. Delete
+  it with `gh release delete-asset` per Step 5 so users don't
+  accidentally download a 1.6 GB installer when one of the 775 MB
+  arch-specific ones would do.
 - **Concurrent `publish=true` on both workflows racing over zip**
   → cannot happen by design: only Linux x64 matrix job uploads the zip.
   Windows and Linux arm64 skip that step entirely.

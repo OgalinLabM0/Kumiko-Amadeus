@@ -182,7 +182,7 @@ chmod +x Kumiko-Amadeus-x86_64.AppImage
 1. 仓库页 → `Actions` → 左侧选对应 workflow → 右侧 `Run workflow`
 2. 选择 `publish`：
    - `publish=false`（默认）：产物作为 workflow artifact 上传 + 跑 smoke test，**不动任何 GitHub Release**。用于首次编译验证。
-   - `publish=true`：附加跑 `electron-builder --publish always`，把产物追加到 `package.json#version` 对应的 GitHub Release（不存在则自动建 draft）。用于实际发版。
+   - `publish=true`：附加跑 `electron-builder --publish always`，把产物直接追加到 `package.json#version` 对应的 GitHub Release（`releaseType: release`，不存在则自动新建并直接以 non-draft 状态发布，GitHub 会把最高 semver 自动标记为 `latest`）。用于实际发版。
 
 两条 workflow 都是 15–30 分钟完成；ARM64 因为要本地 `node-gyp`，比 x64 慢一些。
 
