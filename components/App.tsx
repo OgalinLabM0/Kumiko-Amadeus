@@ -30,11 +30,12 @@ import { useInitialLoadBootstrap } from '../hooks/useInitialLoadBootstrap';
 import { useVoicePipeline } from '../hooks/useVoicePipeline';
 import { useProactiveLifeCycle } from '../hooks/useProactiveLifeCycle';
 import { useBackupWorkflow } from '../hooks/useBackupWorkflow';
+import { useUnreadAlertsChrome } from '../hooks/useUnreadAlertsChrome';
 import { useDevLogs } from '../hooks/useDevLogs';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
 import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, normalizeReminderEvent, type RelativeReminder, type DailyReminder } from '../store/slices/reminderSlice';
 import { LoadingDataScreen } from './app/AppStatusOverlays';
-import { Message, AppState, EmotionType, WorldBookEntry, Language, LocationConfig, BackupConfig, AnchorEntry, AIConfig, ChatResponse, SummaryArchiveState, SummaryBoundaryReason, MemoryQuerySession, TemporalQueryPrecision, TemporalQuerySource, TemporalQueryDiagnosticsStatus, TemporalQueryConfidence, SummarySegmentMetadata, TtsConfig, VoiceMode, MissedMessageAlert, MessageAlertKind } from '../types';
+import { Message, AppState, EmotionType, WorldBookEntry, Language, LocationConfig, BackupConfig, AnchorEntry, AIConfig, ChatResponse, SummaryArchiveState, SummaryBoundaryReason, MemoryQuerySession, TemporalQueryPrecision, TemporalQuerySource, TemporalQueryDiagnosticsStatus, TemporalQueryConfidence, SummarySegmentMetadata, TtsConfig, VoiceMode } from '../types';
 import { sendMessageToGemini, startChat, summarizeConversation, searchRagMemory, saveRagMemory, uploadImageToBackend, analyzeTemporalQueryDetailed, getTemporalSearchRoleFromQuery, rewriteHistoricalRecallQueryDetailed, type HistoricalQueryRewrite, type HistoricalSearchStrategy, type TemporalQueryAnalysis, type TemporalQueryDiagnostics } from '../services/geminiService';
 import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK } from '../constants';
 import { VoiceCallOverlay } from './VoiceCallOverlay';
@@ -124,7 +125,6 @@ import {
 } from './app/summaryActions';
 import {
   addMessageToStore,
-  showBackgroundNotification,
   executeSend as executeSendAction,
   handleSendAction,
   type ChatActionRefs,
@@ -623,40 +623,11 @@ export const App = () => {
 
   // Semantic signal helpers moved to chatActions.ts
 
-  const markAllAlertsRead = useCallback(() => {
-    setMessageAlerts(prev => {
-      let changed = false;
-      const next = prev.map(alert => {
-        if (alert.isRead) return alert;
-        changed = true;
-        return { ...alert, isRead: true };
-      });
-      return changed ? next : prev;
-    });
-  }, []);
-
-  const registerBackgroundAlert = useCallback((messageId: string, preview: string, kind: MessageAlertKind) => {
-    const trimmedPreview = preview.trim();
-    if (!trimmedPreview || (!document.hidden && document.hasFocus())) {
-      return;
-    }
-
-    setMessageAlerts(prev => {
-      const nextAlert: MissedMessageAlert = {
-        id: `${kind}-${messageId}`,
-        messageId,
-        preview: trimmedPreview,
-        timestamp: Date.now(),
-        kind,
-        isRead: false
-      };
-      return [nextAlert, ...prev.filter(alert => alert.id !== nextAlert.id)].slice(0, 50);
-    });
-  }, []);
-
-  const showBackgroundMessageNotification = useCallback((body: string, kind: MessageAlertKind = 'reply', messageId?: string) => {
-    showBackgroundNotification(body, kind, messageId);
-  }, [language, registerBackgroundAlert]);
+  const { markAllAlertsRead, showBackgroundMessageNotification } = useUnreadAlertsChrome({
+    flowState,
+    unreadAlertCount,
+    setMessageAlerts,
+  });
 
   useInitialLoadBootstrap({
     rawHistorySyncedIdsRef,
@@ -690,39 +661,6 @@ export const App = () => {
     setDataLoadError,
     setSystemNotice,
   });
-
-  useEffect(() => {
-    if (flowState !== 'APP') return;
-
-    const markVisibleAlertsRead = () => {
-      if (!document.hidden && document.hasFocus()) {
-        markAllAlertsRead();
-      }
-    };
-
-    markVisibleAlertsRead();
-    window.addEventListener('focus', markVisibleAlertsRead);
-    document.addEventListener('visibilitychange', markVisibleAlertsRead);
-
-    return () => {
-      window.removeEventListener('focus', markVisibleAlertsRead);
-      document.removeEventListener('visibilitychange', markVisibleAlertsRead);
-    };
-  }, [flowState, markAllAlertsRead]);
-
-  useEffect(() => {
-    const baseTitle = 'Kumiko·Amadeus';
-    document.title = unreadAlertCount > 0 ? `(${unreadAlertCount}) ${baseTitle}` : baseTitle;
-
-    if (isDesktopElectron()) {
-      try {
-        const ipc = (window as any).electronAPI;
-        ipc?.send('app:update-unread-state', { count: unreadAlertCount });
-      } catch (error) {
-        console.warn('[UNREAD] Failed to sync unread state to Electron shell:', error);
-      }
-    }
-  }, [unreadAlertCount]);
 
   const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
