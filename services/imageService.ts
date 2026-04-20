@@ -159,12 +159,31 @@ export const getImageBase64 = async (imageId: string): Promise<string | undefine
 // no callers break.
 export const getImage = getImageBase64;
 
+// P2 #6 Phase 1 (and fix for desktop export silently dropping images):
+// On desktop, `db.images` rows are metadata-only (`base64Data: ''`) because
+// `rag:save` wrote the real bytes to userData/images/{id}.{ext}. The old
+// implementation below returned those rows with `data: ''`, and
+// handleExportBackup's regex then silently dropped them from the zip — users
+// saw "backup exported" while the zip's images/ folder was empty. Now we
+// hydrate every metadata-only row from the filesystem via `images:load` IPC
+// (which getImageBase64 already implements), so callers always get a real
+// data URL. On web, base64Data is populated and this is a cheap pass-through.
 export const getAllImages = async () => {
   const images = await db.images.toArray();
-  return images.map(img => ({
-    id: img.id,
-    data: img.base64Data,
-  }));
+  const out: { id: string; data: string }[] = [];
+  for (const img of images) {
+    if (img.base64Data) {
+      out.push({ id: img.id, data: img.base64Data });
+      continue;
+    }
+    const hydrated = await getImageBase64(img.id);
+    if (hydrated) {
+      out.push({ id: img.id, data: hydrated });
+    } else {
+      console.warn('[imageService] getAllImages could not hydrate image id:', img.id);
+    }
+  }
+  return out;
 };
 
 export const saveImageWithId = async (id: string, base64Data: string) => {
