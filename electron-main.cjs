@@ -1,11 +1,8 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, dialog, shell, Notification, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const JSZip = require('jszip');
 const { initRag, closeRag } = require('./electron-rag.cjs');
 const {
-  readConfigValue,
-  writeConfigValue,
   migrateRegistryToConfigStoreOnce,
 } = require('./electron/user-config.cjs');
 const {
@@ -35,7 +32,6 @@ const {
   setAppUpdaterWindow,
   setAppUpdaterLifecycleHooks,
   getUpdateState,
-  isUpdateInstalling,
   emitAppUpdateState,
   checkForAppUpdates,
   downloadAppUpdate,
@@ -69,7 +65,6 @@ const {
 } = require('./electron/weather-calendar.cjs');
 const {
   setBackupDialogParent,
-  getLastWrittenBackupPath,
   handlePickSaveFile,
   handlePickOpenFile,
   handleWriteFile,
@@ -77,6 +72,13 @@ const {
   handleGetFileInfo,
   handleParseImportFile,
 } = require('./electron/backup-ipc.cjs');
+const {
+  setAutoZipProgressTarget,
+  markAutoBackupDone,
+  handleGetAutoZip,
+  handleSetAutoZip,
+  runAutoZipBeforeQuit,
+} = require('./electron/auto-zip-backup.cjs');
 
 // Platform detection. Used throughout this file to branch registry/PowerShell
 // (Windows-only) vs JSON config store (Linux), drive-letter preference (Windows)
@@ -110,19 +112,19 @@ let mainWindow;
 let tray = null;
 let unreadMessageCount = 0;
 const isDev = !app.isPackaged;
-let isAutoBackupDone = false;
 
 // electron-updater side-effects (skip auto-backup + mark quitting intent
 // for the tray/window-close logic) get invoked by app-updater.cjs via
 // setAppUpdaterLifecycleHooks, registered during app initialization
-// below.
+// below. `markAutoBackupDone` lives on auto-zip-backup.cjs now, so the
+// updater hooks just flip its private flag through the exported setter.
 setAppUpdaterLifecycleHooks({
   beforeQuitForInstall: () => {
-    isAutoBackupDone = true;
+    markAutoBackupDone(true);
     app.isQuiting = true;
   },
   onQuitAndInstallError: () => {
-    isAutoBackupDone = false;
+    markAutoBackupDone(false);
   },
 });
 
@@ -178,6 +180,7 @@ function createWindow() {
   setAppUpdaterWindow(mainWindow);
   setGenieDialogParent(mainWindow);
   setBackupDialogParent(mainWindow);
+  setAutoZipProgressTarget(mainWindow);
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
@@ -512,24 +515,8 @@ if (!singleInstanceLock) {
   ipcMain.handle('backup:get-file-info', handleGetFileInfo);
   ipcMain.handle('backup:parse-import-file', handleParseImportFile);
 
-  ipcMain.handle('app:set-auto-zip-backup', (_event, payload = {}) => {
-    try {
-      const enabled = !!payload.enabled;
-      writeConfigValue('AutoZipBackupEnabled', enabled ? '1' : '0');
-      return { success: true, enabled };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
-
-  ipcMain.handle('app:get-auto-zip-backup', () => {
-    try {
-      const val = readConfigValue('AutoZipBackupEnabled');
-      return { success: true, enabled: val === '1' };
-    } catch (error) {
-      return { success: false, error: error.message };
-    }
-  });
+  ipcMain.handle('app:set-auto-zip-backup', handleSetAutoZip);
+  ipcMain.handle('app:get-auto-zip-backup', handleGetAutoZip);
 
   app.whenReady().then(async () => {
     // Restore persisted backup path + SoVITS authorization registries (paths the user
@@ -604,141 +591,7 @@ if (!singleInstanceLock) {
     });
   });
 
-  app.on('before-quit', (event) => {
-    if (isAutoBackupDone || isUpdateInstalling()) return;
-    try {
-      const autoZipVal = readConfigValue('AutoZipBackupEnabled');
-      if (autoZipVal !== '1') return;
-
-      event.preventDefault();
-      console.log('[AUTO BACKUP] Starting auto ZIP backup before quit...');
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        try { mainWindow.webContents.send('app:auto-zip-progress', { status: 'start' }); } catch(_e){}
-      }
-
-      let latestJson = null;
-
-      const lastWritten = getLastWrittenBackupPath();
-      if (lastWritten && fs.existsSync(lastWritten)) {
-        latestJson = lastWritten;
-      } else {
-        const searchDirs = [app.getPath('documents'), app.getPath('userData')];
-        let latestMtime = 0;
-        for (const dir of searchDirs) {
-          try {
-            const files = fs.readdirSync(dir);
-            for (const file of files) {
-              if (file.startsWith('kumiko_backup_') && file.endsWith('.json')) {
-                const fullPath = path.join(dir, file);
-                const stat = fs.statSync(fullPath);
-                if (stat.mtimeMs > latestMtime) {
-                  latestMtime = stat.mtimeMs;
-                  latestJson = fullPath;
-                }
-              }
-            }
-          } catch (_) {}
-        }
-      }
-
-      if (!latestJson) {
-        console.log('[AUTO BACKUP] No JSON backup found, skipping.');
-        isAutoBackupDone = true;
-        app.quit();
-        return;
-      }
-
-      const zip = new JSZip();
-
-      // P0 #2 (Plan 2): attach images/ snapshot and stamp _autoZipMeta so the
-      // importer can detect degraded auto-backups. Images live as real files
-      // under userData/images/{id}.{ext} (see imageService.ts + images:save
-      // handler above), so we can just read the folder directly from the main
-      // process — no IPC round-trip needed. The manual-export path does the
-      // equivalent from renderer-side Dexie; for the auto-backup path,
-      // filesystem is the source of truth.
-      const autoZipMeta = {
-        autoZipGeneratedAt: new Date().toISOString(),
-        hasImages: false,
-        imagesIncludedCount: 0,
-        imagesTotalCount: 0,
-      };
-      try {
-        const imagesDir = path.join(app.getPath('userData'), 'images');
-        if (fs.existsSync(imagesDir)) {
-          const imageEntries = fs.readdirSync(imagesDir)
-            .filter((f) => /^[\w-]+\.(jpg|jpeg|png|webp|gif)$/i.test(f));
-          autoZipMeta.imagesTotalCount = imageEntries.length;
-          if (imageEntries.length > 0) {
-            const imagesFolder = zip.folder('images');
-            for (const fileName of imageEntries) {
-              try {
-                imagesFolder.file(fileName, fs.readFileSync(path.join(imagesDir, fileName)));
-                autoZipMeta.imagesIncludedCount += 1;
-              } catch (imgErr) {
-                console.warn('[AUTO BACKUP] Skipped image', fileName, imgErr);
-              }
-            }
-            autoZipMeta.hasImages = autoZipMeta.imagesIncludedCount > 0;
-          }
-        }
-      } catch (imgListErr) {
-        autoZipMeta.imagesErrorReason = imgListErr && imgListErr.message ? imgListErr.message : String(imgListErr);
-        console.warn('[AUTO BACKUP] Images snapshot failed:', imgListErr);
-      }
-
-      // Stamp _autoZipMeta into data.json by re-parsing + re-serializing. If
-      // the latest JSON is malformed, fall back to writing the raw bytes
-      // untouched so the core backup is never lost to a cosmetic metadata
-      // patch.
-      let dataJsonPayload;
-      try {
-        const parsedBackup = JSON.parse(fs.readFileSync(latestJson, 'utf-8'));
-        dataJsonPayload = JSON.stringify({ ...parsedBackup, _autoZipMeta: autoZipMeta }, null, 2);
-      } catch (patchErr) {
-        console.warn('[AUTO BACKUP] Failed to stamp _autoZipMeta into data.json; writing raw bytes:', patchErr);
-        dataJsonPayload = fs.readFileSync(latestJson);
-      }
-      zip.file('data.json', dataJsonPayload);
-
-      const voiceDir = path.join(app.getPath('userData'), 'voice');
-      if (fs.existsSync(voiceDir)) {
-        const voiceFolder = zip.folder('voice');
-        const vFiles = fs.readdirSync(voiceDir);
-        for (const f of vFiles) {
-          if (f.endsWith('.mp3')) {
-            voiceFolder.file(f, fs.readFileSync(path.join(voiceDir, f)));
-          }
-        }
-      }
-
-      const ringtoneDir = path.join(app.getPath('userData'), 'ringtone');
-      if (fs.existsSync(ringtoneDir)) {
-        const ringtoneFolder = zip.folder('ringtone');
-        const audioExts = ['.mp3', '.wav', '.ogg', '.m4a', '.flac'];
-        const rFiles = fs.readdirSync(ringtoneDir).filter(f => f.startsWith('custom.') && audioExts.some(ext => f.endsWith(ext)));
-        for (const f of rFiles) {
-          ringtoneFolder.file(f, fs.readFileSync(path.join(ringtoneDir, f)));
-        }
-      }
-
-      zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }).then((zipContent) => {
-        const zipName = 'kumiko_backup_auto.zip';
-        const zipPath = path.join(path.dirname(latestJson), zipName);
-        fs.writeFileSync(zipPath, zipContent);
-        console.log('[AUTO BACKUP] Auto ZIP backup created:', zipName);
-      }).catch((err) => {
-        console.error('[AUTO BACKUP] ZIP generation failed:', err);
-      }).finally(() => {
-        isAutoBackupDone = true;
-        app.quit();
-      });
-    } catch (e) {
-      console.error('[AUTO BACKUP] Failed during before-quit:', e);
-      isAutoBackupDone = true;
-      app.quit();
-    }
-  });
+  app.on('before-quit', runAutoZipBeforeQuit);
 
   app.on('will-quit', () => {
     closeRag();
