@@ -677,7 +677,13 @@ async function parseBackupImportFile(filePath) {
   if (extension === '.zip') {
     const zipBuffer = fs.readFileSync(normalizedPath);
     const zip = await JSZip.loadAsync(zipBuffer);
-    const dataFile = zip.file('data.json');
+    let dataFile = zip.file('data.json');
+    if (!dataFile) {
+      dataFile = zip.file('kumiko_backup.json');
+      if (dataFile) {
+        console.warn('[IMPORT] Legacy auto-backup filename kumiko_backup.json detected; please re-export after loading to migrate.');
+      }
+    }
 
     if (!dataFile) {
       throw new Error('data.json not found in ZIP');
@@ -2434,7 +2440,7 @@ function writeRingtoneMetadata(dir, originalName) {
       }
 
       const zip = new JSZip();
-      zip.file('kumiko_backup.json', fs.readFileSync(latestJson));
+      zip.file('data.json', fs.readFileSync(latestJson));
 
       const voiceDir = path.join(app.getPath('userData'), 'voice');
       if (fs.existsSync(voiceDir)) {

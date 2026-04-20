@@ -500,7 +500,13 @@ export async function handleImportBackup(
       importedImages = parsedResult.images || [];
     } else if (file.name.endsWith('.zip')) {
       const zip = await JSZip.loadAsync(file);
-      const dataFile = zip.file('data.json');
+      let dataFile = zip.file('data.json');
+      if (!dataFile) {
+        dataFile = zip.file('kumiko_backup.json');
+        if (dataFile) {
+          console.warn('[IMPORT] Legacy auto-backup filename kumiko_backup.json detected; please re-export after loading to migrate.');
+        }
+      }
       if (!dataFile) {
         throw new Error('data.json not found in ZIP');
       }
