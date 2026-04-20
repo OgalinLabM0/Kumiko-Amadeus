@@ -4,7 +4,6 @@ const fs = require('fs');
 const os = require('os');
 const { spawn } = require('child_process');
 const JSZip = require('jszip');
-const { autoUpdater } = require('electron-updater');
 const { initRag, closeRag } = require('./electron-rag.cjs');
 const {
   readConfigValue,
@@ -53,6 +52,18 @@ const {
   handleRingtoneGetInfo,
   handleRingtoneOpenFolder,
 } = require('./electron/media-files.cjs');
+const {
+  setAppUpdaterWindow,
+  setAppUpdaterLifecycleHooks,
+  getUpdateState,
+  isUpdateInstalling,
+  emitAppUpdateState,
+  checkForAppUpdates,
+  downloadAppUpdate,
+  quitAndInstallAppUpdate,
+  setupAutoUpdater,
+  cleanupUpdaterCache,
+} = require('./electron/app-updater.cjs');
 
 // Platform detection. Used throughout this file to branch registry/PowerShell
 // (Windows-only) vs JSON config store (Linux), drive-letter preference (Windows)
@@ -122,22 +133,21 @@ function terminateGenieProcess() {
 }
 
 const isDev = !app.isPackaged;
-let isInstallingUpdate = false;
 let isAutoBackupDone = false;
-let updateCheckPromise = null;
-let updateDownloadPromise = null;
-let appUpdateState = {
-  status: isDev ? 'unsupported' : 'idle',
-  currentVersion: app.getVersion(),
-  availableVersion: null,
-  releaseDate: null,
-  progressPercent: 0,
-  transferred: 0,
-  total: 0,
-  bytesPerSecond: 0,
-  error: null,
-  isPackaged: app.isPackaged
-};
+
+// electron-updater side-effects (skip auto-backup + mark quitting intent
+// for the tray/window-close logic) get invoked by app-updater.cjs via
+// setAppUpdaterLifecycleHooks, registered during app initialization
+// below.
+setAppUpdaterLifecycleHooks({
+  beforeQuitForInstall: () => {
+    isAutoBackupDone = true;
+    app.isQuiting = true;
+  },
+  onQuitAndInstallError: () => {
+    isAutoBackupDone = false;
+  },
+});
 
 // App icon resolution. Windows Tray/BrowserWindow strongly prefer .ico (multi-DPI
 // sprite). Linux desktops (GNOME/KDE) only reliably render PNG for StatusNotifier
@@ -162,12 +172,6 @@ const legacyDefaultUserDataPath = path.resolve(app.getPath('userData'));
 const SYSTEM_DRIVE_ROOT = IS_WINDOWS
   ? `${(process.env.SystemDrive || legacyDefaultUserDataPath).slice(0, 2)}\\`.toUpperCase()
   : '/';
-const UPDATER_CACHE_DIRECTORY_NAMES = [
-  'kumiko-ai-amadeus-updater',
-  'Kumiko AI-updater',
-  'kumiko-amadeus-updater',
-  'Kumiko-Amadeus-updater'
-];
 let lastDataMigrationError = null;
 
 function getDriveRoot(targetPath) {
@@ -269,225 +273,6 @@ function copyDirectoryContents(sourcePath, targetPath) {
 
 function getManagedDataDirectoryPath(selectedDirectory) {
   return path.join(path.resolve(selectedDirectory), CUSTOM_DATA_DIRECTORY_NAME);
-}
-
-function cleanupUpdaterCache() {
-  if (updateCheckPromise || updateDownloadPromise || isInstallingUpdate) {
-    return;
-  }
-
-  const localAppDataPath = getLocalAppDataPath();
-
-  for (const directoryName of UPDATER_CACHE_DIRECTORY_NAMES) {
-    const directoryPath = path.join(localAppDataPath, directoryName);
-    try {
-      fs.rmSync(directoryPath, { recursive: true, force: true });
-    } catch (error) {
-      console.warn('[INSTALL CACHE] Failed to remove installer cache:', directoryPath, error);
-    }
-  }
-}
-
-function stringifyUpdateError(error) {
-  if (!error) return 'Unknown updater error';
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-function emitAppUpdateState(patch = {}) {
-  appUpdateState = {
-    ...appUpdateState,
-    ...patch,
-    currentVersion: app.getVersion(),
-    isPackaged: app.isPackaged
-  };
-
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    try {
-      mainWindow.webContents.send('app:update-status', appUpdateState);
-    } catch (error) {
-      console.warn('[UPDATER] Failed to send update state to renderer:', error);
-    }
-  }
-
-  return appUpdateState;
-}
-
-async function checkForAppUpdates(trigger = 'manual') {
-  if (!app.isPackaged || isDev) {
-    const reason = 'Automatic updates are only available in packaged desktop builds.';
-    emitAppUpdateState({ status: 'unsupported', error: reason });
-    return { success: false, error: reason };
-  }
-
-  if (updateCheckPromise) {
-    return { success: true, alreadyChecking: true };
-  }
-
-  emitAppUpdateState({
-    status: 'checking',
-    error: null
-  });
-
-  updateCheckPromise = autoUpdater.checkForUpdates()
-    .then((result) => ({
-      success: true,
-      trigger,
-      updateInfo: result?.updateInfo || null
-    }))
-    .catch((error) => {
-      const message = stringifyUpdateError(error);
-      emitAppUpdateState({ status: 'error', error: message });
-      return { success: false, error: message };
-    })
-    .finally(() => {
-      updateCheckPromise = null;
-    });
-
-  return updateCheckPromise;
-}
-
-async function downloadAppUpdate() {
-  if (!app.isPackaged || isDev) {
-    const reason = 'Automatic updates are only available in packaged desktop builds.';
-    emitAppUpdateState({ status: 'unsupported', error: reason });
-    return { success: false, error: reason };
-  }
-
-  if (appUpdateState.status === 'downloaded') {
-    return { success: true, alreadyDownloaded: true };
-  }
-
-  if (updateDownloadPromise) {
-    return { success: true, alreadyDownloading: true };
-  }
-
-  if (!appUpdateState.availableVersion) {
-    return { success: false, error: 'No update available to download.' };
-  }
-
-  emitAppUpdateState({
-    status: 'downloading',
-    error: null,
-    progressPercent: 0,
-    transferred: 0,
-    total: 0,
-    bytesPerSecond: 0
-  });
-
-  updateDownloadPromise = autoUpdater.downloadUpdate()
-    .then(() => ({ success: true }))
-    .catch((error) => {
-      const message = stringifyUpdateError(error);
-      emitAppUpdateState({ status: 'error', error: message });
-      return { success: false, error: message };
-    })
-    .finally(() => {
-      updateDownloadPromise = null;
-    });
-
-  return updateDownloadPromise;
-}
-
-async function quitAndInstallAppUpdate() {
-  if (appUpdateState.status !== 'downloaded') {
-    return { success: false, error: 'No downloaded update is ready to install.' };
-  }
-
-  isInstallingUpdate = true;
-  isAutoBackupDone = true;
-  app.isQuiting = true;
-
-  setTimeout(() => {
-    try {
-      autoUpdater.quitAndInstall(false, true);
-    } catch (error) {
-      console.error('[UPDATER] Failed to quit and install update:', error);
-      isInstallingUpdate = false;
-      isAutoBackupDone = false;
-      emitAppUpdateState({ status: 'error', error: stringifyUpdateError(error) });
-    }
-  }, 120);
-
-  return { success: true };
-}
-
-function setupAutoUpdater() {
-  if (!app.isPackaged || isDev) {
-    emitAppUpdateState({
-      status: 'unsupported',
-      error: 'Automatic updates are only available in packaged desktop builds.'
-    });
-    return;
-  }
-
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = false;
-  autoUpdater.allowPrerelease = false;
-
-  autoUpdater.on('checking-for-update', () => {
-    console.log('[UPDATER] Checking for updates...');
-    emitAppUpdateState({ status: 'checking', error: null });
-  });
-
-  autoUpdater.on('update-available', (info) => {
-    console.log('[UPDATER] Update available:', info?.version);
-    emitAppUpdateState({
-      status: 'available',
-      availableVersion: info?.version || null,
-      releaseDate: info?.releaseDate || null,
-      progressPercent: 0,
-      transferred: 0,
-      total: 0,
-      bytesPerSecond: 0,
-      error: null
-    });
-  });
-
-  autoUpdater.on('update-not-available', () => {
-    console.log('[UPDATER] No updates available.');
-    emitAppUpdateState({
-      status: 'not-available',
-      availableVersion: null,
-      releaseDate: null,
-      progressPercent: 0,
-      transferred: 0,
-      total: 0,
-      bytesPerSecond: 0,
-      error: null
-    });
-  });
-
-  autoUpdater.on('download-progress', (progress) => {
-    emitAppUpdateState({
-      status: 'downloading',
-      progressPercent: Number.isFinite(progress?.percent) ? progress.percent : 0,
-      transferred: Number.isFinite(progress?.transferred) ? progress.transferred : 0,
-      total: Number.isFinite(progress?.total) ? progress.total : 0,
-      bytesPerSecond: Number.isFinite(progress?.bytesPerSecond) ? progress.bytesPerSecond : 0,
-      error: null
-    });
-  });
-
-  autoUpdater.on('update-downloaded', (info) => {
-    console.log('[UPDATER] Update downloaded:', info?.version);
-    emitAppUpdateState({
-      status: 'downloaded',
-      availableVersion: info?.version || appUpdateState.availableVersion,
-      releaseDate: info?.releaseDate || appUpdateState.releaseDate,
-      progressPercent: 100,
-      transferred: appUpdateState.total || appUpdateState.transferred,
-      total: appUpdateState.total || appUpdateState.transferred,
-      bytesPerSecond: 0,
-      error: null
-    });
-  });
-
-  autoUpdater.on('error', (error) => {
-    const message = stringifyUpdateError(error);
-    console.error('[UPDATER] Error:', message);
-    emitAppUpdateState({ status: 'error', error: message });
-  });
 }
 
 function promoteDefaultUserDataPath() {
@@ -655,6 +440,8 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.cjs')
     }
   });
+
+  setAppUpdaterWindow(mainWindow);
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:3000');
@@ -859,7 +646,7 @@ if (!singleInstanceLock) {
   });
 
   ipcMain.handle('app:update:get-state', () => {
-    return { success: true, state: appUpdateState };
+    return { success: true, state: getUpdateState() };
   });
 
   ipcMain.handle('app:update:check', async () => {
@@ -1564,7 +1351,7 @@ if (!singleInstanceLock) {
   });
 
   app.on('before-quit', (event) => {
-    if (isAutoBackupDone || isInstallingUpdate) return;
+    if (isAutoBackupDone || isUpdateInstalling()) return;
     try {
       const autoZipVal = readConfigValue('AutoZipBackupEnabled');
       if (autoZipVal !== '1') return;
