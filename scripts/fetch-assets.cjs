@@ -18,6 +18,23 @@
 //     escapes the project root.
 //   - Only jszip as non-stdlib dep (already a direct dependency for
 //     scripts/package-assets.cjs), so `npm ci` must have completed first.
+//
+// Publish-race fallback (Plan 6):
+//   When Windows x64 hits `releases/latest/download/kumiko-assets.zip`
+//   during a publish=true workflow, electron-builder has already created
+//   the new GA tag but Linux x64 may not have uploaded the zip yet, so
+//   the request 404s mid-build. Rather than failing the whole workflow,
+//   we list the repo's recent releases via the GitHub REST API and pick
+//   the most recent prior release that still has the zip attached. zip
+//   contents are almost always identical across patch bumps (user
+//   character assets rarely change), so this is semantically safe.
+//
+//   Opt-outs:
+//     - FETCH_ASSETS_NO_FALLBACK=1 : skip the fallback entirely, raise
+//       the original 404. Use this for strict validation.
+//     - ASSETS_URL pointing at a non-GitHub mirror: the URL parser
+//       refuses to synthesize a fallback for non-github.com hosts, so
+//       private-mirror 404s propagate as-is.
 
 'use strict';
 
@@ -45,6 +62,9 @@ const IDEMPOTENCY_SENTINELS = [
 
 const MAX_REDIRECTS = 8;
 const REQUEST_TIMEOUT_MS = 120_000;
+
+const USER_AGENT =
+  'kumiko-amadeus-ci/1.0 (+https://github.com/OgalinLabM0/Kumiko-Amadeus)';
 
 function log(msg) {
   console.log(`[fetch-assets] ${msg}`);
@@ -92,8 +112,7 @@ function download(urlString) {
           port: parsedUrl.port || undefined,
           path: `${parsedUrl.pathname}${parsedUrl.search}`,
           headers: {
-            'User-Agent':
-              'kumiko-amadeus-ci/1.0 (+https://github.com/OgalinLabM0/Kumiko-Amadeus)',
+            'User-Agent': USER_AGENT,
             Accept: 'application/zip, application/octet-stream, */*;q=0.5',
           },
         },
@@ -109,22 +128,24 @@ function download(urlString) {
 
           if (status === 404) {
             res.resume();
-            reject(
-              new Error(
-                `HTTP 404 from ${nextUrl}. Most likely the latest GitHub release does not ` +
-                  `yet have kumiko-assets.zip attached. First-time bootstrap from a machine ` +
-                  `that still has the assets on disk:\n` +
-                  `    npm run release:assets\n` +
-                  `    gh release upload <tag> release/kumiko-assets.zip --clobber\n` +
-                  `Or override the source: ASSETS_URL=https://example.com/kumiko-assets.zip npm run fetch-assets`
-              )
+            const err = new Error(
+              `HTTP 404 from ${nextUrl}. Most likely the latest GitHub release does not ` +
+                `yet have kumiko-assets.zip attached. First-time bootstrap from a machine ` +
+                `that still has the assets on disk:\n` +
+                `    npm run release:assets\n` +
+                `    gh release upload <tag> release/kumiko-assets.zip --clobber\n` +
+                `Or override the source: ASSETS_URL=https://example.com/kumiko-assets.zip npm run fetch-assets`
             );
+            err.status = 404;
+            reject(err);
             return;
           }
 
           if (status !== 200) {
             res.resume();
-            reject(new Error(`HTTP ${status} from ${nextUrl}`));
+            const err = new Error(`HTTP ${status} from ${nextUrl}`);
+            err.status = status;
+            reject(err);
             return;
           }
 
@@ -173,6 +194,165 @@ function download(urlString) {
   });
 }
 
+// Lightweight JSON fetcher used only for the GitHub REST releases listing
+// in the fallback path. Kept separate from `download()` so the main asset
+// path stays a pure streamed binary fetch.
+function fetchJson(urlString, depth = 0) {
+  return new Promise((resolve, reject) => {
+    if (depth > MAX_REDIRECTS) {
+      reject(new Error(`Too many redirects (>${MAX_REDIRECTS}) starting from ${urlString}`));
+      return;
+    }
+
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(urlString);
+    } catch (err) {
+      reject(new Error(`Invalid URL ${urlString}: ${err.message}`));
+      return;
+    }
+
+    const request = https.get(
+      {
+        protocol: parsedUrl.protocol,
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || undefined,
+        path: `${parsedUrl.pathname}${parsedUrl.search}`,
+        headers: {
+          'User-Agent': USER_AGENT,
+          Accept: 'application/vnd.github+json',
+        },
+      },
+      (res) => {
+        const status = res.statusCode || 0;
+
+        if (status >= 300 && status < 400 && res.headers.location) {
+          const redirectTarget = new URL(res.headers.location, urlString).toString();
+          res.resume();
+          fetchJson(redirectTarget, depth + 1).then(resolve, reject);
+          return;
+        }
+
+        if (status !== 200) {
+          res.resume();
+          const err = new Error(`HTTP ${status} from ${urlString}`);
+          err.status = status;
+          reject(err);
+          return;
+        }
+
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('error', (err) => reject(err));
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+          } catch (err) {
+            reject(new Error(`Invalid JSON from ${urlString}: ${err.message}`));
+          }
+        });
+      }
+    );
+
+    request.setTimeout(REQUEST_TIMEOUT_MS, () => {
+      request.destroy(new Error(`Request timed out after ${REQUEST_TIMEOUT_MS}ms: ${urlString}`));
+    });
+    request.on('error', (err) => reject(err));
+  });
+}
+
+// Parses a github.com release asset URL into owner / repo / tag / filename.
+// Supported shapes:
+//   https://github.com/<owner>/<repo>/releases/latest/download/<file>
+//   https://github.com/<owner>/<repo>/releases/download/<tag>/<file>
+// Returns null for anything else (private mirrors, raw.githubusercontent,
+// custom CDNs), which short-circuits the fallback path.
+function parseGitHubReleaseUrl(urlString) {
+  let parsed;
+  try {
+    parsed = new URL(urlString);
+  } catch (_err) {
+    return null;
+  }
+  if (parsed.hostname !== 'github.com') return null;
+  const parts = parsed.pathname.split('/').filter(Boolean);
+  if (parts.length < 6 || parts[2] !== 'releases') return null;
+  const owner = parts[0];
+  const repo = parts[1];
+  const filename = parts[parts.length - 1];
+  let currentTag = null;
+  if (parts[3] === 'latest' && parts[4] === 'download') {
+    currentTag = null; // /latest/ form: GitHub will resolve tag; we'll skip index 0 in the releases list instead.
+  } else if (parts[3] === 'download' && parts[4]) {
+    currentTag = parts[4];
+  } else {
+    return null;
+  }
+  return { owner, repo, filename, currentTag };
+}
+
+async function findPreviousReleaseZipUrl(originalUrl) {
+  const info = parseGitHubReleaseUrl(originalUrl);
+  if (!info) return null;
+  const { owner, repo, filename, currentTag } = info;
+
+  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/releases?per_page=20`;
+  let releases;
+  try {
+    releases = await fetchJson(apiUrl);
+  } catch (err) {
+    warn(`fallback: could not list releases (${err.message || err})`);
+    return null;
+  }
+  if (!Array.isArray(releases) || releases.length === 0) return null;
+
+  for (let i = 0; i < releases.length; i += 1) {
+    const r = releases[i];
+    // Skip rule: /latest/ URLs skip index 0 (GitHub returns newest-first).
+    // Explicit-tag URLs skip that specific tag regardless of index (in case
+    // the tag is mid-list, e.g. a non-draft test release).
+    if (currentTag === null && i === 0) continue;
+    if (currentTag && r && r.tag_name === currentTag) continue;
+    const asset = r && Array.isArray(r.assets)
+      ? r.assets.find((a) => a && a.name === filename)
+      : null;
+    if (asset && asset.browser_download_url) {
+      return { url: asset.browser_download_url, tag: r.tag_name || '<unknown>' };
+    }
+  }
+  return null;
+}
+
+async function downloadWith404Fallback(primaryUrl) {
+  try {
+    return await download(primaryUrl);
+  } catch (err) {
+    if (err && err.status === 404) {
+      if (process.env.FETCH_ASSETS_NO_FALLBACK === '1') {
+        warn('FETCH_ASSETS_NO_FALLBACK=1 set; not attempting fallback.');
+        throw err;
+      }
+      if (!parseGitHubReleaseUrl(primaryUrl)) {
+        warn('URL is not a github.com release asset; no fallback path applies.');
+        throw err;
+      }
+      warn(`primary 404 (${err.message.split('\n')[0]})`);
+      warn('checking whether a previous release still carries a valid zip...');
+      const fallback = await findPreviousReleaseZipUrl(primaryUrl);
+      if (!fallback) {
+        warn('no previous release with this asset found; bubbling up original 404.');
+        throw err;
+      }
+      warn(`FALLBACK: using ${fallback.tag} (likely mid-publish race or recently-deleted asset).`);
+      warn('Contents of kumiko-assets.zip rarely change across patch releases, so this is usually safe.');
+      warn('If the current release intentionally ships NEW asset contents, rerun fetch-assets once Linux x64 has finished uploading the zip.');
+      log(`Downloading fallback from ${fallback.url}`);
+      return await download(fallback.url);
+    }
+    throw err;
+  }
+}
+
 async function extractZip(buffer) {
   const zip = await JSZip.loadAsync(buffer);
   const entries = Object.keys(zip.files).filter((name) => !zip.files[name].dir);
@@ -207,7 +387,7 @@ async function main() {
   }
 
   log(`Downloading from ${DEFAULT_URL}`);
-  const zipBuffer = await download(DEFAULT_URL);
+  const zipBuffer = await downloadWith404Fallback(DEFAULT_URL);
   log(`Downloaded ${humanSize(zipBuffer.length)}`);
 
   const count = await extractZip(zipBuffer);
