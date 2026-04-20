@@ -13,7 +13,6 @@ import {
   appendRecentSummarySegment,
   buildSummarySegmentId,
   buildRecentSummaryBuffer,
-  resolveCoreMemoryFromSummaryArchive,
   evaluateSummaryBoundary,
   getArchivedSummaryProgressText,
   getSummaryContinuationCarryoverState,
@@ -29,6 +28,7 @@ import { ExtendedSyncStatus } from './SyncStatus';
 import { useAutoSave } from '../hooks/useAutoSave'; 
 import { useAppViewport } from '../hooks/useAppViewport';
 import { useKumikoStatusLine } from '../hooks/useKumikoStatusLine';
+import { useInitialLoadBootstrap } from '../hooks/useInitialLoadBootstrap';
 import { useDevLogs } from '../hooks/useDevLogs';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
 import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, normalizeReminderEvent, type RelativeReminder, type DailyReminder } from '../store/slices/reminderSlice';
@@ -54,7 +54,7 @@ import {
   type PsycheStateEntity,
   type WorldCharacterStatusMap
 } from '../services/db';
-import { DEFAULT_BACKUP_CONFIG, normalizeBackupConfig } from '../services/appConfig';
+import { normalizeBackupConfig } from '../services/appConfig';
 import { loadTemporalEpisodesForRange, syncTemporalEpisodes } from '../services/temporalEpisodeService';
 import {
   getDesktopBackupFileInfo,
@@ -74,7 +74,6 @@ import {
   normalizeImportedBackupMessages,
 } from './app/messageMappers';
 import {
-  loadRawHistoryMessages,
   syncRawHistoryMessages,
   buildHistoryEvidenceMessages,
 } from './app/rawHistorySync';
@@ -83,14 +82,11 @@ import {
   parseRelativeReminderRequest,
   parseDailyReminderRequest,
   getTimePartsInTimezone,
-  sanitizeRelativeReminderRecord,
-  sanitizeDailyReminderRecord,
   sanitizeWorldCharacterStatusRecord,
   sanitizeKumikoDiaryRecord,
   sanitizeDailyFragmentRecord,
   sanitizePsycheStateRecord,
   sanitizeEpisodeRecord,
-  sanitizeMessageAlertRecord,
   summarizeBackupPayloadForLog,
 } from './app/backupHelpers';
 import {
@@ -147,7 +143,6 @@ import {
   type ChatActionRefs,
   type ExecuteSendHelpers,
 } from './app/chatActions';
-import { migrateLegacyMessageImages } from './app/legacyImageMigration';
 import { useAppUpdater } from './app/useAppUpdater';
 import { useLocalFileBackup } from './app/useLocalFileBackup';
 import { useAppPreferencesSync } from './app/useAppPreferencesSync';
@@ -686,112 +681,38 @@ export const App = () => {
     showBackgroundNotification(body, kind, messageId);
   }, [language, registerBackgroundAlert]);
 
-  useEffect(() => {
-    const loadData = async () => {
-      try {
-        // P2 #6 Phase 1: run the legacy `message.image` -> `imageId` migration
-        // BEFORE loading messages into state, so the UI only ever sees the
-        // post-migration shape. Idempotent across reboots via the
-        // `image && !imageId` pending filter; no-op on fresh installs. Failures
-        // here are logged but non-fatal: legacy inline `image` is still a valid
-        // fallback that the UI layer understands via useMessageImage.
-        try {
-          const migrationResult = await migrateLegacyMessageImages();
-          if (migrationResult.pending > 0) {
-            console.log('[LegacyImageMigration]', migrationResult);
-          }
-        } catch (migrateErr) {
-          console.warn('[LegacyImageMigration] failed (continuing load):', migrateErr);
-        }
-
-        const loadedMessages = await loadRawHistoryMessages();
-        const loadedTurnCount = recalculateTurnCountFromMessages(loadedMessages);
-        const loadedSummaryArchiveState = normalizeSummaryArchiveState(
-          await db.getVal(SUMMARY_ARCHIVE_STATE_STORAGE_KEY, null),
-          loadedTurnCount
-        );
-        const loadedCoreMemory = resolveCoreMemoryFromSummaryArchive(
-          loadedSummaryArchiveState,
-          await db.getVal('kumiko_core_memory', '')
-        );
-        const loadedMemoryQuerySession = normalizeMemoryQuerySession(
-          await db.getVal(MEMORY_QUERY_SESSION_STORAGE_KEY, null)
-        );
-
-        setMessages(loadedMessages);
-        if (loadedMessages.some(m => m.sendStatus === 'failed')) {
-          setIsDisconnected(true);
-        }
-        rawHistorySyncedIdsRef.current = new Set(loadedMessages.map(message => message.id));
-        forceRawHistoryResyncRef.current = false;
-        updateMemoryQuerySession(loadedMemoryQuerySession);
-        setLanguage(await db.getVal('kumiko_language', 'zh'));
-        setLocationConfig(await db.getVal('kumiko_location_config', DEFAULT_LOCATION_CONFIG));
-        setCoreMemory(loadedCoreMemory);
-        setKumikoNotebook(await db.getVal('kumiko_notebook', ''));
-        setContextLimit(await db.getVal('kumiko_context_limit', 100));
-        {
-          const storedPreset = await db.getVal('kumiko_diary_layer_preset', 'balanced');
-          // Defensive: legacy installs / corrupted rows may hold an unknown string.
-          // Fall back to the default rather than letting it poison the store.
-          const resolvedPreset: 'economy' | 'balanced' | 'rich' =
-            storedPreset === 'economy' || storedPreset === 'rich' ? storedPreset : 'balanced';
-          setDiaryLayerPreset(resolvedPreset);
-        }
-        {
-          const storedImageQuality = await db.getVal('kumiko_image_quality_preset', 'high');
-          const resolvedImagePreset: 'original' | 'high' | 'standard' | 'compact' =
-            storedImageQuality === 'original' || storedImageQuality === 'standard' || storedImageQuality === 'compact'
-              ? storedImageQuality
-              : 'high';
-          setImageQualityPreset(resolvedImagePreset);
-        }
-        
-        const savedWorldBook = await db.getVal('kumiko_world_book', null);
-        if (savedWorldBook) {
-            setWorldBook(savedWorldBook);
-        } else {
-            setWorldBook(LOCALIZED_WORLD_BOOK['zh']);
-        }
-
-        setTurnCount(loadedTurnCount);
-        setSummaryArchiveState(loadedSummaryArchiveState);
-        setAnchors(await db.getVal('kumiko_anchors', []));
-        setCurrentEmotion(await db.getVal('kumiko_current_emotion', 'neutral'));
-        setRelativeReminders((await db.getVal(RELATIVE_REMINDER_STORAGE_KEY, [])).map(sanitizeRelativeReminderRecord).filter(Boolean) as RelativeReminder[]);
-        setDailyReminders((await db.getVal(DAILY_REMINDER_STORAGE_KEY, [])).map(sanitizeDailyReminderRecord).filter(Boolean) as DailyReminder[]);
-        setMessageAlerts((await db.getVal(MESSAGE_ALERTS_STORAGE_KEY, [])).map(sanitizeMessageAlertRecord).filter(Boolean).slice(0, 50) as MissedMessageAlert[]);
-        setWorldCharacterStatus(sanitizeWorldCharacterStatusRecord(await db.getVal('world_character_status', INITIAL_WORLD_CHARACTER_STATUS)));
-        setAutoSavedKumikoDiary((await db.kumikoDiary.orderBy('date').toArray()).map(sanitizeKumikoDiaryRecord).filter(Boolean) as KumikoDiaryEntity[]);
-        setAutoSavedDailyFragments((await db.dailyFragments.orderBy('timestamp').toArray()).map(sanitizeDailyFragmentRecord).filter(Boolean) as DailyFragmentEntity[]);
-        setAutoSavedPsycheState(sanitizePsycheStateRecord(await db.psycheState.get('current')));
-        
-        const backupCfg = normalizeBackupConfig(await db.getVal('kumiko_backup_config', DEFAULT_BACKUP_CONFIG));
-        setBackupConfig(backupCfg);
-        setIsRagHistoryDirty(await db.getVal(RAG_HISTORY_DIRTY_STORAGE_KEY, false));
-
-        ragBufferRef.current = await db.getVal('kumiko_rag_buffer', []);
-
-        setIsDataLoaded(true);
-      } catch (e) {
-        console.error("Failed to load data from IndexedDB", e);
-        // CRITICAL: record the error so useAutoSave can block writes and UI can warn.
-        // Previously we unconditionally flipped isDataLoaded to true, which let the empty
-        // default state be auto-saved back over the user's real backup in 3s — destroying data.
-        const message = e instanceof Error ? e.message : String(e);
-        setDataLoadError(message);
-        // Surface a warning. We cannot rely on `language` being loaded here (it's part of
-        // the failing load). Default to zh (app primary language); only use en if browser
-        // explicitly reports English.
-        const isEn = typeof navigator !== 'undefined' && /^en/i.test(navigator.language || '');
-        setSystemNotice(isEn
-          ? 'Data load failed; auto-save has been paused to protect your backup. Please restart the app or restore from a backup.'
-          : '数据加载失败，已暂停自动保存以保护您的备份。请重启应用或从备份恢复。');
-        setIsDataLoaded(true);
-      }
-    };
-    loadData();
-  }, [updateMemoryQuerySession]);
+  useInitialLoadBootstrap({
+    rawHistorySyncedIdsRef,
+    forceRawHistoryResyncRef,
+    ragBufferRef,
+    updateMemoryQuerySession,
+    setMessages,
+    setIsDisconnected,
+    setLanguage,
+    setLocationConfig,
+    setCoreMemory,
+    setKumikoNotebook,
+    setContextLimit,
+    setDiaryLayerPreset,
+    setImageQualityPreset,
+    setWorldBook,
+    setTurnCount,
+    setSummaryArchiveState,
+    setAnchors,
+    setCurrentEmotion,
+    setRelativeReminders,
+    setDailyReminders,
+    setMessageAlerts,
+    setWorldCharacterStatus,
+    setAutoSavedKumikoDiary,
+    setAutoSavedDailyFragments,
+    setAutoSavedPsycheState,
+    setBackupConfig,
+    setIsRagHistoryDirty,
+    setIsDataLoaded,
+    setDataLoadError,
+    setSystemNotice,
+  });
 
   useEffect(() => {
     if (flowState !== 'APP') return;
