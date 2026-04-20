@@ -31,9 +31,9 @@ import { useVoicePipeline } from '../hooks/useVoicePipeline';
 import { useProactiveLifeCycle } from '../hooks/useProactiveLifeCycle';
 import { useBackupWorkflow } from '../hooks/useBackupWorkflow';
 import { useUnreadAlertsChrome } from '../hooks/useUnreadAlertsChrome';
+import { usePreferencesPersistence } from '../hooks/usePreferencesPersistence';
 import { useDevLogs } from '../hooks/useDevLogs';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
-import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, normalizeReminderEvent, type RelativeReminder, type DailyReminder } from '../store/slices/reminderSlice';
 import { LoadingDataScreen } from './app/AppStatusOverlays';
 import { Message, AppState, EmotionType, WorldBookEntry, Language, LocationConfig, BackupConfig, AnchorEntry, AIConfig, ChatResponse, SummaryArchiveState, SummaryBoundaryReason, MemoryQuerySession, TemporalQueryPrecision, TemporalQuerySource, TemporalQueryDiagnosticsStatus, TemporalQueryConfidence, SummarySegmentMetadata, TtsConfig, VoiceMode } from '../types';
 import { sendMessageToGemini, startChat, summarizeConversation, searchRagMemory, saveRagMemory, uploadImageToBackend, analyzeTemporalQueryDetailed, getTemporalSearchRoleFromQuery, rewriteHistoricalRecallQueryDetailed, type HistoricalQueryRewrite, type HistoricalSearchStrategy, type TemporalQueryAnalysis, type TemporalQueryDiagnostics } from '../services/geminiService';
@@ -62,8 +62,6 @@ import {
   refocusDesktopWebContents,
 } from '../services/desktopBackupService';
 import {
-  MESSAGE_ALERTS_STORAGE_KEY,
-  SUMMARY_ARCHIVE_STATE_STORAGE_KEY,
   MEMORY_QUERY_SESSION_STORAGE_KEY,
   SUMMARY_SEMANTIC_CACHE_LIMIT,
 } from './app/appConstants';
@@ -212,62 +210,28 @@ export const App = () => {
   const language = useAppStore(s => s.language);
   const setLanguage = useAppStore(s => s.setLanguage);
 
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_language', language);
-  }, [language, isDataLoaded]);
-
   const t = UI_TRANSLATIONS[language];
 
   const locationConfig = useAppStore(s => s.locationConfig);
   const setLocationConfig = useAppStore(s => s.setLocationConfig);
 
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_location_config', locationConfig);
-  }, [locationConfig, isDataLoaded]);
-
   const coreMemory = useAppStore(s => s.coreMemory);
   const setCoreMemory = useAppStore(s => s.setCoreMemory);
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_core_memory', coreMemory);
-  }, [coreMemory, isDataLoaded]);
-  
+
   const kumikoNotebook = useAppStore(s => s.kumikoNotebook);
   const setKumikoNotebook = useAppStore(s => s.setKumikoNotebook);
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_notebook', kumikoNotebook);
-  }, [kumikoNotebook, isDataLoaded]);
 
   const contextLimit = useAppStore(s => s.contextLimit);
   const setContextLimit = useAppStore(s => s.setContextLimit);
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_context_limit', contextLimit);
-  }, [contextLimit, isDataLoaded]);
 
   const diaryLayerPreset = useAppStore(s => s.diaryLayerPreset);
   const setDiaryLayerPreset = useAppStore(s => s.setDiaryLayerPreset);
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_diary_layer_preset', diaryLayerPreset);
-  }, [diaryLayerPreset, isDataLoaded]);
 
   const imageQualityPreset = useAppStore(s => s.imageQualityPreset);
   const setImageQualityPreset = useAppStore(s => s.setImageQualityPreset);
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_image_quality_preset', imageQualityPreset);
-  }, [imageQualityPreset, isDataLoaded]);
 
   const worldBook = useAppStore(s => s.worldBook);
   const setWorldBook = useAppStore(s => s.setWorldBook);
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_world_book', worldBook);
-  }, [worldBook, isDataLoaded]);
 
   // This effect ensures the official lore content is always up-to-date with the code
   useEffect(() => {
@@ -318,18 +282,8 @@ export const App = () => {
   const turnCount = useAppStore(s => s.turnCount);
   const setTurnCount = useAppStore(s => s.setTurnCount);
 
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_turn_count', turnCount);
-  }, [turnCount, isDataLoaded]);
-
   const summaryArchiveState = useAppStore(s => s.summaryArchiveState);
   const setSummaryArchiveState = useAppStore(s => s.setSummaryArchiveState);
-
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal(SUMMARY_ARCHIVE_STATE_STORAGE_KEY, summaryArchiveState);
-  }, [summaryArchiveState, isDataLoaded]);
 
   const isMemoryPanelOpen = useAppStore(s => s.isMemoryPanelOpen);
   const setIsMemoryPanelOpen = useAppStore(s => s.setIsMemoryPanelOpen);
@@ -419,17 +373,28 @@ export const App = () => {
   const markDailyReminderTriggered = useAppStore(s => s.markDailyReminderTriggered);
   const markDailyReminderRetry = useAppStore(s => s.markDailyReminderRetry);
 
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal(RELATIVE_REMINDER_STORAGE_KEY, relativeReminders);
-  }, [relativeReminders, isDataLoaded]);
-
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal(DAILY_REMINDER_STORAGE_KEY, dailyReminders);
-  }, [dailyReminders, isDataLoaded]);
   const messageAlerts = useAppStore(s => s.messageAlerts);
   const setMessageAlerts = useAppStore(s => s.setMessageAlerts);
+
+  usePreferencesPersistence({
+    isDataLoaded,
+    isBulkRestoreInProgressRef,
+    language,
+    locationConfig,
+    coreMemory,
+    kumikoNotebook,
+    contextLimit,
+    diaryLayerPreset,
+    imageQualityPreset,
+    worldBook,
+    turnCount,
+    summaryArchiveState,
+    relativeReminders,
+    dailyReminders,
+    anchors,
+    messageAlerts,
+  });
+
   const [worldCharacterStatus, setWorldCharacterStatus] = useState<WorldCharacterStatusMap>(INITIAL_WORLD_CHARACTER_STATUS);
   const [autoSavedKumikoDiary, setAutoSavedKumikoDiary] = useState<KumikoDiaryEntity[]>([]);
   const [autoSavedDailyFragments, setAutoSavedDailyFragments] = useState<DailyFragmentEntity[]>([]);
@@ -451,16 +416,6 @@ export const App = () => {
     async () => sanitizePsycheStateRecord(await db.psycheState.get('current')),
     []
   );
-
-  useEffect(() => {
-      if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-      db.setVal('kumiko_anchors', anchors);
-  }, [anchors, isDataLoaded]);
-
-  useEffect(() => {
-      if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-      db.setVal(MESSAGE_ALERTS_STORAGE_KEY, messageAlerts.slice(0, 50));
-  }, [messageAlerts, isDataLoaded]);
 
   useEffect(() => {
     if (liveWorldCharacterStatus) {
