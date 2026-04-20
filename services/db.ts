@@ -213,6 +213,24 @@ export class AppDatabase extends Dexie {
       kumikoDiary: 'id, date, timestamp',
       psycheState: 'id'
     });
+
+    // V10: add imageId index on messages so the P2 #6 Phase 1 boot-time
+    // migration can cheaply find messages that still carry legacy inline
+    // `image` (base64 data URL) without scanning the entire table. The real
+    // migration (reading the base64, writing userData/images/{id}.{ext} via
+    // IPC, patching the row) runs in components/app/legacyImageMigration.ts
+    // during App.tsx:loadData — NOT here — because calling images:save IPC
+    // from inside a Dexie upgrade transaction risks long-held schema locks.
+    this.version(10).stores({
+      messages: 'id, timestamp, role, isPinned, imageId',
+      images: 'id, timestamp',
+      vectors: 'id, timestamp, tier, source, canonicalKey, *tags',
+      episodes: 'id, startTimestamp, endTimestamp, startMessageId, endMessageId, roleScope',
+      keyval: 'key',
+      dailyFragments: 'id, date, timestamp',
+      kumikoDiary: 'id, date, timestamp',
+      psycheState: 'id'
+    });
   }
 
   async getVal<T>(key: string, defaultValue: T): Promise<T> {
