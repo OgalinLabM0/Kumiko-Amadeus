@@ -1,6 +1,8 @@
-// Backup IPC surface. Extracted from electron-main.cjs (Plan 9 SubPhase 3.2).
+// Backup IPC surface. Extracted from electron-main.cjs (Plan 9 SubPhase 3.2);
+// extended in Plan 14 Phase B with `backup:build-zip-from-payload` that unifies
+// manual / auto-zip paths behind backup-zip-builder.cjs.
 //
-// Owns the 6 `backup:*` IPC handlers that combine native file dialogs with
+// Owns the 7 `backup:*` IPC handlers that combine native file dialogs with
 // the pure-IO helpers from ./backup-files.cjs:
 //
 //   - `backup:pick-save-file` / `backup:pick-open-file` drive native save/open
@@ -10,6 +12,10 @@
 //     delegate to backup-files helpers.
 //   - `backup:parse-import-file` previews an import candidate without
 //     loading it into the renderer.
+//   - `backup:build-zip-from-payload` is the new manual-export entry point:
+//     renderer hands over a serialized `data.json` string, main drives the
+//     save dialog + shared zip builder + fs write. Replaces the renderer-
+//     side JSZip path that used to live in backupActions.handleExportBackup.
 //
 // The module also owns the `lastWrittenBackupPath` state so that the
 // auto-zip-backup before-quit flow can locate the most recent JSON backup
@@ -25,6 +31,7 @@ const {
   parseBackupImportFile,
   getDefaultBackupFilePath,
 } = require('./backup-files.cjs');
+const { buildBackupZip } = require('./backup-zip-builder.cjs');
 
 // Native dialog parent window. Injected via setBackupDialogParent(mainWindow)
 // from electron-main.cjs once BrowserWindow is ready. Dialogs fall back to
@@ -154,6 +161,96 @@ async function handleParseImportFile(_event, payload = {}) {
   }
 }
 
+function getDefaultBackupZipPath(defaultFileName) {
+  const normalizedFileName = defaultFileName && typeof defaultFileName === 'string'
+    ? defaultFileName
+    : `kumiko_backup_${new Date().toISOString().slice(0, 10)}.zip`;
+  return path.join(app.getPath('documents'), normalizedFileName);
+}
+
+// Plan 14 Phase B: manual backup export path. Renderer passes the
+// already-serialized `data.json` string (renderer has the Zustand store +
+// Dexie vectors / episodes / diary / psyche etc. — main process has no
+// visibility into those tables). We drive the native save dialog here and
+// hand the chosen path + payload to the shared zip builder, which attaches
+// userData/images + voice + ringtone and writes the zip.
+//
+// Behaviour vs. the pre-Plan-14 renderer JSZip path:
+//   - Uses the native save dialog (matches backup:pick-save-file's UX)
+//     instead of the file-saver library's download-prompt semantics. This
+//     is a user-visible improvement: they now get to pick location + file
+//     name, and the approved path is authorized for future writes (same
+//     allowlist as the JSON backup path).
+//   - Images come from userData/images (filesystem source of truth, same
+//     as auto-zip), not from the renderer's Dexie ImageEntity rows. For
+//     any user whose imageService stayed consistent (every shipped version
+//     to date) these are identical; on a corrupted install the fs version
+//     is closer to what kumiko-image:// will actually resolve post-restore.
+async function handleBuildZipFromPayload(_event, payload = {}) {
+  const { dataJsonString, defaultFileName } = payload || {};
+  if (typeof dataJsonString !== 'string' || dataJsonString.length === 0) {
+    return {
+      success: false,
+      error: 'dataJsonString is required and must be a non-empty string',
+    };
+  }
+
+  let outputPath;
+  try {
+    const result = await dialog.showSaveDialog(dialogParent || undefined, {
+      title: '导出备份 ZIP',
+      defaultPath: getDefaultBackupZipPath(defaultFileName),
+      filters: [{ name: 'Kumiko Backup ZIP', extensions: ['zip'] }],
+    });
+
+    if (result.canceled || !result.filePath) {
+      return { canceled: true };
+    }
+
+    outputPath = path.resolve(result.filePath);
+    // User just approved this path via the native dialog — authorize it for
+    // the lifetime of this session (parity with backup:pick-save-file; the
+    // zip path won't be re-read for write via backup:write-file anyway, but
+    // we keep authorization consistent across all native-picked paths).
+    authorizeBackupPath(outputPath);
+  } catch (error) {
+    console.error('[LOCAL BACKUP] Save dialog failed:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  try {
+    const buildResult = await buildBackupZip({
+      dataJsonString,
+      mode: 'manual',
+      outputPath,
+    });
+    if (buildResult.success) {
+      return {
+        success: true,
+        outputPath,
+        fileName: path.basename(outputPath),
+        bytesWritten: buildResult.bytesWritten,
+        imagesIncluded: buildResult.imagesIncluded,
+        imagesTotal: buildResult.imagesTotal,
+      };
+    }
+    return {
+      success: false,
+      outputPath,
+      error: buildResult.error || 'Unknown builder failure',
+    };
+  } catch (error) {
+    console.error('[LOCAL BACKUP] Manual zip build failed:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 module.exports = {
   setBackupDialogParent,
   getLastWrittenBackupPath,
@@ -163,4 +260,5 @@ module.exports = {
   handleReadFile,
   handleGetFileInfo,
   handleParseImportFile,
+  handleBuildZipFromPayload,
 };

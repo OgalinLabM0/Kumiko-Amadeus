@@ -53,6 +53,7 @@ import {
   parseDesktopBackupImportFile,
   isDesktopElectron,
   writeDesktopBackupFile,
+  buildDesktopBackupZip,
 } from '../../services/desktopBackupService';
 import { syncTemporalEpisodes } from '../../services/temporalEpisodeService';
 import { imageService } from '../../services/imageService';
@@ -384,6 +385,61 @@ export async function restoreBackupData(
 // handleExportBackup
 // ---------------------------------------------------------------------------
 
+// Plan 14 Phase B: renderer-side ZIP assembly kept as the web fallback. On
+// Electron desktop the main-process builder is authoritative (it scans
+// userData directly) and this path only runs on a browser / PWA deployment
+// where no main process exists. Kept strictly behind `isDesktopElectron()`
+// so the two paths don't drift; every field / folder here must match what
+// electron/backup-zip-builder.cjs attaches on the desktop path.
+async function buildWebBackupZipBlob(dataJsonString: string): Promise<Blob> {
+  const zip = new JSZip();
+  zip.file('data.json', dataJsonString);
+
+  const imagesFolder = zip.folder('images');
+  if (imagesFolder) {
+    const allImages = await imageService.getAllImages();
+    for (const img of allImages) {
+      const match = img.data.match(/^data:(.*);base64,(.*)$/);
+      if (match) {
+        const base64Data = match[2];
+        const ext = match[1].includes('png') ? 'png' : 'jpg';
+        imagesFolder.file(`${img.id}.${ext}`, base64Data, { base64: true });
+      }
+    }
+  }
+
+  if (isVoiceServiceAvailable()) {
+    try {
+      const { listVoiceFiles, loadVoiceFile: loadVF } = await import('../../services/voiceFileService');
+      const voiceFiles = await listVoiceFiles();
+      if (voiceFiles.length > 0) {
+        const voiceFolder = zip.folder('voice');
+        if (voiceFolder) {
+          for (const vf of voiceFiles) {
+            const buf = await loadVF(vf.id);
+            if (buf) voiceFolder.file(`${vf.id}.mp3`, buf);
+          }
+        }
+      }
+      const { loadRingtoneFileWithName } = await import('../../services/voiceFileService');
+      const rtResult = await loadRingtoneFileWithName();
+      if (rtResult) {
+        const ringtoneFolder = zip.folder('ringtone');
+        if (ringtoneFolder) {
+          ringtoneFolder.file(rtResult.fileName, rtResult.buffer);
+          if (rtResult.displayName && rtResult.displayName !== rtResult.fileName) {
+            ringtoneFolder.file('custom.meta.json', JSON.stringify({ originalName: rtResult.displayName }, null, 2));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[EXPORT] Failed to include voice files:', e);
+    }
+  }
+
+  return zip.generateAsync({ type: 'blob' });
+}
+
 export async function handleExportBackup(backupData: any) {
   const state = useAppStore.getState();
   const language = state.language;
@@ -414,55 +470,34 @@ export async function handleExportBackup(backupData: any) {
       episodes: episodesExport,
     };
     const jsonString = JSON.stringify(fullBackup, null, 2);
+    const defaultFileName = `kumiko_backup_${new Date().toISOString().slice(0, 10)}.zip`;
 
-    const zip = new JSZip();
-    zip.file('data.json', jsonString);
-
-    const imagesFolder = zip.folder('images');
-    if (imagesFolder) {
-      const allImages = await imageService.getAllImages();
-      for (const img of allImages) {
-        const match = img.data.match(/^data:(.*);base64,(.*)$/);
-        if (match) {
-          const base64Data = match[2];
-          const ext = match[1].includes('png') ? 'png' : 'jpg';
-          imagesFolder.file(`${img.id}.${ext}`, base64Data, { base64: true });
-        }
+    // Desktop: hand off to the main-process shared zip builder via IPC.
+    // Main drives the native save dialog + userData media snapshot; we
+    // just feed it the serialized JSON string. The renderer-side Dexie
+    // images path no longer runs on desktop (userData filesystem is the
+    // source of truth there — see backup-zip-builder.cjs header).
+    if (isDesktopElectron()) {
+      const result = await buildDesktopBackupZip(jsonString, defaultFileName);
+      if (result.canceled) {
+        // User dismissed the save dialog — silent no-op matches the UX of
+        // backup:pick-save-file on every other backup flow.
+        return;
       }
+      if (!result.success) {
+        const detail = result.error ? ` (${result.error})` : '';
+        console.error('[EXPORT] Desktop backup zip build failed:', result);
+        alert((language === 'zh' ? '备份导出失败。' : 'Failed to export backup.') + detail);
+        return;
+      }
+      alert(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
+      return;
     }
 
-    if (isVoiceServiceAvailable()) {
-      try {
-        const { listVoiceFiles, loadVoiceFile: loadVF } = await import('../../services/voiceFileService');
-        const voiceFiles = await listVoiceFiles();
-        if (voiceFiles.length > 0) {
-          const voiceFolder = zip.folder('voice');
-          if (voiceFolder) {
-            for (const vf of voiceFiles) {
-              const buf = await loadVF(vf.id);
-              if (buf) voiceFolder.file(`${vf.id}.mp3`, buf);
-            }
-          }
-        }
-        const { loadRingtoneFileWithName } = await import('../../services/voiceFileService');
-        const rtResult = await loadRingtoneFileWithName();
-        if (rtResult) {
-          const ringtoneFolder = zip.folder('ringtone');
-          if (ringtoneFolder) {
-            ringtoneFolder.file(rtResult.fileName, rtResult.buffer);
-            if (rtResult.displayName && rtResult.displayName !== rtResult.fileName) {
-              ringtoneFolder.file('custom.meta.json', JSON.stringify({ originalName: rtResult.displayName }, null, 2));
-            }
-          }
-        }
-      } catch (e) {
-        console.warn('[EXPORT] Failed to include voice files:', e);
-      }
-    }
-
-    const content = await zip.generateAsync({ type: 'blob' });
-    saveAs(content, `kumiko_backup_${new Date().toISOString().slice(0, 10)}.zip`);
-
+    // Web / PWA fallback: renderer-side JSZip + file-saver download. Only
+    // reached when `window.electronAPI` is absent (no main process).
+    const content = await buildWebBackupZipBlob(jsonString);
+    saveAs(content, defaultFileName);
     alert(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
   } catch (e) {
     console.error('Failed to export backup', e);

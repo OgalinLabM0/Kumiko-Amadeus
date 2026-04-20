@@ -66,6 +66,7 @@ const {
   handleReadFile,
   handleGetFileInfo,
   handleParseImportFile,
+  handleBuildZipFromPayload,
 } = require('./electron/backup-ipc.cjs');
 const {
   markAutoBackupDone,
@@ -263,6 +264,7 @@ if (!singleInstanceLock) {
   ipcMain.handle('backup:read-file', handleReadFile);
   ipcMain.handle('backup:get-file-info', handleGetFileInfo);
   ipcMain.handle('backup:parse-import-file', handleParseImportFile);
+  ipcMain.handle('backup:build-zip-from-payload', handleBuildZipFromPayload);
 
   ipcMain.handle('app:set-auto-zip-backup', handleSetAutoZip);
   ipcMain.handle('app:get-auto-zip-backup', handleGetAutoZip);

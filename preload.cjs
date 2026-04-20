@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'backup:read-file',
       'backup:get-file-info',
       'backup:parse-import-file',
+      'backup:build-zip-from-payload',
       'rag:embed',
       'rag:save',
       'rag:search',

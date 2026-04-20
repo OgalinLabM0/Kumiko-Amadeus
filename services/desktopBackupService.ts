@@ -93,6 +93,35 @@ export const parseDesktopBackupImportFile = async (filePath: string): Promise<De
   return window.electronAPI.invoke('backup:parse-import-file', { filePath });
 };
 
+export interface DesktopBuildZipResult extends DesktopBackupResult {
+  outputPath?: string;
+  bytesWritten?: number;
+  imagesIncluded?: number;
+  imagesTotal?: number;
+}
+
+// Plan 14 Phase B: hand a serialized backup JSON to the main process, which
+// drives the native save dialog + shared zip builder (userData/images/voice/
+// ringtone snapshot) and writes the zip. Returns { canceled: true } if the
+// user dismissed the dialog; { success: true, outputPath, ... } on write.
+export const buildDesktopBackupZip = async (
+  dataJsonString: string,
+  defaultFileName?: string,
+): Promise<DesktopBuildZipResult> => {
+  if (!isDesktopElectron()) {
+    return { success: false, error: 'Desktop environment is required.' };
+  }
+
+  if (typeof window === 'undefined' || !window.electronAPI) {
+    return { success: false, error: 'Desktop IPC is unavailable.' };
+  }
+
+  return window.electronAPI.invoke('backup:build-zip-from-payload', {
+    dataJsonString,
+    defaultFileName,
+  });
+};
+
 export const setDesktopBackgroundThrottling = async (allowed: boolean): Promise<DesktopBackupResult> => {
   if (!isDesktopElectron()) {
     return { success: false, error: 'Desktop environment is required.' };
