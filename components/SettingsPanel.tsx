@@ -448,7 +448,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       setDialogConfig({
           isOpen: true,
           title: language === 'zh' ? '重建记忆库' : 'Rebuild Memory Bank',
-          message: language === 'zh' ? '这可能需要几分钟时间，确定要重建记忆库吗？' : 'This may take a few minutes. Are you sure you want to rebuild the memory bank?',
+          message: language === 'zh'
+              ? '将基于当前历史消息重新生成每条消息对应的对话向量（turn_pair）。\n\n不会被动：\n· 核心记忆（近期摘要缓冲）与摘要归档状态\n· 摘要块向量（memory chunks，tier=core）\n· 官方世界观向量（lore）\n· 其他非对话类向量\n\n过程中可能需要几分钟；数据库事务保护下失败会自动回滚，不会留下半清空状态。\n\n确定重建吗？'
+              : 'This will regenerate the per-message conversation vectors (turn_pair) from your current history.\n\nKept intact:\n- Core memory (recent summary buffer) and summary archive\n- Memory-chunk vectors (tier=core)\n- Official lore vectors\n- All other non-message vectors\n\nMay take a few minutes; wrapped in a database transaction, so any failure rolls back without leaving a half-cleared state.\n\nRebuild?',
           type: 'confirm',
           confirmText: language === 'zh' ? '确定重建' : 'Rebuild',
           cancelText: language === 'zh' ? '取消' : 'Cancel',
