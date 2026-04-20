@@ -83,7 +83,7 @@ A release with all 9 is complete. See
 | Command | Purpose |
 | --- | --- |
 | `npm install` | Install dependencies. First-time setup. |
-| `npm run fetch-assets` | Pull `kumiko-assets.zip` from latest release and unpack into `public/` + `assets/`. Idempotent: skips if sentinel files already present. |
+| `npm run fetch-assets` | Pull `kumiko-assets.zip` from latest release and unpack into `public/` + `assets/`. Idempotent: skips if sentinel files already present. If the latest release 404s on the zip (publish race), auto-falls back to the most recent prior release that still has it; set `FETCH_ASSETS_NO_FALLBACK=1` to disable the fallback. |
 | `npm run check-assets` | **Pre-release mandatory check.** Diffs local asset set against the zip on the latest release. Exit 0 = in sync, exit 2 = drift (with a printed bootstrap hint), exit 1 = transport error. |
 | `npm run desktop:dev` | Vite dev server + Electron main process, with hot reload. |
 | `npm run build:cap` | Production Vite bundle (relative base, suitable for Electron + Capacitor). |
@@ -112,6 +112,12 @@ added a new sprite locally and forgot to refresh
 old asset set into the new installer, ship a stale release, and never
 tell anyone. This check is the only safeguard against that class of
 silent failure, and it runs in under 15 seconds.
+
+**When to run this check.** Only when you are about to cut a release
+or refresh the zip on the current latest tag. Not every merge to
+`main` triggers a release — see
+[When to cut a release](docs/RELEASE.md#when-to-cut-a-release) in the
+release playbook for the current cadence policy.
 
 ## kumiko-assets.zip lifecycle
 

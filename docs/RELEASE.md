@@ -42,6 +42,38 @@ neither humans nor future release agents mistake it for a lost history.
 Going forward every bump of `package.json#version` must correspond to a
 release cut through this playbook.
 
+## When to cut a release
+
+Not every merge to `main` becomes a release. A full cookbook run costs
+~45 minutes of CI time plus the Step 5 manual cleanup (stray combined
+installer, `latest-arm64.yml` synthesis), so the current policy — in
+effect since v2.9.5 — is:
+
+- **Code changes without a new installer** (refactors, doc fixes,
+  follow-ups that do not need to ship to end users immediately) →
+  land on `main` and stop. Skip Step 0 through Step 5. The next time
+  a release is cut for any other reason, these commits ship with it.
+- **Asset-only update** (emotion sprite, ringtone, lore / worldbook,
+  favicon, splash) → refresh the zip on the current latest release
+  without cutting a new version:
+  ```bash
+  npm run release:assets
+  gh release upload <current-latest-tag> release/kumiko-assets.zip --clobber
+  npm run check-assets      # must report "In sync"
+  ```
+  No `package.json#version` bump, no new workflow run. Running
+  builds and already-installed apps auto-pick the new assets the next
+  time they `fetch-assets`.
+- **User-visible feature, bug fix that must reach auto-update, or you
+  want to manually install and smoke the installer** → run the full
+  Step 0 through Step 5 cookbook below. This is the only path that
+  actually cuts a new `vX.Y.Z`.
+
+Prior to v2.9.5 every patch bump shipped on its own. That policy was
+dropped when the release flow's wall-clock cost outgrew the value of
+shipping every chore. If in doubt, prefer not to cut a release — the
+backlog queued on `main` is free, the 45-minute release run is not.
+
 ## The three distribution channels
 
 | Channel | Workflow | Runs on | Publishes |
@@ -350,6 +382,22 @@ the normal cookbook to move users forward.
   asset API is intermittently flaky; `gh run rerun <run-id> --failed`
   usually succeeds on the second attempt. If two reruns fail the same
   way, check <https://www.githubstatus.com/>.
+- **Windows x64 `Fetch shared assets` step fails with HTTP 404 during
+  publish=true** → race window: electron-builder creates the `vX.Y.Z`
+  release and marks it `latest` the moment the Linux x64 AppImage
+  upload begins, but the Linux x64 `Upload kumiko-assets.zip` step is
+  a later step in the same job. Windows x64, running in parallel,
+  tries to fetch `releases/latest/download/kumiko-assets.zip` and hits
+  the empty window. `scripts/fetch-assets.cjs` auto-falls back to the
+  previous release's zip (whose contents are usually identical across
+  patch bumps, since character assets change rarely), so the workflow
+  self-heals and no action is needed. If the fallback also 404s — for
+  example every prior release has been deleted, or the fallback's zip
+  is stale and the current release ships intentionally new assets —
+  either set `FETCH_ASSETS_NO_FALLBACK=1` temporarily and wait for the
+  Linux x64 upload to finish, or `gh run rerun <windows-run-id>
+  --failed` once you confirm `gh release view vX.Y.Z --json assets`
+  shows `kumiko-assets.zip`.
 - **After Windows publish: `latest-arm64.yml` missing** → known
   electron-builder edge case with the dual-arch target config. Follow
   the "Patch: `latest-arm64.yml` missing" sub-step in Step 5 to
