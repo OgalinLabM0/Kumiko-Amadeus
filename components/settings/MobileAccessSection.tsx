@@ -540,12 +540,16 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
 
       {isOpen && (
         <div className="px-4 pb-4 space-y-3">
+          {/* Phase 7 Part t13_settings_sections: on narrow settings panels
+              the `min-w-[240px]` on the description forced the guide
+              button to overflow horizontally. Drop to 180px so 320px
+              phones still wrap neatly; sm: restores the 240px target. */}
           <div className="flex items-start justify-between gap-3 flex-wrap">
-            <p className={`text-sm ${mutedClass} flex-1 min-w-[240px]`}>{t.desc}</p>
+            <p className={`text-sm ${mutedClass} flex-1 min-w-[180px] sm:min-w-[240px]`}>{t.desc}</p>
             <button
               type="button"
               onClick={() => openGuide()}
-              className={primaryBtnClass}
+              className={primaryBtnClass + ' active:scale-95'}
             >
               <Book size={14} />
               {t.guideButton}

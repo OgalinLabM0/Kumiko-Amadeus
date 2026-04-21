@@ -160,9 +160,23 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center"
-      style={{ background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.95) 100%)' }}>
-      <div className="flex flex-col items-center gap-8 text-white animate-[breathe_0.3s_ease-out]">
+    // Phase 7 Part t10_chat_voice: on 5.5" phones in the ringing
+    // phase (avatar + name + reminder + accept/reject row) the stack
+    // overflowed 667px vertical. We add `overflow-y-auto` + safe-area
+    // padding so the Accept button isn't clipped under the iOS home
+    // indicator and all content remains scrollable. Desktop still has
+    // plenty of vertical room.
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center overflow-y-auto"
+      style={{
+        background: 'radial-gradient(ellipse at center, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.95) 100%)',
+        paddingTop: 'max(1rem, var(--sat))',
+        paddingBottom: 'max(1rem, var(--sab))',
+        paddingLeft: 'var(--sal)',
+        paddingRight: 'var(--sar)',
+      }}
+    >
+      <div className="flex flex-col items-center gap-6 sm:gap-8 text-white animate-[breathe_0.3s_ease-out] my-auto">
         <div className="relative">
           <div className={`w-28 h-28 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center text-4xl font-bold shadow-2xl overflow-hidden ${phase === 'ringing' ? 'animate-pulse' : ''}`}>
             <img src="./CCA-P2.png" alt="Kumiko" className="w-full h-full object-cover" onError={(e) => { e.currentTarget.style.display = 'none'; e.currentTarget.parentElement!.innerText = '久'; }} />
@@ -198,13 +212,17 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
         )}
 
         {phase === 'ringing' ? (
-          <div className="flex items-center gap-16 mt-4">
+          // Phase 7 Part t10_chat_voice: drop gap to 12 on phones so
+          // the Accept+Reject pair still centres on 320px screens, and
+          // add `active:scale-95` for a tactile press. Desktop `sm:`
+          // rehydrates the original `gap-16`.
+          <div className="flex items-center gap-12 sm:gap-16 mt-4">
             <button onClick={handleReject}
-              className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 flex items-center justify-center transition-colors shadow-lg shadow-red-500/30">
+              className="w-16 h-16 rounded-full bg-red-500 hover:bg-red-600 active:scale-95 flex items-center justify-center transition-all shadow-lg shadow-red-500/30">
               <PhoneOff size={24} />
             </button>
             <button onClick={handleAccept} disabled={acceptedRef.current}
-              className={`w-16 h-16 rounded-full flex items-center justify-center transition-colors shadow-lg shadow-green-500/30 ${acceptedRef.current ? 'bg-green-800 opacity-50 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600 animate-bounce'}`}>
+              className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg shadow-green-500/30 active:scale-95 ${acceptedRef.current ? 'bg-green-800 opacity-50 cursor-not-allowed' : 'bg-green-500 hover:bg-green-600 animate-bounce'}`}>
               <Phone size={24} />
             </button>
           </div>

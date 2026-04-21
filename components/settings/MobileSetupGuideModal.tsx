@@ -36,6 +36,7 @@ import {
   type MobileGuideSectionId,
 } from '../../constants/mobileSetupGuideContent';
 import { useModalKeyboard } from '../../hooks/useModalKeyboard';
+import { useModalPortal } from '../../hooks/useModalPortal';
 import { openExternalUrl } from '../../utils/openExternal';
 
 interface MobileSetupGuideModalProps {
@@ -70,6 +71,7 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
   const [activeId, setActiveId] = useState<MobileGuideSectionId>(initialSectionId || defaultId);
   const [isClosing, setIsClosing] = useState(false);
   const articleScrollRef = useRef<HTMLDivElement | null>(null);
+  const renderPortal = useModalPortal();
 
   const isVisible = isOpen || isClosing;
 
@@ -124,7 +126,11 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
     await openExternalUrl(url);
   };
 
-  return (
+  // Phase 7 Part t5_a3_mobile_setup_guide: portal into <body> so the backdrop
+  // is relative to the viewport, not the SettingsPanel `ka-settings-shell`
+  // (which has `contain: layout style paint` + `transform` and would otherwise
+  // clip this modal to the settings window on desktop compact mode).
+  return renderPortal(
     <>
       <style>{`
         @keyframes mobileGuideIn {

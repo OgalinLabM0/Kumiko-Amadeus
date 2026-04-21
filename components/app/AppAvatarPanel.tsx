@@ -47,7 +47,7 @@ export const AppAvatarPanel: React.FC<AppAvatarPanelProps> = ({
       <div className={overlayClass}></div>
       <div className={`absolute inset-0 ${avatarGradient}`}></div>
 
-      <div className={`absolute top-20 left-4 md:top-10 md:left-10 md:max-w-[calc(100%-160px)] font-mono text-[10px] md:text-[10px] lg:text-xs z-0 md:z-30 p-2 md:p-0 rounded-lg md:rounded-none transition-all duration-500 pointer-events-none select-none ${statusTextColor}`}>
+      <div className={`ka-mobile-hud-offset absolute left-4 md:top-10 md:left-10 md:max-w-[calc(100%-160px)] font-mono text-[10px] md:text-[10px] lg:text-xs z-0 md:z-30 p-2 md:p-0 rounded-lg md:rounded-none transition-all duration-500 pointer-events-none select-none ${statusTextColor}`}>
         <p className="font-bold opacity-80 truncate">{systemName}</p>
         <p className="opacity-60 truncate">{systemId}</p>
         <div className="h-px w-8 bg-current my-1 opacity-30"></div>

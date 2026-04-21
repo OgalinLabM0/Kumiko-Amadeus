@@ -1,27 +1,30 @@
 // components/MobilePairingGate.tsx
 //
-// Phase 4 Part E: unify the mobile PWA entry with the full desktop app.
+// Phase 4 Part E + Phase 7 Part t2_pairing_ui: unify the mobile PWA
+// entry with the full desktop app, wrapped in the Kitauji brand chrome.
 //
-// Before this phase the mobile PWA rendered a parallel `MobilePhase1App`
-// component with its own minimal chat list. That was scaffolding while
-// Phases 1–3 wired up transport, IPC, and sync; phase 4 now makes phones
-// render the exact same `App` component as desktop (settings panel,
-// memory panel, diary, etc.), so "pc能用的手机完全都能用" holds by
-// construction rather than by feature-chasing two parallel UIs.
+// Before Phase 4 the mobile PWA rendered a parallel `MobilePhase1App`
+// component with its own minimal chat list. Phase 4 made phones render
+// the exact same `<App />` as desktop (settings, memory, diary, etc.).
+// Phase 6 removed the INTRO auto-skip so the mobile PWA walks the FULL
+// desktop onboarding flow (INTRO → AUTH → CONFIG → APP) — see
+// components/App.tsx `initialFlowFor`.
 //
 // What this gate owns:
-//   1. Probe `/api/status` and the session cookie. If the phone hasn't
-//      paired yet we render the pairing screen (exactly the same UX that
-//      used to live in `MobilePhase1App`).
-//   2. Once paired we render `children` (the real `<App />`). `App` has
-//      a sibling effect that auto-advances `flowState` from INTRO → APP
-//      when `isMobilePwa()`, so the user skips the desktop onboarding
-//      wizard (AUTH / CONFIG) — those flows configure the *desktop's*
-//      local-file backup and API keys, which on mobile are already
-//      handled by the PC backend we just paired with.
+//   1. Probe `/api/status` + session cookie. If the phone hasn't paired
+//      yet we render the pairing screen.
+//   2. Once paired, hydrate the local Dexie mirror + AI config from the
+//      PC snapshot (once per tab, guarded by sessionStorage).
+//   3. Hand off to `children` (the real `<App />`) which then runs the
+//      same `flowState` state machine as desktop.
 //
 // Desktop Electron never instantiates this gate (index.tsx branches on
 // `isMobilePwa()`), so none of this code runs there.
+//
+// Phase 7 note: All three views (Loading, Pairing, Hydrating) now share
+// the `MobilePairingChrome` shell that mirrors IntroScreen's palette +
+// typography, so a phone landing on the PWA never sees a "demo" dark
+// screen before the app kicks in.
 
 import React, { useCallback, useEffect, useState } from 'react';
 import {
@@ -32,12 +35,20 @@ import {
 } from '../services/httpApi';
 import { db, type DailyFragmentEntity, type KeyValEntity, type KumikoDiaryEntity, type MessageEntity, type PsycheStateEntity } from '../services/db';
 import { ensurePushSubscription } from '../services/pushSubscriptionService';
+import {
+  MobilePairingChrome,
+  MobilePairingHydrating,
+  MobilePairingLoading,
+  type MobilePairingStep,
+} from './mobile/MobilePairingChrome';
 
 type GateState =
   | { kind: 'loading' }
   | { kind: 'pairing'; hint?: string }
-  | { kind: 'hydrating'; hostname: string | null; step: string }
+  | { kind: 'hydrating'; hostname: string | null; step: HydrationStep }
   | { kind: 'paired'; hostname: string | null };
+
+type HydrationStep = 'probing' | 'config' | 'snapshot' | 'applying';
 
 interface BootstrapSnapshotPayload {
   messages: MessageEntity[];
@@ -59,13 +70,13 @@ interface BootstrapAiConfigResponse {
   error?: string;
 }
 
-// Flag kept in sessionStorage so hydration runs exactly once per tab —
-// reloading the PWA picks up the latest PC snapshot, but in-session
-// re-renders of the gate (e.g. StrictMode) skip the slow replay.
 const HYDRATION_FLAG_KEY = 'kumiko_mobile_hydrated';
 
-async function hydrateFromPcSnapshot(): Promise<{ ok: true } | { ok: false; error: string }> {
+async function hydrateFromPcSnapshot(
+  onStep: (s: HydrationStep) => void,
+): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
+    onStep('config');
     const aiConfigRes = await httpInvoke<BootstrapAiConfigResponse>('bootstrap:ai-config');
     if (aiConfigRes?.ok && typeof aiConfigRes.config === 'string' && aiConfigRes.config.length > 0) {
       try {
@@ -76,16 +87,14 @@ async function hydrateFromPcSnapshot(): Promise<{ ok: true } | { ok: false; erro
       }
     }
 
+    onStep('snapshot');
     const snapRes = await httpInvoke<BootstrapSnapshotResponse>('bootstrap:snapshot');
     if (!snapRes?.ok || !snapRes.snapshot) {
       return { ok: false, error: snapRes?.error || 'Empty snapshot from PC.' };
     }
     const snap = snapRes.snapshot;
 
-    // Bulk-replace each table so the phone's Dexie ends as an exact
-    // mirror of the PC's (for the tables we care about on mobile).
-    // Vectors + images tables are intentionally left empty — RAG runs
-    // on PC, images stream via /media/images/:id.
+    onStep('applying');
     await db.transaction(
       'rw',
       [db.messages, db.kumikoDiary, db.dailyFragments, db.psycheState, db.keyval],
@@ -111,6 +120,24 @@ async function hydrateFromPcSnapshot(): Promise<{ ok: true } | { ok: false; erro
   }
 }
 
+const HYDRATION_LABELS: Record<HydrationStep, { zh: string; en: string }> = {
+  probing: { zh: '定位桌面服务', en: 'Reaching desktop Fastify' },
+  config: { zh: '读取 AI 配置', en: 'Reading AI configuration' },
+  snapshot: { zh: '从 PC 拉取历史', en: 'Pulling history from PC' },
+  applying: { zh: '写入本地存储', en: 'Mirroring into local storage' },
+};
+
+function hydrationSteps(current: HydrationStep): MobilePairingStep[] {
+  const order: HydrationStep[] = ['probing', 'config', 'snapshot', 'applying'];
+  const idx = order.indexOf(current);
+  return order.map((id, i) => ({
+    id,
+    label: HYDRATION_LABELS[id].zh,
+    labelEn: HYDRATION_LABELS[id].en,
+    state: i < idx ? 'done' : i === idx ? 'active' : 'pending',
+  }));
+}
+
 function PairingView({
   onPaired,
   hint,
@@ -125,7 +152,7 @@ function PairingView({
   const submit = useCallback(async () => {
     const trimmed = token.trim();
     if (!trimmed) {
-      setError('Paste the pairing token shown in your desktop app.');
+      setError('请先粘贴桌面端显示的配对口令。');
       return;
     }
     setSubmitting(true);
@@ -133,161 +160,98 @@ function PairingView({
     try {
       const result = await httpPair(trimmed);
       if (!result.ok) {
-        setError(result.error || 'Pairing failed.');
+        setError(result.error || '配对失败。');
         return;
       }
       // Phase 5 Part A: while we still own the user-gesture context from
       // the "Pair phone" tap, kick off Web Push registration. iOS 16.4+
       // requires Notification.requestPermission() to fire from a user
       // gesture, and this is the only hands-on moment we have in the
-      // pairing flow. A 401 back from subscribe would be benign — the
-      // session is already valid (we just paired); the HTTP error path
-      // just returns { ok: false, reason }. We don't await it because
-      // hydration can start in parallel and the subscription is best
-      // effort — users can retry from Settings later.
+      // pairing flow. Best-effort — can retry from Settings later.
       void ensurePushSubscription();
       onPaired();
     } catch (e) {
-      setError((e as Error).message || 'Network error.');
+      setError((e as Error).message || '网络异常，请稍后重试。');
     } finally {
       setSubmitting(false);
     }
   }, [token, onPaired]);
 
   return (
-    <div style={{
-      minHeight: '100dvh',
-      background: '#0f172a',
-      color: '#e2e8f0',
-      display: 'flex',
-      flexDirection: 'column',
-      padding: 24,
-      boxSizing: 'border-box',
-      paddingTop: 'max(40px, env(safe-area-inset-top))',
-      paddingBottom: 'max(24px, env(safe-area-inset-bottom))',
-    }}>
-      <div>
-        <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 6 }}>
-          Kumiko·Amadeus Mobile
-        </h1>
-        <div style={{ fontSize: 13, color: '#94a3b8' }}>
-          Pair with your desktop
+    <div className="flex flex-col gap-5">
+      <div className="ka-pair-card px-5 py-5">
+        <div className="ka-pair-micro text-[10px] font-semibold uppercase mb-1">
+          第一步 · 与桌面端配对
         </div>
+        <div className="ka-pair-micro text-[10px] opacity-70 mb-2">
+          Step 1 · Pair with Desktop
+        </div>
+        <p className="ka-pair-body text-[13px] leading-relaxed">
+          在桌面端打开 <strong>设置 → 手机访问</strong>，复制一次性配对口令，
+          粘贴到下方，即可把这台手机接入你的 Tailnet。
+        </p>
+        <p className="ka-pair-micro text-[10.5px] leading-relaxed opacity-60 mt-2">
+          Open <strong>Settings → Mobile Access</strong> on your desktop and
+          paste the one-time token below.
+        </p>
       </div>
 
-      <p style={{ fontSize: 14, color: '#cbd5f5', marginTop: 24, lineHeight: 1.6 }}>
-        Open Settings → Mobile Access on your desktop and copy the pairing
-        token. Paste it below to link this phone to your Tailnet.
-      </p>
-
       {hint && (
-        <div style={{
-          marginTop: 12,
-          background: '#1f2937',
-          padding: 10,
-          borderRadius: 8,
-          fontSize: 13,
-          color: '#fbbf24',
-        }}>
+        <div
+          className="ka-pair-card px-4 py-3 text-[12px] leading-relaxed"
+          style={{
+            background: 'rgba(197, 160, 89, 0.12)',
+            borderColor: 'rgba(197, 160, 89, 0.4)',
+            color: '#785A42',
+          }}
+        >
           {hint}
         </div>
       )}
 
-      <label style={{ marginTop: 24, fontSize: 13, color: '#94a3b8' }}>
-        Pairing token
-      </label>
-      <textarea
-        value={token}
-        onChange={(e) => setToken(e.target.value)}
-        placeholder="Paste token here"
-        autoComplete="off"
-        autoCapitalize="off"
-        spellCheck={false}
-        style={{
-          marginTop: 6,
-          background: '#1e293b',
-          color: '#f8fafc',
-          border: '1px solid #334155',
-          borderRadius: 10,
-          padding: 12,
-          fontSize: 15,
-          minHeight: 96,
-          resize: 'vertical',
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-        }}
-      />
+      <div className="flex flex-col gap-2">
+        <label className="ka-pair-micro text-[10px] font-semibold uppercase px-1">
+          配对口令 · Pairing token
+        </label>
+        <textarea
+          className="ka-pair-input"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+          autoComplete="off"
+          autoCapitalize="off"
+          spellCheck={false}
+        />
+      </div>
 
       {error && (
-        <div style={{
-          marginTop: 12,
-          color: '#f87171',
-          fontSize: 13,
-          background: 'rgba(248,113,113,0.08)',
-          padding: 10,
-          borderRadius: 8,
-        }}>
+        <div
+          className="ka-pair-card px-4 py-3 text-[12px] leading-relaxed"
+          style={{
+            background: 'rgba(180, 60, 60, 0.08)',
+            borderColor: 'rgba(180, 60, 60, 0.32)',
+            color: '#7f2a2a',
+          }}
+        >
           {error}
         </div>
       )}
 
       <button
+        type="button"
         onClick={submit}
         disabled={submitting}
-        style={{
-          marginTop: 20,
-          padding: '14px 16px',
-          minHeight: 48,
-          background: submitting ? '#334155' : '#2563eb',
-          color: '#fff',
-          border: 'none',
-          borderRadius: 10,
-          fontSize: 16,
-          fontWeight: 600,
-          cursor: submitting ? 'wait' : 'pointer',
-        }}
+        className="ka-pair-btn"
       >
-        {submitting ? 'Pairing…' : 'Pair phone'}
+        <span className="relative z-10">
+          {submitting ? '配对中…' : '配对手机 · Pair phone'}
+        </span>
       </button>
 
-      <div style={{ marginTop: 24, fontSize: 12, color: '#64748b', lineHeight: 1.5 }}>
-        Token is one-time reveal on the desktop. Pair succeeds when the
-        server sets a secure cookie; subsequent visits skip this step.
+      <div className="ka-pair-body text-[11.5px] leading-relaxed opacity-70 px-1">
+        口令仅在桌面端显示一次。一旦服务器下发会话 cookie，配对即完成，下次
+        访问不需要再填。
       </div>
-    </div>
-  );
-}
-
-function LoadingView() {
-  return (
-    <div style={{
-      minHeight: '100dvh',
-      background: '#0f172a',
-      color: '#94a3b8',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontSize: 14,
-    }}>
-      Connecting…
-    </div>
-  );
-}
-
-function HydratingView({ step }: { step: string }) {
-  return (
-    <div style={{
-      minHeight: '100dvh',
-      background: '#0f172a',
-      color: '#e2e8f0',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      fontSize: 14,
-      gap: 12,
-    }}>
-      <div style={{ fontSize: 18, fontWeight: 600 }}>Syncing with desktop</div>
-      <div style={{ color: '#94a3b8', fontSize: 13 }}>{step}</div>
     </div>
   );
 }
@@ -300,7 +264,7 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!status) {
       setState({
         kind: 'pairing',
-        hint: 'Desktop Fastify not reachable. Verify Tailscale + desktop app are running.',
+        hint: '无法连接桌面端。请确认桌面端 App 已启动，且两台设备在同一 Tailscale 账户下。',
       });
       return;
     }
@@ -310,10 +274,6 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
       return;
     }
 
-    // Session is valid. Hydrate local Dexie + AI config from PC if we
-    // haven't done it yet in this session. This is the single blocking
-    // step between pairing and <App /> mounting so the App sees real
-    // data instead of empty IndexedDB.
     const alreadyHydrated = typeof sessionStorage !== 'undefined'
       && sessionStorage.getItem(HYDRATION_FLAG_KEY) === '1';
     if (alreadyHydrated) {
@@ -321,12 +281,14 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
       return;
     }
 
-    setState({ kind: 'hydrating', hostname: status.hostname, step: 'Pulling history from PC…' });
-    const result = await hydrateFromPcSnapshot();
+    setState({ kind: 'hydrating', hostname: status.hostname, step: 'probing' });
+    const result = await hydrateFromPcSnapshot((s) => {
+      setState({ kind: 'hydrating', hostname: status.hostname, step: s });
+    });
     if (result.ok === false) {
       setState({
         kind: 'pairing',
-        hint: `Hydration failed: ${result.error}. Try repairing with a fresh token.`,
+        hint: `同步失败：${result.error}。请回到桌面端重新生成口令后再试一次。`,
       });
       return;
     }
@@ -343,13 +305,28 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
   }, [refresh]);
 
   if (state.kind === 'loading') {
-    return <LoadingView />;
+    return (
+      <MobilePairingChrome>
+        <MobilePairingLoading
+          label="正在连接桌面端"
+          subLabel="Connecting with your desktop"
+        />
+      </MobilePairingChrome>
+    );
   }
   if (state.kind === 'pairing') {
-    return <PairingView onPaired={refresh} hint={state.hint} />;
+    return (
+      <MobilePairingChrome>
+        <PairingView onPaired={refresh} hint={state.hint} />
+      </MobilePairingChrome>
+    );
   }
   if (state.kind === 'hydrating') {
-    return <HydratingView step={state.step} />;
+    return (
+      <MobilePairingChrome>
+        <MobilePairingHydrating steps={hydrationSteps(state.step)} />
+      </MobilePairingChrome>
+    );
   }
   return <>{children}</>;
 };

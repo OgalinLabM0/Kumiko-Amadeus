@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Download, Minus, Plus, RotateCcw, X } from 'lucide-react';
 import { AnimatePresence, animate, motion, useMotionValue, useTransform } from 'framer-motion';
+import { useModalPortal } from '../hooks/useModalPortal';
 
 interface ImageViewerProps {
   src: string | null;
@@ -17,6 +18,7 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ src, onClose, download
   const backdropOpacity = useTransform(y, [-200, 0, 200], [0, 1, 0]);
   const constraintsRef = useRef<HTMLDivElement>(null);
   const dismissConstraints = useMemo(() => ({ top: 0, bottom: 0 }), []);
+  const renderPortal = useModalPortal();
 
   useEffect(() => {
     const unsubscribe = zoomLevel.on('change', (latest) => {
@@ -73,7 +75,10 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ src, onClose, download
     setIsZoomed(false);
   };
 
-  return (
+  // Phase 7 Part t5_b3_image_viewer: portal the overlay into <body> so the
+  // fixed backdrop always covers the viewport (the AppMainView host has
+  // `contain: layout style` which otherwise hijacks the containing block).
+  return renderPortal(
     <AnimatePresence>
       {src && (
         <motion.div
