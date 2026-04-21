@@ -30,14 +30,30 @@
 //     close/error handlers, push the socket into the live set, and
 //     optionally send a 'ready' frame so the phone knows it's live.
 //
-// Payload schema (see also services/httpApi.ts subscribeEvents):
+// Payload schema (see also services/httpApi.ts subscribeEvents).
 //
+// Phase 2 (chat / state mirror):
 //   { type: 'message:added', message: SlimMessage }
 //   { type: 'message:updated', message: SlimMessage }
 //   { type: 'message:deleted', messageId: string }
 //   { type: 'status:line', text: string }
 //   { type: 'status:emotion', emotion: string }
 //   { type: 'status:unread', count: number }
+//
+// Phase 3 Part D (main-process background streams). These mirror the
+// one-way IPC events that ship from electron-rag.cjs / auto-zip-backup
+// .cjs / app-updater.cjs / genie-process.cjs, bridged at the renderer
+// via useMobileBroadcaster so phone UI can react live.
+//   { type: 'rag:rebuild:started', job }
+//   { type: 'rag:rebuild:progress', job }
+//   { type: 'rag:rebuild:done', job }
+//   { type: 'rag:rebuild:error', job }
+//   { type: 'backup:auto-zip', status }
+//   { type: 'update:state', state }
+//   { type: 'genie:state', state }
+//
+// Handshake / keepalive (server-originated):
+//   { type: 'hello', ts, clients }
 //   { type: 'ping', ts: number }           // optional keepalive
 //
 // Type strings are case-sensitive and MUST match useMobileBroadcaster.

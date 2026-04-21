@@ -1,5 +1,7 @@
 import { db } from './db';
 import { Message } from '../types';
+import { isMobilePwa } from './environment';
+import { subscribeEvents } from './httpApi';
 
 // --- Electron IPC Bridge ---
 // In Electron, embedding generation and vector search run in the main process (bge-m3 ONNX + SQLite).
@@ -503,48 +505,81 @@ export const subscribeLocalRagRebuild = (
   listener: (event: LocalRagRebuildEvent) => void
 ) => {
   const ipc = getIpcRenderer();
-  if (!ipc) {
-    return () => {};
+
+  if (ipc) {
+    const handleStarted = (_event: any, payload: any) => {
+      listener({
+        type: 'started',
+        ...normalizeLocalRagRebuildSnapshot(payload),
+      });
+    };
+    const handleProgress = (_event: any, payload: any) => {
+      listener({
+        type: 'progress',
+        ...normalizeLocalRagRebuildSnapshot(payload),
+      });
+    };
+    const handleDone = (_event: any, payload: any) => {
+      listener({
+        type: 'done',
+        ...normalizeLocalRagRebuildSnapshot(payload),
+        appliedCount: Number.isFinite(payload?.appliedCount) ? Number(payload.appliedCount) : undefined,
+      });
+    };
+    const handleError = (_event: any, payload: any) => {
+      listener({
+        type: 'error',
+        ...normalizeLocalRagRebuildSnapshot(payload),
+        error: typeof payload?.error === 'string' ? payload.error : undefined,
+      });
+    };
+
+    ipc.on(RAG_REBUILD_STARTED_CHANNEL, handleStarted);
+    ipc.on(RAG_REBUILD_PROGRESS_CHANNEL, handleProgress);
+    ipc.on(RAG_REBUILD_DONE_CHANNEL, handleDone);
+    ipc.on(RAG_REBUILD_ERROR_CHANNEL, handleError);
+
+    return () => {
+      ipc.removeListener(RAG_REBUILD_STARTED_CHANNEL, handleStarted);
+      ipc.removeListener(RAG_REBUILD_PROGRESS_CHANNEL, handleProgress);
+      ipc.removeListener(RAG_REBUILD_DONE_CHANNEL, handleDone);
+      ipc.removeListener(RAG_REBUILD_ERROR_CHANNEL, handleError);
+    };
   }
 
-  const handleStarted = (_event: any, payload: any) => {
-    listener({
-      type: 'started',
-      ...normalizeLocalRagRebuildSnapshot(payload),
+  // Mobile PWA: no local IPC, but the desktop's useMobileBroadcaster
+  // bridges the four rag:rebuild:* IPC events into the WebSocket fan-
+  // out (Phase 3 Part D). We hook into that stream so mobile RAG UIs
+  // see the exact same event sequence desktop UI sees.
+  if (isMobilePwa()) {
+    const unsubscribe = subscribeEvents((event) => {
+      const type = event?.type;
+      if (type === 'rag:rebuild:started') {
+        const payload = (event as { job?: unknown }).job;
+        listener({ type: 'started', ...normalizeLocalRagRebuildSnapshot(payload) });
+      } else if (type === 'rag:rebuild:progress') {
+        const payload = (event as { job?: unknown }).job;
+        listener({ type: 'progress', ...normalizeLocalRagRebuildSnapshot(payload) });
+      } else if (type === 'rag:rebuild:done') {
+        const payload = (event as { job?: any }).job;
+        listener({
+          type: 'done',
+          ...normalizeLocalRagRebuildSnapshot(payload),
+          appliedCount: Number.isFinite(payload?.appliedCount) ? Number(payload.appliedCount) : undefined,
+        });
+      } else if (type === 'rag:rebuild:error') {
+        const payload = (event as { job?: any }).job;
+        listener({
+          type: 'error',
+          ...normalizeLocalRagRebuildSnapshot(payload),
+          error: typeof payload?.error === 'string' ? payload.error : undefined,
+        });
+      }
     });
-  };
-  const handleProgress = (_event: any, payload: any) => {
-    listener({
-      type: 'progress',
-      ...normalizeLocalRagRebuildSnapshot(payload),
-    });
-  };
-  const handleDone = (_event: any, payload: any) => {
-    listener({
-      type: 'done',
-      ...normalizeLocalRagRebuildSnapshot(payload),
-      appliedCount: Number.isFinite(payload?.appliedCount) ? Number(payload.appliedCount) : undefined,
-    });
-  };
-  const handleError = (_event: any, payload: any) => {
-    listener({
-      type: 'error',
-      ...normalizeLocalRagRebuildSnapshot(payload),
-      error: typeof payload?.error === 'string' ? payload.error : undefined,
-    });
-  };
+    return unsubscribe;
+  }
 
-  ipc.on(RAG_REBUILD_STARTED_CHANNEL, handleStarted);
-  ipc.on(RAG_REBUILD_PROGRESS_CHANNEL, handleProgress);
-  ipc.on(RAG_REBUILD_DONE_CHANNEL, handleDone);
-  ipc.on(RAG_REBUILD_ERROR_CHANNEL, handleError);
-
-  return () => {
-    ipc.removeListener(RAG_REBUILD_STARTED_CHANNEL, handleStarted);
-    ipc.removeListener(RAG_REBUILD_PROGRESS_CHANNEL, handleProgress);
-    ipc.removeListener(RAG_REBUILD_DONE_CHANNEL, handleDone);
-    ipc.removeListener(RAG_REBUILD_ERROR_CHANNEL, handleError);
-  };
+  return () => {};
 };
 
 // ==========================================

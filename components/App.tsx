@@ -64,6 +64,8 @@ import {
   setDesktopBackgroundThrottling,
   refocusDesktopWebContents,
 } from '../services/desktopBackupService';
+import { isMobilePwa } from '../services/environment';
+import { subscribeEvents as subscribeMobileEvents } from '../services/httpApi';
 import {
   MEMORY_QUERY_SESSION_STORAGE_KEY,
   SUMMARY_SEMANTIC_CACHE_LIMIT,
@@ -683,12 +685,27 @@ export const App = () => {
   const setIsAutoZipping = useAppStore(s => s.setIsAutoZipping);
 
   useEffect(() => {
-    if (!isDesktopElectron() || !window.electronAPI?.on) return;
-    const handler = (_event: any, payload: any) => {
-      if (payload?.status === 'start') setIsAutoZipping(true);
-    };
-    window.electronAPI.on('app:auto-zip-progress', handler);
-    return () => { window.electronAPI?.removeListener?.('app:auto-zip-progress', handler); };
+    if (isDesktopElectron() && window.electronAPI?.on) {
+      const handler = (_event: any, payload: any) => {
+        if (payload?.status === 'start') setIsAutoZipping(true);
+      };
+      window.electronAPI.on('app:auto-zip-progress', handler);
+      return () => { window.electronAPI?.removeListener?.('app:auto-zip-progress', handler); };
+    }
+
+    // Mobile PWA: auto-zip progress is bridged by useMobileBroadcaster
+    // (Phase 3 Part D) as `backup:auto-zip`. The phone only needs the
+    // "start" edge for the same UI indicator the desktop shows.
+    if (isMobilePwa()) {
+      const unsubscribe = subscribeMobileEvents((event) => {
+        if (event?.type !== 'backup:auto-zip') return;
+        const status = (event as { status?: { status?: string } }).status;
+        if (status?.status === 'start') setIsAutoZipping(true);
+      });
+      return unsubscribe;
+    }
+
+    return undefined;
   }, []);
 
   // Cloud sync removed from the product. `performCloudSync`, `handleCloudRestore`,

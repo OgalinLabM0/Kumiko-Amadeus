@@ -16,6 +16,8 @@ import {
 } from '../../services/voiceFileService';
 import { Collapse } from '../Collapse';
 import { openExternalUrl } from '../../utils/openExternal';
+import { isMobilePwa } from '../../services/environment';
+import { httpInvoke, subscribeEvents } from '../../services/httpApi';
 
 const BUILT_IN_RINGTONES = [
   { id: '01.mp3', displayNum: '01', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '115-man Kilo no Film - Kumiko Oumae' },
@@ -263,15 +265,49 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   useEffect(() => {
     if (!isOpen) return;
     const ipc = (window as any)?.electronAPI;
-    if (!ipc) return;
-    ipc.invoke('genie:status').then((s: any) => {
-      if (s?.running) { setGenieStatus('ready'); setGeniePid(s.pid); }
-    }).catch(() => {});
-    const handler = (_: any, data: any) => {
-      if (!data?.running) { setGenieStatus('off'); setGeniePid(null); }
+    const applyStatus = (running: boolean, pid?: number | null) => {
+      if (running) {
+        setGenieStatus('ready');
+        setGeniePid(typeof pid === 'number' ? pid : null);
+      } else {
+        setGenieStatus('off');
+        setGeniePid(null);
+      }
     };
-    ipc.on('genie:status-changed', handler);
-    return () => { ipc.removeListener('genie:status-changed', handler); };
+
+    if (ipc) {
+      ipc.invoke('genie:status').then((s: any) => {
+        if (s?.running) applyStatus(true, s.pid);
+      }).catch(() => {});
+      const handler = (_: any, data: any) => {
+        if (!data?.running) applyStatus(false);
+      };
+      ipc.on('genie:status-changed', handler);
+      return () => { ipc.removeListener('genie:status-changed', handler); };
+    }
+
+    // Mobile PWA: fetch initial status via HTTP IPC, then live-update
+    // through the WS `genie:state` fan-out bridged by Phase 3 Part D.
+    if (isMobilePwa()) {
+      let cancelled = false;
+      httpInvoke<{ running?: boolean; pid?: number | null }>('genie:status', {})
+        .then((s) => {
+          if (cancelled) return;
+          if (s?.running) applyStatus(true, s.pid);
+        })
+        .catch(() => {});
+      const unsubscribe = subscribeEvents((event) => {
+        if (event?.type !== 'genie:state') return;
+        const state = (event as { state?: { running?: boolean; pid?: number | null } }).state;
+        if (!state?.running) applyStatus(false);
+      });
+      return () => {
+        cancelled = true;
+        unsubscribe();
+      };
+    }
+
+    return undefined;
   }, [isOpen]);
 
   const [showAdvancedSovits, setShowAdvancedSovits] = useState(false);

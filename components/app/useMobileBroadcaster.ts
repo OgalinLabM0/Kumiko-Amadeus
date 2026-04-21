@@ -34,7 +34,19 @@ type BroadcastPayload =
   | { type: 'message:deleted'; messageId: string }
   | { type: 'status:line'; text: string }
   | { type: 'status:emotion'; emotion: string }
-  | { type: 'status:unread'; count: number };
+  | { type: 'status:unread'; count: number }
+  // Phase 3 Part D: one-way event streams that originate in the main
+  // process and used to be renderer-only. Phone clients now receive
+  // them too so mobile UI can live-reflect RAG rebuild progress, auto-
+  // zip writes, app updater state, and SoVITS genie lifecycle without
+  // polling.
+  | { type: 'rag:rebuild:started'; job: unknown }
+  | { type: 'rag:rebuild:progress'; job: unknown }
+  | { type: 'rag:rebuild:done'; job: unknown }
+  | { type: 'rag:rebuild:error'; job: unknown }
+  | { type: 'backup:auto-zip'; status: unknown }
+  | { type: 'update:state'; state: unknown }
+  | { type: 'genie:state'; state: unknown };
 
 interface SlimMessage {
   id: string;
@@ -110,6 +122,37 @@ function diffMessageLists(prev: Message[], next: Message[]): BroadcastPayload[] 
   return events;
 }
 
+// Generic bridge: subscribe to a renderer-delivered IPC event and
+// re-emit it to every connected phone under `forwardType`. Returns a
+// cleanup that removes the underlying IPC listener on unmount.
+function bridgeIpcEvent<TPayload>(
+  api: NonNullable<typeof window.electronAPI>,
+  ipcChannel: string,
+  forwardType: BroadcastPayload['type'],
+  shape: (p: TPayload) => BroadcastPayload,
+): () => void {
+  const handler = (payload: TPayload) => {
+    try {
+      const event = shape(payload);
+      // Defensive: emission shape mismatch would poison the phone's
+      // MobileEvent stream. Assert the forwardType matches the helper's
+      // contract before pushing.
+      if (event && event.type === forwardType) emit(event);
+    } catch (e) {
+      console.warn(`[MOBILE-BROADCAST] Failed to bridge ${ipcChannel}:`, e);
+    }
+  };
+  try {
+    api.on?.(ipcChannel, handler);
+  } catch (e) {
+    console.warn(`[MOBILE-BROADCAST] Failed to subscribe to ${ipcChannel}:`, e);
+    return () => {};
+  }
+  return () => {
+    try { api.removeListener?.(ipcChannel, handler); } catch { /* ignore */ }
+  };
+}
+
 export function useMobileBroadcaster() {
   // Keep the previous snapshot so we can diff against it on each
   // subscribe callback. We don't use useRef<Message[]>([]) because we
@@ -169,8 +212,49 @@ export function useMobileBroadcaster() {
       }
     });
 
+    // ── Phase 3 Part D: background event streams ────────────────
+    //
+    // These are one-way main → renderer events that the renderer has
+    // always listened for. We add a thin IPC → WebSocket bridge so
+    // phone clients receive the same stream without a per-event IPC
+    // channel whitelist. The renderer still gets its own copy of the
+    // event (ipcRenderer.on is additive), so desktop UI behavior is
+    // unchanged.
+    const bridgeCleanups: Array<() => void> = [];
+    bridgeCleanups.push(bridgeIpcEvent<{ job?: unknown } | undefined>(
+      api, 'rag:rebuild:started', 'rag:rebuild:started',
+      (p) => ({ type: 'rag:rebuild:started', job: p?.job ?? p ?? null }),
+    ));
+    bridgeCleanups.push(bridgeIpcEvent<{ job?: unknown } | undefined>(
+      api, 'rag:rebuild:progress', 'rag:rebuild:progress',
+      (p) => ({ type: 'rag:rebuild:progress', job: p?.job ?? p ?? null }),
+    ));
+    bridgeCleanups.push(bridgeIpcEvent<{ job?: unknown } | undefined>(
+      api, 'rag:rebuild:done', 'rag:rebuild:done',
+      (p) => ({ type: 'rag:rebuild:done', job: p?.job ?? p ?? null }),
+    ));
+    bridgeCleanups.push(bridgeIpcEvent<{ job?: unknown } | undefined>(
+      api, 'rag:rebuild:error', 'rag:rebuild:error',
+      (p) => ({ type: 'rag:rebuild:error', job: p?.job ?? p ?? null }),
+    ));
+    bridgeCleanups.push(bridgeIpcEvent<unknown>(
+      api, 'app:auto-zip-progress', 'backup:auto-zip',
+      (p) => ({ type: 'backup:auto-zip', status: p ?? null }),
+    ));
+    bridgeCleanups.push(bridgeIpcEvent<unknown>(
+      api, 'app:update-status', 'update:state',
+      (p) => ({ type: 'update:state', state: p ?? null }),
+    ));
+    bridgeCleanups.push(bridgeIpcEvent<unknown>(
+      api, 'genie:status-changed', 'genie:state',
+      (p) => ({ type: 'genie:state', state: p ?? null }),
+    ));
+
     return () => {
       try { unsubscribe(); } catch { /* ignore */ }
+      for (const cleanup of bridgeCleanups) {
+        try { cleanup(); } catch { /* ignore */ }
+      }
     };
   }, []);
 }
