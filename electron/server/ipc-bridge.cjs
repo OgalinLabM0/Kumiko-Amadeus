@@ -33,19 +33,46 @@ const { ipcMain } = require('electron');
 //
 //   Read-mostly passthrough to existing renderer invoke channels:
 //     app:get-weather, app:get-historical-weather, app:get-japan-holidays
-//     images:list, voice:list
-//     rag:search, rag:get-messages, rag:stats, rag:status,
-//     rag:rebuild:status
+//     app:get-data-directory-info, app:get-auto-zip-backup
+//     images:list, images:get-storage-info
+//     voice:list, voice:get-storage-info
+//     ringtone:get-info
+//     backup:parse-import-file, backup:build-zip-from-payload
+//     mobile-access:get-state
+//     genie:status, genie:test-sovits-python
+//     rag:search, rag:get-messages, rag:get-all, rag:stats, rag:status,
+//     rag:rebuild:status, rag:embed, rag:expand-context
 //
-//   Write passthrough (binary payloads arrive as base64; handler decodes
-//   before forwarding):
+//   Write passthrough (binary payloads arrive as base64; renderer
+//   handler decodes before forwarding):
 //     images:save, images:delete, voice:save, voice:delete,
-//     rag:sync-messages
+//     ringtone:save, ringtone:delete,
+//     app:set-auto-zip-backup,
+//     genie:start, genie:stop,
+//     rag:sync-messages, rag:save, rag:restore,
+//     rag:clear-all, rag:clear-message-vectors, rag:rebuild:start
 //
-// Intentionally NOT in the list: backup:*, genie:*, app:update:*,
-// app:*-directory-*, app:open-external, ringtone:*, mobile-access:*,
-// images:open-folder, voice:open-folder, images:load, voice:load
-// (the last two go through /media/{images,voices}/:id instead of JSON).
+// Intentionally NOT in the list (PC-only by design):
+//   quit-app, app:update:* (desktop updater),
+//   app:pick-data-directory, app:migrate-data-directory,
+//   app:reset-data-directory, app:set-background-throttling,
+//   app:refocus-webcontents (PC renderer plumbing),
+//   app:open-external (phone uses window.open directly),
+//   backup:pick-save-file/pick-open-file/write-file/read-file/get-file-info
+//   (phone uses /api/backup/export + /api/backup/import routes),
+//   images:open-folder / voice:open-folder / ringtone:open-folder
+//   (opens PC file explorer — meaningless on phone),
+//   images:load / voice:load
+//   (arrive via /media/{images,voices}/:id routes instead of base64-
+//   over-JSON),
+//   ringtone:load (Phase 5 Part D will add /media/ringtone for the
+//   incoming-call UI; until then phone reads only ringtone:get-info
+//   for the displayName + format fields),
+//   mobile-access:enable/disable/get-pairing-token/rotate-token/
+//   revoke-sessions (PC admin only — phone shouldn't revoke itself),
+//   genie:pick-sovits-dir / genie:pick-sovits-python (native file
+//   dialogs — phone uses genie:test-sovits-python with manual paths
+//   instead, and Phase 3 Part B2 adds a scan-candidates endpoint).
 const ALLOWED_CHANNELS = new Set([
   // --- Synthetic Dexie ------------------------------------------------
   'ping',
@@ -57,19 +84,42 @@ const ALLOWED_CHANNELS = new Set([
   'app:get-weather',
   'app:get-historical-weather',
   'app:get-japan-holidays',
+  'app:get-data-directory-info',
+  'app:get-auto-zip-backup',
   'images:list',
+  'images:get-storage-info',
   'voice:list',
+  'voice:get-storage-info',
+  'ringtone:get-info',
+  'backup:parse-import-file',
+  'backup:build-zip-from-payload',
+  'mobile-access:get-state',
+  'genie:status',
+  'genie:test-sovits-python',
   'rag:search',
   'rag:get-messages',
+  'rag:get-all',
   'rag:stats',
   'rag:status',
   'rag:rebuild:status',
+  'rag:embed',
+  'rag:expand-context',
   // --- Passthrough writes --------------------------------------------
   'images:save',
   'images:delete',
   'voice:save',
   'voice:delete',
+  'ringtone:save',
+  'ringtone:delete',
+  'app:set-auto-zip-backup',
+  'genie:start',
+  'genie:stop',
   'rag:sync-messages',
+  'rag:save',
+  'rag:restore',
+  'rag:clear-all',
+  'rag:clear-message-vectors',
+  'rag:rebuild:start',
 ]);
 
 const DEFAULT_TIMEOUT_MS = 60000; // chat responses can stream for a while

@@ -270,26 +270,84 @@ async function handleVoiceSave(args: unknown) {
   return invokeElectron('voice:save', { messageId, buffer: bytes });
 }
 
+async function handleRingtoneSave(args: unknown) {
+  const payload = argsAsObject(args);
+  const ext = typeof payload.ext === 'string' ? payload.ext : '';
+  const bufferB64 = typeof payload.bufferB64 === 'string' ? payload.bufferB64 : '';
+  const originalName = typeof payload.originalName === 'string' ? payload.originalName : '';
+  if (!ext || !bufferB64) {
+    return { success: false, error: 'Missing ext/bufferB64' };
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = base64ToBytes(bufferB64);
+  } catch (e) {
+    return { success: false, error: `Invalid base64: ${(e as Error).message}` };
+  }
+  return invokeElectron('ringtone:save', {
+    buffer: bytes,
+    ext,
+    originalName: originalName || undefined,
+  });
+}
+
 // ── Passthrough to existing Electron IPC ─────────────────────────
 
 // Channels that accept args as-is and whose return shape is already
 // phone-friendly JSON. Adding one here requires the matching entry in
 // electron/server/ipc-bridge.cjs's ALLOWED_CHANNELS and also that the
 // preload already whitelists the channel in its `invoke` array.
+//
+// Kept in sync with ipc-bridge.cjs's ALLOWED_CHANNELS. Binary-write
+// channels (images:save, voice:save, ringtone:save) are handled in
+// dedicated helpers above so they can decode base64 before forwarding.
 const PASSTHROUGH_CHANNELS = new Set<string>([
+  // Weather + holiday lookups
   'app:get-weather',
   'app:get-historical-weather',
   'app:get-japan-holidays',
+  // App-wide status / config
+  'app:get-data-directory-info',
+  'app:get-auto-zip-backup',
+  'app:set-auto-zip-backup',
+  // Mobile session introspection (phone reads its own state)
+  'mobile-access:get-state',
+  // Image management
   'images:list',
   'images:delete',
+  'images:get-storage-info',
+  // Voice file management
   'voice:list',
   'voice:delete',
+  'voice:get-storage-info',
+  // Ringtone management (save routed through handleRingtoneSave)
+  'ringtone:delete',
+  'ringtone:get-info',
+  // Backup passthroughs (dialog-free variants only)
+  'backup:parse-import-file',
+  'backup:build-zip-from-payload',
+  // GPT-SoVITS (genie) lifecycle. Phone passes manual paths to
+  // genie:test-sovits-python; native dialog pickers are intentionally
+  // PC-only and excluded from the whitelist above.
+  'genie:status',
+  'genie:start',
+  'genie:stop',
+  'genie:test-sovits-python',
+  // RAG maintenance + inspection
   'rag:search',
   'rag:get-messages',
+  'rag:get-all',
   'rag:sync-messages',
   'rag:stats',
   'rag:status',
+  'rag:rebuild:start',
   'rag:rebuild:status',
+  'rag:embed',
+  'rag:expand-context',
+  'rag:save',
+  'rag:restore',
+  'rag:clear-all',
+  'rag:clear-message-vectors',
 ]);
 
 async function invokeElectron(channel: string, args: unknown): Promise<unknown> {
@@ -311,6 +369,7 @@ async function dispatch(channel: string, args: unknown) {
     case 'chat': return handleChat(args);
     case 'images:save': return handleImagesSave(args);
     case 'voice:save': return handleVoiceSave(args);
+    case 'ringtone:save': return handleRingtoneSave(args);
     default: {
       if (PASSTHROUGH_CHANNELS.has(channel)) {
         return invokeElectron(channel, args);
