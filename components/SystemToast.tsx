@@ -22,11 +22,16 @@ export const SystemToast: React.FC<SystemToastProps> = ({ message, onClose, isDa
   return (
     <AnimatePresence>
       {message && (
+        // Phase 7 Part t11_modal_toast: the toast was anchored at `top-12`
+        // (48px), which sat under the iPhone notch / Dynamic Island. Add
+        // env(safe-area-inset-top) so on phones the toast floats below the
+        // punchhole. Desktop Electron env() is 0, so visually unchanged.
         <motion.div
           initial={{ y: -50, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: -50, opacity: 0 }}
-          className="fixed top-12 left-1/2 -translate-x-1/2 z-[250] pointer-events-none"
+          className="fixed left-1/2 -translate-x-1/2 z-[250] pointer-events-none"
+          style={{ top: 'calc(3rem + var(--sat))' }}
         >
           {/* P2 #43: screen readers need role="status" + aria-live to announce
               transient toasts. Before this the message was visually shown but

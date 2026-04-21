@@ -375,11 +375,19 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({
     }
 
     return (
-      <div className="p-4">
-        <div className="grid grid-cols-7 gap-3">
+      // Phase 7 Part t7_diary_panel: a 7-col grid of 96px tall cells
+      // with `gap-3 p-3 text-xl` was ~48px per cell on a 375px phone
+      // once padding/gap was deducted, which truncated the day numbers
+      // and overflowed the "已有记录" copy. We collapse the cells on
+      // `< sm` (640px) viewports: smaller padding, smaller numbers,
+      // hide the "Recorded/Blank" label and keep the dot indicator,
+      // and swap weekday letter for a single-character. Desktop `sm:`
+      // breakpoint rehydrates the original spec.
+      <div className="p-2 sm:p-4">
+        <div className="grid grid-cols-7 gap-1 sm:gap-3">
           {cells.map((dayNumber, index) => {
             if (!dayNumber) {
-              return <div key={`empty-${index}`} className="min-h-[96px] rounded-xl bg-transparent" />;
+              return <div key={`empty-${index}`} className="min-h-[56px] sm:min-h-[96px] rounded-lg sm:rounded-xl bg-transparent" />;
             }
 
             const dateStr = toDateStr(selectedYear, selectedMonth, dayNumber);
@@ -406,7 +414,7 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({
                     animate(() => setViewLevel('day'));
                   }
                 }}
-                className={`group relative min-h-[96px] rounded-xl border p-3 flex flex-col justify-between transition-all overflow-hidden ${
+                className={`group relative min-h-[56px] sm:min-h-[96px] rounded-lg sm:rounded-xl border p-1.5 sm:p-3 flex flex-col justify-between transition-all overflow-hidden ${
                   isSelected
                     ? `${isDarkMode ? 'border-[#d8b36f]/60 bg-[#2a1f14] ring-2 ring-[#d8b36f]/40 text-[#f0dfc7]' : 'border-[#785A42]/50 bg-[#785A42]/12 ring-2 ring-[#785A42]/30 text-[#785A42]'} cursor-pointer`
                     : !inRange || (batchSelectMode && !hasDiary)
@@ -418,27 +426,27 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({
                           : `${isDarkMode ? 'border-[#4a392b] bg-[#15110d] hover:bg-[#1d1711] text-[#d4c1a7]' : 'border-[#785A42]/10 bg-[#fffdf7] hover:bg-[#785A42]/6 text-[#785A42]'} cursor-pointer`
                 }`}
               >
-                <div className="flex items-baseline justify-between w-full">
-                  <span className="flex items-center gap-1.5">
+                <div className="flex items-baseline justify-between w-full gap-1">
+                  <span className="flex items-center gap-1 sm:gap-1.5 min-w-0">
                     {batchSelectMode && hasDiary && (
                       isSelected
-                        ? <CheckSquare className={`w-3.5 h-3.5 ${isDarkMode ? 'text-[#d8b36f]' : 'text-[#785A42]'}`} />
-                        : <Square className={`w-3.5 h-3.5 ${isDarkMode ? 'text-[#6a5a4c]' : 'text-[#785A42]/30'}`} />
+                        ? <CheckSquare className={`w-3 h-3 sm:w-3.5 sm:h-3.5 flex-shrink-0 ${isDarkMode ? 'text-[#d8b36f]' : 'text-[#785A42]'}`} />
+                        : <Square className={`w-3 h-3 sm:w-3.5 sm:h-3.5 flex-shrink-0 ${isDarkMode ? 'text-[#6a5a4c]' : 'text-[#785A42]/30'}`} />
                     )}
-                    <span className={`ka-value text-xl font-bold tracking-tight ${isToday ? (isDarkMode ? 'text-[#f0dfc7]' : 'text-[#5d402b]') : ''}`}>
+                    <span className={`ka-value text-base sm:text-xl font-bold tracking-tight ${isToday ? (isDarkMode ? 'text-[#f0dfc7]' : 'text-[#5d402b]') : ''}`}>
                       {dayNumber}
                     </span>
                   </span>
-                  <span className={`ka-micro font-medium uppercase tracking-wider ${isToday ? inkClass : `${isDarkMode ? 'text-[#8e7761] group-hover:text-[#c0a788]' : 'text-[#785A42]/40 group-hover:text-[#785A42]/60'}`} transition-colors`}>
+                  <span className={`ka-micro font-medium uppercase tracking-wider hidden sm:inline ${isToday ? inkClass : `${isDarkMode ? 'text-[#8e7761] group-hover:text-[#c0a788]' : 'text-[#785A42]/40 group-hover:text-[#785A42]/60'}`} transition-colors`}>
                     {weekdayLabels[weekdayIndex]}
                   </span>
                 </div>
-                
-                <div className="w-full flex items-center justify-between mt-3">
-                  <span className={`text-[10px] font-medium tracking-wide ${inRange ? (hasDiary ? (isDarkMode ? 'text-[#c5b29a]' : 'text-[#785A42]/70') : (isDarkMode ? 'text-[#7a6756]' : 'text-[#785A42]/30')) : 'text-transparent'}`}>
+
+                <div className="w-full flex items-center justify-between mt-1 sm:mt-3">
+                  <span className={`hidden sm:inline text-[10px] font-medium tracking-wide ${inRange ? (hasDiary ? (isDarkMode ? 'text-[#c5b29a]' : 'text-[#785A42]/70') : (isDarkMode ? 'text-[#7a6756]' : 'text-[#785A42]/30')) : 'text-transparent'}`}>
                     {inRange ? (hasDiary ? (language === 'zh' ? '已有记录' : 'Recorded') : (language === 'zh' ? '空白' : 'Blank')) : ''}
                   </span>
-                  {hasDiary && <span className={`w-2 h-2 rounded-full ${isDarkMode ? 'bg-[#d8b36f] shadow-[0_0_8px_rgba(216,179,111,0.32)]' : 'bg-[#785A42] shadow-[0_0_6px_rgba(120,90,66,0.6)]'}`} />}
+                  {hasDiary && <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full ${isDarkMode ? 'bg-[#d8b36f] shadow-[0_0_8px_rgba(216,179,111,0.32)]' : 'bg-[#785A42] shadow-[0_0_6px_rgba(120,90,66,0.6)]'}`} />}
                 </div>
 
                 {isToday && (
@@ -460,12 +468,13 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({
   const renderDayView = () => (
     <div className="px-4 py-3">
       <div className={`${cardBgClass} rounded-xl shadow-md border ${borderClass} overflow-hidden`}>
-        <div className={`${cardHeaderBgClass} px-5 py-2.5 border-b ${borderClass}`}>
-          <div className="flex items-center justify-between gap-2">
+        {/* Phase 7 Part t7_diary_panel: this header squeezed ChevronLeft + date + ChevronRight + Rewrite button + optional pen badge into one row. On phones the full date (e.g. "2026年3月31日 · Sunday" / "Sunday, March 31, 2026") wrapped into 2 lines and pushed the Rewrite label to the next row, leaving a lopsided layout. We shrink the horizontal padding on `< sm`, allow the title to truncate with `min-w-0`, and hide the Rewrite text label so only the icon shows on phones. */}
+        <div className={`${cardHeaderBgClass} px-3 sm:px-5 py-2.5 border-b ${borderClass}`}>
+          <div className="flex items-center justify-between gap-1 sm:gap-2">
             <button
               onClick={() => prevDiaryDate && syncSelectedDate(prevDiaryDate)}
               disabled={!prevDiaryDate}
-              className={`p-1.5 rounded-full transition-colors ${
+              className={`p-1.5 rounded-full transition-colors flex-shrink-0 ${
                 prevDiaryDate
                   ? `${inkClass} ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-[#785A42]/10'}`
                   : `${disabledInkClass} cursor-not-allowed`
@@ -473,11 +482,11 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({
             >
               <ChevronLeft size={16} />
             </button>
-            <div className={`${inkClass} font-mincho ka-label font-semibold tracking-[0.03em] text-center flex-1`}>{titleText}</div>
+            <div className={`${inkClass} font-mincho ka-label font-semibold tracking-[0.03em] text-center flex-1 min-w-0 truncate`} title={titleText}>{titleText}</div>
             <button
               onClick={() => nextDiaryDate && syncSelectedDate(nextDiaryDate)}
               disabled={!nextDiaryDate}
-              className={`p-1.5 rounded-full transition-colors ${
+              className={`p-1.5 rounded-full transition-colors flex-shrink-0 ${
                 nextDiaryDate
                   ? `${inkClass} ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-[#785A42]/10'}`
                   : `${disabledInkClass} cursor-not-allowed`
@@ -488,7 +497,7 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({
             {currentDiary?.rewriteCount && currentDiary.rewriteCount > 0 && (
               <span
                 title={language === 'zh' ? `已重写 ${currentDiary.rewriteCount} 次` : `Rewritten ${currentDiary.rewriteCount} time${currentDiary.rewriteCount > 1 ? 's' : ''}`}
-                className={`ml-1 cursor-default ${isDarkMode ? 'text-[#cdb89f]/50' : 'text-[#785A42]/45'}`}
+                className={`ml-1 cursor-default flex-shrink-0 ${isDarkMode ? 'text-[#cdb89f]/50' : 'text-[#785A42]/45'}`}
               >
                 <PenLine size={11} />
               </span>
@@ -497,7 +506,7 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({
               <button
                 onClick={handleRewriteCurrentDiary}
                 disabled={rewritingDate === selectedDate}
-                className={`flex items-center gap-1 px-2.5 py-1 rounded border ka-micro font-semibold transition-colors ml-1 ${
+                className={`flex items-center gap-1 px-1.5 py-1 sm:px-2.5 rounded border ka-micro font-semibold transition-colors ml-1 flex-shrink-0 ${
                   rewritingDate === selectedDate
                     ? `${borderClass} ${disabledInkClass} cursor-not-allowed`
                     : `${borderClass} ${inkClass} ${isDarkMode ? 'hover:bg-white/5' : 'hover:bg-[#785A42]/10'}`
@@ -505,9 +514,11 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({
                 title={language === 'zh' ? '如果旧内容写偏了，可以按当前设定直接覆盖重写' : 'Rewrite this entry with current canon settings'}
               >
                 <RefreshCw size={11} className={rewritingDate === selectedDate ? 'animate-spin' : ''} />
-                {rewritingDate === selectedDate
-                  ? (language === 'zh' ? '重写中...' : 'Rewriting...')
-                  : (language === 'zh' ? '重写' : 'Rewrite')}
+                <span className="hidden sm:inline">
+                  {rewritingDate === selectedDate
+                    ? (language === 'zh' ? '重写中...' : 'Rewriting...')
+                    : (language === 'zh' ? '重写' : 'Rewrite')}
+                </span>
               </button>
             )}
           </div>
@@ -541,7 +552,25 @@ export const DiaryPanel: React.FC<DiaryPanelProps> = ({
   );
 
   return (
-    <div className={`absolute inset-0 z-50 flex flex-col ${shellBgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', pointerEvents: isOpen ? 'auto' as const : 'none' as const, visibility: isOpen ? 'visible' as const : 'hidden' as const, transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out, visibility 0s 0s' : 'opacity 200ms ease-in, transform 200ms ease-in, visibility 0s 200ms', willChange: 'opacity, transform' as const, contain: 'layout style' as const }}>
+    // Phase 7 Part t7_diary_panel: pad the overlay past the device
+    // safe-area on notched phones so the back/close buttons in the
+    // 56px header aren't clipped. Desktop Electron sees
+    // env(safe-area-inset-*) === 0 and visually regresses to the
+    // pre-Phase-7 layout.
+    <div
+      className={`absolute inset-0 z-50 flex flex-col ${shellBgClass}`}
+      style={{
+        opacity: isOpen ? 1 : 0,
+        transform: isOpen ? 'translateY(0)' : 'translateY(10px)',
+        pointerEvents: isOpen ? 'auto' as const : 'none' as const,
+        visibility: isOpen ? 'visible' as const : 'hidden' as const,
+        transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out, visibility 0s 0s' : 'opacity 200ms ease-in, transform 200ms ease-in, visibility 0s 200ms',
+        willChange: 'opacity, transform' as const,
+        contain: 'layout style' as const,
+        paddingTop: 'var(--sat)',
+        paddingBottom: 'var(--sab)',
+      }}
+    >
       {/* Header */}
       <div className={`flex-none h-14 border-b ${borderClass} flex items-center justify-between px-4 ${chromeBgClass} backdrop-blur-md`}>
         <div className="flex items-center gap-2">

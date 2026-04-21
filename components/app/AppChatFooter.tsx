@@ -75,7 +75,7 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
       )}
 
       {isSelectionMode ? (
-        <div className={`pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] md:pb-[calc(0.625rem+env(safe-area-inset-bottom,0px))] px-4 border-t flex items-center justify-between gap-3 ${isDarkMode ? 'bg-[#1a1410] border-[#4f3926]/60' : 'bg-[#faf6f0] border-[#e8ddcf]'}`}>
+        <div className={`pt-2.5 pb-[max(0.625rem,var(--sab))] md:pb-[calc(0.625rem+var(--sab,0px))] px-4 border-t flex items-center justify-between gap-3 ${isDarkMode ? 'bg-[#1a1410] border-[#4f3926]/60' : 'bg-[#faf6f0] border-[#e8ddcf]'}`}>
           <div className="flex items-center gap-2.5 min-w-0">
             <span className={`inline-flex items-center justify-center h-7 min-w-[1.75rem] px-2 rounded-full text-xs font-bold tabular-nums ${selectedIdsCount > 0 ? (isDarkMode ? 'bg-red-500/20 text-red-400' : 'bg-red-100 text-red-600') : (isDarkMode ? 'bg-white/8 text-gray-500' : 'bg-black/5 text-gray-400')}`}>
               {selectedIdsCount}
@@ -97,7 +97,7 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
             <span className="animate-pulse">{typingLabel}</span>
           </div>
         )}
-        <div className={`pt-2 px-3 border-t transition-colors duration-500 pb-[max(0.25rem,env(safe-area-inset-bottom))] md:pb-[calc(0.5rem+env(safe-area-inset-bottom,0px))] ${inputAreaBg} ${inputShadow}`}>
+        <div className={`pt-2 px-3 border-t transition-colors duration-200 md:duration-500 pb-[var(--sab)] md:pb-[calc(0.5rem+var(--sab,0px))] ${inputAreaBg} ${inputShadow}`}>
           {replyingToMsg && (
             <div className={`flex items-center justify-between mb-2 p-2 rounded-lg ka-copy-sm border-l-2 ${isDarkMode ? 'bg-white/5 border-yellow-500 text-gray-300' : 'bg-black/5 border-yellow-600 text-gray-700'} animate-in slide-in-from-bottom-2`}>
               <div className="flex flex-col overflow-hidden">
@@ -148,8 +148,19 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
             </button>
           </div>
 
-          <div className="hidden md:block text-right mt-1">
-            <span className={`ka-micro ${isDarkMode ? 'text-yellow-600/60' : 'text-gray-400'}`}>{statusText}</span>
+          {/* Phase 7 Part t6_main_shell: statusText is shown on every
+              viewport now. On desktop it always rendered here (pre-Phase
+              7) AND on the AvatarPanel top-left. Mobile's chat side bar
+              is full-width so the AvatarPanel copy is covered — we
+              therefore keep the footer copy visible on phones too, but
+              truncate to a single line so the composer height is stable. */}
+          <div className="text-right mt-0.5 md:mt-1 overflow-hidden">
+            <span
+              className={`ka-micro block truncate ${isDarkMode ? 'text-yellow-600/60' : 'text-gray-400'}`}
+              title={statusText}
+            >
+              {statusText}
+            </span>
           </div>
         </div>
         </>

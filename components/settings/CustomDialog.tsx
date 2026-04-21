@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useModalKeyboard } from '../../hooks/useModalKeyboard';
+import { useModalPortal } from '../../hooks/useModalPortal';
 
 interface CustomDialogProps {
   isOpen: boolean;
@@ -29,6 +30,8 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
   language = 'en'
 }) => {
   const [inputValue, setInputValue] = useState('');
+  const renderPortal = useModalPortal();
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   // P2 #42: close on Esc. Also reset the input each time the dialog opens
   // so stale text from a previous invocation doesn't carry over.
@@ -37,21 +40,47 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
     if (isOpen) setInputValue('');
   }, [isOpen]);
 
-  if (!isOpen) return null;
+  // The dialog is now permanently mounted (preload, no first-paint jank),
+  // so `autoFocus` would never re-fire. Explicitly focus the prompt input
+  // each time the dialog transitions into the open state.
+  useEffect(() => {
+    if (isOpen && type === 'prompt') {
+      const t = window.setTimeout(() => {
+        inputRef.current?.focus();
+      }, 0);
+      return () => window.clearTimeout(t);
+    }
+  }, [isOpen, type]);
 
   const defaultConfirm = language === 'zh' ? '确定' : 'OK';
   const defaultCancel = language === 'zh' ? '取消' : 'Cancel';
   const finalConfirmText = confirmText || defaultConfirm;
   const finalCancelText = cancelText || defaultCancel;
 
-  return (
+  // Phase 7 Part t5_a2_custom_dialog: portal into <body> so DiaryPanel /
+  // SettingsPanel shell / other hijacked hosts no longer clip the backdrop.
+  return renderPortal(
+    // Phase 7 Part t11_modal_toast: the `p-4` padding assumed no device
+    // notch/home-indicator. On iOS landscape the confirm button could
+    // slip under the home bar. env(safe-area-inset-*) bumps the min
+    // padding. Desktop gets the original 1rem minimum.
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center backdrop-blur-sm p-4 animate-in fade-in"
+      className="fixed inset-0 z-[100] flex items-center justify-center backdrop-blur-sm"
       style={{
         background: isDarkMode
           ? 'radial-gradient(circle, rgba(8,6,5,0.82) 28%, rgba(6,5,4,0.92) 100%)'
-          : 'radial-gradient(circle, rgba(0,0,0,0.5) 30%, rgba(0,0,0,0) 100%)'
+          : 'radial-gradient(circle, rgba(0,0,0,0.5) 30%, rgba(0,0,0,0) 100%)',
+        paddingTop: 'max(1rem, var(--sat))',
+        paddingBottom: 'max(1rem, var(--sab))',
+        paddingLeft: 'max(1rem, var(--sal))',
+        paddingRight: 'max(1rem, var(--sar))',
+        opacity: isOpen ? 1 : 0,
+        visibility: isOpen ? 'visible' : 'hidden',
+        pointerEvents: isOpen ? 'auto' : 'none',
+        transition: isOpen ? 'opacity 200ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
       }}
+      aria-hidden={!isOpen}
+      inert={!isOpen}
     >
       <div className={`w-full max-w-sm rounded-xl shadow-2xl overflow-hidden ${isDarkMode ? 'bg-[#17120e] border border-[#5a4635]' : 'bg-white border border-gray-200'}`}>
         <div className="p-5">
@@ -60,12 +89,12 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
 
           {type === 'prompt' && (
             <input
+              ref={inputRef}
               type="text"
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               placeholder={inputPlaceholder}
               className={`mt-4 w-full p-2 rounded text-sm border ${isDarkMode ? 'bg-[#120d0a] border-[#5a4635] text-[#ead8c1] placeholder-[#8d7760]' : 'bg-gray-50 border-gray-300 text-gray-900 placeholder-gray-400'}`}
-              autoFocus
             />
           )}
         </div>

@@ -2,10 +2,44 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { Loader2 } from 'lucide-react';
 import { ChatBubble } from '../ChatBubble';
 import { Language, Message } from '../../types';
+import { isMobilePwa } from '../../services/environment';
 
-const OVERSCAN_PX = 420;
+// Mobile perf: cache the mobile-runtime flag once at module load. Keeps
+// `isMobilePwa()` out of the per-frame scroll + resize hot paths.
+let _msgListIsMobile: boolean | null = null;
+const msgListIsMobile = (): boolean => {
+  if (_msgListIsMobile === null) {
+    try { _msgListIsMobile = isMobilePwa(); } catch { _msgListIsMobile = false; }
+  }
+  return _msgListIsMobile;
+};
+
+// Mobile perf: shrink the off-screen render window on phones.
+// Desktop keeps the original 420px overscan so fast mouse-wheel scrolls
+// don't reveal the measurement gap. Phones flick-scroll more slowly so
+// 240px is enough to cover the 1-frame-ahead needs, and halves the
+// number of mounted <ChatBubble> instances at any given moment.
+//
+// Previously this was computed once at module load from `msgListIsMobile()`.
+// That baked the answer from the *sync* runtime heuristic — if the async
+// probe later upgraded the runtime to desktop-via-Fastify (or vice versa)
+// the value stayed stale until the `kumiko:runtime-changed`-triggered
+// reload in `index.tsx` kicked in. The reload normally fires, but we
+// can't rely on it when this module is re-imported by HMR during
+// development or by future code paths that hot-swap the chat panel. So
+// OVERSCAN_PX is now derived inside the component via `useMemo` and
+// listens to the runtime-changed event to refresh.
+const OVERSCAN_PX_DESKTOP = 420;
+const OVERSCAN_PX_MOBILE = 240;
 const MIN_ESTIMATED_HEIGHT = 84;
 const MAX_ESTIMATED_HEIGHT = 460;
+
+// Invalidate the cached flag used by the hot paths so the next
+// `msgListIsMobile()` call re-reads `isMobilePwa()`. Invoked from the
+// `kumiko:runtime-changed` listener.
+const invalidateMsgListIsMobileCache = () => {
+  _msgListIsMobile = null;
+};
 
 interface AppMessageListProps {
   messages: Message[];
@@ -39,6 +73,12 @@ interface VirtualizedMessageRowProps {
   top: number;
   onMeasured: (index: number, id: string, height: number) => void;
   children: React.ReactNode;
+  // Passed down so the row's style memo invalidates when the async
+  // runtime probe flips mobile/desktop mid-session. Previously the
+  // memo only depended on `top`, so the `will-change: transform`
+  // toggle was frozen to whatever `msgListIsMobile()` answered on the
+  // first render.
+  isMobileRuntime: boolean;
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
@@ -76,6 +116,7 @@ const VirtualizedMessageRow: React.FC<VirtualizedMessageRowProps> = ({
   top,
   onMeasured,
   children,
+  isMobileRuntime,
 }) => {
   const rowRef = useRef<HTMLDivElement | null>(null);
 
@@ -106,17 +147,31 @@ const VirtualizedMessageRow: React.FC<VirtualizedMessageRowProps> = ({
     return () => { cancelAnimationFrame(rafId); observer.disconnect(); };
   }, [index, message.id, onMeasured]);
 
-  return (
-    <div
-      ref={rowRef}
-      style={{
+  // Mobile perf: drop `will-change: transform` on phones. Promoting every
+  // visible row to its own compositor layer is a net loss on iOS/Android
+  // mid-range devices (layer explosion → VRAM pressure → slower scrolls).
+  // Desktop keeps the hint because its compositor budget is much higher
+  // and the scroll feel gains more from the layer promotion than it
+  // loses from the memory cost.
+  const rowStyle = useMemo<React.CSSProperties>(() => (
+    isMobileRuntime
+      ? {
+        position: 'absolute',
+        left: 0,
+        right: 0,
+        transform: `translate3d(0, ${top}px, 0)`,
+      }
+      : {
         position: 'absolute',
         left: 0,
         right: 0,
         transform: `translate3d(0, ${top}px, 0)`,
         willChange: 'transform',
-      }}
-    >
+      }
+  ), [top, isMobileRuntime]);
+
+  return (
+    <div ref={rowRef} style={rowStyle}>
       {children}
     </div>
   );
@@ -155,6 +210,26 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
   const [scrollTop, setScrollTop] = useState(0);
   const [layoutVersion, setLayoutVersion] = useState(0);
 
+  // Track the runtime flag so OVERSCAN_PX stays in sync when the async
+  // probe flips mobile/desktop mid-session (usually followed by a reload,
+  // but the state tracker here means the first post-reload render already
+  // has the right value — and HMR re-renders stay correct without a
+  // module reload).
+  const [isMobileRuntime, setIsMobileRuntime] = useState<boolean>(() => msgListIsMobile());
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handler = () => {
+      invalidateMsgListIsMobileCache();
+      setIsMobileRuntime(msgListIsMobile());
+    };
+    window.addEventListener('kumiko:runtime-changed', handler);
+    return () => window.removeEventListener('kumiko:runtime-changed', handler);
+  }, []);
+  const overscanPx = useMemo(
+    () => (isMobileRuntime ? OVERSCAN_PX_MOBILE : OVERSCAN_PX_DESKTOP),
+    [isMobileRuntime],
+  );
+
   const visibleMessages = useMemo(
     () => messages.filter((msg) => !msg.isHidden),
     [messages]
@@ -181,8 +256,8 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
       return { startIndex: 0, endIndex: -1 };
     }
 
-    const overscannedTop = Math.max(0, scrollTop - OVERSCAN_PX);
-    const overscannedBottom = scrollTop + viewportHeight + OVERSCAN_PX;
+    const overscannedTop = Math.max(0, scrollTop - overscanPx);
+    const overscannedBottom = scrollTop + viewportHeight + overscanPx;
     const nextStartIndex = clamp(findClosestItemIndex(itemOffsets, overscannedTop), 0, visibleMessages.length - 1);
     const nextEndIndex = clamp(findClosestItemIndex(itemOffsets, overscannedBottom), nextStartIndex, visibleMessages.length - 1);
 
@@ -190,7 +265,7 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
       startIndex: nextStartIndex,
       endIndex: nextEndIndex,
     };
-  }, [itemOffsets, scrollTop, viewportHeight, visibleMessages.length]);
+  }, [itemOffsets, scrollTop, viewportHeight, visibleMessages.length, overscanPx]);
 
   useLayoutEffect(() => {
     const container = containerRef.current;
@@ -296,6 +371,7 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
               message={message}
               top={itemOffsets[absoluteIndex] || 0}
               onMeasured={handleMeasured}
+              isMobileRuntime={isMobileRuntime}
             >
               <ChatBubble
                 message={message}

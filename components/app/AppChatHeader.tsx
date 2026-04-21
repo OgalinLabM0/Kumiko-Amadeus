@@ -2,6 +2,19 @@ import React from 'react';
 import { BellRing, BrainCircuit, CheckSquare, Clock3, Maximize, Minimize, Moon, Settings, Sun, Trash2, User, BookOpen } from 'lucide-react';
 import { ExtendedSyncStatus, RagStatusIndicator, SyncStatusIndicator } from '../SyncStatus';
 import { useAppStore } from '../../store';
+import { isMobilePwa } from '../../services/environment';
+
+// Mobile perf: cache the mobile-runtime flag at module load so hot paths
+// (ResizeObserver callbacks, per-frame rAF loops) don't re-probe the
+// runtime on every invocation. Desktop Electron and web fallback both
+// resolve to `false` here, so their behaviour is unchanged.
+let _chatHeaderIsMobile: boolean | null = null;
+const chatHeaderIsMobile = (): boolean => {
+  if (_chatHeaderIsMobile === null) {
+    try { _chatHeaderIsMobile = isMobilePwa(); } catch { _chatHeaderIsMobile = false; }
+  }
+  return _chatHeaderIsMobile;
+};
 
 interface AppChatHeaderProps {
   ragStatus: 'IDLE' | 'RECALLING' | 'INDEXING' | 'ERROR' | 'OFF' | 'STALE';
@@ -75,13 +88,32 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
       setHeaderScale(prev => Math.abs(prev - nextScale) < 0.005 ? prev : nextScale);
     };
 
+    // Mobile perf: debounce ResizeObserver with an extra 120ms trailing
+    // delay on top of the rAF batching. Phones fire resize events for
+    // every keystroke (virtual keyboard anims) and every orientation
+    // nudge, and the scale recompute touches layout (scrollWidth), which
+    // is a double-reflow we don't need to run at 60fps. Desktop keeps
+    // the rAF-only path.
+    const isMobile = chatHeaderIsMobile();
     let rafId = 0;
-    const resizeObserver = new ResizeObserver(() => {
+    let trailingTimer: number | undefined;
+    const schedule = () => {
       cancelAnimationFrame(rafId);
       rafId = requestAnimationFrame(() => {
         if (document.documentElement.hasAttribute('data-resizing')) return;
         updateScale();
       });
+    };
+    const resizeObserver = new ResizeObserver(() => {
+      if (isMobile) {
+        if (trailingTimer !== undefined) window.clearTimeout(trailingTimer);
+        trailingTimer = window.setTimeout(() => {
+          trailingTimer = undefined;
+          schedule();
+        }, 120);
+      } else {
+        schedule();
+      }
     });
     resizeObserver.observe(container);
     resizeObserver.observe(identity);
@@ -90,6 +122,7 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
 
     return () => {
       cancelAnimationFrame(rafId);
+      if (trailingTimer !== undefined) window.clearTimeout(trailingTimer);
       resizeObserver.disconnect();
     };
   }, [
@@ -107,8 +140,25 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
   ]);
 
   return (
-    <div className={`h-16 overflow-hidden border-b px-3 md:px-4 transition-colors duration-500 ${headerBg} ${headerShadow}`}>
-      <div ref={containerRef} className="flex h-full w-full items-center justify-center overflow-hidden">
+    <div
+      className={`overflow-hidden border-b px-3 md:px-4 transition-colors duration-200 md:duration-500 ${headerBg} ${headerShadow}`}
+      style={{
+        // Phase 7 Part t6_main_shell: push the title row past the device
+        // safe-area inset on notched phones. Desktop Electron / wide
+        // browsers see env(safe-area-inset-top) === 0 so the original
+        // h-16 dimension is preserved byte-for-byte.
+        //
+        // Mobile-only trim: `max(var(--sat) - 6px, 0px)` shaves 6px off
+        // the safe-area inset so the header visually rides a little
+        // higher on notched phones while still staying clear of the
+        // status bar (typical --sat is ≥ 20–50px, so we keep ≥ 14–44px
+        // of clearance). On desktop --sat === 0, max() resolves to 0
+        // and the original h-16 layout is preserved exactly.
+        height: 'calc(4rem + max(var(--sat) - 6px, 0px))',
+        paddingTop: 'max(var(--sat) - 6px, 0px)',
+      }}
+    >
+      <div ref={containerRef} className="flex h-16 w-full items-center justify-center overflow-hidden">
         <div
           className="flex items-center justify-between gap-3"
           style={{

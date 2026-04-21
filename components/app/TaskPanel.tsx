@@ -124,7 +124,14 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
 }) => {
   const totalTasks = relativeReminders.length + dailyReminders.length;
   const nextOneTime = relativeReminders.slice().sort((a, b) => a.dueAt - b.dueAt)[0];
-  const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-white/95 border-yellow-500/30';
+  // Dark-mode frosted glass: drop the near-opaque `/96` wash and let
+  // `backdrop-blur-md` smear whatever chat bubble sits underneath. 80%
+  // fill keeps copy readable but the blur kills the noisy bleed-through
+  // users complained about. Light mode stays essentially unchanged and
+  // just inherits the same blur class for visual parity.
+  const bgClass = isDarkMode
+    ? 'bg-[#161412]/80 backdrop-blur-md border-[#2a2522]/60'
+    : 'bg-white/90 backdrop-blur-md border-yellow-500/30';
   const textClass = isDarkMode ? 'text-yellow-100' : 'text-gray-800';
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]';
   const labelClass = isDarkMode ? 'text-yellow-700' : 'text-yellow-600/80';
@@ -144,7 +151,26 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
     : 'border-yellow-300 bg-yellow-100 text-yellow-800';
 
   return (
-    <div className={`absolute top-[4.45rem] right-3 z-40 w-[min(94vw,24rem)] max-h-[74vh] rounded-lg border shadow-2xl flex flex-col overflow-hidden ${bgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'scale(1)' : 'scale(0.96)', pointerEvents: isOpen ? 'auto' as const : 'none' as const, visibility: isOpen ? 'visible' as const : 'hidden' as const, transformOrigin: 'top right', transition: isOpen ? 'opacity 250ms ease-out, transform 250ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, transform 180ms ease-in, visibility 0s 180ms', willChange: 'opacity, transform' as const }}>
+    // Phase 7 Part t9_task_msgcenter: shift the popover down by the iOS
+    // notch's safe-area-inset-top and in by safe-area-inset-right so it
+    // doesn't hide under the punchhole. Also duplicate the max-h in
+    // `dvh` so Safari's dynamic viewport doesn't cut the bottom off when
+    // its toolbar is visible. Desktop Electron still gets the 4.45rem
+    // top offset (env = 0) and the `74vh` cap.
+    <div
+      className={`absolute z-40 w-[min(94vw,24rem)] max-h-[74vh] max-h-[74dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden ${bgClass}`}
+      style={{
+        top: 'calc(4.45rem + max(var(--sat) - 6px, 0px))',
+        right: 'calc(0.75rem + var(--sar))',
+        opacity: isOpen ? 1 : 0,
+        transform: isOpen ? 'scale(1)' : 'scale(0.96)',
+        pointerEvents: isOpen ? 'auto' as const : 'none' as const,
+        visibility: isOpen ? 'visible' as const : 'hidden' as const,
+        transformOrigin: 'top right',
+        transition: isOpen ? 'opacity 250ms ease-out, transform 250ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, transform 180ms ease-in, visibility 0s 180ms',
+        willChange: 'opacity, transform' as const,
+      }}
+    >
       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-600 to-transparent opacity-50"></div>
 
       <div className={`flex items-center justify-between px-4 py-3 border-b ${borderClass}`}>
@@ -170,21 +196,25 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
       </div>
 
       <div data-resize-heavy className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-thin">
+        {/* Phase 7 Part t9_task_msgcenter: the stat strip used a
+            fixed `p-3` which left the English "Recurring" label
+            clipped on a 360px phone. Shrink to `p-2` on narrow
+            viewports and allow labels to wrap. */}
         <div className="grid grid-cols-3 gap-2">
-          <div className={`rounded border p-3 ${cardClass}`}>
-            <div className={`ka-kicker ${labelClass}`}>
+          <div className={`rounded border p-2 sm:p-3 ${cardClass}`}>
+            <div className={`ka-kicker break-words ${labelClass}`}>
               {language === 'zh' ? '生效中' : 'Active'}
             </div>
             <div className={`mt-1 ka-value ${textClass}`}>{totalTasks}</div>
           </div>
-          <div className={`rounded border p-3 ${cardClass}`}>
-            <div className={`ka-kicker ${labelClass}`}>
+          <div className={`rounded border p-2 sm:p-3 ${cardClass}`}>
+            <div className={`ka-kicker break-words ${labelClass}`}>
               {language === 'zh' ? '一次性' : 'One-time'}
             </div>
             <div className={`mt-1 ka-value ${textClass}`}>{relativeReminders.length}</div>
           </div>
-          <div className={`rounded border p-3 ${cardClass}`}>
-            <div className={`ka-kicker ${labelClass}`}>
+          <div className={`rounded border p-2 sm:p-3 ${cardClass}`}>
+            <div className={`ka-kicker break-words ${labelClass}`}>
               {language === 'zh' ? '循环' : 'Recurring'}
             </div>
             <div className={`mt-1 ka-value ${textClass}`}>{dailyReminders.length}</div>

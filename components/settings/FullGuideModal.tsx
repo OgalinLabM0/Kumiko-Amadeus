@@ -27,6 +27,7 @@ import {
 import { Language } from '../../types';
 import { SOFTWARE_GUIDE_SECTIONS } from '../../constants';
 import { useModalKeyboard } from '../../hooks/useModalKeyboard';
+import { useModalPortal } from '../../hooks/useModalPortal';
 
 const INLINE_ICONS: Record<string, React.ElementType> = {
   Maximize,
@@ -66,10 +67,8 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
   isDarkMode
 }) => {
   const [activeGuideSection, setActiveGuideSection] = useState('intro');
-  const [isClosing, setIsClosing] = useState(false);
   const articleScrollRef = useRef<HTMLDivElement | null>(null);
-
-  const isVisible = isOpen || isClosing;
+  const renderPortal = useModalPortal();
 
   const bgClass = isDarkMode ? 'bg-[#161412] border-[#2a2522]/60' : 'bg-[#faf6f0] border-[#e6ddcf]';
   const textClass = isDarkMode ? 'text-[#f1e6d7]' : 'text-[#3d2a18]';
@@ -80,7 +79,6 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setIsClosing(false);
       setActiveGuideSection('intro');
     }
   }, [isOpen]);
@@ -95,19 +93,13 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
   };
 
   const handleClose = () => {
-    setIsClosing(true);
+    onClose();
   };
 
-  // P2 #42: Esc closes the guide just like the X button (goes through the
-  // same animation path so the exit transition still plays).
+  // P2 #42: Esc closes the guide just like the X button. The exit
+  // animation is now driven by CSS transitions on the preloaded shell,
+  // so the close handler can call `onClose` directly.
   useModalKeyboard({ isOpen, onClose: handleClose });
-
-  const handleAnimationEnd = (e: React.AnimationEvent) => {
-    if (isClosing && e.animationName === 'guideOut') {
-      setIsClosing(false);
-      onClose();
-    }
-  };
 
   const renderInlineContent = (line: string) => {
     const parts = line.split(/(\*\*.*?\*\*|`[^`]+`|\[ICON:[a-zA-Z0-9_]+\])/g);
@@ -255,45 +247,39 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
     });
   }, [activeData.content, isDarkMode]);
 
-  const animClass = isClosing
-    ? 'animate-[guideOut_200ms_ease-in_forwards]'
-    : 'animate-[guideIn_300ms_ease-out]';
-  const backdropAnimClass = isClosing
-    ? 'animate-[guideBackdropOut_200ms_ease-in_forwards]'
-    : 'animate-[guideBackdropIn_300ms_ease-out]';
-
-  if (!isVisible) {
-    return null;
-  }
-
-  return (
+  // Phase 7 Part t5_b1_full_guide: portal into <body> so the backdrop is
+  // always viewport-sized, even when rendered as a SettingsPanel sibling
+  // under AppMainView's `contain: layout style`.
+  //
+  // Preload rework: the shell stays mounted after first open so the large
+  // Markdown-rendered archive no longer has to rebuild on every re-open.
+  // Visibility is driven by CSS transitions on opacity + transform.
+  return renderPortal(
     <>
-      <style>{`
-        @keyframes guideIn {
-          from { transform: translateY(24px) scale(0.97); opacity: 0; }
-          to { transform: translateY(0) scale(1); opacity: 1; }
-        }
-        @keyframes guideOut {
-          from { transform: translateY(0) scale(1); opacity: 1; }
-          to { transform: translateY(12px) scale(0.98); opacity: 0; }
-        }
-        @keyframes guideBackdropIn {
-          from { opacity: 0; }
-          to { opacity: 1; }
-        }
-        @keyframes guideBackdropOut {
-          from { opacity: 1; }
-          to { opacity: 0; }
-        }
-      `}</style>
       <div
-        className={`ka-mobile-fullbleed-backdrop fixed inset-0 z-[100] flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal ${backdropAnimClass}`}
-        style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.62) 30%, rgba(0,0,0,0) 100%)' }}
+        className="ka-mobile-fullbleed-backdrop fixed inset-0 z-[100] flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal"
+        style={{
+          background: 'radial-gradient(circle, rgba(0,0,0,0.62) 30%, rgba(0,0,0,0) 100%)',
+          opacity: isOpen ? 1 : 0,
+          visibility: isOpen ? 'visible' : 'hidden',
+          pointerEvents: isOpen ? 'auto' : 'none',
+          transition: isOpen
+            ? 'opacity 300ms ease-out, visibility 0s 0s'
+            : 'opacity 200ms ease-in, visibility 0s 200ms',
+        }}
+        aria-hidden={!isOpen}
+        inert={!isOpen}
       >
         <div
-          className={`ka-mobile-fullbleed-sheet relative w-full max-w-7xl h-full max-h-[92dvh] rounded-[1.2rem] border shadow-2xl overflow-hidden flex flex-col ${animClass} ${bgClass}`}
-          style={{ contain: 'layout style paint' }}
-          onAnimationEnd={handleAnimationEnd}
+          className={`ka-mobile-fullbleed-sheet relative w-full max-w-7xl h-full max-h-[92dvh] rounded-[1.2rem] border shadow-2xl overflow-hidden flex flex-col ${bgClass}`}
+          style={{
+            contain: 'layout style paint',
+            opacity: isOpen ? 1 : 0,
+            transform: isOpen ? 'translateY(0) scale(1)' : 'translateY(12px) scale(0.98)',
+            transition: isOpen
+              ? 'opacity 300ms ease-out, transform 300ms ease-out'
+              : 'opacity 200ms ease-in, transform 200ms ease-in',
+          }}
         >
           <div className={`absolute top-0 left-0 w-full h-[2px] ${isDarkMode ? 'bg-gradient-to-r from-transparent via-[#d4a852]/50 to-transparent' : 'bg-gradient-to-r from-transparent via-[#b8860b]/30 to-transparent'}`}></div>
 

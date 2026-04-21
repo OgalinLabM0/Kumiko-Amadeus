@@ -95,7 +95,11 @@ export const ApiSecuritySection: React.FC<ApiSecuritySectionProps> = ({
               </select>
               <ChevronDown size={14} className={`absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`} />
             </div>
-            <p className={`ka-micro mt-1 font-mono ${isDarkMode ? 'text-teal-400/60' : 'text-teal-600/60'}`}>
+            {/* Phase 7 Part t13_settings_sections: long provider endpoints
+                (https://generativelanguage.googleapis.com/v1beta/...) were
+                overflowing on 360px phones. `break-all` allows the URL to
+                wrap mid-path instead of pushing the layout wider. */}
+            <p className={`ka-micro mt-1 font-mono break-all ${isDarkMode ? 'text-teal-400/60' : 'text-teal-600/60'}`}>
               {currentProvider !== 'gemini' && `Endpoint: ${getDefaultEndpoint(currentProvider)}`}
             </p>
           </div>
@@ -135,7 +139,7 @@ export const ApiSecuritySection: React.FC<ApiSecuritySectionProps> = ({
                 />
               </div>
             ) : (
-              <div className={`ka-micro font-mono italic p-2 rounded ${isDarkMode ? 'bg-black/30 text-gray-400' : 'bg-gray-200 text-gray-600'}`}>
+              <div className={`ka-micro font-mono italic p-2 rounded break-words ${isDarkMode ? 'bg-black/30 text-gray-400' : 'bg-gray-200 text-gray-600'}`}>
                 {t_local.useCustomEndpointDesc}
               </div>
             )}

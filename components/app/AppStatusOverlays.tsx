@@ -18,10 +18,19 @@ interface AppConnectingOverlayProps {
 }
 
 export const AppConnectingOverlay: React.FC<AppConnectingOverlayProps> = ({ isOpen }) => {
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center text-yellow-600 backdrop-blur-sm gap-3" style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.8) 30%, rgba(0,0,0,0) 100%)' }}>
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center text-yellow-600 backdrop-blur-sm gap-3"
+      style={{
+        background: 'radial-gradient(circle, rgba(0,0,0,0.8) 30%, rgba(0,0,0,0) 100%)',
+        opacity: isOpen ? 1 : 0,
+        visibility: isOpen ? 'visible' : 'hidden',
+        pointerEvents: isOpen ? 'auto' : 'none',
+        transition: isOpen ? 'opacity 220ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
+      }}
+      aria-hidden={!isOpen}
+      inert={!isOpen}
+    >
       <Loader2 className="animate-spin" size={24} />
       <span className="ka-kicker font-mono tracking-[0.2em]">ESTABLISHING NEURAL LINK...</span>
     </div>
@@ -43,13 +52,19 @@ interface DisconnectedBannerProps {
 export const DisconnectedBanner: React.FC<DisconnectedBannerProps> = ({ isVisible, isDarkMode, language, onOpenSettings }) => (
   <AnimatePresence>
     {isVisible && (
+      // Phase 7 Part t11_modal_toast: the banner is rendered just
+      // under the chat header on desktop, but on mobile we mount it
+      // at the top of the shell. Pad with env(safe-area-inset-top) so
+      // iOS notches don't eat the wifi-off icon. Desktop keeps its
+      // flush appearance since env() === 0.
       <motion.div
         initial={{ y: -40, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         exit={{ y: -40, opacity: 0 }}
         transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+        style={{ paddingTop: 'calc(0.5rem + var(--sat))' }}
         className={`
-          flex items-center justify-center gap-2 px-4 py-2 z-[120]
+          flex items-center justify-center gap-2 px-4 pb-2 z-[120]
           backdrop-blur-md border-b
           ${isDarkMode
             ? 'bg-red-950/60 border-red-800/40 text-red-300'
@@ -82,10 +97,19 @@ export const DisconnectedBanner: React.FC<DisconnectedBannerProps> = ({ isVisibl
 );
 
 export const AppErrorOverlay: React.FC<AppErrorOverlayProps> = ({ isOpen, onReconfigure }) => {
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-[200] flex flex-col items-center justify-center text-red-500 backdrop-blur-sm gap-4 p-6 text-center" style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.9) 30%, rgba(0,0,0,0) 100%)' }}>
+    <div
+      className="fixed inset-0 z-[200] flex flex-col items-center justify-center text-red-500 backdrop-blur-sm gap-4 p-6 text-center"
+      style={{
+        background: 'radial-gradient(circle, rgba(0,0,0,0.9) 30%, rgba(0,0,0,0) 100%)',
+        opacity: isOpen ? 1 : 0,
+        visibility: isOpen ? 'visible' : 'hidden',
+        pointerEvents: isOpen ? 'auto' : 'none',
+        transition: isOpen ? 'opacity 220ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
+      }}
+      aria-hidden={!isOpen}
+      inert={!isOpen}
+    >
       <AlertTriangle size={48} className="mb-2" />
       <h2 className="font-mincho text-xl font-semibold tracking-[0.18em]">NEURAL LINK FAILED</h2>
       <p className="ka-copy-sm opacity-70">CONNECTION TERMINATED. CHECK SIGNAL STRENGTH.</p>

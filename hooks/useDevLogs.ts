@@ -96,7 +96,10 @@ export function useDevLogs() {
               console.log("[KEY_SWITCH] More than 24 hours passed. Reverting to primary API key.");
               const newConfig: AIConfig = { ...config, activeKey: 'primary' };
               delete newConfig.keySwitchTimestamp;
-              localStorage.setItem('kumiko_ai_config', JSON.stringify(newConfig));
+              // Phase 6 Part B: fan out to any connected phones so their
+              // activeKey mirror updates. Fire-and-forget — the boot-time
+              // revert doesn't block further initialization.
+              void import('../services/llmCore').then(m => m.setAIConfig(newConfig));
             }
           }
         }

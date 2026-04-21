@@ -1,6 +1,7 @@
 import React from 'react';
 import { BellRing, Clock3, MessageSquareText, Trash2, X } from 'lucide-react';
 import { Language } from '../../types';
+import { formatCompactTime } from '../../services/datetimeFormat';
 
 type MessageAlertItem = {
   id: string;
@@ -23,14 +24,12 @@ interface MessageCenterPanelProps {
   onClearAlerts: () => void;
 }
 
+// Phase 7 Part t9_task_msgcenter: desktop kept the previous `MM/DD
+// HH:MM` format. On narrow viewports today's alerts compress to just
+// `HH:MM`, freeing ~4 chars per row so the unread pill + kind chip +
+// timestamp all fit on one line without flex-wrap spilling to row 2.
 const formatTime = (timestamp: number, language: Language) => {
-  return new Date(timestamp).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  });
+  return formatCompactTime(timestamp, { lang: language, variant: 'chat' });
 };
 
 const getKindLabel = (kind: MessageAlertItem['kind'], language: Language) => {
@@ -56,7 +55,15 @@ export const MessageCenterPanel: React.FC<MessageCenterPanelProps> = ({
   onDismissAlert,
   onClearAlerts
 }) => {
-  const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-white/95 border-yellow-500/30';
+  // Dark-mode frosted glass: drop the near-opaque `/96` wash and let
+  // `backdrop-blur-md` smear whatever chat bubble sits underneath. 80%
+  // fill keeps copy readable but the blur kills the noisy bleed-through
+  // users complained about. Light mode stays essentially unchanged — the
+  // chat canvas there is already paper-cream so readability was never a
+  // problem, we just pick up the same blur class for visual parity.
+  const bgClass = isDarkMode
+    ? 'bg-[#161412]/80 backdrop-blur-md border-[#2a2522]/60'
+    : 'bg-white/90 backdrop-blur-md border-yellow-500/30';
   const textClass = isDarkMode ? 'text-yellow-100' : 'text-gray-800';
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]';
   const labelClass = isDarkMode ? 'text-yellow-700' : 'text-yellow-600/80';
@@ -73,7 +80,24 @@ export const MessageCenterPanel: React.FC<MessageCenterPanelProps> = ({
     : 'hover:bg-red-500/10 hover:text-red-500';
 
   return (
-    <div className={`absolute top-[4.45rem] right-3 z-40 w-[min(94vw,24rem)] max-h-[72vh] rounded-lg border shadow-2xl flex flex-col overflow-hidden ${bgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'scale(1)' : 'scale(0.96)', pointerEvents: isOpen ? 'auto' as const : 'none' as const, visibility: isOpen ? 'visible' as const : 'hidden' as const, transformOrigin: 'top right', transition: isOpen ? 'opacity 250ms ease-out, transform 250ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, transform 180ms ease-in, visibility 0s 180ms', willChange: 'opacity, transform' as const }}>
+    // Phase 7 Part t9_task_msgcenter: mirror the TaskPanel safe-area
+    // treatment — shift top/right by env() insets and duplicate the
+    // max-height in `dvh` so the list stays reachable on notched phones
+    // with the iOS Safari toolbar visible.
+    <div
+      className={`absolute z-40 w-[min(94vw,24rem)] max-h-[72vh] max-h-[72dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden ${bgClass}`}
+      style={{
+        top: 'calc(4.45rem + max(var(--sat) - 6px, 0px))',
+        right: 'calc(0.75rem + var(--sar))',
+        opacity: isOpen ? 1 : 0,
+        transform: isOpen ? 'scale(1)' : 'scale(0.96)',
+        pointerEvents: isOpen ? 'auto' as const : 'none' as const,
+        visibility: isOpen ? 'visible' as const : 'hidden' as const,
+        transformOrigin: 'top right',
+        transition: isOpen ? 'opacity 250ms ease-out, transform 250ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, transform 180ms ease-in, visibility 0s 180ms',
+        willChange: 'opacity, transform' as const,
+      }}
+    >
       <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-600 to-transparent opacity-50"></div>
 
       <div className={`flex items-center justify-between px-4 py-3 border-b ${borderClass}`}>

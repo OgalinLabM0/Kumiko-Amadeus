@@ -21,7 +21,7 @@ export const SettingsToggle: React.FC<SettingsToggleProps> = ({
       onClick={onClick}
       aria-pressed={checked}
       aria-label={ariaLabel}
-      className={`relative inline-flex h-7 w-12 shrink-0 items-center overflow-hidden rounded-full p-[3px] transition-colors flex-shrink-0 ${
+      className={`relative inline-flex h-7 w-12 shrink-0 items-center overflow-hidden rounded-full p-[3px] transition-all active:scale-95 flex-shrink-0 ${
         checked ? activeTrackClass : inactiveTrackClass
       }`}
     >

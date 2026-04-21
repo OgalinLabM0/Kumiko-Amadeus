@@ -51,11 +51,13 @@ export const useDataManagementInfo = (
     }
   };
 
+  // Preload rework: SettingsPanel is permanently mounted, so run the
+  // prefetch once on mount and additionally whenever the Data Management
+  // section is opened so the figures are never "1 frame empty".
   useEffect(() => {
-    if (isOpen) {
-      refreshStorageEstimate();
-      refreshDataDirectoryInfo();
-    }
+    refreshStorageEstimate();
+    refreshDataDirectoryInfo();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
   const formatBytes = (bytes: number) => {

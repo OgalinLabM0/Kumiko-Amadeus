@@ -1,6 +1,22 @@
 import { callLLMRaw, getCurrentAIConfig } from './geminiService';
 import { searchLocalRagMemory } from './localRagService';
 
+// Platform note:
+//   `searchLocalRagMemory` routes through `getRagInvoker()` inside
+//   localRagService, so on mobile PWA builds it hits the desktop's
+//   SQLite vector store via httpInvoke('rag:search', ...) rather than
+//   the (deliberately empty) phone Dexie vector mirror. That means
+//   verifyAgainstHistory is useful on phones too — if the PC is
+//   reachable we get the same continuity / repetition signal the
+//   desktop does; if the PC is offline the invoker throws and the
+//   caller falls through to a partial validation path. See commit
+//   notes in `services/localRagService.ts > getRagInvoker`.
+//
+//   `callLLMRaw` is platform-agnostic: AI config is read from
+//   localStorage / desktop refs and the HTTPS request to the LLM
+//   provider is made directly from whichever process owns the config.
+//   There's no dedicated mobile path for the LLM call itself.
+
 export interface DiaryDateMetadata {
   dateStr: string;
   weekday: string;
@@ -83,20 +99,47 @@ ${draftContent}
 如果上述问题统统没有，请仅仅输出 "PASS"。
 如果查出问题，请分行输出具体的报错原因及修改指令（例如：“逻辑矛盾：你在聊天中提到了吃拉面，但日记写了吃外卖。请修改饮食部分。”、“吃书：你此前买的其实是大闸蟹，不是大虾。请修正剧情接续。”）`;
 
-  const verificationResult = await callLLMRaw(
-    verifyPrompt, 
-    "请核对草稿是否存在矛盾与重复。", 
-    config.model_summary || config.model_main
-  );
-  
+  // The validator LLM can occasionally return an empty or single-word
+  // reply due to a content filter, a network blip, or the model
+  // getting confused by a huge prompt. Previously any response shorter
+  // than 5 characters was treated as "PASS", which meant those failure
+  // cases silently rubber-stamped diaries and the continuity checker
+  // stopped being a safety net. New policy:
+  //   1. One automatic retry with a slightly stronger reminder when the
+  //      first call comes back empty / <5 chars.
+  //   2. If the retry STILL comes back empty / <5 chars, return a
+  //      synthetic issue string so the outer lifeStreamService rewrite
+  //      loop treats it as "verification inconclusive, rewrite a safer
+  //      draft" instead of trusting the draft as-is.
+  const runVerifyOnce = async (nudge: string) => {
+    const result = await callLLMRaw(
+      nudge ? `${verifyPrompt}\n\n【补充提醒】${nudge}` : verifyPrompt,
+      '请核对草稿是否存在矛盾与重复。',
+      config.model_summary || config.model_main
+    );
+    return (result || '').trim();
+  };
+
+  let trimmed = await runVerifyOnce('');
+  if (!trimmed || trimmed.length < 5) {
+    console.warn(
+      '[DIARY-VALIDATOR] Empty / too-short first response, retrying once before defaulting to failure.'
+    );
+    trimmed = await runVerifyOnce(
+      '上一次审查没有给出任何文字反馈。请务必按照审查要求输出：没问题时仅输出 PASS；有问题时逐行列出原因与修改指令。不要输出空白或单字回复。'
+    );
+  }
+  if (!trimmed || trimmed.length < 5) {
+    console.warn(
+      '[DIARY-VALIDATOR] Retry also returned empty / too-short response; treating as validation failure so the rewrite loop can recover.'
+    );
+    return ['验证器无响应：审查接口连续返回空白 / 过短回复，无法确认草稿是否存在吃书、重复或矛盾。请基于历史记录与聊天事实，保守重写一份更安全的版本，优先替换高特异性事件与微小物件的重复素材。'];
+  }
+
   // Strict PASS detection: avoid substring traps like "NOT PASS" / "CANNOT PASS" / "未 PASS".
   // Only treat as passed when the response (or its first meaningful line) is exactly "PASS"
   // (case-insensitive, optional surrounding punctuation). Anything else is treated as a failure
   // list and the lines are returned as issues for rewrite.
-  const trimmed = (verificationResult || '').trim();
-  if (!trimmed || trimmed.length < 5) {
-    return [];
-  }
   if (/^\s*PASS[\s.!。！]*$/im.test(trimmed)) {
     return [];
   }

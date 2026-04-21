@@ -1,3 +1,13 @@
+// services/psycheStateService.ts
+//
+// Stress / energy / relaxation drift over time, modulated by the
+// schedule (SLEEPING → energy regen, peak workload → stress spike,
+// etc.). This file plus `lifeStreamService.ts` and `diaryValidatorService.ts`
+// jointly replaced the deleted `services/sleepConsolidation.ts` (commit
+// 0a82cba). The "夜间 settlement" job that used to live there now
+// happens implicitly through the SLEEPING transition handling below
+// plus the diary continuity logic in lifeStreamService.
+
 import { db, PsycheStateEntity } from './db';
 import { getCurrentKumikoState, getDetailedScheduleSlot } from './kumikoStateMachine';
 

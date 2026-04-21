@@ -10,7 +10,7 @@ export const useLocationPreview = (
   const [modelPreviewTime, setModelPreviewTime] = useState('');
 
   useEffect(() => {
-    if (!isOpen || !locationConfig) return;
+    if (!locationConfig) return;
 
     const update = () => {
       try {
@@ -59,7 +59,11 @@ export const useLocationPreview = (
       }
     };
 
+    // Always seed a preview string so the Location section doesn't show
+    // a blank "---" flash the first time the user opens it (SettingsPanel
+    // is now permanently mounted so this runs during warmup).
     update();
+    if (!isOpen) return;
     const timer = setInterval(update, 1000);
     return () => clearInterval(timer);
   }, [isOpen, locationConfig?.userTimezone, locationConfig?.modelTimezone, language]);

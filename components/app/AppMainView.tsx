@@ -78,7 +78,7 @@ export const AppMainView: React.FC<AppMainViewProps> = ({
       <ImageViewer {...imageViewerProps} />
       <AppAvatarPanel {...avatarPanelProps} />
 
-      <div className={`relative z-20 h-full w-full md:w-1/2 lg:w-2/5 flex flex-col border-l transition-colors duration-500 overflow-hidden min-h-0 ${sidebarBg} ${chatContainerShadow}`} style={{contain:'layout style'}}>
+      <div className={`relative z-20 h-full w-full md:w-1/2 lg:w-2/5 flex flex-col border-l transition-colors duration-200 md:duration-500 overflow-hidden min-h-0 ${sidebarBg} ${chatContainerShadow}`} style={{contain:'layout style'}}>
         <AppChatHeader {...chatHeaderProps} />
         <DisconnectedBanner
           isVisible={isDisconnected}

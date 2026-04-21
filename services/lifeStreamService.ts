@@ -1,3 +1,22 @@
+// services/lifeStreamService.ts
+//
+// Replaces the old `services/sleepConsolidation.ts` (deleted in commit
+// 0a82cba together with `psycheStateService.ts` and
+// `diaryValidatorService.ts` being introduced). This file now owns the
+// combined responsibilities that used to be split across the old
+// "起床整理 / 夜间 settlement / 日记一致性" trio:
+//
+//   - Daily life-fragment generation + retroactive backfill
+//     (handleRetroactiveGeneration / generateLifeFragment).
+//   - Diary continuity + carryover propagation (built on top of the
+//     fragments and on `psycheStateService` SLEEPING transitions).
+//   - History consistency checks via the new `diaryValidatorService`.
+//
+// If you arrive here looking for the symbols that used to live in
+// `sleepConsolidation.ts`, the equivalents are inside this file and
+// the two sibling services above. There is nothing to restore from the
+// pre-0a82cba layout — the responsibility was promoted, not removed.
+
 import { db, DailyFragmentEntity, KumikoDiaryEntity, getWorldCharacterStatus, updateWorldCharacterStatus, WorldCharacterStatusMap } from './db';
 import { callLLMRaw, getCurrentAIConfig } from './geminiService';
 import { verifyAgainstHistory, type DiaryDateMetadata } from './diaryValidatorService';

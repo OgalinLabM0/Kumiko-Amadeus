@@ -27,6 +27,7 @@ import {
 // consumer picks the right locale.
 const getKumikoLocalRag = (language?: Language) =>
   language === 'en' ? KUMIKO_LOCAL_RAG_EN : KUMIKO_LOCAL_RAG_ZH;
+import { setAIConfig } from '../../services/llmCore';
 import {
   sendMessageToGemini,
   getCurrentAIConfig,
@@ -117,6 +118,33 @@ import type { RelativeReminder, DailyReminder } from '../../store/slices/reminde
 import type { DeriveSummaryTopicLabelFn } from './chatPipelineRegistry';
 import { tryGetChatPipelineRegistration } from './chatPipelineRegistry';
 import type { RunVoicePipelineFn } from '../../hooks/useVoicePipeline';
+
+// ---------------------------------------------------------------------------
+// Cross-reference note for code archaeologists:
+//   起床整理 / 夜间 settlement / 日记一致性 used to live in the
+//   deleted `services/sleepConsolidation.ts`. Commit 0a82cba moved those
+//   responsibilities into `services/lifeStreamService.ts`,
+//   `services/psycheStateService.ts` and `services/diaryValidatorService.ts`.
+//   If `git status` shows `sleepConsolidation.ts` as deleted, that's the
+//   working-tree echo of that refactor — there is nothing to restore.
+//
+// Mobile-path note:
+//   Phone turns hit `sendUserMessageFromMobile` below (search for the
+//   big banner comment). The "What this DOES NOT do" section used to
+//   list 'memory query session threading' — that's stale as of this
+//   plan; mobile now reuses `registration.memoryQuerySessionRef` when
+//   a chat pipeline is registered so consecutive phone turns continue
+//   the same temporal/topic recall thread desktop would.
+// ---------------------------------------------------------------------------
+
+// Module-level fallback for the memory query session on phone turns
+// that arrive BEFORE a chat pipeline is registered (i.e. the App
+// component tree has not mounted useChatPipelineRegistration yet).
+// Normally we read/write through `registration.memoryQuerySessionRef`
+// which is the same ref App.tsx owns; this singleton just bridges the
+// first couple of HTTP turns until that ref is attached, so the session
+// doesn't reset to null on every mobile request.
+let mobileMemoryQuerySessionFallback: MemoryQuerySession | null = null;
 
 // ---------------------------------------------------------------------------
 // Shared ref / dep types
@@ -784,9 +812,12 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           latest.setBackfillGapInfo(gapInfo);
           await ctx.waitForBackfillGate();
         } else {
-          // Mobile has no BackfillDialog yet (Phase 4 Part B). Broadcast
-          // the gap info for the phone to surface, then auto-run to
-          // avoid stalling the chat turn.
+          // Mobile-originated turns never block on the confirm gate.
+          // DiaryBackfillDialog is mounted globally in App.tsx, so the
+          // phone still sees it as a progress banner — but we kick off
+          // the auto-run here so the chat turn doesn't stall waiting
+          // for a tap that may never come (e.g. screen locked, WS
+          // dropped mid-turn).
           latest.setBackfillGapInfo(gapInfo);
           void latest.runAutoDiaryBackfill(gapInfo);
         }
@@ -1637,7 +1668,10 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           activeKey: 'backup',
           keySwitchTimestamp: Date.now(),
         };
-        localStorage.setItem('kumiko_ai_config', JSON.stringify(newConfig));
+        // Phase 6 Part B: route through setAIConfig so phones re-hydrate
+        // the new activeKey + keySwitchTimestamp. Fire-and-forget is fine
+        // here — the retry below doesn't depend on the broadcast landing.
+        void setAIConfig(newConfig);
         ctx.onRetry();
         return;
       } else if (ctx.origin === 'desktop') {
@@ -1927,13 +1961,13 @@ async function calculateSummaryContinuationSignalStandalone(
 // sendUserMessageFromMobile — Phase 2 Part D
 // ---------------------------------------------------------------------------
 //
-// Streamlined chat pipeline for phone-originated messages. The desktop
-// executeSend() is 900+ lines because it owns UI timers, pending-ref
-// bookkeeping, countdown coordination, and retroactive lifestream
-// integration. None of that applies when the phone sends a message —
-// the phone has no timers on desktop, no pending state in our refs,
-// and the retroactive generation can happen on the NEXT desktop-
-// originated turn without losing anything.
+// Phone-originated turns funnel through here. Unlike the desktop's
+// executeSend() we don't own UI timers or pending-ref bookkeeping on
+// the phone, but we DO run the same executeSendCore pipeline —
+// including RAG recall, memory query session threading, summary
+// cycle boundaries, voice delivery and anchor parsing. Anything that
+// wants to diverge needs a dedicated `ctx.origin === 'mobile'` branch
+// inside executeSendCore.
 //
 // What this DOES keep from executeSend:
 //   - full sendMessageToGemini call with coreMemory, worldBook, history
@@ -1943,16 +1977,20 @@ async function calculateSummaryContinuationSignalStandalone(
 //   - turnCount increment (so summary cycle keeps ticking)
 //   - currentEmotion update (so the WS broadcaster pushes the right
 //     mood dot to the phone)
+//   - memory query session threading: we reuse the App.tsx
+//     `memoryQuerySessionRef` when a chat pipeline registration is
+//     present so consecutive phone turns continue the same temporal/
+//     topic search thread desktop would; when no registration is
+//     present we fall through to a module-level singleton so at least
+//     the current page session stays consistent.
 //
 // What this DOES NOT do:
-//   - busy-state interception (schedule-driven short replies)
-//   - retroactive life stream regeneration
-//   - reminder parsing (phone users can trigger reminders via the
-//     regular chat flow; parsing is kept desktop-only for now so we
-//     don't accidentally create cross-device duplicates while the
-//     scheduler is still only watched by the desktop renderer)
-//   - memory query session threading
-//   - sleep-mode auto-reply
+//   - UI timers (countdown, send timer) — there's no input box on PC
+//     to animate for a phone-originated turn
+//   - reminder parsing (kept desktop-only for now so scheduling stays
+//     single-owner; the scheduler is still only watched by the desktop
+//     renderer)
+//   - optimistic pendingTextRef / pendingImageRef bookkeeping
 //
 // The caller (useMobileApiProxy's handleChat) awaits this and returns
 // { userMessageId, modelMessageIds } so the phone can show a progress
@@ -2014,15 +2052,17 @@ export async function sendUserMessageFromMobile(
 
   // 3. Build an ExecuteSendCoreContext backed by (a) the chat pipeline
   // registration when available (for voice + summary helpers wired from
-  // App.tsx), and (b) local fallbacks for mobile-only state (memory
-  // query session, RAG dedup keys, summary embedding cache).
+  // App.tsx), and (b) local fallbacks for mobile-only state (RAG dedup
+  // keys, summary embedding cache).
   //
-  // Phone-originated turns currently don't thread a memory query session
-  // across HTTP calls — each turn starts fresh with no historical intent
-  // active. When Phase 4 Part C lands mobile-side historical recall UI,
-  // this will be hoisted into a per-session store.
-  let mobileMemoryQuerySession: MemoryQuerySession | null = null;
-
+  // Memory query session: when a registration is present we route
+  // through `registration.memoryQuerySessionRef` which is the same ref
+  // App.tsx owns and useInitialLoadBootstrap pre-hydrates from Dexie
+  // (`kumiko_memory_query_session`). That keeps consecutive phone turns
+  // threaded through the same historical recall thread just like
+  // desktop. Before the registration is attached (very early HTTP
+  // calls right after boot) we fall back to the module-level
+  // singleton so at least the current page session stays consistent.
   let mobileRagDedupeKeys: string[] = [];
   try {
     const stored = await db.getVal<string[]>('kumiko_rag_dedupe_keys', []);
@@ -2062,8 +2102,26 @@ export async function sendUserMessageFromMobile(
     currentTurnStartMessageId: userMessageId,
     generationId: 0,
     isCancelled: () => false,
-    getMemoryQuerySession: () => mobileMemoryQuerySession,
-    setMemoryQuerySession: (s) => { mobileMemoryQuerySession = s; },
+    getMemoryQuerySession: () => registration
+      ? registration.memoryQuerySessionRef.current
+      : mobileMemoryQuerySessionFallback,
+    setMemoryQuerySession: (s) => {
+      if (registration) {
+        // Same helper desktop uses: writes to the App.tsx ref AND
+        // persists to Dexie via `kumiko_memory_query_session` so a
+        // phone-triggered temporal-recall thread survives reload.
+        updateMemoryQuerySessionRef(
+          { memoryQuerySessionRef: registration.memoryQuerySessionRef },
+          s,
+        );
+        return;
+      }
+      // No registration yet — normalize shape and persist to Dexie
+      // directly so desktop bootstrap picks it up when it mounts.
+      const normalized = normalizeMemoryQuerySession(s);
+      mobileMemoryQuerySessionFallback = normalized;
+      void db.setVal('kumiko_memory_query_session', normalized);
+    },
     getRecentRagDedupeKeys: () => mobileRagDedupeKeys,
     appendRagDedupeKey: (k) => {
       if (!k) return;
@@ -2099,10 +2157,14 @@ export async function sendUserMessageFromMobile(
         m.id === userMessageId ? { ...m, sendStatus: 'failed' as const, failReason: reason } : m,
       ));
     },
-    // Mobile doesn't expose the BackfillDialog yet; Phase 4 Part B adds
-    // the responsive version. Until then we skip the gate and let the
-    // auto-run path (state.runAutoDiaryBackfill) handle it from within
-    // the core.
+    // Mobile-originated turns skip the confirm gate. The dialog itself
+    // IS mounted on mobile (App.tsx renders DiaryBackfillDialogLazy from
+    // `backfillGapInfo`), but we can't hand control over to it — the
+    // phone's WS session may drop mid-turn, so `executeSend` would hang
+    // forever waiting for a confirmation that will never fire. Instead
+    // the mobile path in `maybeHandleDiaryGapInterception` kicks off
+    // `runAutoDiaryBackfill` directly and lets the dialog follow along
+    // as a progress banner.
     waitForBackfillGate: undefined,
     // The busy-state follow-up currently relies on
     // triggerNativeProactiveMessage which reads the desktop refs. When

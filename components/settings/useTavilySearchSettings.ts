@@ -50,11 +50,25 @@ export const useTavilySearchSettings = (
     }
   };
 
+  // Preload rework: fetch usage as soon as the API key is known (which
+  // happens on SettingsPanel mount because it's now permanently mounted),
+  // so the InternetSearch section doesn't show empty usage on first open.
+  // The `isInternetSearchOpen` dependency is intentionally omitted.
+  useEffect(() => {
+    if (tavilyApiKey) {
+      refreshUsage(tavilyApiKey);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tavilyApiKey]);
+
+  // Re-check usage when the section is explicitly opened (keeps the
+  // original "open to refresh" semantic).
   useEffect(() => {
     if (isInternetSearchOpen && tavilyApiKey) {
       refreshUsage(tavilyApiKey);
     }
-  }, [isInternetSearchOpen, tavilyApiKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isInternetSearchOpen]);
 
   const saveConfig = (key: string, enabled: boolean) => {
     setTavilyApiKey(key);

@@ -248,6 +248,12 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                       </button>
                     )}
                     
+                    {/* Phase 7 Part t10_chat_voice: give the reply icon
+                        a 32×32 hit target on phones (Apple HIG = 44pt,
+                        this is a compromise to stay within the existing
+                        meta column), plus an `active:scale-95` for
+                        tactile feedback. Desktop keeps the `p-1.5`
+                        (~28px) footprint. */}
                     <div className="flex gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-200">
                         <button
                           onClick={(e) => {
@@ -255,7 +261,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                             onReply && onReply(message);
                           }}
                           className={`
-                            p-1.5 rounded-full transition-all duration-200
+                            p-1.5 rounded-full transition-all duration-200 active:scale-95 min-w-[32px] min-h-[32px] flex items-center justify-center
                             ${isDarkMode ? 'text-gray-500 hover:text-yellow-500 hover:bg-white/10' : 'text-gray-400 hover:text-yellow-600 hover:bg-black/5'}
                           `}
                           title={t.reply}
@@ -354,7 +360,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                 <div
                   className={`
                     relative w-fit px-4 py-2 rounded-lg border 
-                    transition-all duration-500
+                    transition-colors duration-200 md:duration-500
                     ${bubbleClasses} 
                     ${isSelectionMode && isSelected ? 'ring-2 ring-offset-1 ring-yellow-500/50' : ''}
                     ${isPending ? 'border-dashed opacity-90' : ''} 
@@ -400,7 +406,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                 <div
                   className={`
                     relative w-fit px-4 py-2 rounded-lg border 
-                    transition-all duration-500
+                    transition-colors duration-200 md:duration-500
                     ${bubbleClasses} 
                     ${isSelectionMode && isSelected ? 'ring-2 ring-offset-1 ring-yellow-500/50' : ''}
                     ${highlightClass}
@@ -430,8 +436,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
              </div>
              )}
 
-             {/* Right Meta Column - UPDATED COLOR FOR DARK MODE (gray-500 -> gray-300) */}
-             <div className={`flex flex-col justify-end items-start gap-1 pb-1 min-w-[40px] ka-micro opacity-50 ${isDarkMode ? 'text-gray-300' : 'text-gray-400'}`}>
+             {/* Right Meta Column - UPDATED COLOR FOR DARK MODE (gray-500 -> gray-300)
+                 Phase 7 Part t10_chat_voice: used to set `opacity-50`
+                 on the whole column, which meant the `opacity-100`
+                 override on the reply button still compounded to
+                 ~0.5 on phones, rendering it nearly invisible.
+                 We move the fade onto the timestamp span so the
+                 button gets its full opacity. Desktop looks identical
+                 (same cascade), the button still ghosts in via
+                 `md:group-hover:opacity-100`. */}
+             <div className={`flex flex-col justify-end items-start gap-1 pb-1 min-w-[40px] ka-micro ${isDarkMode ? 'text-gray-300' : 'text-gray-400'}`}>
                 {!isSelectionMode && (
                     <div className="flex gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-200 mb-1">
                         <button
@@ -440,7 +454,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                             onReply && onReply(message);
                             }}
                             className={`
-                            p-1.5 rounded-full transition-all duration-200
+                            p-1.5 rounded-full transition-all duration-200 active:scale-95 min-w-[32px] min-h-[32px] flex items-center justify-center
                             ${isDarkMode ? 'hover:text-yellow-500 hover:bg-white/10' : 'hover:text-yellow-600 hover:bg-black/5'}
                             `}
                             title={t.reply}
@@ -449,7 +463,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                         </button>
                     </div>
                 )}
-                <span>{formatTime(message.timestamp)}</span>
+                <span className="opacity-50">{formatTime(message.timestamp)}</span>
              </div>
           </>
         )}

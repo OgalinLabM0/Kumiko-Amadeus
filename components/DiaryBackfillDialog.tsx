@@ -2,6 +2,7 @@ import React from 'react';
 import { BookOpen, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import type { DiaryGapInfo } from '../services/lifeStreamService';
 import { useModalKeyboard } from '../hooks/useModalKeyboard';
+import { useModalPortal } from '../hooks/useModalPortal';
 
 export interface BackfillProgress {
   current: number;
@@ -34,6 +35,7 @@ export const DiaryBackfillDialog: React.FC<DiaryBackfillDialogProps> = ({
 }) => {
   const isZh = language === 'zh';
   const isGenerating = !!progress && !isComplete;
+  const renderPortal = useModalPortal();
 
   // P2 #42: allow Esc to dismiss. Respect ongoing batch generation — do not
   // let Esc cancel mid-batch (matches the existing behaviour where the Skip
@@ -68,13 +70,26 @@ export const DiaryBackfillDialog: React.FC<DiaryBackfillDialogProps> = ({
       : gapInfo.gapType === 'mid_gap' ? 'Middle Gap'
       : '';
 
-  return (
+  // Phase 7 Part t5_a1_diary_backfill: portal the overlay into <body> so its
+  // `fixed inset-0` is relative to the viewport instead of the DiaryPanel
+  // host (which sets `contain: layout style` + `transform` + bottom safe-area
+  // padding, hijacking the containing block and leaking a white strip at the
+  // bottom on iOS PWA). The App.tsx-level instance is unaffected because it
+  // renders at the root; re-portaling there is a no-op.
+  return renderPortal(
+    // Phase 7 Part t11_modal_toast: add safe-area padding so the dialog
+    // card clears iOS's home indicator and notch on phones. Desktop
+    // Electron sees env() === 0 and keeps the original centering.
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center backdrop-blur-sm animate-in fade-in duration-200"
       style={{
         background: isDarkMode
           ? 'radial-gradient(circle, rgba(8,6,5,0.82) 28%, rgba(6,5,4,0.92) 100%)'
-          : 'radial-gradient(circle, rgba(0,0,0,0.42) 24%, rgba(0,0,0,0.64) 100%)'
+          : 'radial-gradient(circle, rgba(0,0,0,0.42) 24%, rgba(0,0,0,0.64) 100%)',
+        paddingTop: 'max(1rem, var(--sat))',
+        paddingBottom: 'max(1rem, var(--sab))',
+        paddingLeft: 'max(1rem, var(--sal))',
+        paddingRight: 'max(1rem, var(--sar))',
       }}
     >
       <div className={`rounded-xl shadow-2xl border w-[90%] max-w-sm overflow-hidden ${panelClass}`}>

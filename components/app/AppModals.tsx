@@ -1,6 +1,18 @@
 import React from 'react';
 import { AlertTriangle, Cloud, CloudDownload, ShieldAlert } from 'lucide-react';
+import { useModalPortal } from '../../hooks/useModalPortal';
 // `Language` and `Sparkles` were only used by the removed CloudRestoreModal (P0 #6).
+
+// Phase 7 Part t11_modal_toast: shared safe-area padding so every modal
+// in this file clears iOS notch/home-indicator on phones without
+// touching Electron (env() === 0). Kept as module constant instead of
+// a CSS class so the minimum (`1rem`) survives `max()` on old Safari.
+const MODAL_SAFE_AREA_STYLE = {
+  paddingTop: 'max(1rem, var(--sat))',
+  paddingBottom: 'max(1rem, var(--sab))',
+  paddingLeft: 'max(1rem, var(--sal))',
+  paddingRight: 'max(1rem, var(--sar))',
+} as const;
 
 interface SyncConflictModalProps {
   isOpen: boolean;
@@ -15,12 +27,21 @@ export const SyncConflictModal: React.FC<SyncConflictModalProps> = ({
   message,
   onRestore
 }) => {
-  if (!isOpen) return null;
+  const renderPortal = useModalPortal();
 
-  return (
+  return renderPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 backdrop-blur-md"
-      style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.8) 30%, rgba(0,0,0,0) 100%)' }}
+      className="fixed inset-0 z-[100] flex items-center justify-center backdrop-blur-md"
+      style={{
+        background: 'radial-gradient(circle, rgba(0,0,0,0.8) 30%, rgba(0,0,0,0) 100%)',
+        ...MODAL_SAFE_AREA_STYLE,
+        opacity: isOpen ? 1 : 0,
+        visibility: isOpen ? 'visible' : 'hidden',
+        pointerEvents: isOpen ? 'auto' : 'none',
+        transition: isOpen ? 'opacity 200ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
+      }}
+      aria-hidden={!isOpen}
+      inert={!isOpen}
     >
       <div className={`w-full max-w-sm rounded-lg border-2 border-orange-500/50 shadow-[0_0_50px_rgba(249,115,22,0.3)] flex flex-col animate-[breathe_0.3s_ease-out] overflow-hidden ${isDarkMode ? 'bg-black' : 'bg-white'}`}>
         <div className="flex items-center gap-3 border-b pb-3 border-orange-900/30 p-6 pb-0">
@@ -66,14 +87,23 @@ export const DeleteConfirmationModal: React.FC<DeleteConfirmationModalProps> = (
   onCancel,
   onConfirm
 }) => {
-  if (!isOpen) return null;
+  const renderPortal = useModalPortal();
 
-  return (
+  return renderPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
-      style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.7) 30%, rgba(0,0,0,0) 100%)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm"
+      style={{
+        background: 'radial-gradient(circle, rgba(0,0,0,0.7) 30%, rgba(0,0,0,0) 100%)',
+        ...MODAL_SAFE_AREA_STYLE,
+        opacity: isOpen ? 1 : 0,
+        visibility: isOpen ? 'visible' : 'hidden',
+        pointerEvents: isOpen ? 'auto' : 'none',
+        transition: isOpen ? 'opacity 200ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
+      }}
+      aria-hidden={!isOpen}
+      inert={!isOpen}
     >
-      <div className={`w-full max-w-sm max-h-[80vh] flex flex-col rounded border shadow-2xl overflow-hidden animate-[breathe_0.3s_ease-out] ${isDarkMode ? 'bg-black border-red-900/50' : 'bg-white border-red-200'}`}>
+      <div className={`w-full max-w-sm max-h-[80vh] max-h-[80dvh] flex flex-col rounded border shadow-2xl overflow-hidden animate-[breathe_0.3s_ease-out] ${isDarkMode ? 'bg-black border-red-900/50' : 'bg-white border-red-200'}`}>
         <div className="p-6 pb-0">
           <h3 className={`font-mincho font-semibold ka-floating-title mb-2 ${isDarkMode ? 'text-red-500' : 'text-red-600'}`}>{title}</h3>
         </div>
@@ -108,12 +138,22 @@ export const SyncErrorModal: React.FC<SyncErrorModalProps> = ({
   closeLabel,
   onClose
 }) => {
-  if (!isOpen || !details) return null;
+  const renderPortal = useModalPortal();
+  const shouldShow = isOpen && !!details;
 
-  return (
+  return renderPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 backdrop-blur-md"
-      style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.8) 30%, rgba(0,0,0,0) 100%)' }}
+      className="fixed inset-0 z-[100] flex items-center justify-center backdrop-blur-md"
+      style={{
+        background: 'radial-gradient(circle, rgba(0,0,0,0.8) 30%, rgba(0,0,0,0) 100%)',
+        ...MODAL_SAFE_AREA_STYLE,
+        opacity: shouldShow ? 1 : 0,
+        visibility: shouldShow ? 'visible' : 'hidden',
+        pointerEvents: shouldShow ? 'auto' : 'none',
+        transition: shouldShow ? 'opacity 200ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
+      }}
+      aria-hidden={!shouldShow}
+      inert={!shouldShow}
     >
       <div className={`w-full max-w-sm rounded-lg border-2 shadow-[0_0_30px_rgba(220,38,38,0.3)] flex flex-col animate-[shake_0.5s_ease-in-out] overflow-hidden ${isDarkMode ? 'bg-black border-red-500/50' : 'bg-white border-red-600'}`}>
         <div className="flex items-center gap-3 border-b pb-3 border-red-900/30 p-6 pb-0">
@@ -160,12 +200,21 @@ export const AppUpdateModal: React.FC<AppUpdateModalProps> = ({
   onInstall,
   onClose
 }) => {
-  if (!isOpen) return null;
+  const renderPortal = useModalPortal();
 
-  return (
+  return renderPortal(
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center p-4 backdrop-blur-md"
-      style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.8) 30%, rgba(0,0,0,0) 100%)' }}
+      className="fixed inset-0 z-[100] flex items-center justify-center backdrop-blur-md"
+      style={{
+        background: 'radial-gradient(circle, rgba(0,0,0,0.8) 30%, rgba(0,0,0,0) 100%)',
+        ...MODAL_SAFE_AREA_STYLE,
+        opacity: isOpen ? 1 : 0,
+        visibility: isOpen ? 'visible' : 'hidden',
+        pointerEvents: isOpen ? 'auto' : 'none',
+        transition: isOpen ? 'opacity 200ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
+      }}
+      aria-hidden={!isOpen}
+      inert={!isOpen}
     >
       <div className={`w-full max-w-sm rounded-lg border-2 shadow-[0_0_30px_rgba(34,211,238,0.25)] flex flex-col animate-[breathe_0.3s_ease-out] overflow-hidden ${isDarkMode ? 'bg-black border-cyan-500/40' : 'bg-white border-cyan-300'}`}>
         <div className="flex items-center gap-3 border-b pb-3 border-cyan-900/20 p-6 pb-0">
@@ -217,12 +266,21 @@ export const ClearAllModal: React.FC<ClearAllModalProps> = ({
   onCancel,
   onConfirm
 }) => {
-  if (!isOpen) return null;
+  const renderPortal = useModalPortal();
 
-  return (
+  return renderPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-md"
-      style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.8) 30%, rgba(0,0,0,0) 100%)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-md"
+      style={{
+        background: 'radial-gradient(circle, rgba(0,0,0,0.8) 30%, rgba(0,0,0,0) 100%)',
+        ...MODAL_SAFE_AREA_STYLE,
+        opacity: isOpen ? 1 : 0,
+        visibility: isOpen ? 'visible' : 'hidden',
+        pointerEvents: isOpen ? 'auto' : 'none',
+        transition: isOpen ? 'opacity 200ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
+      }}
+      aria-hidden={!isOpen}
+      inert={!isOpen}
     >
       <div className={`w-full max-w-sm rounded-lg border-2 shadow-[0_0_30px_rgba(0,0,0,0.5)] flex flex-col animate-[breathe_0.3s_ease-out] overflow-hidden ${isDarkMode ? 'bg-black border-yellow-500/50' : 'bg-white border-yellow-600'}`}>
         <div className="flex items-center gap-3 border-b pb-3 border-gray-800 p-6 pb-0">
@@ -272,12 +330,21 @@ export const DoubleClearAllModal: React.FC<DoubleClearAllModalProps> = ({
   onCancel,
   onConfirm
 }) => {
-  if (!isOpen) return null;
+  const renderPortal = useModalPortal();
 
-  return (
+  return renderPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-md transition-all duration-500"
-      style={{ background: 'radial-gradient(circle, rgba(69,10,10,0.9) 30%, rgba(69,10,10,0) 100%)' }}
+      className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-md"
+      style={{
+        background: 'radial-gradient(circle, rgba(69,10,10,0.9) 30%, rgba(69,10,10,0) 100%)',
+        ...MODAL_SAFE_AREA_STYLE,
+        opacity: isOpen ? 1 : 0,
+        visibility: isOpen ? 'visible' : 'hidden',
+        pointerEvents: isOpen ? 'auto' : 'none',
+        transition: isOpen ? 'opacity 200ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
+      }}
+      aria-hidden={!isOpen}
+      inert={!isOpen}
     >
       <div className={`relative w-full max-w-sm border-4 shadow-[0_0_80px_rgba(220,38,38,0.8)] flex flex-col animate-[shake_0.5s_ease-in-out] overflow-hidden ${isDarkMode ? 'bg-black border-red-600' : 'bg-white border-red-600'}`}>
         <div className="absolute inset-0 pointer-events-none z-0 opacity-10 bg-[linear-gradient(transparent_50%,rgba(255,0,0,0.5)_50%)] bg-[length:100%_4px]"></div>

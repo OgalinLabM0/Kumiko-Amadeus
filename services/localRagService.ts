@@ -1,7 +1,7 @@
 import { db } from './db';
 import { Message } from '../types';
 import { isMobilePwa } from './environment';
-import { subscribeEvents } from './httpApi';
+import { httpInvoke, subscribeEvents } from './httpApi';
 
 // --- Electron IPC Bridge ---
 // In Electron, embedding generation and vector search run in the main process (bge-m3 ONNX + SQLite).
@@ -13,6 +13,40 @@ const getIpcRenderer = () => {
         return (window as any).electronAPI;
     }
     return null;
+};
+
+// Unified RAG invoker. Picks the right transport for the current runtime
+// so callers don't have to know whether SQLite + bge-m3 lives in this
+// process (desktop Electron) or behind the desktop's Fastify HTTP IPC
+// bridge (mobile PWA). On a plain web-preview build with no PC pairing
+// the helper returns null and callers fall back to whatever Dexie path
+// they have — for the message store that's the actual data; for the
+// `vectors` table that's a degraded "empty result" fallback because
+// `useMobileApiProxy.ts` deliberately excludes the vectors table from
+// the mobile Dexie sync (vectors live exclusively on the PC). The
+// mobile branch was previously missing entirely, so on phones every
+// `searchLocalRagMemoryDetailed` etc. call was reading the empty
+// IndexedDB and returning zero hits.
+type RagInvoker = {
+  kind: 'electron' | 'http';
+  invoke: <T = any>(channel: string, payload?: any) => Promise<T>;
+};
+
+const getRagInvoker = (): RagInvoker | null => {
+  const ipc = getIpcRenderer();
+  if (ipc) {
+    return {
+      kind: 'electron',
+      invoke: <T = any>(channel: string, payload?: any) => ipc.invoke(channel, payload) as Promise<T>,
+    };
+  }
+  if (isMobilePwa()) {
+    return {
+      kind: 'http',
+      invoke: <T = any>(channel: string, payload?: any) => httpInvoke<T>(channel, payload),
+    };
+  }
+  return null;
 };
 
 export interface LocalRagMemoryMetadata {
@@ -227,11 +261,11 @@ const mapMainRawMessageToMessage = (raw: any): Message | null => {
 };
 
 export const loadRawHistoryMessagesFromMain = async (): Promise<Message[] | null> => {
-  const ipc = getIpcRenderer();
-  if (!ipc) return null;
+  const invoker = getRagInvoker();
+  if (!invoker) return null;
 
   try {
-    const result = await ipc.invoke('rag:get-messages');
+    const result = await invoker.invoke<any>('rag:get-messages');
     if (!result?.success || !Array.isArray(result.messages)) return [];
     return result.messages
       .map(mapMainRawMessageToMessage)
@@ -247,8 +281,8 @@ export const syncRawHistoryMessagesToMain = async (
   messages: Message[],
   options: { replaceAll?: boolean } = {}
 ) => {
-  const ipc = getIpcRenderer();
-  if (!ipc) return;
+  const invoker = getRagInvoker();
+  if (!invoker) return;
 
   const payload = messages.map(message => ({
     id: message.id,
@@ -269,7 +303,7 @@ export const syncRawHistoryMessagesToMain = async (
     japaneseText: message.japaneseText,
   }));
 
-  const result = await ipc.invoke('rag:sync-messages', {
+  const result = await invoker.invoke<any>('rag:sync-messages', {
     messages: payload,
     replaceAll: !!options.replaceAll,
   });
@@ -282,11 +316,13 @@ export const syncRawHistoryMessagesToMain = async (
 // EMBEDDING GENERATION
 // ==========================================
 export const generateEmbedding = async (text: string, retries = 5, backoff = 2000): Promise<Float32Array> => {
-  // Try local ONNX first (via IPC)
-  const ipc = getIpcRenderer();
-  if (ipc) {
+  // Embeddings come from the desktop's bge-m3 ONNX runtime — either
+  // directly (Electron) or via HTTP IPC (mobile PWA proxies through
+  // the desktop's renderer-side handler).
+  const invoker = getRagInvoker();
+  if (invoker) {
       try {
-          const result = await ipc.invoke('rag:embed', text);
+          const result = await invoker.invoke<any>('rag:embed', text);
           if (result.success) {
               return new Float32Array(result.vector);
           }
@@ -301,7 +337,7 @@ export const generateEmbedding = async (text: string, retries = 5, backoff = 200
       }
   }
 
-  throw new Error('Local RAG is only available through the Electron main process.');
+  throw new Error('Local RAG is only available through the Electron main process or a paired mobile PWA.');
 };
 
 // ==========================================
@@ -314,10 +350,12 @@ export const saveLocalRagMemory = async (
 ) => {
   try {
     const { quiet = false, ...persistedMetadata } = metadata;
-    const ipc = getIpcRenderer();
-    if (ipc) {
-      // Use main process SQLite storage
-      const result = await ipc.invoke('rag:save', { text, messageId, ...persistedMetadata });
+    const invoker = getRagInvoker();
+    if (invoker) {
+      // Both desktop Electron and mobile PWA target the same SQLite
+      // store on the desktop side; the mobile path differs only in
+      // transport (HTTP IPC vs in-process).
+      const result = await invoker.invoke<any>('rag:save', { text, messageId, ...persistedMetadata });
       if (result.success) {
         if (result.skipped) {
           if (!quiet) {
@@ -339,7 +377,7 @@ export const saveLocalRagMemory = async (
       throw new Error(result.error || 'SQLite save failed');
     }
 
-    throw new Error('Local RAG save requires Electron IPC and SQLite support.');
+    throw new Error('Local RAG save requires Electron IPC or a paired mobile PWA.');
   } catch (e) {
     console.error("Failed to save local RAG memory", e);
     throw e;
@@ -350,8 +388,8 @@ export const saveLocalRagMemory = async (
 // GET ALL VECTORS (for backup/export)
 // ==========================================
 export const getAllVectors = async () => {
-  const ipc = getIpcRenderer();
-  if (ipc) {
+  const invoker = getRagInvoker();
+  if (invoker) {
     // P1 #13 follow-up (Plan 4): on desktop, SQLite is the real source of
     // RAG vectors — Dexie `vectors` is basically empty because `rag:save`
     // writes straight to SQLite. If the IPC fails we must NOT silently fall
@@ -359,14 +397,25 @@ export const getAllVectors = async () => {
     // would then write a structurally-valid but content-empty `vectors: []`
     // and the user would see "backup succeeded" with no RAG payload. Surface
     // the failure so handleExportBackup can alert the user.
-    const result = await ipc.invoke('rag:get-all');
+    //
+    // Mobile PWA goes through the same SQLite store via httpInvoke and
+    // therefore inherits the same "fail loudly on transport error"
+    // semantics — useMobileApiProxy deliberately does not sync the
+    // vectors table to the phone Dexie, so the previous IndexedDB
+    // fallback below would always have returned [] on mobile.
+    const result = await invoker.invoke<any>('rag:get-all');
     if (!result?.success) {
       throw new Error(result?.error || 'Failed to read RAG vectors from main process.');
     }
     return result.vectors;
   }
 
-  // Web/PWA build: Dexie is the real source of truth.
+  // Plain web preview (no Electron, no mobile pairing): the phone has
+  // never received vectors, so Dexie is at best empty. Return whatever
+  // we have but warn — callers that genuinely care (backup export,
+  // diary verifier) should detect the empty result and surface a
+  // "RAG unavailable" message rather than treating it as "no matches".
+  console.warn('[LOCAL RAG] getAllVectors: no Electron / mobile transport available, falling back to (likely empty) IndexedDB vectors.');
   try {
     const allVectors = await db.vectors.toArray();
     return allVectors.map(v => ({
@@ -414,10 +463,10 @@ export const restoreVectors = async (vectorsData: any[]): Promise<RestoreVectors
   }
 
   const totalExpected = vectorsData.length;
-  const ipc = getIpcRenderer();
-  if (ipc) {
+  const invoker = getRagInvoker();
+  if (invoker) {
     try {
-      const result = await ipc.invoke('rag:restore', vectorsData);
+      const result = await invoker.invoke<any>('rag:restore', vectorsData);
       if (result?.success) {
         const restored = typeof result.count === 'number' ? result.count : totalExpected;
         console.log(`[LOCAL RAG] Restored ${restored} vectors to SQLite.`);
@@ -457,15 +506,17 @@ export const restoreVectors = async (vectorsData: any[]): Promise<RestoreVectors
 // CLEAR ALL VECTORS
 // ==========================================
 export const clearAllLocalRagMemory = async () => {
-  const ipc = getIpcRenderer();
-  if (ipc) {
+  const invoker = getRagInvoker();
+  if (invoker) {
     // P1 #13 follow-up (Plan 4): on desktop, clearing is SQLite-only because
     // that's where `rag:save` actually writes. Silently falling back to
     // `db.vectors.clear()` was a data-consistency trap — Dexie is almost
     // empty on desktop, so "Dexie cleared successfully" returned OK while
     // SQLite (the real RAG store) still held every vector. Surface the
-    // failure instead so the user can retry or rebuild.
-    const result = await ipc.invoke('rag:clear-all');
+    // failure instead so the user can retry or rebuild. The mobile PWA
+    // path hits the same SQLite store via HTTP IPC and therefore
+    // inherits the same "fail loudly" semantics.
+    const result = await invoker.invoke<any>('rag:clear-all');
     if (!result?.success) {
       throw new Error(result?.error || 'Failed to clear RAG vectors in main process.');
     }
@@ -473,7 +524,7 @@ export const clearAllLocalRagMemory = async () => {
     return;
   }
 
-  // Web/PWA build: Dexie is the real source of truth.
+  // Web/PWA build without pairing: Dexie is the only storage we have.
   try {
     await db.vectors.clear();
     console.log('[LOCAL RAG] Cleared all IndexedDB vectors.');
@@ -484,12 +535,12 @@ export const clearAllLocalRagMemory = async () => {
 };
 
 export const startLocalRagRebuild = async () => {
-  const ipc = getIpcRenderer();
-  if (!ipc) {
-    throw new Error('Local RAG rebuild requires Electron IPC.');
+  const invoker = getRagInvoker();
+  if (!invoker) {
+    throw new Error('Local RAG rebuild requires Electron IPC or a paired mobile PWA.');
   }
 
-  const result = await ipc.invoke('rag:rebuild:start');
+  const result = await invoker.invoke<any>('rag:rebuild:start');
   if (!result?.success) {
     throw new Error(result?.error || 'Failed to start local RAG rebuild.');
   }
@@ -665,7 +716,7 @@ const expandContextBatch = async (candidates: { text: string, messageId?: string
     }
     
     try {
-      const ipc = getIpcRenderer();
+      const invoker = getRagInvoker();
       if (candidate.messageId) {
           const rawIndex = rawMessages.findIndex(message => message.id === candidate.messageId);
           if (rawIndex >= 0 && appendRawHistoryWindow(messageMap, rawMessages, rawIndex)) {
@@ -689,8 +740,8 @@ const expandContextBatch = async (candidates: { text: string, messageId?: string
           }
       }
 
-      if (ipc && candidate.timestamp) {
-          const result = await ipc.invoke('rag:expand-context', { timestamp: candidate.timestamp });
+      if (invoker && candidate.timestamp) {
+          const result = await invoker.invoke<any>('rag:expand-context', { timestamp: candidate.timestamp });
           if (result.success && result.messages) {
               result.messages.forEach((msg: any) => {
                   if (msg.messageId || msg.timestamp) {
@@ -798,11 +849,11 @@ export const searchLocalRagMemoryDetailed = async (
       score?: number;
     }[] = [];
     
-    const ipc = getIpcRenderer();
-    if (ipc) {
+    const invoker = getRagInvoker();
+    if (invoker) {
       const ipcPayload: Record<string, unknown> = { query, topK: 15, ...temporalFilters, memoryIntent };
       if (keywords && keywords.length > 0) ipcPayload.keywords = keywords;
-      const result = await ipc.invoke('rag:search', ipcPayload);
+      const result = await invoker.invoke<any>('rag:search', ipcPayload);
       // Defensive: result.results may legitimately be missing/undefined when the
       // SQLite vector table is empty or during race conditions. Accessing `.length`
       // on undefined would throw and the outer catch would mask the real "no results"
@@ -814,9 +865,14 @@ export const searchLocalRagMemoryDetailed = async (
       }
     }
 
-    // If no results from IPC, only use IndexedDB fallback when Electron IPC is unavailable.
+    // If no results from IPC/HTTP, only use IndexedDB fallback when
+    // neither transport is available (plain web preview). Mobile PWA
+    // and Electron both target the same authoritative SQLite store via
+    // `invoker`, so an empty result there means "no hits" — falling
+    // back to Dexie would just surface the empty mobile Dexie `vectors`
+    // table as if it were "recall failed silently".
     if (rawCandidates.length === 0) {
-        if (ipc) {
+        if (invoker) {
             if (temporalFilters && (
               typeof temporalFilters.startTime === 'number'
               || typeof temporalFilters.endTime === 'number'

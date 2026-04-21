@@ -13,11 +13,10 @@ export const useAccountSettings = (
   const [authPassword, setAuthPassword] = useState('');
   const [isEditingAccount, setIsEditingAccount] = useState(false);
 
+  // Preload rework: read the credentials on mount (and again when the
+  // panel toggles open) so the Account section never renders with blank
+  // fields during the first paint.
   useEffect(() => {
-    if (!isOpen) {
-      return;
-    }
-
     const storedUser = localStorage.getItem('kumiko_auth_username') || 'Kumiko';
     const storedPass = localStorage.getItem('kumiko_auth_password') || '0821';
     setAuthUsername(storedUser);
