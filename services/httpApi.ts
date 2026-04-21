@@ -238,6 +238,115 @@ export function getHttpVoiceUrl(voiceFileId: string): string {
   return `${getApiBaseUrl()}/media/voices/${encodeURIComponent(voiceFileId)}`;
 }
 
+// ── Backup export / import (Phase 3 Part C) ──────────────────────
+//
+// Phone-side wrappers for the POST /api/backup/export and
+// POST /api/backup/import routes. These intentionally bypass the JSON
+// IPC bridge because backups can reach hundreds of MB — JSON base64
+// would mean 4/3x in-memory bloat on every round trip and would also
+// bust the 5MB body limit on the default Fastify instance.
+
+export interface BackupExportResponse {
+  ok: boolean;
+  blob?: Blob;
+  fileName: string;
+  imagesIncluded: number;
+  imagesTotal: number;
+  error?: string;
+}
+
+// Post a pre-serialized `dataJsonString` (same JSON that
+// handleExportBackup would pass through `backup:build-zip-from-payload`
+// on desktop) and download the resulting .zip. The server reads
+// userData/images|voice|ringtone directly, so the phone does NOT
+// need to upload any media — only the JSON state snapshot.
+export async function httpBackupExport(
+  dataJsonString: string,
+  defaultFileName: string,
+): Promise<BackupExportResponse> {
+  assertMobileContext();
+  const url = `${getApiBaseUrl()}/api/backup/export`;
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dataJsonString, defaultFileName }),
+    });
+    if (!response.ok) {
+      const err = await parseJson(response) as { error?: string } | null;
+      return {
+        ok: false,
+        fileName: defaultFileName,
+        imagesIncluded: 0,
+        imagesTotal: 0,
+        error: (err && err.error) || `HTTP ${response.status}`,
+      };
+    }
+    const blob = await response.blob();
+    const imagesIncluded = Number(response.headers.get('X-Images-Included') || 0) || 0;
+    const imagesTotal = Number(response.headers.get('X-Images-Total') || 0) || 0;
+    return { ok: true, blob, fileName: defaultFileName, imagesIncluded, imagesTotal };
+  } catch (e) {
+    return {
+      ok: false,
+      fileName: defaultFileName,
+      imagesIncluded: 0,
+      imagesTotal: 0,
+      error: (e as Error).message || 'Network error',
+    };
+  }
+}
+
+export interface BackupImportResponse {
+  ok: boolean;
+  result?: {
+    success: boolean;
+    filePath: string;
+    fileName: string;
+    json: unknown;
+    images: Array<{ id: string; dataUrl: string }>;
+    imageCount: number;
+  };
+  error?: string;
+}
+
+// Upload a backup file (zip or json) as raw binary. The server parses
+// it via the same `parseBackupImportFile` path that desktop uses, then
+// returns the data.json payload + image dataUrls. Voice / ringtone are
+// unpacked into userData server-side and are NOT returned in the
+// response — the renderer-side import orchestration can simply
+// re-resolve voice clips through /media/voices/:id afterward.
+export async function httpBackupImport(
+  file: Blob,
+  fileName: string,
+): Promise<BackupImportResponse> {
+  assertMobileContext();
+  const contentType =
+    (file as Blob & { type?: string }).type
+    || (fileName.toLowerCase().endsWith('.json') ? 'application/json' : 'application/zip');
+  const encodedName = encodeURIComponent(fileName || 'backup.zip');
+  const url = `${getApiBaseUrl()}/api/backup/import?fileName=${encodedName}`;
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': contentType },
+      body: file,
+    });
+    const body = await parseJson(response) as BackupImportResponse | null;
+    if (!response.ok || !body || body.ok !== true) {
+      return {
+        ok: false,
+        error: (body && body.error) || `HTTP ${response.status}`,
+      };
+    }
+    return body;
+  } catch (e) {
+    return { ok: false, error: (e as Error).message || 'Network error' };
+  }
+}
+
 // ── WebSocket event subscription (Phase 2) ─────────────────────────
 //
 // Opens wss:// to the desktop and forwards every parsed event to

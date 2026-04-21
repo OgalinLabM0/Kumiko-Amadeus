@@ -136,17 +136,7 @@ function stampAutoZipMeta(dataJsonString, autoZipMeta) {
  *   (test seam).
  * @returns {Promise<{ success: boolean, bytesWritten?: number, imagesIncluded?: number, imagesTotal?: number, autoZipMeta?: object | null, error?: string }>}
  */
-async function buildBackupZip({ dataJsonString, mode, outputPath, userDataDir }) {
-  if (typeof dataJsonString !== 'string' || dataJsonString.length === 0) {
-    return { success: false, error: 'dataJsonString is required and must be a non-empty string' };
-  }
-  if (mode !== 'manual' && mode !== 'auto') {
-    return { success: false, error: `Unknown mode: ${mode}` };
-  }
-  if (typeof outputPath !== 'string' || outputPath.length === 0) {
-    return { success: false, error: 'outputPath is required' };
-  }
-
+async function assembleZipBuffer({ dataJsonString, mode, userDataDir }) {
   const ud = userDataDir || app.getPath('userData');
   const zip = new JSZip();
 
@@ -171,15 +161,33 @@ async function buildBackupZip({ dataJsonString, mode, outputPath, userDataDir })
 
   zip.file('data.json', dataJsonPayload);
 
+  const buffer = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+  });
+
+  return { buffer, imagesResult, autoZipMeta };
+}
+
+async function buildBackupZip({ dataJsonString, mode, outputPath, userDataDir }) {
+  if (typeof dataJsonString !== 'string' || dataJsonString.length === 0) {
+    return { success: false, error: 'dataJsonString is required and must be a non-empty string' };
+  }
+  if (mode !== 'manual' && mode !== 'auto') {
+    return { success: false, error: `Unknown mode: ${mode}` };
+  }
+  if (typeof outputPath !== 'string' || outputPath.length === 0) {
+    return { success: false, error: 'outputPath is required' };
+  }
+
   try {
-    const zipContent = await zip.generateAsync({
-      type: 'nodebuffer',
-      compression: 'DEFLATE',
+    const { buffer, imagesResult, autoZipMeta } = await assembleZipBuffer({
+      dataJsonString, mode, userDataDir,
     });
-    fs.writeFileSync(outputPath, zipContent);
+    fs.writeFileSync(outputPath, buffer);
     return {
       success: true,
-      bytesWritten: zipContent.length,
+      bytesWritten: buffer.length,
       imagesIncluded: imagesResult.imagesIncluded,
       imagesTotal: imagesResult.imagesTotal,
       autoZipMeta,
@@ -193,6 +201,45 @@ async function buildBackupZip({ dataJsonString, mode, outputPath, userDataDir })
   }
 }
 
+/**
+ * In-memory variant of `buildBackupZip`. Used by the mobile HTTP export
+ * route which streams the zip buffer straight to the phone instead of
+ * landing it on disk. Same media attachment + _autoZipMeta stamping as
+ * `buildBackupZip` (both go through the shared `assembleZipBuffer`
+ * helper so the zip layout stays byte-identical across manual, auto,
+ * and mobile paths).
+ *
+ * @returns {Promise<{ success: boolean, buffer?: Buffer, bytesWritten?: number, imagesIncluded?: number, imagesTotal?: number, autoZipMeta?: object | null, error?: string }>}
+ */
+async function buildBackupZipBuffer({ dataJsonString, mode = 'manual', userDataDir }) {
+  if (typeof dataJsonString !== 'string' || dataJsonString.length === 0) {
+    return { success: false, error: 'dataJsonString is required and must be a non-empty string' };
+  }
+  if (mode !== 'manual' && mode !== 'auto') {
+    return { success: false, error: `Unknown mode: ${mode}` };
+  }
+  try {
+    const { buffer, imagesResult, autoZipMeta } = await assembleZipBuffer({
+      dataJsonString, mode, userDataDir,
+    });
+    return {
+      success: true,
+      buffer,
+      bytesWritten: buffer.length,
+      imagesIncluded: imagesResult.imagesIncluded,
+      imagesTotal: imagesResult.imagesTotal,
+      autoZipMeta,
+    };
+  } catch (e) {
+    console.error('[backup-zip-builder] ZIP buffer assembly failed:', e);
+    return {
+      success: false,
+      error: (e && e.message) ? e.message : String(e),
+    };
+  }
+}
+
 module.exports = {
   buildBackupZip,
+  buildBackupZipBuffer,
 };

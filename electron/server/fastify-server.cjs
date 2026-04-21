@@ -6,14 +6,18 @@
 // the Settings panel, stopped in `will-quit`. Only one instance may run
 // at a time; callers must `stop()` before starting with a new config.
 //
-// Phase 1 route surface:
+// Route surface (Phase 1 + Phase 2 + Phase 3):
 //   GET  /healthz                   (no auth, liveness probe)
 //   GET  /api/status                (no auth, returns { paired: boolean, hostname })
 //   POST /api/auth/pair             (no auth, rate-limited, accepts { token })
 //   POST /api/auth/logout           (session-only, clears cookie + revokes)
+//   GET  /api/auth/me               (session-only, cookie identity check)
 //   POST /api/ipc/:channel          (session-only, proxies through ipc-bridge)
+//   POST /api/backup/export         (session-only, returns application/zip bytes) — Phase 3 Part C
+//   POST /api/backup/import         (session-only, accepts raw .zip/.json body) — Phase 3 Part C
 //   GET  /media/images/:id          (session-only, streams userData/images/)
-//   GET  /ws                        (session-only, WebSocket stub; filled in Phase 2)
+//   GET  /media/voices/:id          (session-only, streams userData/voice/)
+//   GET  /ws                        (session-only, broadcasts mobile events)
 //   GET  /*                         (static PWA bundle from dist/, SPA fallback)
 //
 // The `dist/` location differs between dev and packaged builds; resolution
@@ -35,6 +39,7 @@ const auth = require('./auth.cjs');
 const ipcBridge = require('./ipc-bridge.cjs');
 const tailscaleCert = require('./tailscale-cert.cjs');
 const { registerMediaRoutes } = require('./media-routes.cjs');
+const { registerBackupRoutes } = require('./backup-routes.cjs');
 const wsBroadcast = require('./ws-broadcast.cjs');
 
 let fastifyInstance = null;
@@ -197,6 +202,18 @@ async function buildApp({ certPath, keyPath }) {
   fastify.register(async function mediaScope(scoped) {
     scoped.addHook('preHandler', requireSession);
     await registerMediaRoutes(scoped);
+  });
+
+  // ── Backup export / import (Phase 3 Part C) ──────────────────
+  //
+  // Binary-backup routes. Registered in their own plugin scope so the
+  // 2GB body limit + application/zip content-type parser don't leak
+  // into the rest of the API (which stays on the 5MB JSON ceiling set
+  // on the root instance). Session cookie still required, same as the
+  // IPC bridge and media routes.
+  fastify.register(async function backupScope(scoped) {
+    scoped.addHook('preHandler', requireSession);
+    await registerBackupRoutes(scoped);
   });
 
   // ── PWA static bundle ─────────────────────────────────────────

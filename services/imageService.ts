@@ -7,6 +7,8 @@ import {
 } from '../constants/imageQualityConfig';
 import { useAppStore } from '../store';
 import { isDesktopElectron } from './desktopBackupService';
+import { isMobilePwa } from './environment';
+import { httpInvoke, getHttpImageUrl } from './httpApi';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Image storage service (P1 #36)
@@ -69,6 +71,30 @@ function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
   return btoa(binary);
 }
 
+// Ship an image (raw base64 + extension) to the desktop for userData
+// storage. On desktop this goes directly through electronAPI.invoke; on
+// mobile PWA it goes over POST /api/ipc/images:save which is handled on
+// the PC renderer side (useMobileApiProxy.handleImagesSave decodes the
+// base64 and forwards to the real IPC handler). Returns the IPC result
+// shape `{ success, filePath?, error? }`. This lets both mobile image
+// uploads and mobile backup-import image restoration land on the PC's
+// filesystem instead of leaking into a phone-local Dexie shell that
+// will never be read.
+async function saveImageToBackend(
+  imageId: string,
+  ext: string,
+  rawBase64: string,
+): Promise<{ success: boolean; filePath?: string; error?: string }> {
+  if (isDesktopElectron() && (window as any).electronAPI) {
+    const buffer = base64ToArrayBuffer(rawBase64);
+    return (window as any).electronAPI.invoke('images:save', { imageId, ext, buffer });
+  }
+  if (isMobilePwa()) {
+    return httpInvoke('images:save', { imageId, ext, bufferB64: rawBase64 });
+  }
+  return { success: false, error: 'No backend available' };
+}
+
 export const compressAndSaveImage = async (file: File): Promise<string> => {
   const cfg = currentPresetConfig();
   // The 'original' preset keeps the source file untouched; every other preset
@@ -86,15 +112,15 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
   const mimeType = processed.type || 'image/jpeg';
   const ext = pickExtFromMime(mimeType);
 
-  if (isDesktopElectron() && (window as any).electronAPI) {
-    // Desktop path: save the file to userData/images/{id}.{ext}.
+  // Desktop + Mobile PWA both land the image on the PC's filesystem via
+  // the `images:save` IPC/HTTP bridge. Desktop uses the direct Electron
+  // IPC; mobile goes through /api/ipc/images:save which proxies the
+  // base64 through the PC renderer into userData/images/{id}.{ext}.
+  if ((isDesktopElectron() && (window as any).electronAPI) || isMobilePwa()) {
     try {
-      const buffer = await processed.arrayBuffer();
-      const result = await (window as any).electronAPI.invoke('images:save', {
-        imageId,
-        ext,
-        buffer,
-      });
+      const dataUrl = await blobToDataUrl(processed);
+      const rawBase64 = dataUrl.split(',')[1] || '';
+      const result = await saveImageToBackend(imageId, ext, rawBase64);
       if (!result?.success) throw new Error(result?.error || 'images:save failed');
       // Keep a metadata-only row so things like imageService.getAllImages()
       // (and the rest of the existing Dexie-based code paths) keep working.
@@ -122,21 +148,29 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
   return imageId;
 };
 
-// Resolve a URL we can put into <img src> for a given imageId. Desktop uses the
-// custom protocol so Chromium can lazy-load and cache the file; web falls back to
-// the base64 data URL fetched from Dexie.
+// Resolve a URL we can put into <img src> for a given imageId.
+//   - Desktop: custom kumiko-image:// protocol so Chromium can lazy-load
+//     and cache the file off-renderer.
+//   - Mobile PWA: GET /media/images/:id, same userData/images source
+//     of truth as desktop. The cookie-gated route handles auth.
+//   - Web fallback (dev preview): data URL from Dexie, same as before.
 export const getImageDisplayUrl = async (imageId: string): Promise<string | null> => {
   if (!imageId) return null;
   if (isDesktopElectron()) {
     // Cache-bust with the image id itself — file contents don't mutate in place.
     return `kumiko-image://${encodeURIComponent(imageId)}`;
   }
+  if (isMobilePwa()) {
+    return getHttpImageUrl(imageId);
+  }
   const row = await db.images.get(imageId);
   return row?.base64Data || null;
 };
 
-// Legacy callers (model tool calls, RAG, etc.) still want the data URL. Prefer
-// the filesystem copy when available, fall back to Dexie.
+// Legacy callers (model tool calls, RAG, etc.) still want the data URL.
+// Prefer the filesystem copy on desktop; on mobile we fetch the bytes
+// from the PC's /media/images/:id route and base64-encode in the phone
+// renderer (the route already enforces the session cookie).
 export const getImageBase64 = async (imageId: string): Promise<string | undefined> => {
   if (!imageId) return undefined;
   if (isDesktopElectron() && (window as any).electronAPI) {
@@ -148,6 +182,18 @@ export const getImageBase64 = async (imageId: string): Promise<string | undefine
       }
     } catch (err) {
       console.warn('[imageService] images:load failed, falling back to Dexie:', err);
+    }
+  }
+  if (isMobilePwa()) {
+    try {
+      const response = await fetch(getHttpImageUrl(imageId), { credentials: 'include' });
+      if (response.ok) {
+        const arr = await response.arrayBuffer();
+        const mime = response.headers.get('Content-Type') || 'image/jpeg';
+        return `data:${mime};base64,${arrayBufferToBase64(arr)}`;
+      }
+    } catch (err) {
+      console.warn('[imageService] /media/images fetch failed, falling back to Dexie:', err);
     }
   }
   const row = await db.images.get(imageId);
@@ -191,11 +237,15 @@ export const saveImageWithId = async (id: string, base64Data: string) => {
   const mimeType = match ? match[1] : 'image/jpeg';
   const rawBase64 = match ? match[2] : base64Data;
 
-  if (isDesktopElectron() && (window as any).electronAPI) {
+  // Both desktop Electron and mobile PWA persist through the PC's
+  // userData/images/ filesystem — see saveImageToBackend. Mobile can't
+  // keep images in its local Dexie because the PC serves /media/images
+  // from disk, not from Dexie. Falling back to Dexie on failure keeps
+  // dev-preview builds (no PC backend at all) alive.
+  if ((isDesktopElectron() && (window as any).electronAPI) || isMobilePwa()) {
     try {
-      const buffer = base64ToArrayBuffer(rawBase64);
       const ext = pickExtFromMime(mimeType);
-      const result = await (window as any).electronAPI.invoke('images:save', { imageId: id, ext, buffer });
+      const result = await saveImageToBackend(id, ext, rawBase64);
       if (result?.success) {
         await db.images.put({
           id,

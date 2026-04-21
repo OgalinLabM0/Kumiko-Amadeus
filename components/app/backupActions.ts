@@ -55,6 +55,8 @@ import {
   writeDesktopBackupFile,
   buildDesktopBackupZip,
 } from '../../services/desktopBackupService';
+import { isMobilePwa } from '../../services/environment';
+import { httpBackupExport, httpBackupImport } from '../../services/httpApi';
 import { syncTemporalEpisodes } from '../../services/temporalEpisodeService';
 import { imageService } from '../../services/imageService';
 import {
@@ -494,8 +496,27 @@ export async function handleExportBackup(backupData: any) {
       return;
     }
 
-    // Web / PWA fallback: renderer-side JSZip + file-saver download. Only
-    // reached when `window.electronAPI` is absent (no main process).
+    // Mobile PWA: POST the serialized JSON to the desktop's
+    // /api/backup/export route and stream the zip blob back. The PC
+    // reads userData/images|voice|ringtone directly — same code path as
+    // desktop manual export — so the phone doesn't have to re-upload
+    // any media. We trigger a browser download by synthesizing an <a>
+    // click; the object URL is revoked right after to free memory.
+    if (isMobilePwa()) {
+      const result = await httpBackupExport(jsonString, defaultFileName);
+      if (!result.ok || !result.blob) {
+        const detail = result.error ? ` (${result.error})` : '';
+        console.error('[EXPORT] Mobile backup export failed:', result);
+        alert((language === 'zh' ? '备份导出失败。' : 'Failed to export backup.') + detail);
+        return;
+      }
+      saveAs(result.blob, defaultFileName);
+      alert(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
+      return;
+    }
+
+    // Web fallback (no electron, no PWA): renderer-side JSZip + file-
+    // saver download. Rare — just dev-server previews.
     const content = await buildWebBackupZipBlob(jsonString);
     saveAs(content, defaultFileName);
     alert(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
@@ -533,6 +554,19 @@ export async function handleImportBackup(
       }
       parsedJson = parsedResult.json;
       importedImages = parsedResult.images || [];
+    } else if (isMobilePwa()) {
+      // Mobile PWA: upload the raw file bytes to the desktop's
+      // /api/backup/import route. The server writes them to userData/
+      // mobile-imports/, runs the same `parseBackupImportFile` the
+      // desktop uses (voice/ringtone land in userData server-side), and
+      // returns the parsed data.json + image dataUrls the renderer
+      // still needs to write into Dexie through imageService.
+      const uploadResult = await httpBackupImport(file, file.name || 'backup.zip');
+      if (!uploadResult.ok || !uploadResult.result || !uploadResult.result.success) {
+        throw new Error(uploadResult.error || 'Failed to parse mobile backup upload.');
+      }
+      parsedJson = uploadResult.result.json;
+      importedImages = uploadResult.result.images || [];
     } else if (file.name.endsWith('.zip')) {
       const zip = await JSZip.loadAsync(file);
       let dataFile = zip.file('data.json');

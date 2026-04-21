@@ -1,3 +1,6 @@
+import { isMobilePwa } from './environment';
+import { httpInvoke, getHttpVoiceUrl } from './httpApi';
+
 const getIpc = () => {
     try {
         if (typeof window === 'undefined' || !(window as any).electronAPI) return null;
@@ -5,7 +8,21 @@ const getIpc = () => {
     } catch { return null; }
 };
 
-export const isVoiceServiceAvailable = () => !!getIpc();
+// On mobile PWA we don't have `window.electronAPI` but we do have the
+// desktop's HTTP IPC bridge. The voice / ringtone channels are already
+// whitelisted in Phase 3 Part B (images:save, voice:save, ringtone:save
+// decode base64 in useMobileApiProxy and forward to the real handlers),
+// so the mobile path is functionally identical to desktop.
+const hasBackend = (): boolean => !!getIpc() || isMobilePwa();
+
+export const isVoiceServiceAvailable = () => hasBackend();
+
+function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
+    const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+    return btoa(binary);
+}
 export const BUILT_IN_RINGTONE_FILE_RE = /^(0[1-8])\.mp3$/i;
 export const CUSTOM_RINGTONE_FILE_RE = /^custom\.(mp3|wav|ogg|m4a|aac|flac)$/i;
 
@@ -53,74 +70,126 @@ export const getBuiltInRingtoneUrl = (ringtoneFileId: string): string | null => 
 
 export async function saveVoiceFile(messageId: string, buffer: ArrayBuffer): Promise<boolean> {
     const ipc = getIpc();
-    if (!ipc) return false;
-    const result = await ipc.invoke('voice:save', { messageId, buffer: new Uint8Array(buffer) });
-    return result?.success === true;
+    if (ipc) {
+        const result = await ipc.invoke('voice:save', { messageId, buffer: new Uint8Array(buffer) });
+        return result?.success === true;
+    }
+    if (isMobilePwa()) {
+        const result = await httpInvoke<{ success?: boolean }>('voice:save', {
+            messageId,
+            bufferB64: arrayBufferToBase64(buffer),
+        });
+        return result?.success === true;
+    }
+    return false;
 }
 
 export async function loadVoiceFile(messageId: string): Promise<ArrayBuffer | null> {
     const ipc = getIpc();
-    if (!ipc) return null;
-    const result = await ipc.invoke('voice:load', { messageId });
-    if (!result?.success || !result.buffer) return null;
-    const buf = result.buffer;
-    if (buf instanceof ArrayBuffer) return buf;
-    if (buf?.buffer instanceof ArrayBuffer) return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    if (ipc) {
+        const result = await ipc.invoke('voice:load', { messageId });
+        if (!result?.success || !result.buffer) return null;
+        const buf = result.buffer;
+        if (buf instanceof ArrayBuffer) return buf;
+        if (buf?.buffer instanceof ArrayBuffer) return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        return null;
+    }
+    if (isMobilePwa()) {
+        try {
+            const response = await fetch(getHttpVoiceUrl(messageId), { credentials: 'include' });
+            if (!response.ok) return null;
+            return await response.arrayBuffer();
+        } catch { return null; }
+    }
     return null;
 }
 
 export async function deleteVoiceFile(messageId: string): Promise<boolean> {
     const ipc = getIpc();
-    if (!ipc) return false;
-    const result = await ipc.invoke('voice:delete', { messageId });
-    return result?.success === true;
+    if (ipc) {
+        const result = await ipc.invoke('voice:delete', { messageId });
+        return result?.success === true;
+    }
+    if (isMobilePwa()) {
+        const result = await httpInvoke<{ success?: boolean }>('voice:delete', { messageId });
+        return result?.success === true;
+    }
+    return false;
 }
 
 export async function listVoiceFiles(): Promise<VoiceFileInfo[]> {
     const ipc = getIpc();
-    if (!ipc) return [];
-    const result = await ipc.invoke('voice:list');
-    return result?.files ?? [];
+    if (ipc) {
+        const result = await ipc.invoke('voice:list');
+        return result?.files ?? [];
+    }
+    if (isMobilePwa()) {
+        const result = await httpInvoke<{ files?: VoiceFileInfo[] }>('voice:list', {});
+        return result?.files ?? [];
+    }
+    return [];
 }
 
 export async function openVoiceFolder(): Promise<void> {
     const ipc = getIpc();
-    if (!ipc) return;
+    if (!ipc) return; // Intentionally PC-only — a file-explorer open is meaningless on mobile.
     await ipc.invoke('voice:open-folder');
 }
 
 export async function getVoiceStorageInfo(): Promise<VoiceStorageInfo> {
     const ipc = getIpc();
-    if (!ipc) return { count: 0, totalBytes: 0 };
-    const result = await ipc.invoke('voice:get-storage-info');
-    return { count: result?.count ?? 0, totalBytes: result?.totalBytes ?? 0 };
+    if (ipc) {
+        const result = await ipc.invoke('voice:get-storage-info');
+        return { count: result?.count ?? 0, totalBytes: result?.totalBytes ?? 0 };
+    }
+    if (isMobilePwa()) {
+        const result = await httpInvoke<VoiceStorageInfo>('voice:get-storage-info', {});
+        return { count: result?.count ?? 0, totalBytes: result?.totalBytes ?? 0 };
+    }
+    return { count: 0, totalBytes: 0 };
 }
 
 export async function saveRingtoneFile(buffer: ArrayBuffer, ext: string, originalName?: string): Promise<boolean> {
     const ipc = getIpc();
-    if (!ipc) return false;
-    const result = await ipc.invoke('ringtone:save', {
-        buffer: new Uint8Array(buffer),
-        ext,
-        originalName,
-    });
-    return result?.success === true;
+    if (ipc) {
+        const result = await ipc.invoke('ringtone:save', {
+            buffer: new Uint8Array(buffer),
+            ext,
+            originalName,
+        });
+        return result?.success === true;
+    }
+    if (isMobilePwa()) {
+        const result = await httpInvoke<{ success?: boolean }>('ringtone:save', {
+            bufferB64: arrayBufferToBase64(buffer),
+            ext,
+            originalName,
+        });
+        return result?.success === true;
+    }
+    return false;
 }
 
 export async function loadRingtoneFile(): Promise<ArrayBuffer | null> {
     const ipc = getIpc();
-    if (!ipc) return null;
-    const result = await ipc.invoke('ringtone:load');
-    if (!result?.success || !result.buffer) return null;
-    const buf = result.buffer;
-    if (buf instanceof ArrayBuffer) return buf;
-    if (buf?.buffer instanceof ArrayBuffer) return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    if (ipc) {
+        const result = await ipc.invoke('ringtone:load');
+        if (!result?.success || !result.buffer) return null;
+        const buf = result.buffer;
+        if (buf instanceof ArrayBuffer) return buf;
+        if (buf?.buffer instanceof ArrayBuffer) return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        return null;
+    }
+    // Mobile ringtone streaming is delivered via the /media/ringtone
+    // route in Phase 5 Part D. Until then a phone that needs the raw
+    // buffer (e.g., to re-save during export) can simply rely on the
+    // server's userData copy via the backup HTTP routes.
     return null;
 }
 
 export async function loadRingtoneFileWithName(): Promise<{ buffer: ArrayBuffer; fileName: string; displayName: string } | null> {
     const ipc = getIpc();
-    if (!ipc) return null;
+    if (!ipc) return null; // Same rationale as loadRingtoneFile.
     const result = await ipc.invoke('ringtone:load');
     if (!result?.success || !result.buffer) return null;
     const buf = result.buffer;
