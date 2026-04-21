@@ -89,8 +89,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.6) 30%, rgba(0,0,0,0) 100%)', opacity: isOpen ? 1 : 0, pointerEvents: isOpen ? 'auto' : 'none', visibility: isOpen ? 'visible' : 'hidden', transition: isOpen ? 'opacity 300ms ease-out, visibility 0s 0s' : 'opacity 200ms ease-in, visibility 0s 200ms', willChange: 'opacity' }}>
-      <div className={`w-full max-w-md max-h-[90dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden relative ${bgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out' : 'opacity 200ms ease-in, transform 200ms ease-in', willChange: 'transform, opacity', contain: 'layout style paint' }}>
+    <div className="ka-mobile-fullbleed-backdrop fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.6) 30%, rgba(0,0,0,0) 100%)', opacity: isOpen ? 1 : 0, pointerEvents: isOpen ? 'auto' : 'none', visibility: isOpen ? 'visible' : 'hidden', transition: isOpen ? 'opacity 300ms ease-out, visibility 0s 0s' : 'opacity 200ms ease-in, visibility 0s 200ms', willChange: 'opacity' }}>
+      <div className={`ka-mobile-fullbleed-sheet w-full max-w-md max-h-[90dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden relative ${bgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out' : 'opacity 200ms ease-in, transform 200ms ease-in', willChange: 'transform, opacity', contain: 'layout style paint' }}>
         
         {/* Decorative Scanline */}
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-600 to-transparent opacity-50"></div>

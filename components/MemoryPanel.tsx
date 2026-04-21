@@ -554,8 +554,8 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
   // parent renders. See the PinnedModal definition + comment near the top of this file.
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(10,8,6,0.48) 24%, rgba(10,8,6,0.08) 100%)', opacity: isOpen ? 1 : 0, pointerEvents: isOpen ? 'auto' : 'none', visibility: isOpen ? 'visible' : 'hidden', transition: isOpen ? 'opacity 300ms ease-out, visibility 0s 0s' : 'opacity 200ms ease-in, visibility 0s 200ms', willChange: 'opacity' }}>
-      <div className={`w-full max-w-2xl max-h-[85dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden ${bgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out' : 'opacity 200ms ease-in, transform 200ms ease-in', willChange: 'transform, opacity', contain: 'layout style paint' }}>
+    <div className="ka-mobile-fullbleed-backdrop fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(10,8,6,0.48) 24%, rgba(10,8,6,0.08) 100%)', opacity: isOpen ? 1 : 0, pointerEvents: isOpen ? 'auto' : 'none', visibility: isOpen ? 'visible' : 'hidden', transition: isOpen ? 'opacity 300ms ease-out, visibility 0s 0s' : 'opacity 200ms ease-in, visibility 0s 200ms', willChange: 'opacity' }}>
+      <div className={`ka-mobile-fullbleed-sheet w-full max-w-2xl max-h-[85dvh] rounded-lg border shadow-2xl flex flex-col overflow-hidden ${bgClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out' : 'opacity 200ms ease-in, transform 200ms ease-in', willChange: 'transform, opacity', contain: 'layout style paint' }}>
         
         {/* Header */}
         <div className={`flex items-center justify-between px-4 py-3 border-b ${isDarkMode ? 'border-[#4f3926]' : 'border-[#ece3d8]'}`}>

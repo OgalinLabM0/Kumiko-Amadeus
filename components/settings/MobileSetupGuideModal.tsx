@@ -145,11 +145,11 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
         }
       `}</style>
       <div
-        className={`fixed inset-0 z-[120] flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal ${backdropAnimClass}`}
+        className={`ka-mobile-fullbleed-backdrop fixed inset-0 z-[120] flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal ${backdropAnimClass}`}
         style={{ background: 'radial-gradient(circle, rgba(0,0,0,0.62) 30%, rgba(0,0,0,0) 100%)' }}
       >
         <div
-          className={`relative w-full max-w-6xl h-full max-h-[92dvh] rounded-[1.2rem] border shadow-2xl overflow-hidden flex flex-col ${animClass} ${bgClass}`}
+          className={`ka-mobile-fullbleed-sheet relative w-full max-w-6xl h-full max-h-[92dvh] rounded-[1.2rem] border shadow-2xl overflow-hidden flex flex-col ${animClass} ${bgClass}`}
           style={{ contain: 'layout style paint' }}
           onAnimationEnd={handleAnimationEnd}
         >
