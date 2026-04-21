@@ -68,7 +68,29 @@ type BroadcastPayload =
   // the same VoiceCallOverlay UI the PC is showing, with buttons that
   // HTTP-post back to /api/call/action to invoke the PC's closures.
   | { type: 'call:state'; state: SlimCallState }
-  | { type: 'call:closed' };
+  | { type: 'call:closed' }
+  // Phase 6 Part B/C: desktop-authoritative config changed — every phone
+  // re-pulls its own local copy via the bootstrap channels. Payload is
+  // intentionally empty: the phone simply re-hydrates from the PC so we
+  // don't have to keep wire shapes for AIConfig / backup config in sync.
+  // `ai-config:changed` is emitted by `useMobileApiProxy.handleAIConfigUpdate`
+  // (when a phone saves a config) and by `useMobileBroadcaster` (when the
+  // desktop renderer mutates kumiko_ai_config). `backup:desktop-path-changed`
+  // is fired when the desktop AuthScreen/SettingsPanel connects, creates or
+  // disconnects a backup file.
+  | { type: 'ai-config:changed' }
+  | { type: 'backup:desktop-path-changed'; filePath: string | null; fileName: string | null };
+
+interface SlimMessageQuote {
+  id?: string;
+  text: string;
+  role: 'user' | 'model';
+}
+
+interface SlimGroundingSource {
+  uri: string;
+  title?: string;
+}
 
 interface SlimMessage {
   id: string;
@@ -79,6 +101,16 @@ interface SlimMessage {
   imageCaption: string | null;
   isVoiceMessage: boolean;
   voiceFileId: string | null;
+  // Fields below were previously dropped on the way to mobile, so the
+  // PWA rendered emotion-less bubbles, no pin indicator, no reply
+  // context, and no grounding footer even though the desktop UI had
+  // all four. They're cheap scalars / tiny arrays, so shipping them
+  // alongside the rest adds negligible WS payload.
+  storedEmotion: string | null;
+  isPinned: boolean;
+  isHidden: boolean;
+  quote: SlimMessageQuote | null;
+  groundingSources: SlimGroundingSource[] | null;
 }
 
 function slimMessage(m: Message): SlimMessage {
@@ -91,6 +123,19 @@ function slimMessage(m: Message): SlimMessage {
     imageCaption: m.imageCaption || null,
     isVoiceMessage: !!m.isVoiceMessage,
     voiceFileId: m.voiceFileId || null,
+    storedEmotion: typeof m.storedEmotion === 'string' && m.storedEmotion.length > 0
+      ? m.storedEmotion as unknown as string
+      : null,
+    isPinned: !!m.isPinned,
+    isHidden: !!m.isHidden,
+    quote: m.quote && typeof m.quote.text === 'string' && (m.quote.role === 'user' || m.quote.role === 'model')
+      ? { id: m.quote.id, text: m.quote.text, role: m.quote.role }
+      : null,
+    groundingSources: Array.isArray(m.groundingSources) && m.groundingSources.length > 0
+      ? m.groundingSources
+          .filter(src => src && typeof src.uri === 'string')
+          .map(src => ({ uri: src.uri, title: typeof src.title === 'string' ? src.title : undefined }))
+      : null,
   };
 }
 
@@ -121,9 +166,11 @@ function emit(payload: BroadcastPayload) {
 // Quick equality check for the fields a phone actually renders — we
 // skip broadcasting when the only change is a non-user-visible flag
 // like `isRead`. This keeps the phone's UI stable during bulk mutation
-// passes like "mark all as read".
+// passes like "mark all as read". Must stay in lockstep with the
+// SlimMessage shape above so emotion / pin / quote / grounding
+// updates on desktop reach phones in real time.
 function messageVisiblyChanged(a: Message, b: Message): boolean {
-  return (
+  if (
     a.text !== b.text
     || a.role !== b.role
     || a.timestamp !== b.timestamp
@@ -131,7 +178,28 @@ function messageVisiblyChanged(a: Message, b: Message): boolean {
     || a.imageCaption !== b.imageCaption
     || !!a.isVoiceMessage !== !!b.isVoiceMessage
     || a.voiceFileId !== b.voiceFileId
-  );
+    || !!a.isPinned !== !!b.isPinned
+    || !!a.isHidden !== !!b.isHidden
+    || (a.storedEmotion || '') !== (b.storedEmotion || '')
+  ) {
+    return true;
+  }
+
+  // Quote: compare text + role + id; ignore if both sides are empty.
+  const aQuoteKey = a.quote ? `${a.quote.id || ''}|${a.quote.role}|${a.quote.text}` : '';
+  const bQuoteKey = b.quote ? `${b.quote.id || ''}|${b.quote.role}|${b.quote.text}` : '';
+  if (aQuoteKey !== bQuoteKey) return true;
+
+  // Grounding sources: compare URI list order as a cheap shape proxy.
+  const aSources = Array.isArray(a.groundingSources) ? a.groundingSources : [];
+  const bSources = Array.isArray(b.groundingSources) ? b.groundingSources : [];
+  if (aSources.length !== bSources.length) return true;
+  for (let i = 0; i < aSources.length; i += 1) {
+    if ((aSources[i]?.uri || '') !== (bSources[i]?.uri || '')) return true;
+    if ((aSources[i]?.title || '') !== (bSources[i]?.title || '')) return true;
+  }
+
+  return false;
 }
 
 // Diff two sorted-by-timestamp message lists and produce the sequence of
@@ -204,6 +272,10 @@ export function useMobileBroadcaster() {
   // can distinguish "UI re-render but call unchanged" from a real
   // transition (ringing → connecting → playing → ended → closed).
   const lastCallSigRef = useRef<string | null>(null);
+  // Phase 6 Part C5: mirror the desktop's connectedFileName to all phones
+  // so when the user picks / disconnects a backup file at the PC,
+  // phones update their "saving to …" indicator in real time.
+  const lastBackupNameRef = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -226,6 +298,7 @@ export function useMobileBroadcaster() {
     // `messageAlerts` + `isMessageCenterOpen`. We derive a simple count.
     const initialUnread = state.messageAlerts?.length ?? 0;
     lastUnreadRef.current = initialUnread;
+    lastBackupNameRef.current = state.connectedFileName ?? null;
 
     const unsubscribe = useAppStore.subscribe((s) => {
       // Messages diff
@@ -251,6 +324,20 @@ export function useMobileBroadcaster() {
       if (unread !== lastUnreadRef.current) {
         lastUnreadRef.current = unread;
         emit({ type: 'status:unread', count: unread });
+      }
+
+      // Phase 6 Part C5: desktop's chosen backup file name fan-out. We send
+      // `filePath: null` for the PC-side wire because the desktop renderer
+      // only stores the basename in `connectedFileName`; the phone's
+      // useMobileMessageSync merely echoes `fileName` into its own store.
+      const connected = s.connectedFileName ?? null;
+      if (connected !== lastBackupNameRef.current) {
+        lastBackupNameRef.current = connected;
+        emit({
+          type: 'backup:desktop-path-changed',
+          filePath: null,
+          fileName: connected,
+        });
       }
 
       // Phase 5 Part D: voice-call overlay mirror.

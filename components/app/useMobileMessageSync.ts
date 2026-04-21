@@ -47,6 +47,17 @@ import { isMobilePwa } from '../../services/environment';
 import { db } from '../../services/db';
 import type { Message, EmotionType } from '../../types';
 
+interface SlimMessageQuote {
+  id?: string;
+  text: string;
+  role: 'user' | 'model';
+}
+
+interface SlimGroundingSource {
+  uri: string;
+  title?: string;
+}
+
 interface SlimMessage {
   id: string;
   role: 'user' | 'model';
@@ -56,14 +67,23 @@ interface SlimMessage {
   imageCaption: string | null;
   isVoiceMessage: boolean;
   voiceFileId: string | null;
+  // Kept in lockstep with the producer side (useMobileBroadcaster.ts).
+  // These are optional on the wire: undefined means "payload predates
+  // the extension" (PC still running old code during upgrade) and we
+  // fall back to the existing local value.
+  storedEmotion?: string | null;
+  isPinned?: boolean;
+  isHidden?: boolean;
+  quote?: SlimMessageQuote | null;
+  groundingSources?: SlimGroundingSource[] | null;
 }
 
 // Convert the wire-format slim payload into a full Message. The WS
-// broadcaster deliberately slims to the fields a phone renders; extra
-// per-message fields (isPinned, sendStatus, failReason, groundingSources,
-// storedEmotion, japaneseText, voiceDuration, quote) either default to
-// undefined on mobile or are merged in from an existing local copy when
-// we apply an update.
+// broadcaster includes the visually-relevant metadata (emotion, pin,
+// quote, grounding) so mobile UI can render emotion bubbles / pin
+// indicators / reply context the same way PC does. Other fields
+// (sendStatus, failReason, voiceDuration, japaneseText) are phone-
+// local and get merged in from an existing copy when present.
 function materialize(slim: SlimMessage, existing?: Message): Message {
   const base: Message = {
     id: slim.id,
@@ -75,6 +95,23 @@ function materialize(slim: SlimMessage, existing?: Message): Message {
     isVoiceMessage: slim.isVoiceMessage || undefined,
     voiceFileId: slim.voiceFileId ?? undefined,
   };
+  if (slim.storedEmotion !== undefined) {
+    base.storedEmotion = slim.storedEmotion === null
+      ? undefined
+      : (slim.storedEmotion as Message['storedEmotion']);
+  }
+  if (slim.isPinned !== undefined) base.isPinned = !!slim.isPinned;
+  if (slim.isHidden !== undefined) base.isHidden = !!slim.isHidden;
+  if (slim.quote !== undefined) {
+    base.quote = slim.quote === null
+      ? undefined
+      : { id: slim.quote.id, text: slim.quote.text, role: slim.quote.role };
+  }
+  if (slim.groundingSources !== undefined) {
+    base.groundingSources = slim.groundingSources === null
+      ? undefined
+      : slim.groundingSources.map(src => ({ uri: src.uri, title: src.title }));
+  }
   if (!existing) return base;
   // Preserve fields the PC didn't send but the phone might have learned
   // locally (e.g. sendStatus set when the phone optimistically rendered
@@ -239,6 +276,41 @@ export function useMobileMessageSync() {
         }
         if (event.type === 'call:closed') {
           useAppStore.getState().setVoiceCallOverlayData(null);
+          return;
+        }
+        // Phase 6 Part B: PC pushed a kumiko_ai_config change. Re-pull
+        // via bootstrap:ai-config so every phone (including the one that
+        // triggered the update) re-hydrates its local mirror. Deliberately
+        // fire-and-forget — if the bootstrap fetch fails the phone still
+        // runs on its previous local copy, and the next restart / manual
+        // reconnect will reconcile.
+        if (event.type === 'ai-config:changed') {
+          void httpInvoke<{ ok?: boolean; config?: string | null }>('bootstrap:ai-config')
+            .then((res) => {
+              if (res && res.ok && typeof res.config === 'string') {
+                try {
+                  localStorage.setItem('kumiko_ai_config', res.config);
+                } catch (err) {
+                  console.warn('[MOBILE-SYNC] failed to persist ai-config:', err);
+                }
+              }
+            })
+            .catch((err) => {
+              console.warn('[MOBILE-SYNC] bootstrap:ai-config refresh failed:', err);
+            });
+          return;
+        }
+        // Phase 6 Part C: PC connected / created / disconnected a local
+        // backup file. Mirror the resulting fileName into the phone's
+        // `connectedFileName` slice so the AuthScreen / BackupSection UI
+        // shows the current PC-side path. The full filePath is stored
+        // into window-level state only (see useLocalFileBackup) because
+        // the desktop's absolute path isn't useful to re-display beyond
+        // the basename in the existing UI.
+        if (event.type === 'backup:desktop-path-changed') {
+          const payload = event as unknown as { filePath?: string | null; fileName?: string | null };
+          const fileName = typeof payload.fileName === 'string' ? payload.fileName : null;
+          useAppStore.getState().setConnectedFileName(fileName);
           return;
         }
         // status:unread intentionally unhandled — see header comment.

@@ -30,6 +30,12 @@ import { db, type MessageEntity } from '../../services/db';
 import { getCurrentAIConfig } from '../../services/llmCore';
 import { sendUserMessageFromMobile } from './chatActions';
 import { useAppStore } from '../../store';
+import {
+  validateAIConnection,
+  validateModels,
+  validateSearchCapability,
+} from '../../services/aiValidation';
+import type { AIConfig } from '../../types';
 
 interface ProxyRequest {
   requestId: string;
@@ -403,6 +409,20 @@ const PASSTHROUGH_CHANNELS = new Set<string>([
   'rag:restore',
   'rag:clear-all',
   'rag:clear-message-vectors',
+  // Phase 6 Part C: mobile remote file browser + desktop backup I/O.
+  // Every handler lives in main (electron-main.cjs); the renderer here
+  // is just a forwarder. Root mutation channels are deliberately out of
+  // the phone's HTTP allowlist — they exist on PASSTHROUGH only so the
+  // desktop's SettingsPanel > MobileBrowseRootSection can hit them
+  // directly via electronAPI.invoke.
+  'fs:get-mobile-browse-root',
+  'fs:list-directory',
+  'fs:get-shortcuts',
+  'fs:check-path-exists',
+  'backup:read-desktop-file',
+  'backup:write-desktop-file',
+  'backup:set-desktop-backup-path',
+  'backup:disconnect-desktop-file',
 ]);
 
 async function invokeElectron(channel: string, args: unknown): Promise<unknown> {
@@ -413,6 +433,51 @@ async function invokeElectron(channel: string, args: unknown): Promise<unknown> 
     throw err;
   }
   return api.invoke(channel, args);
+}
+
+// Phase 6 Part B: AIConfigScreen on mobile proxies validate + save
+// through these. The phone's localStorage is ultimately re-synced from
+// bootstrap:ai-config (fired by the ai-config:changed broadcast below),
+// so the desktop remains the sole authority for API keys + provider
+// choices. Validation runs on PC so the Gemini / OpenAI / etc. network
+// call leaves only the desktop's IP, not the phone's.
+async function handleAIConfigValidate(args: unknown): Promise<boolean> {
+  if (!args || typeof args !== 'object') return false;
+  return validateAIConnection(args as AIConfig);
+}
+
+async function handleAIConfigValidateModels(args: unknown) {
+  if (!args || typeof args !== 'object') {
+    return { main: false, summary: false, vision: false };
+  }
+  return validateModels(args as AIConfig);
+}
+
+async function handleAIConfigValidateSearch(args: unknown) {
+  if (!args || typeof args !== 'object') {
+    return { success: false, message: 'invalid_config' };
+  }
+  return validateSearchCapability(args as AIConfig);
+}
+
+async function handleAIConfigUpdate(args: unknown): Promise<{ ok: boolean; error?: string }> {
+  if (!args || typeof args !== 'object') {
+    return { ok: false, error: 'invalid_config' };
+  }
+  try {
+    localStorage.setItem('kumiko_ai_config', JSON.stringify(args));
+    // Fan-out to every connected phone so they re-hydrate their
+    // localStorage from bootstrap:ai-config. useMobileMessageSync listens
+    // for the resulting `ai-config:changed` WS event.
+    try {
+      window.electronAPI?.send?.('mobile-event-broadcast', { type: 'ai-config:changed' });
+    } catch (e) {
+      console.warn('[MOBILE-PROXY] ai-config:changed broadcast failed:', e);
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
 }
 
 // Phase 5 Part D: invoke the currently-active VoiceCallOverlay's
@@ -455,6 +520,10 @@ async function dispatch(channel: string, args: unknown) {
     case 'bootstrap:ai-config': return handleBootstrapAiConfig();
     case 'bootstrap:snapshot': return handleBootstrapSnapshot();
     case 'call:action': return handleCallAction(args);
+    case 'ai-config:validate-from-mobile': return handleAIConfigValidate(args);
+    case 'ai-config:validate-models-from-mobile': return handleAIConfigValidateModels(args);
+    case 'ai-config:validate-search-from-mobile': return handleAIConfigValidateSearch(args);
+    case 'ai-config:update-from-mobile': return handleAIConfigUpdate(args);
     default: {
       if (PASSTHROUGH_CHANNELS.has(channel)) {
         return invokeElectron(channel, args);
