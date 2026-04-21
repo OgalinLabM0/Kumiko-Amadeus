@@ -80,6 +80,14 @@ const ALLOWED_CHANNELS = new Set([
   'messages:recent',
   'messages:search',
   'messages:load-older',
+  // Phase 4 Part E: one-shot hydration channels for mobile PWAs that
+  // render full <App /> instead of the old MobilePhase1App shell. These
+  // let the phone mirror the PC's Dexie + AI config on first load so
+  // the App.tsx boot path (useInitialLoadBootstrap, getCurrentAIConfig)
+  // finds real data instead of the phone's empty local IndexedDB and
+  // missing localStorage.
+  'bootstrap:snapshot',
+  'bootstrap:ai-config',
   // --- Passthrough reads ---------------------------------------------
   'app:get-weather',
   'app:get-historical-weather',

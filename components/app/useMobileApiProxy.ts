@@ -291,6 +291,60 @@ async function handleRingtoneSave(args: unknown) {
   });
 }
 
+// ── Phase 4 Part E hydration handlers ─────────────────────────────
+//
+// The phone renders the full <App /> now, which reads its initial state
+// from local Dexie + localStorage. Both of those are per-origin, so the
+// phone starts empty. These two handlers let the phone pull the PC's
+// state in one round-trip on boot:
+//
+//   bootstrap:ai-config → PC's `kumiko_ai_config` localStorage payload,
+//     so the phone's `getCurrentAIConfig()` matches the PC's model +
+//     provider + API key choices. The key is synced intentionally so
+//     that any UI that inspects the config (e.g. SettingsPanel) renders
+//     the same rows on both sides; actual LLM calls still run on PC
+//     because sendUserMessageFromMobile routes chat through the PC.
+//
+//   bootstrap:snapshot → the minimum Dexie slice useInitialLoadBootstrap
+//     needs: all `messages` rows, the kumikoDiary / dailyFragments /
+//     psycheState tables, and every `keyval` row the boot path reads
+//     (language, location, core memory, reminders, etc.). Vectors and
+//     images tables are explicitly excluded — they're enormous and the
+//     phone doesn't need them locally: RAG runs on PC and images stream
+//     via /media/images/:id.
+async function handleBootstrapAiConfig() {
+  try {
+    const raw = localStorage.getItem('kumiko_ai_config');
+    return { ok: true, config: raw };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+async function handleBootstrapSnapshot() {
+  try {
+    const [messages, kumikoDiary, dailyFragments, psycheStateRows, keyvalRows] = await Promise.all([
+      db.messages.orderBy('timestamp').toArray(),
+      db.kumikoDiary.orderBy('date').toArray(),
+      db.dailyFragments.orderBy('timestamp').toArray(),
+      db.psycheState.toArray(),
+      db.keyval.toArray(),
+    ]);
+    return {
+      ok: true,
+      snapshot: {
+        messages,
+        kumikoDiary,
+        dailyFragments,
+        psycheState: psycheStateRows,
+        keyval: keyvalRows,
+      },
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 // ── Passthrough to existing Electron IPC ─────────────────────────
 
 // Channels that accept args as-is and whose return shape is already
@@ -370,6 +424,8 @@ async function dispatch(channel: string, args: unknown) {
     case 'images:save': return handleImagesSave(args);
     case 'voice:save': return handleVoiceSave(args);
     case 'ringtone:save': return handleRingtoneSave(args);
+    case 'bootstrap:ai-config': return handleBootstrapAiConfig();
+    case 'bootstrap:snapshot': return handleBootstrapSnapshot();
     default: {
       if (PASSTHROUGH_CHANNELS.has(channel)) {
         return invokeElectron(channel, args);

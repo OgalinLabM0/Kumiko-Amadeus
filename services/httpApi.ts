@@ -35,6 +35,10 @@ export const PWA_ALLOWED_CHANNELS: ReadonlySet<string> = new Set([
   'messages:recent',
   'messages:search',
   'messages:load-older',
+  // Phase 4 Part E hydration channels. Phones fetch these once on boot
+  // so `<App />` sees PC data / PC API keys rather than empty local state.
+  'bootstrap:snapshot',
+  'bootstrap:ai-config',
   // Read-mostly passthrough to renderer IPC.
   'app:get-weather',
   'app:get-historical-weather',

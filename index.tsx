@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './components/App';
-import { MobilePhase1App } from './components/MobilePhase1App';
+import { MobilePairingGate } from './components/MobilePairingGate';
 import { isMobilePwa } from './services/environment';
 
 // PWA service worker registration.
@@ -79,12 +79,17 @@ if (!rootElement) {
 
 const root = ReactDOM.createRoot(rootElement);
 
-// Phase 1 split entry: phone PWAs served by the desktop Fastify tunnel
-// render a lightweight `MobilePhase1App`. The full desktop experience
-// (App.tsx + full store + Dexie wiring) remains untouched in Electron /
-// local dev contexts. Phase 2-5 will land responsive changes inside App
-// itself and retire this fork. See docs/mobile-remote-access.md.
-const RenderedShell = isMobilePwa() ? <MobilePhase1App /> : <App />;
+// Phase 4 Part E: unified entry. Desktop Electron and mobile PWA now
+// both render the same <App />. The mobile branch wraps App in
+// `MobilePairingGate`, which blocks render until the phone has a valid
+// session cookie (pairing token exchange), then transparently hands off
+// to App. App itself detects `isMobilePwa()` and auto-advances flowState
+// past the desktop onboarding wizard (INTRO → AUTH → CONFIG) so phones
+// land directly in the chat view. The previous `MobilePhase1App`
+// parallel entry is retired — see docs/mobile-remote-access.md.
+const RenderedShell = isMobilePwa()
+  ? <MobilePairingGate><App /></MobilePairingGate>
+  : <App />;
 
 root.render(
   <React.StrictMode>

@@ -32,6 +32,8 @@ import { useProactiveLifeCycle } from '../hooks/useProactiveLifeCycle';
 import { useBackupWorkflow } from '../hooks/useBackupWorkflow';
 import { useMobileApiProxy } from './app/useMobileApiProxy';
 import { useMobileBroadcaster } from './app/useMobileBroadcaster';
+import { useMobileMessageSync } from './app/useMobileMessageSync';
+import { sendChatFromMobile } from './app/mobileChatSend';
 import { useUnreadAlertsChrome } from '../hooks/useUnreadAlertsChrome';
 import { usePreferencesPersistence } from '../hooks/usePreferencesPersistence';
 import { useWorldBookLocalization } from '../hooks/useWorldBookLocalization';
@@ -151,6 +153,11 @@ export const App = () => {
   // Must run after useMobileApiProxy so both hooks share the same
   // electronAPI-not-available early exit pattern.
   useMobileBroadcaster();
+  // Phase 4 Part E: consume the broadcaster's events on the mobile side.
+  // On the PC (electronAPI present) this is a no-op; on mobile PWA it
+  // subscribes to /ws and applies message/status events to the local
+  // Zustand store so <App /> re-renders in real time.
+  useMobileMessageSync();
   const { devLogs, setDevLogs } = useDevLogs();
   const isBulkRestoreInProgressRef = useRef(false);
   const rawHistorySyncedIdsRef = useRef<Set<string>>(new Set());
@@ -301,6 +308,20 @@ export const App = () => {
     if (flowState !== 'APP' || !isDataLoaded) return;
     void runAutoDiaryBackfill();
   }, [flowState, isDataLoaded, runAutoDiaryBackfill]);
+
+  // Phase 4 Part E: mobile PWA skips the desktop onboarding wizard.
+  // INTRO/AUTH/CONFIG configure the *desktop's* local-file backup and
+  // AI provider settings — on a phone those are already handled by the
+  // PC backend we paired with via MobilePairingGate, so forcing INTRO
+  // → APP here keeps mobile users from staring at a blank
+  // "Connect / Pair with desktop" wizard that doesn't apply to them.
+  // Desktop Electron keeps the normal INTRO → AUTH → CONFIG → APP flow
+  // because the guard is gated on `isMobilePwa()`.
+  useEffect(() => {
+    if (!isMobilePwa()) return;
+    if (flowState !== 'INTRO') return;
+    setFlowState('APP');
+  }, [flowState, setFlowState]);
 
   const summaryRunningRef = useRef(false);
 
@@ -983,6 +1004,53 @@ export const App = () => {
   };
 
   const handleSend = useCallback(() => {
+    // Phase 4 Part E: on mobile PWA the full desktop pipeline cannot
+    // run locally (no API keys, no main-process file access, no Dexie
+    // authority). We route chat sends to the PC via /api/ipc/chat; the
+    // PC's useMobileApiProxy calls sendUserMessageFromMobile which runs
+    // the same executeSendCore() desktop does. New messages arrive back
+    // via the WebSocket broadcaster → useMobileMessageSync fold.
+    if (isMobilePwa()) {
+      const state = useAppStore.getState();
+      const text = state.inputValue;
+      const image = state.selectedImage;
+      const imageId = state.selectedImageId;
+      if ((!text || !text.trim()) && !image) return;
+      if (state.isThinking) return;
+      // Clear input immediately so the user sees the send "went through"
+      // even if the PC takes a few seconds to produce the model reply.
+      state.setInputValue('');
+      state.setSelectedImage(null);
+      state.setSelectedImageId(null);
+      state.setReplyingToMsg(null);
+      // The input-listening indicator is managed on PC now (the phone
+      // shows activity via broadcaster events). We still clear any
+      // stale countdown timer on the phone side so the UI doesn't flash
+      // a ghost "9s" badge after send.
+      state.setIsListening(false);
+      state.setTimeLeft(0);
+      void sendChatFromMobile({
+        text: (text || '').trim(),
+        imageId: imageId || undefined,
+      }).then((result) => {
+        if (result.unauthenticated) {
+          // Cookie expired — bounce back to MobilePairingGate which will
+          // re-pair. We also clear the hydration flag so next mount
+          // re-pulls PC state.
+          try { sessionStorage.removeItem('kumiko_mobile_hydrated'); } catch { /* ignore */ }
+          window.location.reload();
+          return;
+        }
+        if (!result.ok) {
+          useAppStore.getState().setSystemNotice(result.error || 'Failed to send message');
+          // Restore the text so the user can retry without retyping.
+          if (text) useAppStore.getState().setInputValue(text);
+          if (image) useAppStore.getState().setSelectedImage(image);
+          if (imageId) useAppStore.getState().setSelectedImageId(imageId);
+        }
+      });
+      return;
+    }
     handleSendAction(chatRefs);
   }, [inputValue, selectedImage, isThinking, isTalking, executeSend, replyingToMsg, locationConfig, language, messages, t.autoReplyText]);
 
