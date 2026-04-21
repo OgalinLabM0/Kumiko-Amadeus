@@ -539,7 +539,19 @@ export async function triggerTimedReminderMessage(
               showBackgroundNotification(combinedReminderText, 'reminder', voiceMsgId);
               const buf = await (await import('../../services/voiceFileService')).loadVoiceFile(voiceResult.voiceFileId!);
               if (buf) {
-                useAppStore.getState().setVoiceCallOverlayData((prev: any) => prev ? { ...prev, isConnecting: false, isPlayingVoice: true } : null);
+                // Phase 5 Part D: mirror voiceFileId into the overlay
+                // so the phone's mirrored overlay can HTTP-stream the
+                // clip in parallel with PC's local Blob playback. The
+                // PC renderer itself keeps using the Blob URL path
+                // below because the ArrayBuffer is already in hand
+                // (cheaper than re-fetching /media/voices/ over HTTP
+                // when we're the same process that just wrote it).
+                useAppStore.getState().setVoiceCallOverlayData((prev: any) => prev ? {
+                  ...prev,
+                  isConnecting: false,
+                  isPlayingVoice: true,
+                  voiceFileId: voiceResult.voiceFileId,
+                } : null);
 
                 const blob = new Blob([buf], { type: 'audio/mpeg' });
                 const url = URL.createObjectURL(blob);

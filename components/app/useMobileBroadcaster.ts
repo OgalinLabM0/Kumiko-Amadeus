@@ -26,7 +26,24 @@
 
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../../store';
-import type { Message } from '../../types';
+import type { Message, VoiceCallOverlayData } from '../../types';
+
+// Wire shape for the call overlay — the live Zustand entry carries
+// React closures (onAccept/onReject/onClose) that can't be serialized
+// to JSON. We strip them and let the phone re-synthesize its own
+// HTTP-posting callbacks on the receiving side. `ringtoneFileId` is
+// pulled from ttsConfig at broadcast time so the phone doesn't have
+// to round-trip a separate /api/ipc call before it can start ringing.
+interface SlimCallState {
+  reminderEvent: string;
+  reminderText: string;
+  emotion: string;
+  ringtoneFileId: string | null;
+  isConnecting: boolean;
+  isPlayingVoice: boolean;
+  isEnded: boolean;
+  voiceFileId: string | null;
+}
 
 type BroadcastPayload =
   | { type: 'message:added'; message: SlimMessage }
@@ -46,7 +63,12 @@ type BroadcastPayload =
   | { type: 'rag:rebuild:error'; job: unknown }
   | { type: 'backup:auto-zip'; status: unknown }
   | { type: 'update:state'; state: unknown }
-  | { type: 'genie:state'; state: unknown };
+  | { type: 'genie:state'; state: unknown }
+  // Phase 5 Part D: incoming-call overlay mirror. The phone recreates
+  // the same VoiceCallOverlay UI the PC is showing, with buttons that
+  // HTTP-post back to /api/call/action to invoke the PC's closures.
+  | { type: 'call:state'; state: SlimCallState }
+  | { type: 'call:closed' };
 
 interface SlimMessage {
   id: string;
@@ -69,6 +91,22 @@ function slimMessage(m: Message): SlimMessage {
     imageCaption: m.imageCaption || null,
     isVoiceMessage: !!m.isVoiceMessage,
     voiceFileId: m.voiceFileId || null,
+  };
+}
+
+function slimCallState(
+  call: VoiceCallOverlayData,
+  ringtoneFileId: string | undefined,
+): SlimCallState {
+  return {
+    reminderEvent: call.reminderEvent,
+    reminderText: call.reminderText,
+    emotion: call.emotion as unknown as string,
+    ringtoneFileId: typeof ringtoneFileId === 'string' && ringtoneFileId.length > 0 ? ringtoneFileId : null,
+    isConnecting: !!call.isConnecting,
+    isPlayingVoice: !!call.isPlayingVoice,
+    isEnded: !!call.isEnded,
+    voiceFileId: typeof call.voiceFileId === 'string' && call.voiceFileId.length > 0 ? call.voiceFileId : null,
   };
 }
 
@@ -162,6 +200,10 @@ export function useMobileBroadcaster() {
   const lastStatusLineRef = useRef<string | null>(null);
   const lastEmotionRef = useRef<string | null>(null);
   const lastUnreadRef = useRef<number | null>(null);
+  // Phase 5 Part D: remember the last broadcast call snapshot so we
+  // can distinguish "UI re-render but call unchanged" from a real
+  // transition (ringing → connecting → playing → ended → closed).
+  const lastCallSigRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -209,6 +251,29 @@ export function useMobileBroadcaster() {
       if (unread !== lastUnreadRef.current) {
         lastUnreadRef.current = unread;
         emit({ type: 'status:unread', count: unread });
+      }
+
+      // Phase 5 Part D: voice-call overlay mirror.
+      //
+      // voiceCallOverlayData transitions follow a tight ringing → connecting
+      // → playing → ended → (cleared) loop inside chatActions. We signature-
+      // compare the JSON-serializable fields against the last broadcast so
+      // we never emit "same state repeatedly" (chatActions sets the same
+      // object reference after prev?.isConnecting updates, but stored values
+      // are unchanged).
+      const call = s.voiceCallOverlayData;
+      if (!call) {
+        if (lastCallSigRef.current !== null) {
+          lastCallSigRef.current = null;
+          emit({ type: 'call:closed' });
+        }
+      } else {
+        const slim = slimCallState(call, s.ttsConfig?.ringtoneFileId);
+        const sig = JSON.stringify(slim);
+        if (sig !== lastCallSigRef.current) {
+          lastCallSigRef.current = sig;
+          emit({ type: 'call:state', state: slim });
+        }
       }
     });
 

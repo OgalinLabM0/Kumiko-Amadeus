@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { isDesktopElectron } from '../services/desktopBackupService';
+import { isMobilePwa } from '../services/environment';
 import { showBackgroundNotification } from '../components/app/chatActions';
 import type { MessageAlertKind, MissedMessageAlert } from '../types';
 
@@ -101,6 +102,30 @@ export function useUnreadAlertsChrome(
         ipc?.send('app:update-unread-state', { count: unreadAlertCount });
       } catch (error) {
         console.warn('[UNREAD] Failed to sync unread state to Electron shell:', error);
+      }
+    }
+
+    // Phase 5 Part B: native app-badge for mobile PWAs. Android Chrome
+    // ≥ 81, iOS 16.4+ installed-to-home-screen, desktop Edge/Chrome all
+    // honor setAppBadge when the PWA is in the foreground. The service
+    // worker also writes the badge on push arrival (sw.ts) — this
+    // effect covers the in-session case where messages come in while
+    // the PWA is the foreground app (push is suppressed then).
+    // Permission failures + unsupported browsers are silently ignored
+    // so desktop web fallbacks don't flood the console.
+    if (isMobilePwa()) {
+      const nav = navigator as Navigator & {
+        setAppBadge?: (count?: number) => Promise<void>;
+        clearAppBadge?: () => Promise<void>;
+      };
+      if (typeof nav.setAppBadge === 'function') {
+        if (unreadAlertCount > 0) {
+          void nav.setAppBadge(unreadAlertCount).catch(() => { /* ignore */ });
+        } else if (typeof nav.clearAppBadge === 'function') {
+          void nav.clearAppBadge().catch(() => { /* ignore */ });
+        } else {
+          void nav.setAppBadge(0).catch(() => { /* ignore */ });
+        }
       }
     }
   }, [unreadAlertCount]);

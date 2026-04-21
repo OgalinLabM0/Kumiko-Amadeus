@@ -28,6 +28,13 @@
 //     each is subscribed by its own feature hook (localRagService,
 //     useAppUpdater, TtsConfigSection, useAutoZipProgress).
 //
+// Phase 5 Part D additions:
+//   - call:state / call:closed → reconstructs VoiceCallOverlayData on
+//     the phone with callbacks that HTTP-post to /api/ipc/call:action.
+//     The PC's renderer holds the real onAccept/onReject closures; we
+//     just relay the user's tap over HTTP so the PC's promise resolves
+//     correctly (otherwise the reminder-handling chat pipeline hangs).
+//
 // Desktop Electron short-circuits: isMobilePwa() is false there, so
 // this hook is a no-op and the renderer's local Zustand mutations are
 // already authoritative. We do NOT want to double-apply events on the
@@ -35,7 +42,7 @@
 
 import { useEffect } from 'react';
 import { useAppStore } from '../../store';
-import { subscribeEvents, type MobileEvent } from '../../services/httpApi';
+import { subscribeEvents, httpInvoke, type MobileEvent } from '../../services/httpApi';
 import { isMobilePwa } from '../../services/environment';
 import { db } from '../../services/db';
 import type { Message, EmotionType } from '../../types';
@@ -138,6 +145,55 @@ function applyDelete(id: string) {
   });
 }
 
+// Phase 5 Part D: wire-shape for the call overlay snapshot emitted by
+// useMobileBroadcaster. The PC's real VoiceCallOverlayData carries React
+// closures which can't cross the WS boundary; we reconstruct phone-side
+// closures that HTTP-post back to /api/ipc/call:action so taps on the
+// phone invoke the same onAccept/onReject promises the PC is waiting on.
+interface WireCallState {
+  reminderEvent: string;
+  reminderText: string;
+  emotion: string;
+  ringtoneFileId: string | null;
+  isConnecting: boolean;
+  isPlayingVoice: boolean;
+  isEnded: boolean;
+  voiceFileId: string | null;
+}
+
+// Best-effort fire-and-forget. We log to console on failure rather than
+// surfacing to the user because the WS will quickly replay the PC's
+// next state transition (e.g. call:closed) if the action actually
+// succeeded but the HTTP hop failed mid-response.
+function postCallAction(action: 'accept' | 'reject' | 'close') {
+  void httpInvoke('call:action', { action }).catch((e) => {
+    console.warn('[MOBILE-SYNC] call:action failed:', action, e);
+  });
+}
+
+function applyCallState(wire: WireCallState) {
+  const store = useAppStore.getState();
+  // Merge ringtoneFileId back into ttsConfig on mobile so the overlay
+  // can resolve the correct ringtone. The phone's ttsConfig is already
+  // hydrated by bootstrap:ai-config, but the PC might have changed
+  // ringtone in between and we want the overlay to match.
+  if (wire.ringtoneFileId && store.ttsConfig && store.ttsConfig.ringtoneFileId !== wire.ringtoneFileId) {
+    store.setTtsConfig((prev) => ({ ...prev, ringtoneFileId: wire.ringtoneFileId as string }));
+  }
+  store.setVoiceCallOverlayData({
+    reminderEvent: wire.reminderEvent,
+    reminderText: wire.reminderText,
+    emotion: wire.emotion as EmotionType,
+    isConnecting: wire.isConnecting,
+    isPlayingVoice: wire.isPlayingVoice,
+    isEnded: wire.isEnded,
+    voiceFileId: wire.voiceFileId ?? undefined,
+    onAccept: () => postCallAction('accept'),
+    onReject: () => postCallAction('reject'),
+    onClose: () => postCallAction('close'),
+  });
+}
+
 export function useMobileMessageSync() {
   useEffect(() => {
     if (!isMobilePwa()) return;
@@ -171,6 +227,18 @@ export function useMobileMessageSync() {
           if (typeof emotion === 'string' && emotion.length > 0) {
             useAppStore.getState().setCurrentEmotion(emotion as EmotionType);
           }
+          return;
+        }
+        // Phase 5 Part D: mirror PC's voice-call overlay.
+        if (event.type === 'call:state') {
+          const wire = (event as unknown as { state?: WireCallState }).state;
+          if (wire && typeof wire === 'object' && typeof wire.reminderEvent === 'string') {
+            applyCallState(wire);
+          }
+          return;
+        }
+        if (event.type === 'call:closed') {
+          useAppStore.getState().setVoiceCallOverlayData(null);
           return;
         }
         // status:unread intentionally unhandled — see header comment.

@@ -28,23 +28,67 @@ export default defineConfig(({ mode }) => {
             injectionPoint: undefined
           },
           manifest: {
-            name: 'Kumiko Amadeus',
+            // Phase 5 Part C: complete PWA manifest.
+            //
+            // - `name` / `short_name` / `description` power the "Add to
+            //   Home Screen" prompt + the installed app entry on iOS/
+            //   Android launchers.
+            // - `theme_color` matches the desktop UI's primary accent so
+            //   Android's status bar blends into the chat gradient rather
+            //   than showing a jarring white strip when scrolled.
+            // - `background_color` is only shown between the splash and
+            //   first paint; we use the same warm cream the IntroScreen
+            //   uses so the hand-off is invisible.
+            // - `display: 'standalone'` opts into the "looks like a
+            //   native app" container; iOS 16.4+ only enables Web Push
+            //   for PWAs installed to the home screen in standalone
+            //   mode, so this is non-negotiable.
+            // - `orientation: 'portrait'` prevents iPad-class devices
+            //   from forcing landscape and scrambling the chat layout.
+            // - `categories` helps some stores classify the PWA.
+            // - `scope: '/'` keeps the PWA bound to the origin so deep
+            //   links never escape into Safari.
+            // - Icon set covers the square formats Android pickers want
+            //   plus maskable variants so rounded corners / adaptive
+            //   shapes on Pixel/OnePlus don't clip the artwork.
+            name: 'Kumiko·Amadeus',
             short_name: 'Kumiko',
-            theme_color: '#ffffff',
-            background_color: '#ffffff',
+            description: 'Private AI companion synced with your desktop — chat, reminders, and memory, available on your phone.',
+            theme_color: '#f9f7f2',
+            background_color: '#f9f7f2',
             display: 'standalone',
+            orientation: 'portrait',
+            start_url: '/',
+            scope: '/',
+            lang: 'zh',
+            dir: 'ltr',
+            categories: ['productivity', 'utilities', 'lifestyle'],
             icons: [
               {
                 src: 'icon-192.png',
                 sizes: '192x192',
-                type: 'image/png'
+                type: 'image/png',
+                purpose: 'any',
               },
               {
                 src: 'icon-512.png',
                 sizes: '512x512',
-                type: 'image/png'
-              }
-            ]
+                type: 'image/png',
+                purpose: 'any',
+              },
+              {
+                src: 'icon-192.png',
+                sizes: '192x192',
+                type: 'image/png',
+                purpose: 'maskable',
+              },
+              {
+                src: 'icon-512.png',
+                sizes: '512x512',
+                type: 'image/png',
+                purpose: 'maskable',
+              },
+            ],
           },
           devOptions: {
             enabled: true,

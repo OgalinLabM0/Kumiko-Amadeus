@@ -34,6 +34,7 @@ import { useMobileApiProxy } from './app/useMobileApiProxy';
 import { useMobileBroadcaster } from './app/useMobileBroadcaster';
 import { useMobileMessageSync } from './app/useMobileMessageSync';
 import { sendChatFromMobile } from './app/mobileChatSend';
+import { ensurePushSubscription } from '../services/pushSubscriptionService';
 import { useUnreadAlertsChrome } from '../hooks/useUnreadAlertsChrome';
 import { usePreferencesPersistence } from '../hooks/usePreferencesPersistence';
 import { useWorldBookLocalization } from '../hooks/useWorldBookLocalization';
@@ -322,6 +323,28 @@ export const App = () => {
     if (flowState !== 'INTRO') return;
     setFlowState('APP');
   }, [flowState, setFlowState]);
+
+  // Phase 5 Part A: opportunistic Web Push refresh on mobile.
+  // MobilePairingGate fires `ensurePushSubscription` the first time the
+  // user taps "Pair phone" (while the iOS user-gesture window is still
+  // open for requestPermission). For every *subsequent* launch — where
+  // notification permission is already 'granted' and no prompt is
+  // needed — this effect rehydrates the subscription so:
+  //   - if the service worker updated and the browser invalidated the
+  //     old push subscription, we rebuild it,
+  //   - if the desktop's VAPID key rotated (e.g. userData wiped and
+  //     regenerated), we re-register against the new key,
+  //   - if the server lost our row (subscriptions.json corruption),
+  //     the first chat push won't be silently dropped — the next boot
+  //     restores it.
+  // Denied / default permissions short-circuit inside the helper so we
+  // never spam the permission prompt outside the pair flow.
+  useEffect(() => {
+    if (!isMobilePwa()) return;
+    if (typeof Notification === 'undefined') return;
+    if (Notification.permission !== 'granted') return;
+    void ensurePushSubscription();
+  }, []);
 
   const summaryRunningRef = useRef(false);
 
@@ -1313,6 +1336,7 @@ export const App = () => {
           isConnecting={voiceCallOverlayData.isConnecting}
           isPlayingVoice={voiceCallOverlayData.isPlayingVoice}
           isEnded={voiceCallOverlayData.isEnded}
+          voiceFileId={voiceCallOverlayData.voiceFileId}
         />
       )}
       <SystemToast message={systemNotice} onClose={() => setSystemNotice(null)} isDarkMode={isDarkMode} />

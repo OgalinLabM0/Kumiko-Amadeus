@@ -182,6 +182,36 @@ function findVoiceFile(messageId) {
   }
 }
 
+// Phase 5 Part D: ringtone streaming counterpart of findImageFile /
+// findVoiceFile. The user only ever has ONE custom ringtone stored
+// under userData/ringtone/custom.{ext}, so this helper doesn't take an
+// id — it just finds whichever extension the user uploaded. Returns
+// null when no custom ringtone has been saved.
+//
+// Built-in ringtones (01.mp3 .. 08.mp3) are NOT handled here — they
+// ship in the dist/ringtones/ bundle and are served by the generic
+// @fastify/static root handler, so the phone can load them the same
+// way the desktop renderer does.
+function findRingtoneFile() {
+  try {
+    const dir = getRingtoneDir();
+    const entries = listCustomRingtoneFiles(dir);
+    if (entries.length === 0) return null;
+    const fileName = entries[0];
+    const filePath = path.join(dir, fileName);
+    const ext = path.extname(fileName).toLowerCase().replace(/^\./, '');
+    const mimeType = ext === 'wav' ? 'audio/wav'
+      : ext === 'ogg' ? 'audio/ogg'
+      : ext === 'm4a' ? 'audio/mp4'
+      : ext === 'aac' ? 'audio/aac'
+      : ext === 'flac' ? 'audio/flac'
+      : 'audio/mpeg';
+    return { path: filePath, ext, mimeType, fileName };
+  } catch {
+    return null;
+  }
+}
+
 // ── Image IPC handlers ────────────────────────────────────────────
 
 function handleImagesSave(_event, payload = {}) {
@@ -427,6 +457,7 @@ module.exports = {
   RINGTONE_AUDIO_EXTENSIONS,
   findImageFile,
   findVoiceFile,
+  findRingtoneFile,
   handleImagesSave,
   handleImagesLoad,
   handleImagesDelete,

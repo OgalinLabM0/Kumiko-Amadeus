@@ -39,6 +39,11 @@ export const PWA_ALLOWED_CHANNELS: ReadonlySet<string> = new Set([
   // so `<App />` sees PC data / PC API keys rather than empty local state.
   'bootstrap:snapshot',
   'bootstrap:ai-config',
+  // Phase 5 Part D: mobile taps on the call overlay buttons route
+  // through this synthetic channel. The renderer looks up the active
+  // voiceCallOverlayData and invokes the matching closure; the phone
+  // just relays the user intent and trusts PC-side state.
+  'call:action',
   // Read-mostly passthrough to renderer IPC.
   'app:get-weather',
   'app:get-historical-weather',
@@ -240,6 +245,18 @@ export function getHttpImageUrl(imageId: string): string {
 export function getHttpVoiceUrl(voiceFileId: string): string {
   assertMobileContext();
   return `${getApiBaseUrl()}/media/voices/${encodeURIComponent(voiceFileId)}`;
+}
+
+// Phase 5 Part D: return the PWA-reachable URL for the user's custom
+// ringtone. There is at most one custom ringtone per user so this
+// takes no id — the server's `/media/ringtone` route resolves the
+// file based on userData alone. Callers that might also need to
+// handle the built-in 01.mp3..08.mp3 bucket should go through
+// voiceFileService.resolveRingtoneAudioSource instead; that wrapper
+// picks the right flavor (static /ringtones/ vs this HTTP stream).
+export function getHttpCustomRingtoneUrl(): string {
+  assertMobileContext();
+  return `${getApiBaseUrl()}/media/ringtone`;
 }
 
 // ── Backup export / import (Phase 3 Part C) ──────────────────────

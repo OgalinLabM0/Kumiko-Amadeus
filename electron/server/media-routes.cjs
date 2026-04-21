@@ -13,7 +13,7 @@
 'use strict';
 
 const fs = require('fs');
-const { findImageFile, findVoiceFile } = require('../media-files.cjs');
+const { findImageFile, findVoiceFile, findRingtoneFile } = require('../media-files.cjs');
 
 function streamFile(request, reply, found, kindTag) {
   let stats;
@@ -58,6 +58,22 @@ async function registerMediaRoutes(fastify) {
       return;
     }
     return streamFile(request, reply, found, 'voice');
+  });
+
+  // Phase 5 Part D: stream the user's custom ringtone. Built-in
+  // ringtones are handled transparently by the @fastify/static mount
+  // at /ringtones/0X.mp3; this endpoint fills the gap for the single
+  // custom upload saved under userData/ringtone/custom.{ext}. It
+  // deliberately takes no id param (there is at most one custom
+  // ringtone file per user) so callers don't need to know the
+  // extension the user chose.
+  fastify.get('/media/ringtone', async (request, reply) => {
+    const found = findRingtoneFile();
+    if (!found) {
+      reply.code(404).type('application/json').send({ error: 'Custom ringtone not found' });
+      return;
+    }
+    return streamFile(request, reply, found, 'ringtone');
   });
 }
 

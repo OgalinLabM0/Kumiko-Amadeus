@@ -1,5 +1,5 @@
 import { isMobilePwa } from './environment';
-import { httpInvoke, getHttpVoiceUrl } from './httpApi';
+import { httpInvoke, getHttpVoiceUrl, getHttpCustomRingtoneUrl } from './httpApi';
 
 const getIpc = () => {
     try {
@@ -207,6 +207,11 @@ export async function loadRingtoneFileWithName(): Promise<{ buffer: ArrayBuffer;
 
 export async function resolveRingtoneAudioSource(ringtoneFileId?: string | null): Promise<RingtoneAudioSource | null> {
     if (isBuiltInRingtoneId(ringtoneFileId)) {
+        // Built-in ringtones ship inside dist/ringtones/ so both
+        // Electron's file:// loader and Fastify's @fastify/static mount
+        // serve them without any special handling. getBuiltInRingtoneUrl
+        // resolves against window.location.href which correctly becomes
+        // https://<tailscale>:<port>/ringtones/0X.mp3 on mobile.
         const src = getBuiltInRingtoneUrl(ringtoneFileId);
         if (!src) return null;
         return {
@@ -217,6 +222,21 @@ export async function resolveRingtoneAudioSource(ringtoneFileId?: string | null)
     }
 
     if (isCustomRingtoneId(ringtoneFileId)) {
+        // Phase 5 Part D: on mobile PWA, stream the custom ringtone
+        // directly from the desktop's /media/ringtone route instead of
+        // shuttling its bytes through a JSON IPC bridge. This matches
+        // the voice-clip and image paths (fetch the blob via HTTP,
+        // let the browser cache and range-request it).
+        if (isMobilePwa()) {
+            const fileName = ringtoneFileId;
+            const src = getHttpCustomRingtoneUrl();
+            return {
+                kind: 'custom',
+                src,
+                fileName,
+                displayName: fileName,
+            };
+        }
         const loaded = await loadRingtoneFileWithName();
         if (!loaded) return null;
         const blob = new Blob([loaded.buffer], { type: getAudioMimeTypeForFileName(loaded.fileName) });

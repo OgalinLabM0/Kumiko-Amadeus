@@ -267,6 +267,11 @@ export interface VoiceCallOverlayData {
   isConnecting?: boolean;
   isPlayingVoice?: boolean;
   isEnded?: boolean;
+  // Phase 5 Part D: populated by the PC once the voice pipeline
+  // resolves, so the mobile VoiceCallOverlay can HTTP-stream the same
+  // clip instead of relying on a renderer-local Blob URL. Unused on
+  // desktop (PC renderer already owns the ArrayBuffer in chatActions).
+  voiceFileId?: string;
 }
 
 declare global {

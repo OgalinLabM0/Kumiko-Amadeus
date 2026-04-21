@@ -88,6 +88,12 @@ const ALLOWED_CHANNELS = new Set([
   // missing localStorage.
   'bootstrap:snapshot',
   'bootstrap:ai-config',
+  // Phase 5 Part D: mobile's only way to invoke the PC-side
+  // VoiceCallOverlay closures (accept/reject/close). Forwarded to the
+  // renderer's useMobileApiProxy handleCallAction, which reads the live
+  // Zustand state so a late-arriving action for an already-closed call
+  // is a harmless no-op.
+  'call:action',
   // --- Passthrough reads ---------------------------------------------
   'app:get-weather',
   'app:get-historical-weather',

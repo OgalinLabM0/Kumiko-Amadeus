@@ -29,6 +29,7 @@ import { useEffect } from 'react';
 import { db, type MessageEntity } from '../../services/db';
 import { getCurrentAIConfig } from '../../services/llmCore';
 import { sendUserMessageFromMobile } from './chatActions';
+import { useAppStore } from '../../store';
 
 interface ProxyRequest {
   requestId: string;
@@ -414,6 +415,33 @@ async function invokeElectron(channel: string, args: unknown): Promise<unknown> 
   return api.invoke(channel, args);
 }
 
+// Phase 5 Part D: invoke the currently-active VoiceCallOverlay's
+// closure from the mobile side. The phone sees the same ringing
+// overlay via the call:state WS broadcast (useMobileBroadcaster) and
+// POSTs {action} back through /api/ipc/call:action when the user taps
+// accept/reject/close. We resolve against the live Zustand state so
+// stale payloads for a call that already closed become no-ops
+// instead of resurrecting a dead promise.
+function handleCallAction(args: unknown): { ok: boolean; reason?: string } {
+  const raw = (args as { action?: unknown })?.action;
+  const action = typeof raw === 'string' ? raw : '';
+  if (action !== 'accept' && action !== 'reject' && action !== 'close') {
+    return { ok: false, reason: 'invalid_action' };
+  }
+  const call = useAppStore.getState().voiceCallOverlayData;
+  if (!call) {
+    return { ok: false, reason: 'no_active_call' };
+  }
+  try {
+    if (action === 'accept') call.onAccept();
+    else if (action === 'reject') call.onReject();
+    else if (action === 'close') (call.onClose || (() => useAppStore.getState().setVoiceCallOverlayData(null)))();
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message || 'callback_threw' };
+  }
+}
+
 async function dispatch(channel: string, args: unknown) {
   switch (channel) {
     case 'ping': return handlePing(args);
@@ -426,6 +454,7 @@ async function dispatch(channel: string, args: unknown) {
     case 'ringtone:save': return handleRingtoneSave(args);
     case 'bootstrap:ai-config': return handleBootstrapAiConfig();
     case 'bootstrap:snapshot': return handleBootstrapSnapshot();
+    case 'call:action': return handleCallAction(args);
     default: {
       if (PASSTHROUGH_CHANNELS.has(channel)) {
         return invokeElectron(channel, args);

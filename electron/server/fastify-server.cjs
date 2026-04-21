@@ -40,7 +40,9 @@ const ipcBridge = require('./ipc-bridge.cjs');
 const tailscaleCert = require('./tailscale-cert.cjs');
 const { registerMediaRoutes } = require('./media-routes.cjs');
 const { registerBackupRoutes } = require('./backup-routes.cjs');
+const { registerPushRoutes } = require('./push-routes.cjs');
 const wsBroadcast = require('./ws-broadcast.cjs');
+const pushNotifications = require('./push-notifications.cjs');
 
 let fastifyInstance = null;
 let activeConfig = null; // { port, hostname, certPath, keyPath }
@@ -216,6 +218,17 @@ async function buildApp({ certPath, keyPath }) {
     await registerBackupRoutes(scoped);
   });
 
+  // ── Web Push subscription API (Phase 5 Part A) ───────────────
+  //
+  // Lets the phone PWA ask for our VAPID public key and register /
+  // unregister its push subscription. The actual push emission is
+  // driven by the mobile-event-broadcast IPC listener inside
+  // push-notifications.cjs; these routes just manage the roster.
+  fastify.register(async function pushScope(scoped) {
+    scoped.addHook('preHandler', requireSession);
+    await registerPushRoutes(scoped);
+  });
+
   // ── PWA static bundle ─────────────────────────────────────────
   //
   // Served last so the SPA fallback doesn't accidentally match an /api/
@@ -325,6 +338,10 @@ async function start({ mainWindow, preferredPort } = {}) {
     ipcBridge.installIpcListener();
   }
   wsBroadcast.install();
+  // Phase 5 Part A: ensure the push subsystem is live before the first
+  // Fastify request lands. init() is idempotent so re-starting the
+  // server (e.g. after a port change) won't reload subscriptions.
+  pushNotifications.init();
 
   fastifyInstance = fastify;
   activeConfig = {
@@ -373,6 +390,7 @@ async function stop() {
   ipcBridge.clearRendererTarget();
   ipcBridge.uninstallIpcListener();
   wsBroadcast.uninstall();
+  pushNotifications.dispose();
   if (instance) {
     try { await instance.close(); } catch (e) {
       console.warn('[MOBILE-SERVER] Error while closing Fastify:', e && e.message);

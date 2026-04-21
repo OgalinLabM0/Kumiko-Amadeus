@@ -31,6 +31,7 @@ import {
   httpStatus,
 } from '../services/httpApi';
 import { db, type DailyFragmentEntity, type KeyValEntity, type KumikoDiaryEntity, type MessageEntity, type PsycheStateEntity } from '../services/db';
+import { ensurePushSubscription } from '../services/pushSubscriptionService';
 
 type GateState =
   | { kind: 'loading' }
@@ -135,6 +136,16 @@ function PairingView({
         setError(result.error || 'Pairing failed.');
         return;
       }
+      // Phase 5 Part A: while we still own the user-gesture context from
+      // the "Pair phone" tap, kick off Web Push registration. iOS 16.4+
+      // requires Notification.requestPermission() to fire from a user
+      // gesture, and this is the only hands-on moment we have in the
+      // pairing flow. A 401 back from subscribe would be benign — the
+      // session is already valid (we just paired); the HTTP error path
+      // just returns { ok: false, reason }. We don't await it because
+      // hydration can start in parallel and the subscription is best
+      // effort — users can retry from Settings later.
+      void ensurePushSubscription();
       onPaired();
     } catch (e) {
       setError((e as Error).message || 'Network error.');

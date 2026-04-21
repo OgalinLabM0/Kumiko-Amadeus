@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Phone, PhoneOff, Loader2, X } from 'lucide-react';
 import { resolveRingtoneAudioSource } from '../services/voiceFileService';
+import { isMobilePwa } from '../services/environment';
+import { getHttpVoiceUrl } from '../services/httpApi';
 import type { Language } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
 
@@ -16,6 +18,12 @@ interface VoiceCallOverlayProps {
   isConnecting?: boolean;
   isPlayingVoice?: boolean;
   isEnded?: boolean;
+  // Phase 5 Part D: populated by the PC once the voice pipeline
+  // resolves. On mobile we open an <audio> against /media/voices/:id
+  // so the phone hears Kumiko's clip in parallel with the PC's local
+  // Blob playback. Desktop ignores this — chatActions already owns an
+  // ArrayBuffer-backed <audio> and doesn't need to re-fetch.
+  voiceFileId?: string;
 }
 
 export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
@@ -30,12 +38,17 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
   isConnecting,
   isPlayingVoice,
   isEnded,
+  voiceFileId,
 }) => {
   const t = UI_TRANSLATIONS[language];
   const ringtoneRef = useRef<HTMLAudioElement | null>(null);
   const ringtoneCleanupRef = useRef<(() => void) | null>(null);
   const acceptedRef = useRef(false);
   const callStartRef = useRef<number>(0);
+  // Phase 5 Part D: track the mobile-only voice element separately so
+  // it can be torn down independently of the ringtone. On desktop this
+  // ref stays null and chatActions owns the playback path instead.
+  const voiceAudioRef = useRef<HTMLAudioElement | null>(null);
   const [phase, setPhase] = useState<'ringing' | 'connecting' | 'active' | 'ended'>('ringing');
   const [callDuration, setCallDuration] = useState(0);
 
@@ -90,6 +103,43 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
       }
     };
   }, [phase, ringtoneFileId]);
+
+  // Phase 5 Part D: mobile-side voice playback. When the PC tells the
+  // phone the call transitioned to `isPlayingVoice=true` and which
+  // voiceFileId to stream, we open an <audio> against /media/voices/:id
+  // so Kumiko's voice plays on the phone instead of (or alongside)
+  // the PC speaker. Desktop path is unchanged — chatActions.ts owns
+  // the Blob URL playback there and we never enter this block because
+  // isMobilePwa() is false.
+  useEffect(() => {
+    if (!isMobilePwa()) return;
+    if (phase !== 'active' || !voiceFileId) return;
+    let cancelled = false;
+    const src = getHttpVoiceUrl(voiceFileId);
+    const audio = new Audio(src);
+    audio.preload = 'auto';
+    audio.volume = 1.0;
+    voiceAudioRef.current = audio;
+    audio.addEventListener('ended', () => {
+      if (!cancelled) {
+        // Parent controls the ended flag via PC-side state. We can't
+        // set it locally (would desync from desktop's timer), so we
+        // just let the PC's `isEnded` broadcast drive the transition.
+        try { audio.src = ''; } catch { /* ignore */ }
+      }
+    });
+    audio.play().catch((e) => {
+      console.warn('[CALL-OVERLAY] mobile voice playback failed:', e);
+    });
+    return () => {
+      cancelled = true;
+      try {
+        audio.pause();
+        audio.src = '';
+      } catch { /* ignore */ }
+      voiceAudioRef.current = null;
+    };
+  }, [phase, voiceFileId]);
 
   const handleAccept = useCallback(() => {
     if (acceptedRef.current) return;
