@@ -1,7 +1,7 @@
 import React from 'react';
 import { ExtendedSyncStatus } from '../SyncStatus';
 import { AppMainView } from './AppMainView';
-import { AppUpdateState, BackupConfig, EmotionType, Language, LocationConfig, Message, WorldBookEntry, AnchorEntry, TtsConfig } from '../../types';
+import { AppUpdateState, BackupConfig, EmotionType, Language, LocationConfig, Message, WorldBookEntry, AnchorEntry, TtsConfig, UpdaterCacheInfo } from '../../types';
 
 type RelativeReminderView = {
   id: string;
@@ -99,6 +99,13 @@ interface BuildAppMainViewPropsParams {
   handleCheckForAppUpdates: () => Promise<void>;
   handleDownloadAppUpdate: () => Promise<void>;
   handleInstallAppUpdate: () => Promise<void>;
+  // v2.10.1 Download Cache plumbing. Source of truth is the
+  // updaterSlice; we accept them as closure params so the settings
+  // panel doesn't need to reach into the store directly.
+  updaterCacheInfo: UpdaterCacheInfo | null;
+  refreshUpdaterCacheInfo: () => Promise<void>;
+  openUpdaterCacheFolder: () => Promise<{ success: boolean; error?: string }>;
+  clearUpdaterCache: () => Promise<{ success: boolean; error?: string; sizeBytes?: number }>;
   showAppUpdateModal: boolean;
   setShowAppUpdateModal: React.Dispatch<React.SetStateAction<boolean>>;
   handleToggleAutoZip: () => void;
@@ -242,6 +249,10 @@ export const buildAppMainViewProps = (
     handleCheckForAppUpdates,
     handleDownloadAppUpdate,
     handleInstallAppUpdate,
+    updaterCacheInfo,
+    refreshUpdaterCacheInfo,
+    openUpdaterCacheFolder,
+    clearUpdaterCache,
     showAppUpdateModal,
     setShowAppUpdateModal,
     handleToggleAutoZip,
@@ -356,6 +367,10 @@ export const buildAppMainViewProps = (
       onCheckForUpdates: handleCheckForAppUpdates,
       onDownloadUpdate: handleDownloadAppUpdate,
       onInstallUpdate: handleInstallAppUpdate,
+      updaterCacheInfo,
+      onRefreshUpdaterCacheInfo: refreshUpdaterCacheInfo,
+      onOpenUpdaterCacheFolder: openUpdaterCacheFolder,
+      onClearUpdaterCache: clearUpdaterCache,
       onToggleAutoZip: handleToggleAutoZip,
       onDisconnectLocalFile: handleDisconnectLocalFile
     },

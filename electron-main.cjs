@@ -35,6 +35,9 @@ const {
   quitAndInstallAppUpdate,
   setupAutoUpdater,
   cleanupUpdaterCache,
+  getUpdaterCacheInfo,
+  openUpdaterCacheFolder,
+  clearUpdaterCache,
 } = require('./electron/app-updater.cjs');
 const {
   getDefaultUserDataPath,
@@ -124,18 +127,63 @@ app.commandLine.appendSwitch('enable-gpu-rasterization');
 app.commandLine.appendSwitch('enable-zero-copy');
 app.commandLine.appendSwitch('enable-features', 'UseSkiaRenderer,CanvasOopRasterization');
 
-// electron-updater side-effects (skip auto-backup + mark quitting intent
-// for the tray/window-close logic) get invoked by app-updater.cjs via
+// electron-updater side-effects get invoked by app-updater.cjs via
 // setAppUpdaterLifecycleHooks, registered during app initialization
-// below. `markAutoBackupDone` lives on auto-zip-backup.cjs now, so the
-// updater hooks just flip its private flag through the exported setter.
+// below.
+//
+// beforeQuitForInstall MUST be fully awaited before autoUpdater.quitAndInstall
+// runs, otherwise the NSIS installer races the still-live Electron process
+// for file handles (renderer BrowserWindow, Fastify mobile-access server,
+// electron-rag's better-sqlite3 handle, Genie child process, ...). When the
+// installer is launched with perMachine:true + allowElevation:true, the
+// elevated child fails to replace locked files and silently exits -- which
+// is the "installer flashes and closes" bug this block is fixing. So we:
+//   1. Set app.isQuiting so the tray/window-close handlers stop intercepting.
+//   2. Destroy the main window explicitly -- plain hide() keeps it attached
+//      and still holding its GPU + webContents handles.
+//   3. Synchronously close the RAG SQLite handle and terminate the Genie
+//      subprocess (they're owned by this process; if Electron quits before
+//      closeRag() runs, better-sqlite3's finalizer leaves a WAL + SHM file
+//      that the installer can't replace).
+//   4. AWAIT Fastify shutdown — close() is the only async-heavy step and
+//      was the previous fire-and-forget offender.
+// If the install path errors after elevation we must undo app.isQuiting so
+// the user's next window-close still minimizes to tray instead of quitting.
 setAppUpdaterLifecycleHooks({
-  beforeQuitForInstall: () => {
+  beforeQuitForInstall: async () => {
     markAutoBackupDone(true);
     app.isQuiting = true;
+    const win = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
+    try {
+      if (win) win.destroy();
+    } catch (e) {
+      console.warn('[UPDATER HOOK] win.destroy failed:', e && e.message);
+    }
+    try {
+      closeRag();
+    } catch (e) {
+      console.warn('[UPDATER HOOK] closeRag failed:', e && e.message);
+    }
+    try {
+      terminateGenieProcess();
+    } catch (e) {
+      console.warn('[UPDATER HOOK] terminateGenieProcess failed:', e && e.message);
+    }
+    try {
+      await mobileAccessIpc.stopOnQuit();
+    } catch (e) {
+      console.warn('[UPDATER HOOK] mobileAccessIpc.stopOnQuit failed:', e && e.message);
+    }
   },
   onQuitAndInstallError: () => {
     markAutoBackupDone(false);
+    // App is still alive (autoUpdater.quitAndInstall threw synchronously).
+    // Restore isQuiting so the user can re-try via Settings > App Update
+    // without the tray-minimize behavior staying permanently broken. The
+    // destroyed main window is gone for this session regardless, but a
+    // re-check from the renderer is surfaced through app:update-status
+    // so the user at least sees why it failed.
+    app.isQuiting = false;
   },
 });
 
@@ -191,6 +239,28 @@ if (!singleInstanceLock) {
 
   ipcMain.handle('app:update:quit-and-install', async () => {
     return quitAndInstallAppUpdate();
+  });
+
+  // ── Download-cache inspection + manual cleanup ────────────────────
+  // These are desktop-only on purpose: there is no cache to inspect on
+  // mobile (downloads live on the PC). They stay out of the httpApi /
+  // ipc-bridge allowlists so phones can't accidentally delete the
+  // installer they're waiting for their user to run.
+  ipcMain.handle('app:update:get-cache-info', () => {
+    try {
+      return { success: true, info: getUpdaterCacheInfo() };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { success: false, error: message };
+    }
+  });
+
+  ipcMain.handle('app:update:open-cache-folder', async () => {
+    return openUpdaterCacheFolder();
+  });
+
+  ipcMain.handle('app:update:clear-cache', async () => {
+    return clearUpdaterCache();
   });
 
   ipcMain.handle('app:get-weather', handleGetWeather);

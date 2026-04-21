@@ -223,6 +223,16 @@ export const UI_TRANSLATIONS = {
     updateModalDesc: "检测到新版本 {0}，更新包已下载完成。现在重启并安装吗？",
     updateToastAvailable: "发现新版本 {0}，可在设置中下载。",
     updateToastReady: "更新已下载完成，重启后即可安装。",
+    updateCacheSectionTitle: "下载缓存",
+    updateCachePathLabel: "位置",
+    updateCacheSizeLabel: "大小",
+    updateCacheHint: "下载位于你数据目录的同级文件夹。成功安装后会自动删除；失败时下次启动 15 秒后也会自动清理。",
+    updateCacheOpenFolder: "打开下载文件夹",
+    updateCacheClear: "清理下载缓存",
+    updateCachePathCopied: "已复制下载路径。",
+    updateCacheCleared: "已清理 {0} 的下载缓存。",
+    updateCacheEmpty: "暂无下载缓存。",
+    updateCacheFileCount: "（{0} 个文件）",
 
     // New File System Sync Keys
     advancedLocalSync: "高级本地同步 (文件系统)",
@@ -681,6 +691,16 @@ export const UI_TRANSLATIONS = {
     updateModalDesc: "Version {0} has been downloaded. Restart now to install it?",
     updateToastAvailable: "New version {0} is available in Settings.",
     updateToastReady: "Update downloaded. Restart to install.",
+    updateCacheSectionTitle: "Download Cache",
+    updateCachePathLabel: "Location",
+    updateCacheSizeLabel: "Size",
+    updateCacheHint: "Downloads live in a folder next to your data directory. Deleted automatically after a successful install; failed attempts are auto-cleaned 15 seconds after the next launch.",
+    updateCacheOpenFolder: "Open Download Folder",
+    updateCacheClear: "Clear Download Cache",
+    updateCachePathCopied: "Download path copied.",
+    updateCacheCleared: "Cleared {0} of download cache.",
+    updateCacheEmpty: "No download cache yet.",
+    updateCacheFileCount: "({0} files)",
 
     // New File System Sync Keys
     advancedLocalSync: "ADVANCED LOCAL SYNC (CUSTOM FILE)",

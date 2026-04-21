@@ -36,7 +36,7 @@ import { useProactivePushSettings } from './settings/useProactivePushSettings';
 import { useSettingsDialog } from './settings/useSettingsDialog';
 import { useTavilySearchSettings } from './settings/useTavilySearchSettings';
 import { TtsConfigSection } from './settings/TtsConfigSection';
-import type { AppUpdateState, TtsConfig } from '../types';
+import type { AppUpdateState, TtsConfig, UpdaterCacheInfo } from '../types';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -60,6 +60,13 @@ interface SettingsPanelProps {
   onCheckForUpdates: () => void;
   onDownloadUpdate: () => void;
   onInstallUpdate: () => void;
+  // v2.10.1 Download Cache block. Optional so we don't have to
+  // retrofit every call-site in storybook / test harnesses, though
+  // components/App.tsx always provides them in the real app.
+  updaterCacheInfo?: UpdaterCacheInfo | null;
+  onRefreshUpdaterCacheInfo?: () => Promise<void>;
+  onOpenUpdaterCacheFolder?: () => Promise<{ success: boolean; error?: string }>;
+  onClearUpdaterCache?: () => Promise<{ success: boolean; error?: string; sizeBytes?: number }>;
   onToggleAutoZip: () => void;
   onDisconnectLocalFile?: () => void;
 }
@@ -104,6 +111,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   onCheckForUpdates,
   onDownloadUpdate,
   onInstallUpdate,
+  updaterCacheInfo = null,
+  onRefreshUpdaterCacheInfo,
+  onOpenUpdaterCacheFolder,
+  onClearUpdaterCache,
   onToggleAutoZip,
   onDisconnectLocalFile
 }) => {
@@ -1482,6 +1493,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           onCheckForUpdates={onCheckForUpdates}
           onDownloadUpdate={onDownloadUpdate}
           onInstallUpdate={onInstallUpdate}
+          updaterCacheInfo={updaterCacheInfo}
+          onRefreshUpdaterCacheInfo={onRefreshUpdaterCacheInfo ?? (async () => { /* no-op fallback (non-electron) */ })}
+          onOpenUpdaterCacheFolder={onOpenUpdaterCacheFolder ?? (async () => ({ success: false, error: 'Cache folder is only accessible on desktop.' }))}
+          onClearUpdaterCache={onClearUpdaterCache ?? (async () => ({ success: false, error: 'Cache cleanup is only available on desktop.' }))}
         />
       </div>
       )}
@@ -1595,6 +1610,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     onExportBackup,
     onImportBackup,
     onInstallUpdate,
+    onRefreshUpdaterCacheInfo,
+    onOpenUpdaterCacheFolder,
+    onClearUpdaterCache,
+    updaterCacheInfo,
     onLanguageChange,
     onLocationChange,
     onManualLocalLoad,

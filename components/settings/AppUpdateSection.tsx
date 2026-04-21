@@ -1,7 +1,17 @@
-import React from 'react';
-import { CheckCircle2, ChevronDown, ChevronUp, Download, RefreshCw, Rocket } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  Download,
+  FolderOpen,
+  RefreshCw,
+  Rocket,
+  Trash2,
+} from 'lucide-react';
 import { UI_TRANSLATIONS } from '../../constants';
-import type { AppUpdateState, Language } from '../../types';
+import type { AppUpdateState, Language, UpdaterCacheInfo } from '../../types';
 import { Collapse } from '../Collapse';
 import { isMobilePwa } from '../../services/environment';
 import { isDesktopElectron } from '../../services/desktopBackupService';
@@ -24,6 +34,14 @@ interface AppUpdateSectionProps {
   onCheckForUpdates: () => void;
   onDownloadUpdate: () => void;
   onInstallUpdate: () => void;
+  // v2.10.1 Download Cache block. `updaterCacheInfo` may be null on
+  // mobile / web / before the first refresh; the UI falls back to the
+  // empty-cache copy in that case. The three action props are awaited
+  // so the inline toast messages can reflect success/failure.
+  updaterCacheInfo: UpdaterCacheInfo | null;
+  onRefreshUpdaterCacheInfo: () => Promise<void>;
+  onOpenUpdaterCacheFolder: () => Promise<{ success: boolean; error?: string }>;
+  onClearUpdaterCache: () => Promise<{ success: boolean; error?: string; sizeBytes?: number }>;
 }
 
 const formatBytes = (bytes: number) => {
@@ -47,7 +65,11 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
   updateState,
   onCheckForUpdates,
   onDownloadUpdate,
-  onInstallUpdate
+  onInstallUpdate,
+  updaterCacheInfo,
+  onRefreshUpdaterCacheInfo,
+  onOpenUpdaterCacheFolder,
+  onClearUpdaterCache,
 }) => {
   const t = UI_TRANSLATIONS[language] as any;
   const progressPercent = Math.max(0, Math.min(100, updateState.progressPercent || 0));
@@ -112,6 +134,89 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
     ? (isDarkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-700')
     : (isDarkMode ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200' : 'border-cyan-200 bg-cyan-50 text-cyan-700');
   const bannerText = bannerVariant === 'desktop-dev' ? t.updateUnsupportedDev : t.updateMobileHint;
+
+  // ── Download Cache block (packaged-desktop only) ─────────────────
+  // Refresh on mount + whenever the update lifecycle transitions so
+  // the size/count stay in sync with what electron-updater is actually
+  // doing. We debounce through the slice (refreshUpdaterCacheInfo is
+  // fire-and-forget; the store handles the async).
+  useEffect(() => {
+    if (!isPackagedDesktop) return;
+    void onRefreshUpdaterCacheInfo();
+  }, [isPackagedDesktop, onRefreshUpdaterCacheInfo, updateState.status]);
+
+  const [cacheToast, setCacheToast] = useState<{ tone: 'success' | 'error'; text: string } | null>(null);
+  const [isClearingCache, setIsClearingCache] = useState(false);
+  const [isOpeningCache, setIsOpeningCache] = useState(false);
+
+  // Auto-dismiss the inline toast after 3s so repeated clicks don't
+  // stack a wall of green pills above the buttons.
+  useEffect(() => {
+    if (!cacheToast) return;
+    const timer = window.setTimeout(() => setCacheToast(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [cacheToast]);
+
+  const handleCopyCachePath = useCallback(async () => {
+    const pathToCopy = updaterCacheInfo?.path;
+    if (!pathToCopy) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(pathToCopy);
+      } else {
+        // Fallback for Electron contexts where clipboard write isn't
+        // available (e.g. file://). Swallow silently; the toast still
+        // fires so the user sees *something*.
+      }
+      setCacheToast({ tone: 'success', text: t.updateCachePathCopied });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setCacheToast({ tone: 'error', text: message });
+    }
+  }, [updaterCacheInfo, t]);
+
+  const handleOpenCacheFolder = useCallback(async () => {
+    if (isOpeningCache) return;
+    setIsOpeningCache(true);
+    try {
+      const result = await onOpenUpdaterCacheFolder();
+      if (!result.success && result.error) {
+        setCacheToast({ tone: 'error', text: result.error });
+      }
+    } finally {
+      setIsOpeningCache(false);
+    }
+  }, [isOpeningCache, onOpenUpdaterCacheFolder]);
+
+  const handleClearCache = useCallback(async () => {
+    if (isClearingCache) return;
+    setIsClearingCache(true);
+    try {
+      const sizeBefore = updaterCacheInfo?.sizeBytes ?? 0;
+      const result = await onClearUpdaterCache();
+      if (result.success) {
+        const cleared = typeof result.sizeBytes === 'number' ? result.sizeBytes : sizeBefore;
+        setCacheToast({
+          tone: 'success',
+          text: (t.updateCacheCleared as string).replace('{0}', formatBytes(cleared)),
+        });
+      } else if (result.error) {
+        setCacheToast({ tone: 'error', text: result.error });
+      }
+    } finally {
+      setIsClearingCache(false);
+    }
+  }, [isClearingCache, updaterCacheInfo, onClearUpdaterCache, t]);
+
+  const cacheHasContent = !!updaterCacheInfo && updaterCacheInfo.exists && updaterCacheInfo.sizeBytes > 0;
+  const cachePathDisplay = updaterCacheInfo?.path || '';
+  const cacheSizeDisplay = updaterCacheInfo
+    ? `${formatBytes(updaterCacheInfo.sizeBytes)}${updaterCacheInfo.fileCount > 0 ? ` ${(t.updateCacheFileCount as string).replace('{0}', String(updaterCacheInfo.fileCount))}` : ''}`
+    : t.updateCacheEmpty;
+  const clearDisabled = !isPackagedDesktop || !cacheHasContent || isClearingCache
+    || updateState.status === 'checking' || updateState.status === 'downloading';
+  const openDisabled = !isPackagedDesktop || isOpeningCache;
+  const copyDisabled = !cachePathDisplay;
 
   return (
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
@@ -209,6 +314,89 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
               {t.updateInstall}
             </button>
           </div>
+
+          {isPackagedDesktop && (
+            <div className={`mt-2 rounded-lg border p-3 flex flex-col gap-2 ${isDarkMode ? 'border-white/10 bg-black/30' : 'border-gray-200 bg-white'}`}>
+              <div className="flex items-center justify-between">
+                <div className={`ka-copy-sm font-semibold ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{t.updateCacheSectionTitle}</div>
+              </div>
+
+              <div className={`flex items-start gap-2 ka-copy-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                <div className="flex-shrink-0 font-semibold whitespace-nowrap">{t.updateCachePathLabel}:</div>
+                <div
+                  className={`flex-1 min-w-0 font-mono text-[11px] truncate ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}
+                  title={cachePathDisplay}
+                >
+                  {cachePathDisplay || t.updateCacheEmpty}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCopyCachePath}
+                  disabled={copyDisabled}
+                  title={t.updateCachePathLabel}
+                  className={`flex-shrink-0 p-1.5 rounded-md transition-colors ${
+                    copyDisabled
+                      ? (isDarkMode ? 'text-gray-600' : 'text-gray-400')
+                      : (isDarkMode ? 'text-cyan-300 hover:bg-cyan-500/10' : 'text-cyan-700 hover:bg-cyan-50')
+                  }`}
+                >
+                  <Copy size={12} />
+                </button>
+              </div>
+
+              <div className={`flex items-center gap-2 ka-copy-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                <div className="flex-shrink-0 font-semibold whitespace-nowrap">{t.updateCacheSizeLabel}:</div>
+                <div className={`flex-1 font-mono text-[11px] ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  {cacheSizeDisplay}
+                </div>
+              </div>
+
+              <p className={`ka-copy-sm text-[11px] leading-snug ${isDarkMode ? 'text-[#8c7660]' : 'text-[#9c7f62]'}`}>
+                {t.updateCacheHint}
+              </p>
+
+              {cacheToast && (
+                <div
+                  className={`rounded-md border px-2 py-1.5 ka-copy-sm whitespace-pre-wrap break-all ${
+                    cacheToast.tone === 'success'
+                      ? (isDarkMode ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-emerald-200 bg-emerald-50 text-emerald-700')
+                      : (isDarkMode ? 'border-red-500/30 bg-red-500/10 text-red-200' : 'border-red-200 bg-red-50 text-red-700')
+                  }`}
+                >
+                  {cacheToast.text}
+                </div>
+              )}
+
+              <div className="flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={handleOpenCacheFolder}
+                  disabled={openDisabled}
+                  className={`min-h-[2.4rem] px-3 py-2 rounded-lg flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
+                    openDisabled
+                      ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
+                      : (isDarkMode ? 'bg-sky-500/20 text-sky-200 hover:bg-sky-500/30' : 'bg-sky-100 text-sky-700 hover:bg-sky-200')
+                  }`}
+                >
+                  <FolderOpen size={13} />
+                  {t.updateCacheOpenFolder}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearCache}
+                  disabled={clearDisabled}
+                  className={`min-h-[2.4rem] px-3 py-2 rounded-lg flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
+                    clearDisabled
+                      ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
+                      : (isDarkMode ? 'bg-rose-500/20 text-rose-200 hover:bg-rose-500/30' : 'bg-rose-100 text-rose-700 hover:bg-rose-200')
+                  }`}
+                >
+                  <Trash2 size={13} className={isClearingCache ? 'animate-pulse' : ''} />
+                  {t.updateCacheClear}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </Collapse>
     </div>

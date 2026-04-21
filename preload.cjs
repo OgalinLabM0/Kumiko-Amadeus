@@ -67,6 +67,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:update:check',
       'app:update:download',
       'app:update:quit-and-install',
+      // v2.10.1 download-cache inspection + manual cleanup. Desktop
+      // renderer only — intentionally NOT added to services/httpApi.ts
+      // or electron/server/ipc-bridge.cjs's ALLOWED_CHANNELS so phones
+      // can't accidentally delete the installer the user is waiting to
+      // run on the PC.
+      'app:update:get-cache-info',
+      'app:update:open-cache-folder',
+      'app:update:clear-cache',
       'genie:start',
       'genie:stop',
       'genie:status',

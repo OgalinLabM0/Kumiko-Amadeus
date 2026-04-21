@@ -41,6 +41,12 @@
 ManifestDPIAware true
 
 !include LogicLib.nsh
+; FileFunc: ${GetParent}. Used in customUnInstall to strip the basename
+; off the user's custom UserDataPath (HKCU Software\KumikoAIAmadeus
+; "UserDataPath") so we can clean the sibling updater-cache directory
+; on a custom drive. Header is safe to include unconditionally -- NSIS
+; guards the same header from being expanded twice.
+!include FileFunc.nsh
 
 ; -----------------------------------------------------------------------------
 ; Global dialog font.
@@ -308,10 +314,19 @@ FunctionEnd
   !ifdef APP_INSTALLER_STORE_FILE
     Delete "$LOCALAPPDATA\${APP_INSTALLER_STORE_FILE}"
   !endif
+  ; Legacy default cache location (electron-updater pre-monkey-patch).
+  ; Kept so users upgrading from v2.10.0 or earlier still get their
+  ; orphaned downloader caches cleared on install.
   RMDir /r "$LOCALAPPDATA\kumiko-ai-amadeus-updater"
   RMDir /r "$LOCALAPPDATA\Kumiko AI-updater"
   RMDir /r "$LOCALAPPDATA\kumiko-amadeus-updater"
   RMDir /r "$LOCALAPPDATA\Kumiko-Amadeus-updater"
+  ; New default cache location (sibling of userData under %APPDATA%).
+  ; Matches resolveUpdaterCacheBase() in electron/app-updater.cjs.
+  RMDir /r "$APPDATA\kumiko-ai-amadeus-updater"
+  RMDir /r "$APPDATA\Kumiko AI-updater"
+  RMDir /r "$APPDATA\kumiko-amadeus-updater"
+  RMDir /r "$APPDATA\Kumiko-Amadeus-updater"
   ${if} $installMode == "all"
     SetShellVarContext all
   ${endif}
@@ -351,10 +366,16 @@ FunctionEnd
   !ifdef APP_INSTALLER_STORE_FILE
     Delete "$LOCALAPPDATA\${APP_INSTALLER_STORE_FILE}"
   !endif
+  ; Legacy default cache (LOCALAPPDATA, pre-v2.10.1).
   RMDir /r "$LOCALAPPDATA\kumiko-ai-amadeus-updater"
   RMDir /r "$LOCALAPPDATA\Kumiko AI-updater"
   RMDir /r "$LOCALAPPDATA\kumiko-amadeus-updater"
   RMDir /r "$LOCALAPPDATA\Kumiko-Amadeus-updater"
+  ; Current default cache (APPDATA sibling of userData).
+  RMDir /r "$APPDATA\kumiko-ai-amadeus-updater"
+  RMDir /r "$APPDATA\Kumiko AI-updater"
+  RMDir /r "$APPDATA\kumiko-amadeus-updater"
+  RMDir /r "$APPDATA\Kumiko-Amadeus-updater"
   DetailPrint "清理应用数据目录"
   ReadRegStr $0 HKCU "Software\KumikoAIAmadeus" "UserDataPath"
 
@@ -390,9 +411,20 @@ FunctionEnd
   RMDir /r "$APPDATA\Kumiko Amadeus"
   RMDir /r "$LOCALAPPDATA\Kumiko Amadeus"
 
-  ; Custom user-selected data directory (if configured)
-  StrCmp $0 "" +2
+  ; Custom user-selected data directory (if configured) + its sibling
+  ; updater-cache dir. Example: if $0 = "D:\KumikoData\Kumiko·Amadeus",
+  ; the updater cache lives at "D:\KumikoData\kumiko-ai-amadeus-updater\".
+  ; We use ${GetParent} to get "D:\KumikoData" and sweep the four
+  ; historical cache-folder names before deleting userData itself.
+  StrCmp $0 "" skip_custom_data_removal
+  ${GetParent} "$0" $1
+  StrCmp $1 "" +5
+    RMDir /r "$1\kumiko-ai-amadeus-updater"
+    RMDir /r "$1\Kumiko AI-updater"
+    RMDir /r "$1\kumiko-amadeus-updater"
+    RMDir /r "$1\Kumiko-Amadeus-updater"
   RMDir /r "$0"
+  skip_custom_data_removal:
 
   DeleteRegValue HKCU "Software\KumikoAIAmadeus" "UserDataPath"
   DeleteRegValue HKCU "Software\KumikoAIAmadeus" "PendingMigrationSource"

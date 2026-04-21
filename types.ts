@@ -246,6 +246,25 @@ export interface AppUpdateState {
   isPackaged: boolean;
 }
 
+// Descriptor for the electron-updater "pending/" directory surfaced in
+// Settings > App Update > 下载缓存. Sourced from the desktop main
+// process via the `app:update:get-cache-info` IPC channel.
+//   - path:       absolute path to the pending/ directory. Populated
+//                 even when exists:false so the UI can still display
+//                 where downloads will land.
+//   - exists:     whether pending/ currently exists on disk.
+//   - sizeBytes:  total byte size of every file under pending/ (not
+//                 including directory overhead). 0 when exists:false.
+//   - fileCount:  number of regular files under pending/ (partial
+//                 chunks + completed .exe both count). 0 when
+//                 exists:false.
+export interface UpdaterCacheInfo {
+  path: string;
+  exists: boolean;
+  sizeBytes: number;
+  fileCount: number;
+}
+
 export type MessageAlertKind = 'reply' | 'proactive' | 'reminder';
 
 export type MissedMessageAlert = {
