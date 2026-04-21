@@ -5,6 +5,54 @@ import { AIConfig, AIProvider, Language } from '../types';
 import { Collapse } from './Collapse';
 import { getCurrentAIConfig, validateAIConnection, validateModels, validateSearchCapability } from '../services/geminiService';
 import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel, getDefaultEndpoint } from '../services/appConfig';
+import { setAIConfig } from '../services/llmCore';
+import { isMobilePwa } from '../services/environment';
+import { httpInvoke } from '../services/httpApi';
+
+// Phase 6 Part B: mobile PWAs never talk to the LLM provider directly.
+// Every validate* call proxies through the PC so API keys + provider
+// choices stay on the desktop, and the save/launch path routes through
+// `ai-config:update-from-mobile` so the PC's localStorage remains the
+// single source of truth. Failures fall back to showing an error status
+// in the existing status line; we never silently persist mobile-only
+// drift — the phone always gets whatever the PC currently thinks is
+// the config on the next `ai-config:changed` broadcast.
+async function validateConnectionUnified(cfg: AIConfig): Promise<boolean> {
+    if (!isMobilePwa()) return validateAIConnection(cfg);
+    try {
+        return await httpInvoke<boolean>('ai-config:validate-from-mobile', cfg);
+    } catch (e) {
+        console.warn('[AIConfig] mobile validate-connection failed:', e);
+        return false;
+    }
+}
+
+async function validateModelsUnified(cfg: AIConfig): Promise<{ main: boolean; summary: boolean; vision: boolean }> {
+    if (!isMobilePwa()) return validateModels(cfg);
+    try {
+        return await httpInvoke<{ main: boolean; summary: boolean; vision: boolean }>(
+            'ai-config:validate-models-from-mobile', cfg,
+        );
+    } catch (e) {
+        console.warn('[AIConfig] mobile validate-models failed:', e);
+        return { main: false, summary: false, vision: false };
+    }
+}
+
+async function validateSearchUnified(cfg: AIConfig): Promise<{ success: boolean; message?: string }> {
+    if (!isMobilePwa()) return validateSearchCapability(cfg);
+    try {
+        return await httpInvoke<{ success: boolean; message?: string }>(
+            'ai-config:validate-search-from-mobile', cfg,
+        );
+    } catch (e) {
+        return { success: false, message: (e as Error).message };
+    }
+}
+
+async function persistAIConfig(cfg: AIConfig): Promise<{ ok: boolean; error?: string }> {
+    return setAIConfig(cfg);
+}
 
 interface AIConfigScreenProps {
   onComplete: () => void;
@@ -230,35 +278,6 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
     .status-dot-ok { background: #16a34a; box-shadow: 0 0 8px rgba(22,163,74,0.4); }
     .status-dot-err { background: #dc2626; box-shadow: 0 0 8px rgba(220,38,38,0.4); }
 
-    .bottom-bar {
-      background: rgba(249,247,242,0.88);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border-top: 1px solid rgba(120,90,66,0.1);
-    }
-
-    /* Scroll fade masks — content fades into edges */
-    .scroll-fade-container {
-      position: relative;
-    }
-    .scroll-fade-container::before,
-    .scroll-fade-container::after {
-      content: '';
-      position: absolute;
-      left: 0; right: 0;
-      height: clamp(24px, 3vw, 40px);
-      pointer-events: none;
-      z-index: 2;
-    }
-    .scroll-fade-container::before {
-      top: 0;
-      background: linear-gradient(to bottom, #f9f7f2, transparent);
-    }
-    .scroll-fade-container::after {
-      bottom: 0;
-      background: linear-gradient(to top, #f9f7f2, transparent);
-    }
-
     .btn-launch {
       position: relative; overflow: hidden; transition: all 0.3s ease;
     }
@@ -285,7 +304,12 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
   useEffect(() => { setConfig(getCurrentAIConfig()); }, []);
 
   const handleValidateAll = async () => {
-      localStorage.setItem('kumiko_ai_config', JSON.stringify(config));
+      const save = await persistAIConfig(config);
+      if (!save.ok) {
+          setStatus((language === 'zh' ? '保存到 PC 失败：' : 'Save to PC failed: ') + (save.error || ''));
+          setStatusType('error');
+          return;
+      }
       setIsValidating(true);
       setStatus(language === 'zh' ? "正在进行全面验证..." : "Running full validation...");
       setStatusType('neutral');
@@ -294,18 +318,18 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
       if (!config.apiKey_primary) {
           setStatus(t.error_missing); setStatusType('error'); setIsValidating(false); return;
       }
-      const isValid = await validateAIConnection(config);
+      const isValid = await validateConnectionUnified(config);
       if (!isValid) {
           setStatus(t.error_invalid);
           setStatusType('error'); setIsValidating(false); return;
       }
       setIsModelValidating(true);
-      const modelResult = await validateModels(config);
+      const modelResult = await validateModelsUnified(config);
       setModelValidationResult(modelResult);
       setIsModelValidating(false);
       if (!config.provider || config.provider === 'gemini') {
           setIsSearchValidating(true);
-          const searchResult = await validateSearchCapability(config);
+          const searchResult = await validateSearchUnified(config);
           setSearchStatus(searchResult.success ? t.searchSuccess : (searchResult.message || t.searchFail));
           setSearchStatusType(searchResult.success ? 'success' : 'error');
           setIsSearchValidating(false);
@@ -314,14 +338,24 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
       setStatusType('success'); setIsValidating(false);
   };
 
-  const handleSaveOnly = () => {
-      localStorage.setItem('kumiko_ai_config', JSON.stringify(config));
+  const handleSaveOnly = async () => {
+      const result = await persistAIConfig(config);
+      if (!result.ok) {
+          setStatus((language === 'zh' ? '保存到 PC 失败：' : 'Save to PC failed: ') + (result.error || ''));
+          setStatusType('error');
+          return;
+      }
       setStatus(t.saveSuccess); setStatusType('success');
       setTimeout(() => { setStatus(''); setStatusType('neutral'); }, 2000);
   };
 
-  const handleSaveAndLaunch = () => {
-      localStorage.setItem('kumiko_ai_config', JSON.stringify(config));
+  const handleSaveAndLaunch = async () => {
+      const result = await persistAIConfig(config);
+      if (!result.ok) {
+          setStatus((language === 'zh' ? '保存到 PC 失败：' : 'Save to PC failed: ') + (result.error || ''));
+          setStatusType('error');
+          return;
+      }
       onComplete();
   };
 
@@ -355,27 +389,23 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
   const selectCls = "w-full bg-white/70 border border-[#785A42]/15 rounded-lg cfg-input-text ka-input-copy text-[#785A42] focus:ring-1 focus:ring-[#785A42]/20 outline-none px-[clamp(10px,1.4vw,16px)] py-[clamp(8px,1.2vw,12px)] transition-all";
 
   return (
-    <div className="fixed top-0 left-0 w-full z-[80] config-bg text-[#785A42] flex flex-col font-sans overflow-hidden" style={{ height: 'var(--app-height)' }}>
+    <div className="fixed top-0 left-0 w-full z-[80] config-bg text-[#785A42] font-sans overflow-hidden" style={{ height: 'var(--app-height)' }}>
       <style>{styles}</style>
+      <div className="relative z-10 w-full min-h-full h-full overflow-y-auto touch-scroll">
+        <div className="w-full min-h-full flex flex-col items-center justify-center px-[clamp(16px,4vw,40px)] pt-[calc(var(--sat)+1rem)] pb-[calc(var(--sab)+1rem)]">
+          <div className="w-[min(100%,42rem)] flex flex-col space-y-[clamp(12px,1.8vw,20px)]">
 
-      {/* HEADER */}
-      <div className="flex-shrink-0 px-4 pt-[calc(env(safe-area-inset-top)+clamp(20px,4vw,40px))] pb-[clamp(8px,1.5vw,16px)]">
-         <div className="mx-auto flex w-full max-w-[34rem] flex-col items-center text-center">
-           <div className="relative mb-[clamp(8px,1.2vw,14px)] flex items-center justify-center">
-             <div className="p-[clamp(8px,1.2vw,14px)] bg-[#785A42]/8 rounded-full">
-               <Settings className="text-[#785A42] gear-icon gear-icon-responsive" />
-             </div>
-             <div className="absolute inset-[-8px] border border-dashed border-[#c5a059]/25 rounded-full"></div>
-           </div>
-           <h2 className="cfg-title font-semibold tracking-[0.02em] font-mincho text-[#785A42] title-accent text-center leading-[1.08]">{t.title}</h2>
-           <p className="cfg-subtitle ka-copy-sm text-[#785A42]/55 mt-[clamp(10px,1.4vw,16px)] tracking-[0.05em] text-center">{t.subtitle}</p>
-         </div>
-      </div>
-
-      {/* SCROLLABLE CONTENT */}
-      <div className="flex-1 overflow-hidden scroll-fade-container">
-      <div className="h-full overflow-y-auto overflow-x-hidden px-[clamp(16px,4vw,40px)] pt-[clamp(12px,2vw,20px)] pb-[clamp(24px,3vw,40px)] touch-scroll">
-        <div className="w-[min(100%,42rem)] mx-auto space-y-[clamp(10px,1.6vw,16px)]">
+            {/* HEADER */}
+            <div className="mx-auto flex w-full max-w-[34rem] flex-col items-center text-center">
+              <div className="relative mb-[clamp(8px,1.2vw,14px)] flex items-center justify-center">
+                <div className="p-[clamp(8px,1.2vw,14px)] bg-[#785A42]/8 rounded-full">
+                  <Settings className="text-[#785A42] gear-icon gear-icon-responsive" />
+                </div>
+                <div className="absolute inset-[-8px] border border-dashed border-[#c5a059]/25 rounded-full"></div>
+              </div>
+              <h2 className="cfg-title font-semibold tracking-[0.02em] font-mincho text-[#785A42] title-accent text-center leading-[1.08]">{t.title}</h2>
+              <p className="cfg-subtitle ka-copy-sm text-[#785A42]/55 mt-[clamp(10px,1.4vw,16px)] tracking-[0.05em] text-center">{t.subtitle}</p>
+            </div>
 
             {/* Security */}
             <div className="space-y-[clamp(6px,1vw,10px)]">
@@ -495,49 +525,48 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                 </div>
                 </Collapse>
             </div>
-        </div>
-      </div>
-      </div>
 
-      {/* FIXED BOTTOM BAR */}
-      <div className="flex-shrink-0 bottom-bar px-[clamp(16px,4vw,40px)] py-[clamp(10px,1.8vw,18px)] safe-area-padding-bottom">
-        <div className="w-[min(100%,42rem)] mx-auto space-y-[clamp(6px,1vw,10px)]">
-          {(status || searchStatus) && (
-            <div className="space-y-1">
-              {status && (
-                <div className={`flex items-center justify-center gap-[clamp(4px,0.6vw,8px)] ka-label font-semibold ${statusType === 'error' ? 'text-red-600' : statusType === 'success' ? 'text-green-700' : 'text-[#785A42]'}`}>
-                    {statusType === 'error' && <span className="status-dot status-dot-err"></span>}
-                    {statusType === 'success' && <span className="status-dot status-dot-ok"></span>}
-                    {statusType === 'neutral' && <RefreshCw className="animate-spin" size={13} />}
-                    {status}
+            {/* Status + buttons (no longer a fixed bottom bar; flows with the centered column to mirror IntroScreen / AuthScreen) */}
+            <div className="space-y-[clamp(6px,1vw,10px)]">
+              {(status || searchStatus) && (
+                <div className="space-y-1">
+                  {status && (
+                    <div className={`flex items-center justify-center gap-[clamp(4px,0.6vw,8px)] ka-label font-semibold ${statusType === 'error' ? 'text-red-600' : statusType === 'success' ? 'text-green-700' : 'text-[#785A42]'}`}>
+                        {statusType === 'error' && <span className="status-dot status-dot-err"></span>}
+                        {statusType === 'success' && <span className="status-dot status-dot-ok"></span>}
+                        {statusType === 'neutral' && <RefreshCw className="animate-spin" size={13} />}
+                        {status}
+                    </div>
+                  )}
+                  {searchStatus && (
+                    <div className={`flex items-center justify-center gap-[clamp(4px,0.6vw,8px)] ka-copy-sm font-semibold ${searchStatusType === 'error' ? 'text-red-600' : searchStatusType === 'success' ? 'text-green-700' : 'text-[#785A42]'}`}>
+                        {searchStatusType === 'success' && <span className="status-dot status-dot-ok"></span>}
+                        {searchStatusType === 'error' && <span className="status-dot status-dot-err"></span>}
+                        {searchStatus}
+                    </div>
+                  )}
+                  {statusType === 'success' && (modelValidationResult.main === false || modelValidationResult.summary === false || modelValidationResult.vision === false) && (
+                      <p className="ka-copy-sm text-red-600 text-center">{t.modelValidationWarning}</p>
+                  )}
                 </div>
               )}
-              {searchStatus && (
-                <div className={`flex items-center justify-center gap-[clamp(4px,0.6vw,8px)] ka-copy-sm font-semibold ${searchStatusType === 'error' ? 'text-red-600' : searchStatusType === 'success' ? 'text-green-700' : 'text-[#785A42]'}`}>
-                    {searchStatusType === 'success' && <span className="status-dot status-dot-ok"></span>}
-                    {searchStatusType === 'error' && <span className="status-dot status-dot-err"></span>}
-                    {searchStatus}
-                </div>
-              )}
-              {statusType === 'success' && (modelValidationResult.main === false || modelValidationResult.summary === false || modelValidationResult.vision === false) && (
-                  <p className="ka-copy-sm text-red-600 text-center">{t.modelValidationWarning}</p>
-              )}
+              <button onClick={handleValidateAll} disabled={isValidating || isSearchValidating || isModelValidating}
+                  className="w-full py-[clamp(8px,1.4vw,14px)] min-h-[44px] border border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5 font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]">
+                  {(isValidating || isSearchValidating || isModelValidating) ? <RefreshCw className="animate-spin" size={15} /> : <ShieldCheck size={15} />}
+                  <span>{language === 'zh' ? '全面验证配置 (VALIDATE ALL)' : 'VALIDATE ALL CONFIGURATIONS'}</span>
+              </button>
+              <div className="flex gap-[clamp(8px,1.2vw,14px)]">
+                  <button onClick={handleSaveOnly} disabled={isValidating || isSearchValidating}
+                      className="flex-[0.4] py-[clamp(8px,1.4vw,14px)] min-h-[44px] border border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5 font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.6vw,6px)]">
+                      <Save size={15} /> <span className="hidden sm:inline">{t.saveConfig}</span>
+                  </button>
+                  <button onClick={handleSaveAndLaunch} disabled={isValidating || isModelValidating || isSearchValidating}
+                      className="flex-[1] py-[clamp(8px,1.4vw,14px)] min-h-[48px] bg-[#785A42] hover:bg-[#8c6045] text-[#f9f7f2] font-bold cfg-btn-text rounded-xl btn-launch shadow-[0_4px_16px_rgba(120,90,66,0.18)] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]">
+                      <Power size={15} /> <span>{t.launchSystem}</span>
+                  </button>
+              </div>
             </div>
-          )}
-          <button onClick={handleValidateAll} disabled={isValidating || isSearchValidating || isModelValidating}
-              className="w-full py-[clamp(8px,1.4vw,14px)] min-h-[44px] border border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5 font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]">
-              {(isValidating || isSearchValidating || isModelValidating) ? <RefreshCw className="animate-spin" size={15} /> : <ShieldCheck size={15} />}
-              <span>{language === 'zh' ? '全面验证配置 (VALIDATE ALL)' : 'VALIDATE ALL CONFIGURATIONS'}</span>
-          </button>
-          <div className="flex gap-[clamp(8px,1.2vw,14px)]">
-              <button onClick={handleSaveOnly} disabled={isValidating || isSearchValidating}
-                  className="flex-[0.4] py-[clamp(8px,1.4vw,14px)] min-h-[44px] border border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5 font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.6vw,6px)]">
-                  <Save size={15} /> <span className="hidden sm:inline">{t.saveConfig}</span>
-              </button>
-              <button onClick={handleSaveAndLaunch} disabled={isValidating || isModelValidating || isSearchValidating}
-                  className="flex-[1] py-[clamp(8px,1.4vw,14px)] min-h-[48px] bg-[#785A42] hover:bg-[#8c6045] text-[#f9f7f2] font-bold cfg-btn-text rounded-xl btn-launch shadow-[0_4px_16px_rgba(120,90,66,0.18)] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]">
-                  <Power size={15} /> <span>{t.launchSystem}</span>
-              </button>
+
           </div>
         </div>
       </div>

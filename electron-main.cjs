@@ -94,6 +94,7 @@ const {
 } = require('./electron/window-manager.cjs');
 const mobileAccessIpc = require('./electron/server/mobile-access-ipc.cjs');
 const mobileAccessAuth = require('./electron/server/auth.cjs');
+const mobileFs = require('./electron/mobile-fs.cjs');
 
 // Platform detection. Used throughout this file to branch registry/PowerShell
 // (Windows-only) vs JSON config store (Linux), drive-letter preference (Windows)
@@ -267,6 +268,23 @@ if (!singleInstanceLock) {
   ipcMain.handle('backup:get-file-info', handleGetFileInfo);
   ipcMain.handle('backup:parse-import-file', handleParseImportFile);
   ipcMain.handle('backup:build-zip-from-payload', handleBuildZipFromPayload);
+
+  // ── Phase 6 Part C: mobile remote filesystem + desktop backup I/O ──
+  // Registers:
+  //   fs:get-mobile-browse-root
+  //   fs:set-mobile-browse-root        (desktop-renderer only — not in HTTP allowlist)
+  //   fs:pick-mobile-browse-root       (desktop-renderer only — opens native dialog)
+  //   fs:list-directory
+  //   fs:get-shortcuts
+  //   fs:check-path-exists
+  //   backup:read-desktop-file
+  //   backup:write-desktop-file
+  //   backup:set-desktop-backup-path   (broadcasts backup:desktop-path-changed to phones)
+  //   backup:disconnect-desktop-file   (broadcasts null-path to phones)
+  // Every handler sandboxes paths inside `mobileBrowseRoot` (default = parent
+  // of userData, with fallback to userData itself when the parent is a broad
+  // public OS dir).
+  mobileFs.register(ipcMain);
 
   ipcMain.handle('app:set-auto-zip-backup', handleSetAutoZip);
   ipcMain.handle('app:get-auto-zip-backup', handleGetAutoZip);

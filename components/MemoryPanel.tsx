@@ -7,6 +7,8 @@ import { resolveMessageImageSync } from './app/useMessageImage';
 import { Collapse } from './Collapse';
 import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, KUMIKO_EMOTION_IMAGES, LOCALIZED_WORLD_BOOK } from '../constants';
 import { useAppStore } from '../store';
+import { isWideViewport } from '../services/datetimeFormat';
+import { useModalPortal } from '../hooks/useModalPortal';
 
 interface MemoryPanelProps {
   isOpen: boolean;
@@ -55,6 +57,38 @@ const formatKyotoTime = (timestamp: number): string => {
   }
 };
 
+// Phase 7 Part t8_memory_panel: the MM/DD HH:MM Kyoto variant used on
+// phones so the history row's timestamp + `#123` + pin/hidden chips all
+// fit on a single 360px-wide line. Desktop Electron still gets the full
+// `formatKyotoTime` spelling because `isWideViewport()` returns true.
+const formatKyotoTimeCompact = (timestamp: number): string => {
+  try {
+    const date = new Date(timestamp);
+    const now = new Date();
+    const jstFormatter = new Intl.DateTimeFormat('ja-JP', {
+      month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit',
+      timeZone: 'Asia/Tokyo', hour12: false,
+    });
+    const todayJst = new Intl.DateTimeFormat('ja-JP', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      timeZone: 'Asia/Tokyo',
+    });
+    if (todayJst.format(date) === todayJst.format(now)) {
+      return new Intl.DateTimeFormat('ja-JP', {
+        hour: '2-digit', minute: '2-digit',
+        timeZone: 'Asia/Tokyo', hour12: false,
+      }).format(date);
+    }
+    return jstFormatter.format(date);
+  } catch (e) {
+    return new Date(timestamp).toLocaleString();
+  }
+};
+
+const formatKyotoTimeResponsive = (timestamp: number): string =>
+  isWideViewport() ? formatKyotoTime(timestamp) : formatKyotoTimeCompact(timestamp);
+
 // --- PINNED MODAL (module-level) ---
 // Previously defined inside MemoryPanel, which caused the modal to unmount and
 // remount on every parent re-render — users saw scroll positions reset, animations
@@ -78,15 +112,37 @@ const PinnedModal: React.FC<PinnedModalProps> = ({
   onJumpToMessage, onTogglePin,
   isDarkMode, t,
 }) => {
-  if (!isOpen) return null;
+  const renderPortal = useModalPortal();
   const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-[rgba(255,255,255,0.98)] border-[#e6ded3]';
   const textClass = isDarkMode ? 'text-[#f0e6d8]' : 'text-[#4c3a2b]';
   const titleClass = isDarkMode ? 'text-[#e5c992]' : 'text-[#a97832]';
   const closeButtonClass = isDarkMode ? 'hover:bg-red-500/10 hover:text-red-400' : 'hover:bg-red-500/10 hover:text-red-500';
 
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in safe-area-padding-modal" style={{ background: 'radial-gradient(circle, rgba(10,8,6,0.54) 24%, rgba(10,8,6,0.08) 100%)' }}>
-      <div className={`w-full max-w-md max-h-[70vh] flex flex-col rounded-lg border shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 ${bgClass}`}>
+  // Phase 7 Part t5_b4_memory_panel: portal into <body> so the backdrop
+  // always covers the viewport regardless of AppMainView's `contain`.
+  //
+  // Preload rework: stay permanently mounted so reopening the pinned
+  // modal never has to rebuild the list from scratch.
+  return renderPortal(
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4 backdrop-blur-sm safe-area-padding-modal"
+      style={{
+        background: 'radial-gradient(circle, rgba(10,8,6,0.54) 24%, rgba(10,8,6,0.08) 100%)',
+        opacity: isOpen ? 1 : 0,
+        visibility: isOpen ? 'visible' : 'hidden',
+        pointerEvents: isOpen ? 'auto' : 'none',
+        transition: isOpen ? 'opacity 220ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
+      }}
+      aria-hidden={!isOpen}
+      inert={!isOpen}
+    >
+      {/* Phase 7 Part t8_memory_panel: `max-h-[70vh]` relied on iOS's
+          legacy viewport height which ignores the bottom toolbar, so on
+          Safari the modal was pushed below the fold when the toolbar was
+          shown. Swap to `dvh` on phones to track the dynamic viewport and
+          clamp the max-width on narrow screens. `70vh` fallback keeps
+          older browsers working. */}
+      <div className={`w-full max-w-md max-h-[70vh] max-h-[70dvh] flex flex-col rounded-lg border shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200 ${bgClass}`}>
         <div className={`flex items-center justify-between p-3 border-b ${isDarkMode ? 'border-[#4f3926]' : 'border-[#ece3d8]'}`}>
           <div className={`flex items-center gap-2 ${titleClass}`}>
             <Pin size={16} className="fill-current" />
@@ -120,7 +176,7 @@ const PinnedModal: React.FC<PinnedModalProps> = ({
                     <span className={`ka-micro font-semibold ${isDarkMode ? 'text-[#d0b180]/80' : 'text-[#b18645]/80'}`}>#{contextIndex}</span>
                     <span className="ka-micro font-semibold">{msg.role === 'model' ? 'Kumiko' : 'You'}</span>
                   </div>
-                  <span className="ka-micro">{formatKyotoTime(msg.timestamp)}</span>
+                  <span className="ka-micro whitespace-nowrap">{formatKyotoTimeResponsive(msg.timestamp)}</span>
                 </div>
                 <p className="whitespace-pre-wrap leading-relaxed pointer-events-none">{msg.text}</p>
                 {onTogglePin && (
@@ -167,6 +223,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
   const isDarkMode = useAppStore(s => s.isDarkMode);
   const language = useAppStore(s => s.language);
   const t = UI_TRANSLATIONS[language];
+  const renderArchivePortal = useModalPortal();
   const [localCoreMemory, setLocalCoreMemory] = useState(memoryContent);
   const [localWorldBook, setLocalWorldBook] = useState<WorldBookEntry[]>([]);
   const [localContextLimit, setLocalContextLimit] = useState(contextLimit);
@@ -467,7 +524,15 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
 
   // formatKyotoTime is now defined at module scope (needed by the extracted PinnedModal).
 
-  const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-[rgba(255,255,255,0.98)] border-[#e6ded3]';
+  // Dark-mode frosted glass: drop the near-opaque `/96` wash and let
+  // `backdrop-blur-md` smear whatever chat bubble sits underneath. 80%
+  // fill keeps copy readable but the blur kills the noisy bleed-through
+  // users complained about. Light mode keeps its cream background —
+  // backdrop-blur would have negligible visible effect at 98% alpha, and
+  // we don't want to pay the compositor cost for a no-op.
+  const bgClass = isDarkMode
+    ? 'bg-[#161412]/80 backdrop-blur-md border-[#2a2522]/60'
+    : 'bg-[rgba(255,255,255,0.98)] border-[#e6ded3]';
   const textClass = isDarkMode ? 'text-[#f0e6d8]' : 'text-[#4c3a2b]';
   const titleClass = isDarkMode ? 'text-[#e5c992]' : 'text-[#a97832]';
   const inputBgClass = isDarkMode ? 'bg-[#221d18] border-[#433428]' : 'bg-[#fbfaf8] border-[#e2d9cf]';
@@ -791,9 +856,13 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                               </div>
                               <p className="text-sm font-medium leading-relaxed">{anchor.content}</p>
                               {onDeleteAnchor && (
+                                  // Phase 7 Part t8_memory_panel: the Anchor delete button
+                                  // was `opacity-0 group-hover:opacity-100` — hidden entirely
+                                  // on phones which have no hover. Show at 60% on `< md`
+                                  // (mobile) and keep the hover-reveal on desktop.
                                   <button
                                     onClick={(e) => handleDeleteAnchorClick(e, anchor.id)}
-                                    className={`absolute bottom-2 right-2 p-1 rounded-full transition-all opacity-0 group-hover:opacity-100 ${confirmAnchorDeleteId === anchor.id ? 'bg-red-500 text-white w-auto px-2 text-[10px] font-bold' : (isDarkMode ? 'text-[#b7a08a] hover:text-red-400 hover:bg-white/5' : 'text-[#a08b75] hover:text-red-500 hover:bg-black/5')}`}
+                                    className={`absolute bottom-2 right-2 p-1 rounded-full transition-all opacity-60 md:opacity-0 md:group-hover:opacity-100 ${confirmAnchorDeleteId === anchor.id ? 'bg-red-500 text-white w-auto px-2 text-[10px] font-bold' : (isDarkMode ? 'text-[#b7a08a] hover:text-red-400 hover:bg-white/5' : 'text-[#a08b75] hover:text-red-500 hover:bg-black/5')}`}
                                     title={t.deleteAnchorConfirm}
                                   >
                                       {confirmAnchorDeleteId === anchor.id ? t.deleteAnchorConfirm : <Trash2 size={14} />}
@@ -936,7 +1005,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                                        {msg.isPinned && <div className="px-1 bg-yellow-600/50 text-yellow-200 rounded ka-micro font-semibold flex items-center gap-1" title={t.pin}><Pin size={10} className="fill-current" /></div>}
                                        <span className={`ka-micro font-semibold opacity-30 ${textClass}`}>#{msgNumber}</span>
                                        <Clock size={10} className="opacity-40" />
-                                       <span className={`ka-micro tracking-[0.14em] opacity-50 ${textClass}`}>{formatKyotoTime(msg.timestamp)}</span>
+                                       <span className={`ka-micro tracking-[0.14em] opacity-50 whitespace-nowrap ${textClass}`}>{formatKyotoTimeResponsive(msg.timestamp)}</span>
                                     </div>
                                     <div className={`flex gap-3 ${isUser ? 'flex-row-reverse' : 'flex-row'}`}>
                                         <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 text-xs font-bold ${isUser ? (isDarkMode ? 'bg-yellow-700 text-yellow-100' : 'bg-yellow-200 text-yellow-800') : (isDarkMode ? 'bg-gray-700 text-white' : 'bg-white border text-gray-800')}`}>{isUser ? 'YOU' : '久'}</div>
@@ -1132,8 +1201,11 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
           </div>
         </div>
 
-        {/* Footer Status Bar */}
-        <div className={`px-4 py-2 border-t flex justify-between items-center ka-micro transition-colors duration-300 ${isDarkMode ? 'bg-[#1e1a15] border-[#4f3926]' : 'bg-[#fbf9f5] border-[#ece3d8]'}`}>
+        {/* Footer Status Bar. Phone-only: the `ka-mobile-fullbleed-footer-extend`
+            class draws an ::after pseudo behind the home indicator that inherits
+            this footer's bg color, so the status bar appears to run continuously
+            to the screen bottom (no pale stripe above the indicator). */}
+        <div className={`ka-mobile-fullbleed-footer-extend px-4 py-2 border-t flex justify-between items-center ka-micro transition-colors duration-300 ${isDarkMode ? 'bg-[#1e1a15] border-[#4f3926]' : 'bg-[#fbf9f5] border-[#ece3d8]'}`}>
            <div className="flex items-center gap-2">
               {isDirty ? (
                   <div className="flex items-center gap-1.5 text-orange-500 animate-pulse font-bold">
@@ -1162,8 +1234,19 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
         isDarkMode={isDarkMode}
         t={t}
       />
-      {showArchiveConfirm && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowArchiveConfirm(false)}>
+      {renderArchivePortal(
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+          style={{
+            opacity: showArchiveConfirm ? 1 : 0,
+            visibility: showArchiveConfirm ? 'visible' : 'hidden',
+            pointerEvents: showArchiveConfirm ? 'auto' : 'none',
+            transition: showArchiveConfirm ? 'opacity 220ms ease-out, visibility 0s 0s' : 'opacity 180ms ease-in, visibility 0s 180ms',
+          }}
+          aria-hidden={!showArchiveConfirm}
+          inert={!showArchiveConfirm}
+          onClick={() => setShowArchiveConfirm(false)}
+        >
           <div className={`mx-4 max-w-sm w-full rounded-2xl p-5 shadow-2xl border ${isDarkMode ? 'bg-[#1e1a15] border-[#4f3926] text-[#eadfce]' : 'bg-white border-[#e8ddcf] text-[#4b3a2a]'}`} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center gap-2 mb-3">
               <RefreshCw size={16} className={isDarkMode ? 'text-[#d7bb88]' : 'text-[#b08957]'} />
@@ -1181,7 +1264,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
               </button>
             </div>
           </div>
-        </div>
+        </div>,
       )}
     </div>
   );

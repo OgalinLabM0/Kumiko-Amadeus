@@ -44,12 +44,40 @@ export const PWA_ALLOWED_CHANNELS: ReadonlySet<string> = new Set([
   // voiceCallOverlayData and invokes the matching closure; the phone
   // just relays the user intent and trusts PC-side state.
   'call:action',
+  // Phase 6 Part B: AIConfigScreen on mobile proxies validate + save
+  // through the PC renderer so API keys + provider choices remain
+  // authoritative on the desktop side. The phone's localStorage is
+  // re-synced from bootstrap:ai-config after each save via the
+  // ai-config:changed WebSocket event.
+  'ai-config:update-from-mobile',
+  'ai-config:validate-from-mobile',
+  'ai-config:validate-search-from-mobile',
+  'ai-config:validate-models-from-mobile',
+  // Phase 6 Part C: mobile remote file browser for the AuthScreen LOCAL
+  // tab. `fs:*` traverse the PC filesystem inside `mobileBrowseRoot`;
+  // `backup:*-desktop-file` read / write / register the backup source.
+  // Root mutation (`fs:set-mobile-browse-root`) is PC-renderer-only and
+  // deliberately absent from this HTTP allowlist.
+  'fs:get-mobile-browse-root',
+  'fs:list-directory',
+  'fs:get-shortcuts',
+  'fs:check-path-exists',
+  'backup:read-desktop-file',
+  'backup:write-desktop-file',
+  'backup:set-desktop-backup-path',
+  'backup:disconnect-desktop-file',
   // Read-mostly passthrough to renderer IPC.
   'app:get-weather',
   'app:get-historical-weather',
   'app:get-japan-holidays',
   'app:get-data-directory-info',
   'app:get-auto-zip-backup',
+  // Read-only mirror of the desktop electron-updater state. Phones use
+  // this on boot to seed `appUpdateState` so the Settings → 应用更新
+  // page reflects the current snapshot before the WS `update:state`
+  // push arrives. The write side (check / download / quit-and-install)
+  // stays PC-only and is intentionally absent from this allowlist.
+  'app:update:get-state',
   'images:list',
   'images:get-storage-info',
   'voice:list',

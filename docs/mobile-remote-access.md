@@ -8,6 +8,10 @@ IPC channel, or the pairing token flow.
 Scope: the phone-side remote access story only. Backup architecture is
 separate — see [backup-architecture.md](./backup-architecture.md). RAG
 vector store internals — see [rag-architecture.md](./rag-architecture.md).
+User-facing feature coverage, file storage map, and the three data-flow
+paths (write / sync / push) are covered in
+[mobile-parity.md](./mobile-parity.md); look there before adding feature
+matrices to this doc.
 
 ## Deployment model: distributed, not SaaS
 

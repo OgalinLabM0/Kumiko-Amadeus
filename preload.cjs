@@ -78,7 +78,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'mobile-access:enable',
       'mobile-access:disable',
       'mobile-access:rotate-token',
-      'mobile-access:revoke-sessions'
+      'mobile-access:revoke-sessions',
+      // Phase 6 Part C: mobile remote file browser + desktop backup I/O.
+      // All handlers enforce the `mobileBrowseRoot` sandbox server-side,
+      // so exposing the channels here only lets desktop UI (and the
+      // mobile HTTP bridge) traverse / read / write within the configured
+      // root. `fs:set-mobile-browse-root` is the single mutator and is
+      // intentionally absent from the HTTP allowlist in ipc-bridge.cjs
+      // so only a human in front of the PC can change the sandbox.
+      'fs:get-mobile-browse-root',
+      'fs:set-mobile-browse-root',
+      'fs:pick-mobile-browse-root',
+      'fs:list-directory',
+      'fs:get-shortcuts',
+      'fs:check-path-exists',
+      'backup:read-desktop-file',
+      'backup:write-desktop-file',
+      'backup:set-desktop-backup-path',
+      'backup:disconnect-desktop-file'
       // Note: 'app:set-bg-color' intentionally omitted here — it's a fire-and-forget
       // one-way signal handled by ipcMain.on in the main process, NOT a request/response
       // handler. Calling electronAPI.invoke('app:set-bg-color', ...) used to land here but

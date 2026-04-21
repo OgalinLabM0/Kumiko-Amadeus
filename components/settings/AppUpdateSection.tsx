@@ -3,6 +3,16 @@ import { CheckCircle2, ChevronDown, ChevronUp, Download, RefreshCw, Rocket } fro
 import { UI_TRANSLATIONS } from '../../constants';
 import type { AppUpdateState, Language } from '../../types';
 import { Collapse } from '../Collapse';
+import { isMobilePwa } from '../../services/environment';
+import { isDesktopElectron } from '../../services/desktopBackupService';
+
+type UpdatePlatform = 'desktop' | 'mobile' | 'web';
+
+function detectPlatform(): UpdatePlatform {
+  if (isMobilePwa()) return 'mobile';
+  if (isDesktopElectron()) return 'desktop';
+  return 'web';
+}
 
 interface AppUpdateSectionProps {
   isOpen: boolean;
@@ -45,9 +55,22 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
     ? new Date(updateState.releaseDate).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US')
     : null;
 
+  // Platform-aware banner / button policy. The desktop write side
+  // (check / download / install) only runs inside a packaged Electron
+  // build, so on mobile PWA + dev Electron + plain web preview we want
+  // platform-appropriate hints instead of the desktop-only "未打包" text.
+  const platform = detectPlatform();
+  const isPackagedDesktop = platform === 'desktop' && !!updateState.isPackaged;
+
   let statusText = t.updateSectionDesc;
-  if (!updateState.isPackaged) {
+  if (platform === 'mobile') {
+    statusText = t.updateMobileHint;
+  } else if (platform === 'web') {
     statusText = t.updateUnsupported;
+  } else if (!updateState.isPackaged) {
+    // Desktop dev (npm run dev). Use the dev-specific hint so users
+    // don't think the packaged build is also broken.
+    statusText = t.updateUnsupportedDev;
   } else if (updateState.status === 'checking') {
     statusText = t.updateChecking;
   } else if (updateState.status === 'available') {
@@ -62,9 +85,33 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
     statusText = t.updateError;
   }
 
-  const checkDisabled = !updateState.isPackaged || updateState.status === 'checking' || updateState.status === 'downloading';
-  const downloadDisabled = !updateState.isPackaged || updateState.status !== 'available';
-  const installDisabled = !updateState.isPackaged || updateState.status !== 'downloaded';
+  // Buttons are interactive only in packaged desktop builds. Dev mode
+  // and mobile both surface them as visible-but-disabled with a tooltip
+  // so the UI shape stays predictable across runtimes.
+  const buttonsDisabledByPlatform = !isPackagedDesktop;
+  const platformDisabledTitle = platform === 'mobile'
+    ? t.updateMobileHint
+    : platform === 'web'
+      ? t.updateUnsupported
+      : t.updateUnsupportedDev;
+  const checkDisabled = buttonsDisabledByPlatform || updateState.status === 'checking' || updateState.status === 'downloading';
+  const downloadDisabled = buttonsDisabledByPlatform || updateState.status !== 'available';
+  const installDisabled = buttonsDisabledByPlatform || updateState.status !== 'downloaded';
+
+  // Banner display: packaged desktop never shows it; mobile shows a
+  // neutral cyan info pill (not the warning amber); dev desktop shows
+  // amber but with the "dev mode" wording; web stays silent (the
+  // statusText already conveys the right hint inside the version card).
+  let bannerVariant: 'mobile' | 'desktop-dev' | null = null;
+  if (platform === 'mobile') {
+    bannerVariant = 'mobile';
+  } else if (platform === 'desktop' && !updateState.isPackaged) {
+    bannerVariant = 'desktop-dev';
+  }
+  const bannerClassName = bannerVariant === 'desktop-dev'
+    ? (isDarkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-700')
+    : (isDarkMode ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-200' : 'border-cyan-200 bg-cyan-50 text-cyan-700');
+  const bannerText = bannerVariant === 'desktop-dev' ? t.updateUnsupportedDev : t.updateMobileHint;
 
   return (
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
@@ -115,9 +162,9 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
             </div>
           )}
 
-          {!updateState.isPackaged && (
-            <div className={`rounded-lg border p-3 ka-copy-sm ${isDarkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
-              {t.updateUnsupported}
+          {bannerVariant !== null && (
+            <div className={`rounded-lg border p-3 ka-copy-sm ${bannerClassName}`}>
+              {bannerText}
             </div>
           )}
 
@@ -125,6 +172,7 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
             <button
               onClick={onCheckForUpdates}
               disabled={checkDisabled}
+              title={buttonsDisabledByPlatform ? platformDisabledTitle : undefined}
               className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
                 checkDisabled
                   ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
@@ -137,6 +185,7 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
             <button
               onClick={onDownloadUpdate}
               disabled={downloadDisabled}
+              title={buttonsDisabledByPlatform ? platformDisabledTitle : undefined}
               className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
                 downloadDisabled
                   ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
@@ -149,6 +198,7 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
             <button
               onClick={onInstallUpdate}
               disabled={installDisabled}
+              title={buttonsDisabledByPlatform ? platformDisabledTitle : undefined}
               className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
                 installDisabled
                   ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')

@@ -64,6 +64,37 @@ export const useAppViewport = ({
   }, []);
 
   useLayoutEffect(() => {
+    // Phase 7 regression fix (iOS PWA env() cold-start regression): probe
+    // the browser's resolved env(safe-area-inset-*) value via a physical
+    // hidden DOM element. Reading these from CSS custom properties / JS
+    // directly is unreliable (WebKit bugs #274773 / #191872 return stale or
+    // zero values). `offsetHeight` on an element sized with `env(...)`
+    // forces a synchronous layout and gives us the real computed px.
+    // Reference: fozzedout/iphone-pwa-game-guide.md §3 "Cold-Start Probing".
+    const measureEnvInset = (
+      prop:
+        | 'safe-area-inset-top'
+        | 'safe-area-inset-right'
+        | 'safe-area-inset-bottom'
+        | 'safe-area-inset-left',
+    ): number => {
+      const el = document.createElement('div');
+      el.style.cssText =
+        `position:fixed;top:0;left:0;width:0;` +
+        `height:env(${prop}, 0px);visibility:hidden;pointer-events:none;z-index:-1`;
+      document.body.appendChild(el);
+      const val = el.offsetHeight;
+      el.remove();
+      return val;
+    };
+
+    // Guard so the viewport-fit=auto<->cover toggle only runs once per
+    // effect lifetime. Without this, the recursive `applyViewportFix()`
+    // call from inside the rAF branch would flip the meta tag forever on
+    // devices where env() legitimately stays at 0 (e.g. iPhone SE without
+    // a notch, where `safe-area-inset-*` really is 0px).
+    let vpFitToggleAttempted = false;
+
     const applyViewportFix = () => {
       const vv = window.visualViewport;
       const isStandalone =
@@ -80,13 +111,25 @@ export const useAppViewport = ({
         h = Math.max(h, document.documentElement.clientHeight || 0);
       }
 
-      const isIOSDevice = /iPad|iPhone|iPod/.test(navigator.userAgent) && !(window as any).MSStream;
-      const topOffset = (isStandalone && isIOSDevice) ? 'env(safe-area-inset-top)' : '0';
+      // Phase 7 fix: safe-area-top is now handled by each component (AppChatHeader,
+      // DiaryPanel, TaskPanel, MessageCenterPanel, etc. all add their own
+      // `paddingTop / top: env(safe-area-inset-top)`). Previously we also shifted
+      // the <body> down by safe-top on iOS standalone, which caused a double-inset
+      // visible as (a) extra blank strip above the chat header and (b) the
+      // .ka-settings-shell `height: 100dvh` overflowing its `100dvh - safe-top`
+      // backdrop and getting its bottom clipped. Keep body flush at (0,0) and let
+      // the component layer place its own safe-area padding.
+      const topOffset = '0';
 
-      let hpx = (isStandalone && isIOSDevice) ? `calc(${h}px - env(safe-area-inset-top))` : `${h}px`;
-      if (isStandalone && typeof CSS !== 'undefined' && CSS.supports('height: 100dvh')) {
-        hpx = isIOSDevice ? 'calc(100dvh - env(safe-area-inset-top))' : '100dvh';
-      }
+      // Phase 7 regression fix (iOS PWA viewport collapse, 2026-04): DO NOT
+      // use `100dvh` here. iOS PWA standalone mode has a well-documented
+      // cold-start bug where 100dvh returns stale values until the viewport
+      // is "exercised" (rotation). JS-measured `window.innerHeight` in px is
+      // stable from first paint. In PWA standalone, 100vh == 100dvh ==
+      // window.innerHeight once the viewport has settled, so nothing is lost
+      // by sticking to px -- and we dodge the cold-start bug entirely.
+      // Reference: fozzedout/iphone-pwa-game-guide.md §2 "Height Declaration Trap".
+      const hpx = `${h}px`;
       const bg = flowState === 'APP'
         ? (isDarkMode ? '#121212' : '#ffffff')
         : '#f9f7f2';
@@ -112,8 +155,6 @@ export const useAppViewport = ({
         }
         return;
       }
-
-      hpx = hpx || `${h}px`;
 
       document.documentElement.style.setProperty('--app-height', hpx);
 
@@ -170,6 +211,50 @@ export const useAppViewport = ({
           backgroundColor: bg,
         });
       }
+
+      // Phase 7 regression fix: probe env(safe-area-inset-*) and push the
+      // resolved px values to --sat/--sar/--sab/--sal on :root. All
+      // consumers (index.html safe-area-padding-* helpers, .ka-mobile-
+      // fullbleed-sheet, DiaryPanel / TaskPanel / MessageCenterPanel /
+      // AppChatHeader / AppChatFooter / 6 AppModals / DiaryBackfillDialog
+      // / CustomDialog / SystemToast / VoiceCallOverlay / AIConfigScreen
+      // / AuthScreen / IntroScreen / MobilePairingChrome) read these vars
+      // instead of env() directly, so this one write fixes the entire app
+      // simultaneously. The CSS default for these vars is env(...) so if
+      // this probe is slow/blocked, panels still render with env() values.
+      const sat = measureEnvInset('safe-area-inset-top');
+      const sar = measureEnvInset('safe-area-inset-right');
+      const sab = measureEnvInset('safe-area-inset-bottom');
+      const sal = measureEnvInset('safe-area-inset-left');
+
+      if (sat > 0 || sab > 0 || sar > 0 || sal > 0) {
+        document.documentElement.style.setProperty('--sat', `${sat}px`);
+        document.documentElement.style.setProperty('--sar', `${sar}px`);
+        document.documentElement.style.setProperty('--sab', `${sab}px`);
+        document.documentElement.style.setProperty('--sal', `${sal}px`);
+      } else if (isStandalone && !vpFitToggleAttempted) {
+        // iOS 26.1 PWA cold-start regression: env() resolves to 0 until
+        // the viewport is "exercised". Briefly flip viewport-fit from
+        // cover to auto and back, which forces WebKit to recalculate
+        // env() without requiring physical device rotation. Then reprobe
+        // on the next frame. Guarded by vpFitToggleAttempted so notch-
+        // less devices (where env() really is 0) don't loop forever.
+        vpFitToggleAttempted = true;
+        const meta = document.querySelector('meta[name="viewport"]') as HTMLMetaElement | null;
+        if (meta) {
+          const original = meta.getAttribute('content') || '';
+          if (original.includes('viewport-fit=cover')) {
+            meta.setAttribute(
+              'content',
+              original.replace('viewport-fit=cover', 'viewport-fit=auto'),
+            );
+            requestAnimationFrame(() => {
+              meta.setAttribute('content', original);
+              requestAnimationFrame(() => applyViewportFix());
+            });
+          }
+        }
+      }
     };
 
     const onResize = () => requestAnimationFrame(applyViewportFix);
@@ -199,6 +284,9 @@ export const useAppViewport = ({
     setTimeout(applyViewportFix, 0);
     setTimeout(applyViewportFix, 100);
     setTimeout(applyViewportFix, 400);
+    // Phase 7 regression fix: extra late probe to catch iOS PWA cold-start
+    // cases where env() populates only after ~1s (WebKit bug #191872).
+    setTimeout(applyViewportFix, 1500);
 
     return () => {
       if (!isDesktopElectron()) {

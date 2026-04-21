@@ -34,6 +34,9 @@ const { ipcMain } = require('electron');
 //   Read-mostly passthrough to existing renderer invoke channels:
 //     app:get-weather, app:get-historical-weather, app:get-japan-holidays
 //     app:get-data-directory-info, app:get-auto-zip-backup
+//     app:update:get-state (read-only mirror of electron-updater state;
+//       the *write* side — app:update:check / app:update:download /
+//       app:update:quit-and-install — stays PC-only and is listed below)
 //     images:list, images:get-storage-info
 //     voice:list, voice:get-storage-info
 //     ringtone:get-info
@@ -53,7 +56,11 @@ const { ipcMain } = require('electron');
 //     rag:clear-all, rag:clear-message-vectors, rag:rebuild:start
 //
 // Intentionally NOT in the list (PC-only by design):
-//   quit-app, app:update:* (desktop updater),
+//   quit-app,
+//   app:update:check, app:update:download, app:update:quit-and-install
+//     (desktop electron-updater write side — phones can read state via
+//     app:update:get-state above, but the actual install ritual must
+//     happen on the desktop process that owns the .exe),
 //   app:pick-data-directory, app:migrate-data-directory,
 //   app:reset-data-directory, app:set-background-throttling,
 //   app:refocus-webcontents (PC renderer plumbing),
@@ -94,12 +101,43 @@ const ALLOWED_CHANNELS = new Set([
   // Zustand state so a late-arriving action for an already-closed call
   // is a harmless no-op.
   'call:action',
+  // Phase 6 Part B: mobile's AIConfigScreen routes validate + save through
+  // these so the PC renderer remains the sole localStorage.kumiko_ai_config
+  // owner. `validate-*-from-mobile` run against PC-resident network access
+  // (API keys never leave the PC beyond the single POST body that carries
+  // the candidate config), `update-from-mobile` commits to localStorage and
+  // fans out an `ai-config:changed` event so every other phone re-hydrates.
+  'ai-config:update-from-mobile',
+  'ai-config:validate-from-mobile',
+  'ai-config:validate-search-from-mobile',
+  'ai-config:validate-models-from-mobile',
+  // Phase 6 Part C: mobile remote file browser + desktop file I/O for the
+  // AuthScreen LOCAL tab. All `fs:*` + `backup:*-desktop-file` handlers
+  // resolve paths against `mobileBrowseRoot` and reject anything outside
+  // the allowed root (see electron/mobile-fs.cjs). The root itself is set
+  // from the desktop renderer via `fs:set-mobile-browse-root` which is
+  // intentionally NOT listed here — HTTP can only READ the current root
+  // through `fs:get-mobile-browse-root`, not change it.
+  'fs:get-mobile-browse-root',
+  'fs:list-directory',
+  'fs:get-shortcuts',
+  'fs:check-path-exists',
+  'backup:read-desktop-file',
+  'backup:write-desktop-file',
+  'backup:set-desktop-backup-path',
+  'backup:disconnect-desktop-file',
   // --- Passthrough reads ---------------------------------------------
   'app:get-weather',
   'app:get-historical-weather',
   'app:get-japan-holidays',
   'app:get-data-directory-info',
   'app:get-auto-zip-backup',
+  // Read-only mirror of the desktop electron-updater state. Phones use
+  // this once on boot to seed the Settings → 应用更新 page; thereafter
+  // the WS `update:state` push keeps it live (see app-updater.cjs ->
+  // emitAppUpdateState fan-out). The write half (check/download/install)
+  // intentionally stays PC-only — see the comment block above.
+  'app:update:get-state',
   'images:list',
   'images:get-storage-info',
   'voice:list',

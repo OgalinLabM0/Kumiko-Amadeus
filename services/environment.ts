@@ -4,18 +4,39 @@
 //
 //   1. Electron desktop: `window.electronAPI` + `window.__KUMIKO_ENV__`
 //      are injected by preload.cjs. This is the authoritative build.
-//   2. Phone PWA served by the desktop Fastify server: no electronAPI,
-//      but `location.pathname` is served from the same origin that
-//      exposes `/api/*`. We treat any non-Electron origin that accepts
-//      our HTTP calls as "mobile PWA".
-//   3. Legacy / offline web preview (plain Vite dev server on port 3000
-//      without the Electron wrapper): no electronAPI either. Kept as a
-//      distinct case because HTTP proxy calls will fail, which is
-//      diagnosable rather than a regression.
+//   2. Phone PWA served by the desktop Fastify server (HTTPS via Tailscale
+//      or a plain-HTTP LAN access). Detected by probing `/api/status` on
+//      module load; the same origin exposes our own HTTP API.
+//   3. Legacy / offline web preview (plain Vite `npm run dev` without the
+//      Electron wrapper and without the Fastify proxy). `/api/status`
+//      returns 404 there, so the probe falls through to `webFallback`.
 //
-// This module MUST stay side-effect-free and synchronous at import time.
-// UI components rely on environment detection during their first render
-// to decide which code path to wire up.
+// Phase 7 Part t3_api_probe: `isMobilePwa()` used to gate on
+// `location.protocol === 'https:'`, which meant a phone reaching the
+// Fastify server over plain HTTP (local LAN, or Tailscale without the
+// HTTPS cert deployed) saw every mobile-specific code branch short out,
+// so the file picker fell back to `showOpenFilePicker` / `<input
+// type="file">` and the user got the iOS system picker instead of the
+// remote-file browser. We now:
+//
+//   1. Synchronously fall back to the HTTPS heuristic so callers during
+//      the very first render tick still get a sensible answer (the
+//      runtime kind can't change mid-session).
+//   2. Kick off a single async `HEAD /api/status` probe at module load,
+//      cache the result, and if it disagrees with the sync answer dispatch
+//      `kumiko:runtime-changed` so `index.tsx` can force a reload and
+//      re-render under the correct runtime.
+//   3. Expose `waitForRuntimeDetection()` so the entry bootstrap can
+//      `await` the probe before mounting React, eliminating the single
+//      render flash where the sync heuristic disagreed with the real
+//      runtime.
+//
+// Electron desktop is NEVER re-evaluated; `isElectron()` short-circuits
+// the probe entirely. Desktop behaviour is unchanged — no HTTP hit, no
+// event dispatch, no reload.
+//
+// This module MUST stay synchronous at import time for callers that read
+// the runtime during their first render. Any async work is fire-and-forget.
 
 export type RuntimeKind = 'electron' | 'mobilePwa' | 'webFallback';
 
@@ -30,32 +51,102 @@ declare global {
   }
 }
 
+// Module-local cache. `null` = probe hasn't resolved yet, use sync fallback.
+let cachedRuntime: RuntimeKind | null = null;
+
+// Resolved once the async probe completes (success OR failure). Consumers
+// that need to wait for a definitive answer can `await` this.
+let runtimeResolved: Promise<RuntimeKind> | null = null;
+
 export function isElectron(): boolean {
   if (typeof window === 'undefined') return false;
   const envBridge = window.__KUMIKO_ENV__;
   if (envBridge && envBridge.runtime === 'electron') return true;
-  // Belt-and-braces fallback: the preload may be missing if we ever ship
-  // a dev mode without the bridge, but window.electronAPI.invoke is a
-  // strong signal on its own.
   return typeof (window as unknown as { electronAPI?: { invoke?: unknown } }).electronAPI?.invoke === 'function';
+}
+
+function syncFallbackIsMobilePwa(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (isElectron()) return false;
+  const hasHttps = window.location?.protocol === 'https:';
+  return hasHttps;
+}
+
+async function probeMobilePwa(): Promise<RuntimeKind> {
+  if (typeof window === 'undefined') return 'webFallback';
+  if (isElectron()) return 'electron';
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch('/api/status', {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        return 'mobilePwa';
+      }
+    }
+    return 'webFallback';
+  } catch {
+    return 'webFallback';
+  }
+}
+
+function startRuntimeProbe() {
+  if (runtimeResolved || typeof window === 'undefined') return;
+  if (isElectron()) {
+    cachedRuntime = 'electron';
+    runtimeResolved = Promise.resolve(cachedRuntime);
+    return;
+  }
+  runtimeResolved = probeMobilePwa().then((kind) => {
+    const syncFallback = syncFallbackIsMobilePwa() ? 'mobilePwa' : 'webFallback';
+    cachedRuntime = kind;
+    if (kind !== syncFallback) {
+      try {
+        window.dispatchEvent(new CustomEvent('kumiko:runtime-changed', {
+          detail: { from: syncFallback, to: kind },
+        }));
+      } catch {
+        // CustomEvent failures are non-fatal; callers rely on polling.
+      }
+    }
+    return kind;
+  });
+}
+
+// Kick off the probe as early as possible (module load).
+if (typeof window !== 'undefined') {
+  startRuntimeProbe();
 }
 
 export function isMobilePwa(): boolean {
   if (typeof window === 'undefined') return false;
   if (isElectron()) return false;
-  // Anything served from https:// under Tailscale by our own Fastify is
-  // treated as PWA. We don't try to distinguish the genuine "installed
-  // to home screen" case from Safari tab mode — both should act the
-  // same. `location.protocol === 'https:'` filters out the plain
-  // `npm run dev` fallback below.
-  const hasHttps = window.location?.protocol === 'https:';
-  return hasHttps;
+  if (cachedRuntime !== null) return cachedRuntime === 'mobilePwa';
+  // Async probe hasn't resolved yet — fall back to the HTTPS heuristic.
+  // Caller will be re-rendered once the probe dispatches
+  // `kumiko:runtime-changed` if the answers disagree.
+  return syncFallbackIsMobilePwa();
 }
 
 export function runtimeKind(): RuntimeKind {
   if (isElectron()) return 'electron';
-  if (isMobilePwa()) return 'mobilePwa';
-  return 'webFallback';
+  if (cachedRuntime !== null) return cachedRuntime;
+  return syncFallbackIsMobilePwa() ? 'mobilePwa' : 'webFallback';
+}
+
+export function waitForRuntimeDetection(): Promise<RuntimeKind> {
+  if (isElectron()) return Promise.resolve('electron');
+  if (runtimeResolved) return runtimeResolved;
+  // Defensive: if for some reason startRuntimeProbe didn't run (e.g. SSR),
+  // return the sync fallback immediately.
+  return Promise.resolve(syncFallbackIsMobilePwa() ? 'mobilePwa' : 'webFallback');
 }
 
 // The base URL for HTTP proxy calls. In PWA mode this is always the

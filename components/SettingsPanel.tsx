@@ -5,12 +5,14 @@ import { Language, LocationConfig, BackupConfig, AIConfig } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
 import { useAppStore } from '../store';
 import { getCurrentAIConfig, validateAIConnection, validateModels, validateSearchCapability } from '../services/geminiService';
+import { setAIConfig } from '../services/llmCore';
 import { clearAllLocalRagMemory, syncRawHistoryMessagesToMain } from '../services/localRagService';
 import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel } from '../services/appConfig';
 import { db } from '../services/db';
 import { deleteRingtoneFile, deleteVoiceFile, isVoiceServiceAvailable, listVoiceFiles } from '../services/voiceFileService';
 import { DataManagementSection } from './settings/DataManagementSection';
 import { MobileAccessSection } from './settings/MobileAccessSection';
+import { MobileBrowseRootSection } from './settings/MobileBrowseRootSection';
 import { AccountSection } from './settings/AccountSection';
 import { ApiConfigSection } from './settings/ApiConfigSection';
 import { AppUpdateSection } from './settings/AppUpdateSection';
@@ -74,6 +76,7 @@ type SettingsSectionId =
   | 'backup'
   | 'data'
   | 'mobileAccess'
+  | 'mobileBrowseRoot'
   | 'update'
   | 'account'
   | 'guide'
@@ -138,6 +141,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [isTtsOpen, setIsTtsOpen] = useState(true);
   const [isDataManagementOpen, setIsDataManagementOpen] = useState(true);
   const [isMobileAccessOpen, setIsMobileAccessOpen] = useState(false);
+  const [isMobileBrowseRootOpen, setIsMobileBrowseRootOpen] = useState(false);
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);
   const [isExpandedView, setIsExpandedView] = useState(true);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
@@ -243,8 +247,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     setIsInternetSearchOpen(!compactLayout);
     setIsGeneralOpen(!compactLayout);
     setIsLocationOpen(!compactLayout);
+    setIsMemoryContextOpen(!compactLayout);
+    setIsDiaryLifeOpen(!compactLayout);
+    setIsMediaOpen(!compactLayout);
     setIsBackupOpen(!compactLayout);
     setIsDataManagementOpen(!compactLayout);
+    setIsMobileAccessOpen(!compactLayout);
+    setIsMobileBrowseRootOpen(!compactLayout);
     setIsUpdateOpen(!compactLayout);
     setIsAccountOpen(!compactLayout);
     setIsGuideOpen(!compactLayout);
@@ -256,7 +265,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   useEffect(() => {
     if (isOpen) {
         setLocalAiConfig(getCurrentAIConfig());
-        setIsExpandedView(true);
+        // Initial sidebar mode threshold is unified with `isCompactSettingsLayout`
+        // (>=900). At 768-899 the shell was rendered at the larger breakpoint
+        // but the sidebar stayed hidden, producing a "big modal with no sidebar
+        // and a horizontal tab strip on top" hybrid that the user (correctly)
+        // mistook for the mobile layout being shown on PC. With both values at
+        // 900, PC Electron windows >=900px wide always open in sidebar mode and
+        // the compact layout is reserved for genuinely narrow viewports.
+        const initialExpanded = typeof window !== 'undefined' && window.innerWidth >= 900;
+        setIsExpandedView(initialExpanded);
         setActiveSectionId('api');
         previousCompactLayoutRef.current = null;
     }
@@ -429,8 +446,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       setIsValidating(false);
   };
 
-  const handleSaveApiConfig = () => {
-      localStorage.setItem('kumiko_ai_config', JSON.stringify(localAiConfig));
+  const handleSaveApiConfig = async () => {
+      const saveResult = await setAIConfig(localAiConfig);
+      if (!saveResult.ok) {
+          showDialog({
+              title: language === 'zh' ? '保存失败' : 'Save Failed',
+              message: (language === 'zh' ? '保存到 PC 失败：' : 'Failed to save to PC: ') + (saveResult.error || ''),
+              type: 'alert',
+              onConfirm: () => closeDialog(),
+          });
+          return;
+      }
       showDialog({
         title: language === 'zh' ? "配置已保存" : "Configuration Saved",
         message: language === 'zh' ? "配置已保存并即时生效。" : "Configuration saved and applied.",
@@ -732,6 +758,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       { id: 'backup', label: t.backupTitle, desc: t.backupDesc, icon: HardDrive, active: activeSectionId === 'backup', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'data', label: t.dataManagementTitle, desc: t.dataManagementDesc, icon: Database, active: activeSectionId === 'data', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       isDesktopElectron ? { id: 'mobileAccess', label: language === 'zh' ? '手机远程访问' : 'Mobile Remote Access', desc: language === 'zh' ? '通过 Tailscale 让手机访问桌面版。' : 'Reach the desktop from your phone via Tailscale.', icon: Smartphone, active: activeSectionId === 'mobileAccess', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' } : null,
+      isDesktopElectron ? { id: 'mobileBrowseRoot', label: language === 'zh' ? '手机浏览根目录' : 'Mobile Browse Root', desc: language === 'zh' ? '限定手机远程文件浏览器可访问的 PC 目录。' : 'Sandbox the remote file browser to a PC directory.', icon: Smartphone, active: activeSectionId === 'mobileBrowseRoot', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' } : null,
       { id: 'update', label: t.updateSection, desc: t.updateSectionDesc, icon: Zap, active: activeSectionId === 'update', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'account', label: t.accountSettings, desc: t.accountDesc, icon: UserCircle, active: activeSectionId === 'account', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'guide', label: t.guideTitle, desc: t.guideDesc, icon: BookOpen, active: activeSectionId === 'guide', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
@@ -830,6 +857,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       case 'mobileAccess':
         setIsMobileAccessOpen(prev => !prev);
         break;
+      case 'mobileBrowseRoot':
+        setIsMobileBrowseRootOpen(prev => !prev);
+        break;
       case 'update':
         setIsUpdateOpen(prev => !prev);
         break;
@@ -879,6 +909,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         break;
       case 'mobileAccess':
         setIsMobileAccessOpen(true);
+        break;
+      case 'mobileBrowseRoot':
+        setIsMobileBrowseRootOpen(true);
         break;
       case 'update':
         setIsUpdateOpen(true);
@@ -1424,6 +1457,19 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       </div>
       )}
 
+      {isDesktopElectron && shouldRenderSection('mobileBrowseRoot') && (
+      <div id="settings-section-mobileBrowseRoot" >
+        <MobileBrowseRootSection
+          isOpen={isMobileBrowseRootOpen}
+          onToggle={() => handleSectionToggle('mobileBrowseRoot', isMobileBrowseRootOpen)}
+          isDarkMode={isDarkMode}
+          language={language}
+          sectionBorder={sectionBorder}
+          innerCardClass={innerCardClass}
+        />
+      </div>
+      )}
+
       {shouldRenderSection('update') && (
       <div id="settings-section-update" >
         <AppUpdateSection
@@ -1590,7 +1636,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         willChange: 'opacity' as const,
       }}
     >
-      <div className={`ka-settings-shell relative flex overflow-hidden border ${shellClass} ${shellSurfaceClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out' : 'opacity 200ms ease-in, transform 200ms ease-in', willChange: 'transform, opacity', contain: 'layout style paint' }}>
+      <div data-settings-expanded={isExpandedView ? 'true' : 'false'} className={`ka-settings-shell relative flex overflow-hidden border ${shellClass} ${shellSurfaceClass}`} style={{ opacity: isOpen ? 1 : 0, transform: isOpen ? 'translateY(0)' : 'translateY(10px)', transition: isOpen ? 'opacity 300ms ease-out, transform 300ms ease-out' : 'opacity 200ms ease-in, transform 200ms ease-in', willChange: 'transform, opacity', contain: 'layout style paint' }}>
         <div className={`absolute top-0 left-0 h-px w-full pointer-events-none ${isDarkMode ? 'bg-gradient-to-r from-transparent via-yellow-700/45 to-transparent' : 'bg-gradient-to-r from-transparent via-[#d8b56f]/42 to-transparent'}`} />
         <div className={`absolute inset-0 pointer-events-none ${isDarkMode ? 'bg-[linear-gradient(135deg,rgba(188,149,91,0.03),transparent_40%,rgba(188,149,91,0.02)_72%,transparent)]' : 'bg-[linear-gradient(180deg,rgba(255,255,255,0.22),rgba(255,255,255,0.02)_26%,transparent_52%)]'}`} />
         {!isExpandedView && (
@@ -1663,7 +1709,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             <div className="flex items-center gap-2">
               <button
                 onClick={handleToggleExpandedView}
-                className={`rounded-full border p-2 transition-all ${utilityButtonClass}`}
+                className={`hidden md:inline-flex rounded-full border p-2 transition-all ${utilityButtonClass}`}
                 title={isExpandedView ? (language === 'zh' ? '收为小弹窗' : 'Back To Popup') : (language === 'zh' ? '切换全屏' : 'Expand Workspace')}
               >
                 {isExpandedView ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
@@ -1741,7 +1787,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             </div>
           </div>
 
-          <div className={`lg:hidden shrink-0 border-t px-4 py-3 ${shellDividerClass}`}>
+          <div className={`hidden md:block lg:hidden shrink-0 border-t px-4 py-3 ${shellDividerClass}`}>
             <button
               onClick={handleToggleExpandedView}
               className={`w-full rounded-full border px-3 py-2.5 ka-copy-sm font-semibold flex items-center justify-center gap-2 transition-all ${utilityButtonClass}`}

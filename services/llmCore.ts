@@ -17,6 +17,63 @@ export const getCurrentAIConfig = (): AIConfig => {
     return DEFAULT_AI_CONFIG;
 };
 
+// Phase 6 Part B: single write-side entry for kumiko_ai_config.
+//
+// - Desktop: writes localStorage + emits `ai-config:changed` over the
+//   mobile-event-broadcast bus so every connected phone re-hydrates
+//   via `bootstrap:ai-config` (see useMobileMessageSync). Returns
+//   synchronously-resolved `{ ok: true }` for call-site symmetry with
+//   the mobile branch.
+// - Mobile (PWA): writes local mirror + POSTs through the PC renderer
+//   via `ai-config:update-from-mobile`. The PC renderer's handler also
+//   emits `ai-config:changed`, so every OTHER connected phone picks up
+//   the change (the initiator updated itself synchronously above).
+//
+// All desktop call sites that used to `localStorage.setItem('kumiko_ai_config', …)`
+// directly should switch to this. Keeping the setItem inline still works
+// (localStorage stays authoritative in-process), but phones won't learn
+// about the change without the broadcast.
+export const setAIConfig = async (
+    cfg: AIConfig,
+): Promise<{ ok: boolean; error?: string }> => {
+    try {
+        localStorage.setItem('kumiko_ai_config', JSON.stringify(cfg));
+    } catch (e) {
+        return { ok: false, error: (e as Error).message };
+    }
+    // Runtime flag set by preload.cjs / index.html fallback. Desktop
+    // electron exposes `window.electronAPI.send`; mobile PWAs only
+    // have the HTTP shim in services/httpApi.ts.
+    const anyWindow = typeof window !== 'undefined' ? (window as unknown as {
+        electronAPI?: { send?: (c: string, p: unknown) => void };
+        __KUMIKO_ENV__?: { runtime?: string };
+    }) : null;
+    const runtime = anyWindow?.__KUMIKO_ENV__?.runtime;
+    if (runtime === 'electron') {
+        try {
+            anyWindow?.electronAPI?.send?.('mobile-event-broadcast', { type: 'ai-config:changed' });
+        } catch (e) {
+            console.warn('[setAIConfig] desktop broadcast failed:', e);
+        }
+        return { ok: true };
+    }
+    // Mobile PWA: push to PC. Import is dynamic to avoid an httpApi
+    // circular (httpApi itself doesn't depend on llmCore, but keeping
+    // this lazy makes the desktop path 0-cost).
+    try {
+        const { httpInvoke } = await import('./httpApi');
+        const result = await httpInvoke<{ ok?: boolean; error?: string }>(
+            'ai-config:update-from-mobile', cfg,
+        );
+        if (result && result.ok === false) {
+            return { ok: false, error: result.error || 'remote_rejected' };
+        }
+        return { ok: true };
+    } catch (e) {
+        return { ok: false, error: (e as Error).message };
+    }
+};
+
 // Helper to get a fresh client instance every time to handle dynamic API keys
 export const getGenAI = (overrideKey?: string): GoogleGenAI => {
   const config = getCurrentAIConfig();

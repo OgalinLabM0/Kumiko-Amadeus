@@ -139,6 +139,7 @@ import {
 import { registerChatPipeline, unregisterChatPipeline } from './app/chatPipelineRegistry';
 import { useAppUpdater } from './app/useAppUpdater';
 import { useLocalFileBackup } from './app/useLocalFileBackup';
+import { useMobileRemoteFilePicker } from './app/useMobileRemoteFilePicker';
 import { useAppPreferencesSync } from './app/useAppPreferencesSync';
 import { useScheduledReminders } from './app/useScheduledReminders';
 import { useMessageHistoryOperations } from './app/useMessageHistoryOperations';
@@ -310,19 +311,15 @@ export const App = () => {
     void runAutoDiaryBackfill();
   }, [flowState, isDataLoaded, runAutoDiaryBackfill]);
 
-  // Phase 4 Part E: mobile PWA skips the desktop onboarding wizard.
-  // INTRO/AUTH/CONFIG configure the *desktop's* local-file backup and
-  // AI provider settings — on a phone those are already handled by the
-  // PC backend we paired with via MobilePairingGate, so forcing INTRO
-  // → APP here keeps mobile users from staring at a blank
-  // "Connect / Pair with desktop" wizard that doesn't apply to them.
-  // Desktop Electron keeps the normal INTRO → AUTH → CONFIG → APP flow
-  // because the guard is gated on `isMobilePwa()`.
-  useEffect(() => {
-    if (!isMobilePwa()) return;
-    if (flowState !== 'INTRO') return;
-    setFlowState('APP');
-  }, [flowState, setFlowState]);
+  // Phase 6: mobile now walks the full desktop onboarding (INTRO →
+  // AUTH → CONFIG → APP). The previous Phase 4E auto-skip is removed so
+  // mobile users get the brand IntroScreen, the Kumiko/0821 LOGIN gate,
+  // the backup SETUP step (LOCAL tab now drives the MobileRemoteFileBrowser
+  // via Part C, MANUAL tab uses httpBackupImport), and the AIConfig page
+  // (Part B proxies validate/update back to the paired PC). Existing
+  // `initialFlowState`/`backupConfig` logic inside App.tsx + AppFlowScreens
+  // already lets returning users skip SETUP/CONFIG if they already have
+  // valid config, identical to the desktop.
 
   // Phase 5 Part A: opportunistic Web Push refresh on mobile.
   // MobilePairingGate fires `ensurePushSubscription` the first time the
@@ -756,6 +753,11 @@ export const App = () => {
   // `handleCloudPush`, `handleCloudConnect` used to live here and POST/GET /api/sync.
   // They are intentionally deleted — see P0 #6 notes in the audit plan.
 
+  // Phase 6 Part C4: mount the mobile remote file browser picker so
+  // useLocalFileBackup can delegate (folder, filename) resolution to the
+  // overlay instead of the File System Access API / native dialog.
+  const mobileFilePicker = useMobileRemoteFilePicker({ language, isDarkMode });
+
   const {
     handleCreateNewLocalFile,
     handleOpenLocalFile,
@@ -771,6 +773,8 @@ export const App = () => {
     updateBaseline,
     performFileSave,
     restoreBackupData,
+    pickMobileOpenFile: mobileFilePicker.pickOpen,
+    pickMobileCreateFile: mobileFilePicker.pickCreate,
   });
 
   useEffect(() => {
@@ -1323,6 +1327,7 @@ export const App = () => {
               setFlowState('CONFIG');
           }}
       />
+      {mobileFilePicker.browserElement}
       {voiceCallOverlayData && (
         <VoiceCallOverlay
           reminderEvent={voiceCallOverlayData.reminderEvent}

@@ -13,13 +13,18 @@ const PsycheBar: React.FC<{ label: string; value: number; isDarkMode: boolean; c
     ? (pct > 65 ? (isDarkMode ? 'bg-red-500/70' : 'bg-red-400') : pct > 40 ? (isDarkMode ? 'bg-yellow-500/70' : 'bg-yellow-500') : (isDarkMode ? 'bg-green-500/60' : 'bg-green-500'))
     : (isDarkMode ? 'bg-yellow-500/60' : 'bg-yellow-600');
 
+  // Phase 7 Part t12_profile_panel: the original `w-12` label was too
+  // narrow for "RELAXATION" (10 chars in ka-micro), so the word
+  // overflowed and pushed the bar off the right edge on 360px phones.
+  // Swap to `min-w-[3.25rem]` with a flex-shrink-0 guarantee, allowing
+  // longer English labels to widen without squashing the bar.
   return (
     <div className="flex items-center gap-3">
-      <span className={`ka-micro font-bold uppercase w-12 text-right ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{label}</span>
-      <div className={`flex-1 h-2 rounded-full ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200/80'}`}>
+      <span className={`ka-micro font-bold uppercase text-right flex-shrink-0 min-w-[3.25rem] whitespace-nowrap ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{label}</span>
+      <div className={`flex-1 h-2 rounded-full min-w-0 ${isDarkMode ? 'bg-gray-800' : 'bg-gray-200/80'}`}>
         <div className={`h-full rounded-full transition-all duration-500 ${barColor}`} style={{ width: `${pct}%` }} />
       </div>
-      <span className={`ka-micro font-mono w-8 text-right ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{pct}</span>
+      <span className={`ka-micro font-mono w-8 text-right flex-shrink-0 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{pct}</span>
     </div>
   );
 };
@@ -95,8 +100,8 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
         {/* Decorative Scanline */}
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-yellow-600 to-transparent opacity-50"></div>
 
-        {/* Header */}
-        <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-yellow-900/30' : 'border-gray-200'}`}>
+        {/* Header — Phase 7 Part t12_profile_panel: drop px from 6→4 on phones. */}
+        <div className={`flex items-center justify-between px-4 sm:px-6 py-4 border-b ${isDarkMode ? 'border-yellow-900/30' : 'border-gray-200'}`}>
           <div className="flex items-center gap-3">
             <User size={20} className={titleClass} />
             <span className={`font-mincho ka-overlay-title ${titleClass}`}>{t.profileTitle}</span>
@@ -109,8 +114,12 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
           </button>
         </div>
 
-        {/* Content - Scrollable */}
-        <div data-resize-heavy className="flex-1 p-6 flex flex-col gap-3 overflow-y-auto scrollbar-thin">
+        {/* Content - Scrollable.
+            Phase 7 Part t12_profile_panel: `p-6` (24px) was too much
+            gutter on 360px phones; telemetry grid values crammed into
+            ~140px each and long "7759-KUMIKO-V3" strings overflowed.
+            Shrink to `p-4` on mobile and restore `p-6` on `sm:`. */}
+        <div data-resize-heavy className="flex-1 p-4 sm:p-6 flex flex-col gap-3 overflow-y-auto scrollbar-thin">
           <div className="flex items-end justify-between mb-2">
             <div>
               <h2 className={`font-mincho text-[clamp(1.45rem,1.34rem+0.65vw,1.9rem)] font-bold tracking-[0.02em] ${titleClass}`}>
@@ -137,24 +146,28 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
                   </h3>
               </div>
               <div className={`grid grid-cols-2 gap-2 p-3 rounded border ${isDarkMode ? 'bg-black/40 border-yellow-900/50' : 'bg-white border-yellow-400/50'}`}>
-                  <div className="flex flex-col gap-1">
+                  {/* Phase 7 Part t12_profile_panel: add `break-all` to
+                      every telemetry value so `7759-KUMIKO-V3` and
+                      long emotion names wrap instead of forcing the
+                      grid cell wider than its column. */}
+                  <div className="flex flex-col gap-1 min-w-0">
                       <span className={`ka-micro font-bold uppercase ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>SYS-ID</span>
-                      <div className="flex items-center gap-1">
-                          <Cpu size={12} className={titleClass} />
-                          <span className={`ka-value font-mono ${titleClass}`}>7759-KUMIKO-V3</span>
+                      <div className="flex items-center gap-1 min-w-0">
+                          <Cpu size={12} className={`flex-shrink-0 ${titleClass}`} />
+                          <span className={`ka-value font-mono break-all ${titleClass}`}>7759-KUMIKO-V3</span>
                       </div>
                   </div>
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 min-w-0">
                       <span className={`ka-micro font-bold uppercase ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.emotionLabel}</span>
-                      <span className={`ka-value font-mono ${textClass}`}>{currentEmotion.toUpperCase()}</span>
+                      <span className={`ka-value font-mono break-all ${textClass}`}>{currentEmotion.toUpperCase()}</span>
                   </div>
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 min-w-0">
                       <span className={`ka-micro font-bold uppercase ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.turnsLabel}</span>
-                      <span className={`ka-value font-mono ${textClass}`}>{turnCount}</span>
+                      <span className={`ka-value font-mono break-all ${textClass}`}>{turnCount}</span>
                   </div>
-                  <div className="flex flex-col gap-1">
+                  <div className="flex flex-col gap-1 min-w-0">
                       <span className={`ka-micro font-bold uppercase ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.nextSyncLabel}</span>
-                      <span className="ka-value font-mono text-yellow-600">{summaryProgressText}</span>
+                      <span className="ka-value font-mono break-all text-yellow-600">{summaryProgressText}</span>
                   </div>
               </div>
           </div>

@@ -212,10 +212,18 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
         ))}
 
         {/* --- FULLSCREEN TOGGLE (LEFT) --- */}
-        <div className={`absolute top-8 left-6 z-50`}>
+        {/* Phase 7 Part t5_onboarding_mobile: pin the corner buttons
+            past the device safe area so notched phones (iPhone X+, Pixel
+            etc.) don't clip them. Desktop Electron sees env(safe-area-*)
+            = 0 so the visual position is unchanged from the pre-Phase-7
+            baseline. */}
+        <div className="absolute z-50" style={{
+          top: 'calc(var(--sat) + 1.5rem)',
+          left: 'calc(var(--sal) + 1.25rem)',
+        }}>
            <button 
              onClick={toggleFullscreen}
-             className="p-2 rounded-full border border-[#785A42]/30 bg-white/50 backdrop-blur-sm shadow-sm text-[#785A42]/60 hover:text-[#785A42] transition-all"
+             className="p-2 min-w-[44px] min-h-[44px] rounded-full border border-[#785A42]/30 bg-white/50 backdrop-blur-sm shadow-sm text-[#785A42]/60 hover:text-[#785A42] active:scale-95 transition-all flex items-center justify-center"
              title={language === 'zh' ? '切换全屏' : 'Toggle Fullscreen'}
            >
              {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
@@ -223,7 +231,10 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
         </div>
 
         {/* --- LANGUAGE SWITCHER (RIGHT) --- */}
-        <div className="absolute top-6 right-6 z-50 flex items-center gap-2 animate-[breathe_2s_infinite]">
+        <div className="absolute z-50 flex items-center gap-2 animate-[breathe_2s_infinite]" style={{
+          top: 'calc(var(--sat) + 1.25rem)',
+          right: 'calc(var(--sar) + 1.25rem)',
+        }}>
            <div className={`px-2 py-1 rounded-full border border-[#785A42]/30 flex gap-2 bg-white/50 backdrop-blur-sm shadow-sm transition-opacity duration-500`}>
               <button 
                 onClick={() => onLanguageChange('zh')}
@@ -243,7 +254,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
 
         {/* --- MAIN CONTENT (Layer 1: Safe Area Aware) --- */}
         {/* FIX: Applied 'Sandwich Fix' - Removing manual status bar div and applying padding here */}
-        <div className={`relative z-30 w-full h-full flex flex-col items-center justify-center px-6 pt-[calc(env(safe-area-inset-top)+1.5rem)] pb-[calc(env(safe-area-inset-bottom)+1.5rem)] transition-all duration-1000 ${showContent ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>
+        <div className={`relative z-30 w-full h-full flex flex-col items-center justify-center px-6 pt-[calc(var(--sat)+1.5rem)] pb-[calc(var(--sab)+1.5rem)] transition-all duration-1000 ${showContent ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>
           
           {/* LOGO AREA - HYBRID DESIGN */}
           <div className="relative w-[25vh] h-[25vh] min-w-[160px] min-h-[160px] md:w-[38vh] md:h-[38vh] mb-[2vh] md:mb-[3vh] flex-shrink-0 flex items-center justify-center">
@@ -386,9 +397,9 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
           <div className="relative z-20 mt-auto md:mt-0 mb-[2vh] md:mb-[4vh]">
             <button
               onClick={handleConnect}
-              className="group relative px-10 py-4 md:px-[4vh] md:py-[2vh] min-h-[48px] overflow-hidden bg-[#785A42] text-[#f9f7f2] ka-label font-semibold transition-all duration-300 shadow-[0_4px_15px_rgba(96,65,43,0.3)] hover:shadow-[0_6px_20px_rgba(96,65,43,0.5)] rounded-sm"
+              className="group relative px-10 py-4 md:px-[4vh] md:py-[2vh] min-h-[48px] overflow-hidden bg-[#785A42] text-[#f9f7f2] ka-label font-semibold transition-all duration-300 shadow-[0_4px_15px_rgba(96,65,43,0.3)] hover:shadow-[0_6px_20px_rgba(96,65,43,0.5)] active:scale-[0.97] rounded-sm"
             >
-              <div className="absolute inset-0 bg-[#8c6045] translate-y-[100%] group-hover:translate-y-0 transition-transform duration-300 ease-in-out"></div>
+              <div className="absolute inset-0 bg-[#8c6045] translate-y-[100%] group-hover:translate-y-0 group-active:translate-y-0 transition-transform duration-300 ease-in-out"></div>
               <div className="absolute top-1 left-0 w-full h-[1px] bg-[#f9f7f2] opacity-20"></div>
               <div className="absolute bottom-1 left-0 w-full h-[1px] bg-[#f9f7f2] opacity-20"></div>
 
