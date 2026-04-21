@@ -129,8 +129,8 @@ const FirstTimeWarningModal: React.FC<FirstTimeWarningModalProps> = ({ isOpen, o
          <h3 className="font-mincho ka-overlay-title text-[#785A42] mb-3 tracking-[0.04em] border-b border-[#785A42]/20 pb-1">{t.warningTitle}</h3>
          <p className="ka-copy-sm opacity-90 mb-6 leading-relaxed text-[#785A42] whitespace-pre-wrap">{t.firstTimeWarning}</p>
          <div className="flex w-full gap-3 relative z-20">
-            <ForceTouchButton onClick={onCancel} className="flex-1 py-3 border border-[#785A42]/20 text-[#785A42] ka-label bg-[#f9f7f2] rounded-lg active:bg-[#785A42]/10">{t.cancel}</ForceTouchButton>
-            <ForceTouchButton onClick={onConfirm} className="flex-1 py-3 bg-[#9e2a2b] text-white ka-label rounded-lg shadow-md flex items-center justify-center gap-2 active:bg-[#b03031]"><span>{t.iUnderstand}</span><ChevronRight size={14} /></ForceTouchButton>
+            <ForceTouchButton onClick={onCancel} className="flex-1 py-3 min-h-[44px] border border-[#785A42]/20 text-[#785A42] ka-label bg-[#f9f7f2] rounded-lg active:bg-[#785A42]/10">{t.cancel}</ForceTouchButton>
+            <ForceTouchButton onClick={onConfirm} className="flex-1 py-3 min-h-[44px] bg-[#9e2a2b] text-white ka-label rounded-lg shadow-md flex items-center justify-center gap-2 active:bg-[#b03031]"><span>{t.iUnderstand}</span><ChevronRight size={14} /></ForceTouchButton>
          </div>
       </div>
     </PortalModal>
@@ -474,7 +474,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     </div>
                     {loginError && ( <div className="text-[#9e2a2b] auth-hint ka-copy-sm text-center animate-pulse"> ⚠ ACCESS DENIED: INVALID CREDENTIALS </div> )}
                     
-                    <ForceTouchButton onClick={handleLogin} className="mt-[clamp(6px,1vw,14px)] w-full py-[clamp(10px,1.8vw,16px)] bg-[#785A42] text-[#f9f7f2] ka-label auth-btn-text font-semibold flex items-center justify-center gap-2 rounded-xl btn-primary-auth shadow-[0_4px_16px_rgba(120,90,66,0.2)]" >
+                    <ForceTouchButton onClick={handleLogin} className="mt-[clamp(6px,1vw,14px)] w-full py-[clamp(10px,1.8vw,16px)] min-h-[48px] bg-[#785A42] text-[#f9f7f2] ka-label auth-btn-text font-semibold flex items-center justify-center gap-2 rounded-xl btn-primary-auth shadow-[0_4px_16px_rgba(120,90,66,0.2)]" >
                       <span>{t.loginNext}</span> <ChevronRight size={16} />
                     </ForceTouchButton>
                 </div>
@@ -485,10 +485,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 <div className="flex flex-col gap-[clamp(10px,1.5vw,18px)] w-full animate-in fade-in duration-300">
                     {/* PILL TABS */}
                     <div className="pill-tabs flex">
-                        <ForceTouchButton onClick={() => handleTabChange('LOCAL')} className={`pill-tab flex-1 min-w-0 py-[clamp(8px,1.4vw,14px)] text-[clamp(0.6rem,1.2vw,0.75rem)] font-bold tracking-tight flex flex-col items-center gap-1 whitespace-nowrap overflow-hidden ${setupTab === 'LOCAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
+                        <ForceTouchButton onClick={() => handleTabChange('LOCAL')} className={`pill-tab flex-1 min-w-0 py-[clamp(8px,1.4vw,14px)] min-h-[44px] text-[clamp(0.6rem,1.2vw,0.75rem)] font-bold tracking-tight flex flex-col items-center justify-center gap-1 whitespace-nowrap overflow-hidden ${setupTab === 'LOCAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
                           <HardDrive size={16} /> {t.tabLocal}
                         </ForceTouchButton>
-                        <ForceTouchButton onClick={() => handleTabChange('MANUAL')} className={`pill-tab flex-1 min-w-0 py-[clamp(8px,1.4vw,14px)] text-[clamp(0.6rem,1.2vw,0.75rem)] font-bold tracking-tight flex flex-col items-center gap-1 whitespace-nowrap overflow-hidden ${setupTab === 'MANUAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
+                        <ForceTouchButton onClick={() => handleTabChange('MANUAL')} className={`pill-tab flex-1 min-w-0 py-[clamp(8px,1.4vw,14px)] min-h-[44px] text-[clamp(0.6rem,1.2vw,0.75rem)] font-bold tracking-tight flex flex-col items-center justify-center gap-1 whitespace-nowrap overflow-hidden ${setupTab === 'MANUAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
                           <Download size={16} /> {t.tabManual}
                         </ForceTouchButton>
                         {/* CLOUD tab removed with cloud sync feature (P0 #6) */}
@@ -547,7 +547,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     <div className="flex items-center justify-center gap-1.5 mt-1"> <Database size={13} className="text-[#785A42]/60" /> <p className="auth-hint ka-copy-sm text-[#785A42]/60">{t.ragHint}</p> </div>
 
                     <div className="flex flex-col gap-[clamp(6px,1vw,10px)] mt-[clamp(6px,1vw,12px)]">
-                        <ForceTouchButton onClick={handleExitTransition} disabled={!isReadyToEnter} className={`w-full py-[clamp(12px,2vw,18px)] ka-label auth-btn-text font-semibold flex items-center justify-center gap-2 rounded-xl btn-primary-auth transition-all ${isReadyToEnter ? 'bg-[#9e2a2b] text-white shadow-[0_4px_16px_rgba(158,42,43,0.2)]' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} > <Rocket size={18} /> {t.btnEnterSystem} </ForceTouchButton>
+                        <ForceTouchButton onClick={handleExitTransition} disabled={!isReadyToEnter} className={`w-full py-[clamp(12px,2vw,18px)] min-h-[48px] ka-label auth-btn-text font-semibold flex items-center justify-center gap-2 rounded-xl btn-primary-auth transition-all ${isReadyToEnter ? 'bg-[#9e2a2b] text-white shadow-[0_4px_16px_rgba(158,42,43,0.2)]' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`} > <Rocket size={18} /> {t.btnEnterSystem} </ForceTouchButton>
                         {!isReadyToEnter && ( <ForceTouchButton onClick={handleFirstTimeClick} className="auth-hint ka-copy-sm text-[#785A42]/50 hover:text-[#785A42] hover:underline text-center py-2 transition-colors" > {t.btnFirstTime} </ForceTouchButton> )}
                     </div>
                 </div>

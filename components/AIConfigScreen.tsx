@@ -359,7 +359,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
       <style>{styles}</style>
 
       {/* HEADER */}
-      <div className="flex-shrink-0 px-4 pt-[clamp(20px,4vw,40px)] pb-[clamp(8px,1.5vw,16px)]">
+      <div className="flex-shrink-0 px-4 pt-[calc(env(safe-area-inset-top)+clamp(20px,4vw,40px))] pb-[clamp(8px,1.5vw,16px)]">
          <div className="mx-auto flex w-full max-w-[34rem] flex-col items-center text-center">
            <div className="relative mb-[clamp(8px,1.2vw,14px)] flex items-center justify-center">
              <div className="p-[clamp(8px,1.2vw,14px)] bg-[#785A42]/8 rounded-full">
@@ -525,17 +525,17 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
             </div>
           )}
           <button onClick={handleValidateAll} disabled={isValidating || isSearchValidating || isModelValidating}
-              className="w-full py-[clamp(8px,1.4vw,14px)] border border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5 font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]">
+              className="w-full py-[clamp(8px,1.4vw,14px)] min-h-[44px] border border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5 font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]">
               {(isValidating || isSearchValidating || isModelValidating) ? <RefreshCw className="animate-spin" size={15} /> : <ShieldCheck size={15} />}
               <span>{language === 'zh' ? '全面验证配置 (VALIDATE ALL)' : 'VALIDATE ALL CONFIGURATIONS'}</span>
           </button>
           <div className="flex gap-[clamp(8px,1.2vw,14px)]">
               <button onClick={handleSaveOnly} disabled={isValidating || isSearchValidating}
-                  className="flex-[0.4] py-[clamp(8px,1.4vw,14px)] border border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5 font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.6vw,6px)]">
+                  className="flex-[0.4] py-[clamp(8px,1.4vw,14px)] min-h-[44px] border border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5 font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.6vw,6px)]">
                   <Save size={15} /> <span className="hidden sm:inline">{t.saveConfig}</span>
               </button>
               <button onClick={handleSaveAndLaunch} disabled={isValidating || isModelValidating || isSearchValidating}
-                  className="flex-[1] py-[clamp(8px,1.4vw,14px)] bg-[#785A42] hover:bg-[#8c6045] text-[#f9f7f2] font-bold cfg-btn-text rounded-xl btn-launch shadow-[0_4px_16px_rgba(120,90,66,0.18)] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]">
+                  className="flex-[1] py-[clamp(8px,1.4vw,14px)] min-h-[48px] bg-[#785A42] hover:bg-[#8c6045] text-[#f9f7f2] font-bold cfg-btn-text rounded-xl btn-launch shadow-[0_4px_16px_rgba(120,90,66,0.18)] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]">
                   <Power size={15} /> <span>{t.launchSystem}</span>
               </button>
           </div>

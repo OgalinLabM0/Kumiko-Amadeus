@@ -386,7 +386,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
           <div className="relative z-20 mt-auto md:mt-0 mb-[2vh] md:mb-[4vh]">
             <button
               onClick={handleConnect}
-              className="group relative px-10 py-3 md:px-[4vh] md:py-[2vh] overflow-hidden bg-[#785A42] text-[#f9f7f2] ka-label font-semibold transition-all duration-300 shadow-[0_4px_15px_rgba(96,65,43,0.3)] hover:shadow-[0_6px_20px_rgba(96,65,43,0.5)] rounded-sm"
+              className="group relative px-10 py-4 md:px-[4vh] md:py-[2vh] min-h-[48px] overflow-hidden bg-[#785A42] text-[#f9f7f2] ka-label font-semibold transition-all duration-300 shadow-[0_4px_15px_rgba(96,65,43,0.3)] hover:shadow-[0_6px_20px_rgba(96,65,43,0.5)] rounded-sm"
             >
               <div className="absolute inset-0 bg-[#8c6045] translate-y-[100%] group-hover:translate-y-0 transition-transform duration-300 ease-in-out"></div>
               <div className="absolute top-1 left-0 w-full h-[1px] bg-[#f9f7f2] opacity-20"></div>
