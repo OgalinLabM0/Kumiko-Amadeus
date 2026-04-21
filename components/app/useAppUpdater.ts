@@ -68,6 +68,14 @@ export const useAppUpdater = ({
     // WS fan-out as `update:state` (Phase 3 Part D). We also fetch the
     // initial snapshot via HTTP IPC so a phone that opens after a
     // check has already run still sees the current status.
+    //
+    // The previous version retried with exponential backoff because
+    // `app:update:get-state` was not in PWA_ALLOWED_CHANNELS and every
+    // request failed locally with E_CHANNEL. Now that the channel is
+    // whitelisted in both services/httpApi.ts and ipc-bridge.cjs, a
+    // single fetch + catch-warn is enough — if the desktop happens to
+    // be unreachable on first boot the WS `update:state` push will
+    // catch up the moment the connection comes back.
     if (isMobilePwa()) {
       httpInvoke<{ success?: boolean; state?: AppUpdateState }>('app:update:get-state', {})
         .then((result) => {
@@ -75,8 +83,12 @@ export const useAppUpdater = ({
           setAppUpdateState((prev) => ({ ...prev, ...(result.state as AppUpdateState) }));
         })
         .catch((error: unknown) => {
-          console.error('[UPDATER] Mobile initial update state fetch failed:', error);
+          console.warn(
+            '[UPDATER] Mobile initial update state fetch failed (WS update:state will catch up):',
+            error,
+          );
         });
+
       const unsubscribe = subscribeEvents((event) => {
         if (event?.type !== 'update:state') return;
         const payload = (event as { state?: AppUpdateState }).state;
