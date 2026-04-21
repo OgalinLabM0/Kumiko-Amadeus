@@ -975,7 +975,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                       </button>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className={fieldLabelClass}>{language === 'zh' ? '切分方式' : 'Split Method'}</label>
                         <select value={ttsConfig.sovitsTextSplitMethod || 'cut0'}

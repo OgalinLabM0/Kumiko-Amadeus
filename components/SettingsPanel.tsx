@@ -1576,7 +1576,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   return (
     <div
-      className="absolute inset-0 z-50 flex items-center justify-center p-3 md:p-5 safe-area-padding-modal backdrop-blur-[8px]"
+      className="ka-settings-backdrop absolute inset-0 z-50 flex items-center justify-center p-3 md:p-5 safe-area-padding-modal backdrop-blur-[8px]"
       style={{
         background: isDarkMode
           ? 'radial-gradient(circle at center, rgba(12,9,7,0.78), rgba(8,6,5,0.92) 72%)'
@@ -1599,7 +1599,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </div>
         )}
 
-        <aside className={`${isExpandedView && !isCompactSettingsLayout ? 'flex' : 'hidden'} w-[15.5rem] shrink-0 flex-col border-r ${shellDividerClass} ${railClass}`}>
+        <aside data-settings-siderail className={`${isExpandedView && !isCompactSettingsLayout ? 'flex' : 'hidden'} w-[15.5rem] shrink-0 flex-col border-r ${shellDividerClass} ${railClass}`}>
           <div className="px-5 pt-5 pb-4 border-b border-inherit">
             <div className="flex items-start gap-3">
               <div className={`mt-0.5 flex h-9 w-9 items-center justify-center rounded-full border ${isDarkMode ? 'border-[#6b5132] bg-[#2a1f16] text-yellow-300' : 'border-[#e5dac9] bg-[#fffdfa] text-[#b07b1e]'}`}>
@@ -1677,7 +1677,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             </div>
           </div>
 
-          <div className={`${isExpandedView && !isCompactSettingsLayout ? 'hidden' : ''} border-b ${shellDividerClass}`}>
+          <div data-settings-topnav className={`${isExpandedView && !isCompactSettingsLayout ? 'hidden' : ''} border-b ${shellDividerClass}`}>
             <div className="relative">
               <div
                 className={`pointer-events-none absolute bottom-2 left-0 top-0 z-10 w-10 transition-all duration-300 ${
@@ -1704,7 +1704,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </div>
             </div>
             {isTopNavIndicatorVisible && (
-              <div className="px-4 pb-2">
+              <div data-settings-topnav-indicator className="px-4 pb-2">
                 <div
                   ref={topNavIndicatorTrackRef}
                   onMouseDown={handleTopNavIndicatorPointerDown}
@@ -1735,7 +1735,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             )}
           </div>
 
-          <div ref={contentScrollRef} data-resize-heavy className="flex-1 overflow-y-auto touch-scroll scrollbar-thin">
+          <div ref={contentScrollRef} data-resize-heavy data-settings-content className="flex-1 overflow-y-auto touch-scroll scrollbar-thin">
             <div className={`mx-auto w-full ${isExpandedView ? 'max-w-[54rem]' : 'max-w-[46rem]'} px-4 py-5 md:px-6 md:py-6 flex flex-col gap-4`}>
               {sectionsMarkup}
             </div>

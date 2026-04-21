@@ -468,6 +468,74 @@
           font-size: 16px !important;
         }
       }
+
+      /* --- Phase 4 Part A: mobile-form-factor settings shell -----------------
+
+         SettingsPanel was tuned for tablet+ (compact layout kicks in < 900px),
+         but on actual phones the modal still had visible outer padding + 30px
+         rounded corners that felt like a "floating card" instead of a native
+         sheet. At ≤ 768px we:
+
+         - zero the backdrop's horizontal padding so the shell is full-bleed,
+         - strip the shell's rounded corners + border (native screen feel),
+         - tighten the content column padding from px-4 to px-3,
+         - hide the mouse-drag scrub indicator under the tab bar (the native
+           touch scroll is the same gesture so the thumb is redundant noise),
+         - enforce a 44px minimum touch target on the nav chips + side-rail
+           buttons so they pass WCAG AA on phones without us having to rewrite
+           every section markup.
+
+         Per-section layouts (grid/flex) keep their existing Tailwind sm:/md:
+         variants; the rest of the pass lives in Phase 4 Part A's section
+         edits (e.g. TtsConfigSection's split-method row). */
+      @media screen and (max-width: 768px) {
+        .ka-settings-backdrop {
+          padding-left: 0 !important;
+          padding-right: 0 !important;
+        }
+        .ka-settings-shell {
+          width: 100vw !important;
+          height: 100dvh !important;
+          max-width: 100vw !important;
+          max-height: 100dvh !important;
+          border-radius: 0 !important;
+          border-width: 0 !important;
+        }
+        .ka-settings-shell [data-settings-topnav-indicator] {
+          display: none !important;
+        }
+        .ka-settings-shell [data-settings-topnav] button,
+        .ka-settings-shell [data-settings-siderail] button {
+          min-height: 44px;
+        }
+        .ka-settings-shell [data-settings-content] {
+          padding-left: 0.75rem !important;
+          padding-right: 0.75rem !important;
+        }
+      }
+
+      /* --- Phase 4 Part A: modal + panel full-bleed on phones ---------------
+
+         Other floating surfaces (ProfilePanel, MemoryPanel, DiaryPanel,
+         TaskPanel, MessageCenterPanel, FullGuideModal, DiaryBackfillDialog,
+         CustomDialog) share the same `absolute inset-0 ... p-3 md:p-5`
+         backdrop pattern. Tag them with `ka-mobile-fullbleed-backdrop` /
+         `ka-mobile-fullbleed-sheet` so a single rule here removes the
+         outer air-gap and sheet corners on ≤ 768px without touching every
+         panel's JSX. */
+      @media screen and (max-width: 768px) {
+        .ka-mobile-fullbleed-backdrop {
+          padding-left: 0 !important;
+          padding-right: 0 !important;
+        }
+        .ka-mobile-fullbleed-sheet {
+          width: 100vw !important;
+          height: 100dvh !important;
+          max-width: 100vw !important;
+          max-height: 100dvh !important;
+          border-radius: 0 !important;
+        }
+      }
     </style>
 </head>
   <body>
