@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, AlertTriangle, RefreshCw } from 'lucide-react';
 import { loadVoiceFile } from '../services/voiceFileService';
+import { isMobilePwa } from '../services/environment';
+import { getHttpVoiceUrl } from '../services/httpApi';
 import type { Language } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
 
@@ -107,12 +109,23 @@ export const VoiceBubble: React.FC<VoiceBubbleProps> = ({
 
     try {
       if (!audioRef.current) {
-        const buf = await loadVoiceFile(voiceFileId);
-        if (!buf) { setAudioError(true); return; }
-        const blob = new Blob([buf], { type: 'audio/mpeg' });
-        const url = URL.createObjectURL(blob);
-        objectUrlRef.current = url;
-        const audio = new Audio(url);
+        let audio: HTMLAudioElement;
+        if (isMobilePwa()) {
+          // Mobile PWA: stream directly from the desktop HTTP server; the
+          // browser handles progressive download + playback without loading
+          // the entire buffer into memory. Since the PWA and the media
+          // endpoint share the same origin, the session cookie is sent
+          // automatically; no `crossOrigin` opt-in is needed.
+          const streamUrl = getHttpVoiceUrl(voiceFileId);
+          audio = new Audio(streamUrl);
+        } else {
+          const buf = await loadVoiceFile(voiceFileId);
+          if (!buf) { setAudioError(true); return; }
+          const blob = new Blob([buf], { type: 'audio/mpeg' });
+          const url = URL.createObjectURL(blob);
+          objectUrlRef.current = url;
+          audio = new Audio(url);
+        }
         audioRef.current = audio;
 
         audio.onended = () => {

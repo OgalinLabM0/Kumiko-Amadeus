@@ -530,7 +530,13 @@ export const buildAppMainViewProps = (
     onRegenerateVoice: params.handleRegenerateVoice,
     regeneratingVoiceIds: params.regeneratingVoiceIds,
     onResend: params.handleResendMessage,
-    onWithdraw: params.handleWithdrawMessage
+    onWithdraw: params.handleWithdrawMessage,
+    onLongPress: (message: Message) => {
+      if (!isSelectionMode) {
+        toggleSelectionMode();
+      }
+      handleSelectMessage(message.id);
+    }
   },
     isDisconnected: params.isDisconnected ?? false,
     chatFooterProps: {

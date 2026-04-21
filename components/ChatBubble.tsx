@@ -5,6 +5,7 @@ import { Circle, CheckCircle, Undo2, Reply, Quote, Link as LinkIcon, ImageOff, A
 import { UI_TRANSLATIONS } from '../constants';
 import { VoiceBubble } from './VoiceBubble';
 import { useMessageImage } from './app/useMessageImage';
+import { useLongPress } from '../hooks/useLongPress';
 
 interface ChatBubbleProps {
   message: Message;
@@ -22,6 +23,7 @@ interface ChatBubbleProps {
   isRegeneratingVoice?: boolean;
   onResend?: (id: string) => void;
   onWithdraw?: (id: string) => void;
+  onLongPress?: (msg: Message) => void;
 }
 
 // WRAP IN MEMO TO PREVENT RE-RENDERS ON INPUT CHANGE
@@ -40,7 +42,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   onRegenerateVoice,
   isRegeneratingVoice = false,
   onResend,
-  onWithdraw
+  onWithdraw,
+  onLongPress
 }) => {
   // CRITICAL: Compute early-return conditions BEFORE calling any hooks.
   // If hooks were placed before these early returns, a message transitioning
@@ -188,11 +191,25 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   const isFailed = isUser && message.sendStatus === 'failed';
   const isSending = isUser && message.sendStatus === 'sending';
 
+  const longPressHandlers = useLongPress({
+    threshold: 500,
+    onLongPress: () => {
+      if (isSelectionMode) return;
+      onLongPress?.(message);
+    },
+  });
+
   return (
     <div 
       id={`message-${message.id}`}
       className={`flex w-full mb-3 group ${isSelectionMode ? 'cursor-pointer hover:bg-black/5' : ''}`}
       onClick={isSelectionMode ? onSelect : undefined}
+      onTouchStart={isSelectionMode ? undefined : longPressHandlers.onTouchStart}
+      onTouchMove={isSelectionMode ? undefined : longPressHandlers.onTouchMove}
+      onTouchEnd={isSelectionMode ? undefined : longPressHandlers.onTouchEnd}
+      onTouchCancel={isSelectionMode ? undefined : longPressHandlers.onTouchCancel}
+      onContextMenu={isSelectionMode ? undefined : longPressHandlers.onContextMenu}
+      style={{ WebkitTouchCallout: 'none' }}
     >
       {/* Selection Checkbox */}
       {isSelectionMode && (
@@ -231,7 +248,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                       </button>
                     )}
                     
-                    <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                    <div className="flex gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-200">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -416,7 +433,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
              {/* Right Meta Column - UPDATED COLOR FOR DARK MODE (gray-500 -> gray-300) */}
              <div className={`flex flex-col justify-end items-start gap-1 pb-1 min-w-[40px] ka-micro opacity-50 ${isDarkMode ? 'text-gray-300' : 'text-gray-400'}`}>
                 {!isSelectionMode && (
-                    <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity duration-200 mb-1">
+                    <div className="flex gap-0.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity duration-200 mb-1">
                         <button
                             onClick={(e) => {
                             e.stopPropagation();

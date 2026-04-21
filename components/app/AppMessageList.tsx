@@ -30,6 +30,7 @@ interface AppMessageListProps {
   regeneratingVoiceIds?: Set<string>;
   onResend?: (id: string) => void;
   onWithdraw?: (id: string) => void;
+  onLongPress?: (message: Message) => void;
 }
 
 interface VirtualizedMessageRowProps {
@@ -143,7 +144,8 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
   onRegenerateVoice,
   regeneratingVoiceIds,
   onResend,
-  onWithdraw
+  onWithdraw,
+  onLongPress
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sizeCacheRef = useRef<Map<string, number>>(new Map());
@@ -311,6 +313,7 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
                 isRegeneratingVoice={regeneratingVoiceIds?.has(message.id)}
                 onResend={onResend}
                 onWithdraw={onWithdraw}
+                onLongPress={onLongPress}
               />
             </VirtualizedMessageRow>
           );
