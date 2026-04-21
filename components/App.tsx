@@ -131,6 +131,7 @@ import {
   type ChatActionRefs,
   type ExecuteSendHelpers,
 } from './app/chatActions';
+import { registerChatPipeline, unregisterChatPipeline } from './app/chatPipelineRegistry';
 import { useAppUpdater } from './app/useAppUpdater';
 import { useLocalFileBackup } from './app/useLocalFileBackup';
 import { useAppPreferencesSync } from './app/useAppPreferencesSync';
@@ -869,12 +870,46 @@ export const App = () => {
   }), []);
   const executeSendHelpers = useMemo((): ExecuteSendHelpers => ({
     runVoicePipeline, deriveSummaryTopicLabel,
-  }), []);
+  }), [runVoicePipeline, deriveSummaryTopicLabel]);
   (chatRefs as any).__executeSendHelpers = executeSendHelpers;
+
+  // Phase 3 Part A: register the chat pipeline so mobile-originated
+  // turns (executed inside `sendUserMessageFromMobile` via useMobileApiProxy)
+  // can reach the desktop refs + voice/summary helpers without prop drilling.
+  useEffect(() => {
+    registerChatPipeline({
+      messagesRef,
+      ttsConfigRef,
+      generationIdRef,
+      pendingMessageIdsRef,
+      pendingImageMessageIdRef,
+      pendingImageRef,
+      pendingTextRef,
+      memoryQuerySessionRef,
+      recentRagDedupeKeysRef,
+      hasGoneToSleepRef,
+      sleepWarningTimestampRef,
+      sleepFarewellSentRef,
+      lateNightWakeRolledRef,
+      lateNightWakeResultRef,
+      lateNightWakeTimestampRef,
+      welcomeTriggeredRef,
+      summaryRunningRef,
+      summarySemanticEmbeddingCacheRef,
+      countdownIntervalRef,
+      sendTimerRef,
+      preValidationActiveRef,
+      pendingSendRef,
+      inputRef,
+      runVoicePipeline,
+      deriveSummaryTopicLabel,
+    });
+    return () => { unregisterChatPipeline(); };
+  }, [runVoicePipeline, deriveSummaryTopicLabel]);
 
   const executeSend = useCallback(async () => {
     return executeSendAction(chatRefs, executeSendHelpers);
-  }, [coreMemory, worldBook, contextLimit, triggerAutoSummary, locationConfig, backupConfig, anchors, kumikoNotebook, turnCount, language, showBackgroundMessageNotification, summaryArchiveState]);
+  }, [chatRefs, executeSendHelpers]);
 
   const regeneratingVoiceIds = useAppStore(s => s.regeneratingVoiceIds);
   const setRegeneratingVoiceIds = useAppStore(s => s.setRegeneratingVoiceIds);

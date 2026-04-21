@@ -114,6 +114,9 @@ import {
   type TriggerAutoSummaryParams,
 } from './summaryActions';
 import type { RelativeReminder, DailyReminder } from '../../store/slices/reminderSlice';
+import type { DeriveSummaryTopicLabelFn } from './chatPipelineRegistry';
+import { tryGetChatPipelineRegistration } from './chatPipelineRegistry';
+import type { RunVoicePipelineFn } from '../../hooks/useVoicePipeline';
 
 // ---------------------------------------------------------------------------
 // Shared ref / dep types
@@ -146,17 +149,93 @@ export interface ChatActionRefs {
 }
 
 export interface ExecuteSendHelpers {
-  runVoicePipeline: (
-    messageId: string,
-    chineseText: string,
-    emotion: EmotionType,
-    voiceVariant?: string,
-  ) => Promise<{ success: boolean; voiceFileId?: string; voiceDuration?: number; japaneseText?: string }>;
-  deriveSummaryTopicLabel: (
-    chunks: string[],
-    segmentMessages: Message[],
-    summaryText: string,
-  ) => string;
+  runVoicePipeline: RunVoicePipelineFn;
+  deriveSummaryTopicLabel: DeriveSummaryTopicLabelFn;
+}
+
+// ---------------------------------------------------------------------------
+// executeSendCore context — shared by desktop executeSend and mobile
+// sendUserMessageFromMobile
+// ---------------------------------------------------------------------------
+//
+// Phase 3 Part A unifies the desktop and mobile chat pipelines into a
+// single `executeSendCore` function. Both entry points build a
+// `ExecuteSendCoreContext` describing the same 12 segments of behavior
+// (ambient context / retroactive life stream / busy state / memory
+// resolution / session management / state machine / psyche / voice
+// policy / reminders / voice delivery / RAG indexing / summary
+// boundary) but differ in how they collect inputs and expose UI-coupled
+// callbacks.
+//
+// Design rules:
+//   1. The core never reads from React refs directly. It reads through
+//      callback getters so the caller can plug in ref-backed or
+//      zustand-backed storage interchangeably.
+//   2. Any desktop-only UI side effect (modal, countdown, pending-ref
+//      bookkeeping) is exposed as a callback whose mobile implementation
+//      is either a no-op or a broadcast-friendly substitute (e.g.
+//      auto-running backfill instead of showing a modal gate).
+//   3. Cancellation is a getter — desktop checks the generation ref,
+//      mobile always returns false (HTTP turns are not cancellable from
+//      the phone side yet).
+//   4. The retry-on-rate-limit loop recurses via `onRetry`, letting
+//      desktop re-enter the same executeSend(refs, helpers) path and
+//      mobile re-enter sendUserMessageFromMobile(text, options).
+
+export type ChatPipelineOrigin = 'desktop' | 'mobile';
+
+export interface ExecuteSendCoreContext {
+  origin: ChatPipelineOrigin;
+
+  // --- Inputs (per-turn) ---
+  combinedText: string;
+  userTextForRag: string;
+  finalImage: string | null;
+  pendingImageMessageId: string | null;
+  pendingMessageIds: Set<string>;
+  currentTurnStartMessageId: string | null;
+  generationId: number;
+
+  // --- Cancellation ---
+  isCancelled: () => boolean;
+
+  // --- Memory query session handle ---
+  getMemoryQuerySession: () => MemoryQuerySession | null;
+  setMemoryQuerySession: (s: MemoryQuerySession | null) => void;
+
+  // --- RAG dedup keys ---
+  getRecentRagDedupeKeys: () => string[];
+  appendRagDedupeKey: (k: string) => void;
+
+  // --- Summary infra ---
+  getMessagesSnapshot: () => Message[];
+  getSummaryRunning: () => boolean;
+  setSummaryRunning: (v: boolean) => void;
+  summaryEmbeddingCache: Map<string, Float32Array>;
+
+  // --- Sleep lock (only set on topic-ending replies) ---
+  setHasGoneToSleep: (v: boolean) => void;
+
+  // --- Voice/summary helpers ---
+  runVoicePipeline: RunVoicePipelineFn;
+  deriveSummaryTopicLabel: DeriveSummaryTopicLabelFn;
+
+  // --- TTS snapshot for this turn ---
+  ttsConfig: TtsConfig;
+
+  // --- Desktop-only UI hooks (mobile passes no-ops or broadcast shims) ---
+  clearPendingBuffers: () => void;
+  markPendingSending: () => void;
+  markPendingRead: () => void;
+  markPendingFailed: (reason: string) => void;
+  waitForBackfillGate?: () => Promise<void>;
+
+  // --- Busy-state follow-up (desktop reuses triggerNativeProactiveMessage via
+  //     refs; mobile skips until phone has proactive support) ---
+  triggerBusyFollowUp?: (event: string) => void;
+
+  // --- Retry after rate-limit (re-enters the caller's own entry point) ---
+  onRetry: () => void | Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -532,13 +611,10 @@ export async function executeSend(
   refs: ChatActionRefs,
   helpers: ExecuteSendHelpers,
 ) {
-  const state = useAppStore.getState();
-  const { coreMemory, worldBook, contextLimit, locationConfig, backupConfig, anchors, kumikoNotebook, turnCount, language, summaryArchiveState } = state;
-
-  let combinedText = refs.pendingTextRef.current;
+  const combinedText = refs.pendingTextRef.current;
   const finalImage = refs.pendingImageRef.current;
   const pendingImgId = refs.pendingImageMessageIdRef.current;
-  const currentPendingIds = new Set(refs.pendingMessageIdsRef.current);
+  const currentPendingIds: Set<string> = new Set<string>(refs.pendingMessageIdsRef.current);
   const currentTurnStartMessageId = refs.messagesRef.current
     .filter(msg => currentPendingIds.has(msg.id))
     .sort((a, b) => a.timestamp - b.timestamp)[0]?.id ?? null;
@@ -550,6 +626,7 @@ export async function executeSend(
   refs.pendingImageMessageIdRef.current = null;
 
   if (refs.countdownIntervalRef.current) clearInterval(refs.countdownIntervalRef.current);
+  const state = useAppStore.getState();
   state.setTimeLeft(0);
   state.setIsListening(false);
 
@@ -557,10 +634,97 @@ export async function executeSend(
     currentPendingIds.has(msg.id) ? { ...msg, sendStatus: 'sending' as const } : msg,
   ));
 
-  const currentGenId = refs.generationIdRef.current;
+  const savedGenId = refs.generationIdRef.current;
 
-  let isImageMessage = !!finalImage;
-  let savedImageUrl: string | null = null;
+  const ctx: ExecuteSendCoreContext = {
+    origin: 'desktop',
+    combinedText,
+    userTextForRag,
+    finalImage,
+    pendingImageMessageId: pendingImgId,
+    pendingMessageIds: currentPendingIds,
+    currentTurnStartMessageId,
+    generationId: savedGenId,
+    isCancelled: () => refs.generationIdRef.current !== savedGenId,
+    getMemoryQuerySession: () => refs.memoryQuerySessionRef.current,
+    setMemoryQuerySession: (s) => updateMemoryQuerySessionRef(refs, s),
+    getRecentRagDedupeKeys: () => refs.recentRagDedupeKeysRef.current,
+    appendRagDedupeKey: (k) => rememberRecentRagDedupeKeyRef(refs, k),
+    getMessagesSnapshot: () => refs.messagesRef.current,
+    getSummaryRunning: () => refs.summaryRunningRef.current,
+    setSummaryRunning: (v) => { refs.summaryRunningRef.current = v; },
+    summaryEmbeddingCache: refs.summarySemanticEmbeddingCacheRef.current,
+    setHasGoneToSleep: (v) => { refs.hasGoneToSleepRef.current = v; },
+    runVoicePipeline: helpers.runVoicePipeline,
+    deriveSummaryTopicLabel: helpers.deriveSummaryTopicLabel,
+    ttsConfig: refs.ttsConfigRef.current,
+    clearPendingBuffers: () => { /* desktop already cleared buffers above */ },
+    markPendingSending: () => {
+      useAppStore.getState().setMessages((prev: Message[]) => prev.map(msg =>
+        currentPendingIds.has(msg.id) ? { ...msg, sendStatus: 'sending' as const } : msg,
+      ));
+    },
+    markPendingRead: () => {
+      useAppStore.getState().setMessages((prev: Message[]) => prev.map(msg =>
+        currentPendingIds.has(msg.id) ? { ...msg, isRead: true, sendStatus: undefined, failReason: undefined } : msg,
+      ));
+    },
+    markPendingFailed: (reason) => {
+      useAppStore.getState().setMessages((prev: Message[]) => prev.map(msg => {
+        if (currentPendingIds.has(msg.id) || msg.id === currentTurnStartMessageId) {
+          return { ...msg, sendStatus: 'failed' as const, failReason: reason };
+        }
+        return msg;
+      }));
+    },
+    waitForBackfillGate: () => new Promise<void>((resolve) => {
+      refs.pendingSendRef.current = resolve;
+    }),
+    triggerBusyFollowUp: (event) => {
+      triggerNativeProactiveMessage(refs, 0, event);
+    },
+    onRetry: () => { void executeSend(refs, helpers); },
+  };
+
+  await executeSendCore(ctx);
+}
+
+// ---------------------------------------------------------------------------
+// executeSendCore — shared chat pipeline (Phase 3 Part A)
+// ---------------------------------------------------------------------------
+//
+// Single source of truth for the 12 conversation side effects:
+//   A-1  Ambient environment context
+//   A-2  Retroactive life-stream generation on long gaps + backfill gate
+//   A-3  Busy-state interception
+//   A-4  Memory / RAG resolution (exact / temporal / semantic)
+//   A-5  Session management for historical query sessions
+//   A-6  State machine injection
+//   A-7  Life stream & psyche state injection
+//   A-8  Voice policy
+//   A-9  sendMessageToGemini — model call with all context
+//   A-10 Reminders + anchors extracted from model reply
+//   A-11 Voice / text delivery
+//   A-12 RAG indexing + summary boundary evaluation
+//
+// Both desktop `executeSend(refs, helpers)` and mobile
+// `sendUserMessageFromMobile(text, options)` funnel here with
+// context-object adapters.
+
+async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
+  const state = useAppStore.getState();
+  const { coreMemory, worldBook, contextLimit, locationConfig, backupConfig, anchors, kumikoNotebook, turnCount, language, summaryArchiveState } = state;
+
+  const {
+    combinedText,
+    userTextForRag,
+    finalImage,
+    pendingImageMessageId: pendingImgId,
+    pendingMessageIds: currentPendingIds,
+    currentTurnStartMessageId,
+  } = ctx;
+
+  const isImageMessage = !!finalImage;
 
   try {
     let apiImage = undefined;
@@ -573,21 +737,21 @@ export async function executeSend(
       }
     }
 
-    const allMessages = refs.messagesRef.current.filter(msg => !currentPendingIds.has(msg.id));
+    const allMessages = ctx.getMessagesSnapshot().filter(msg => !currentPendingIds.has(msg.id));
     const recentMessages = allMessages.slice(-contextLimit);
     const pinnedMessages = allMessages.filter(msg => msg.isPinned);
     const gapSincePreviousTurnMinutes = allMessages.length > 0
       ? Math.max(0, (Date.now() - allMessages[allMessages.length - 1].timestamp) / 60000)
       : Number.POSITIVE_INFINITY;
 
-    const historyMap = new Map();
+    const historyMap = new Map<string, Message>();
     [...pinnedMessages, ...recentMessages].forEach(m => historyMap.set(m.id, m));
     const historySlice = Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp);
 
     const ambientEnvironmentContext = await getAmbientEnvironmentContext();
     const isCurrentHoliday = ambientEnvironmentContext.includes('今日特殊历法：日本法定节假日');
 
-    // --- RETROACTIVE LIFE STREAM GENERATION ---
+    // --- A-2 RETROACTIVE LIFE STREAM GENERATION ---
     if (allMessages.length > 0 && gapSincePreviousTurnMinutes > 3 * 60) {
       useAppStore.getState().setIsThinking(true);
       const { handleRetroactiveGeneration, detectDiaryGaps } = await import('../../services/lifeStreamService');
@@ -601,16 +765,23 @@ export async function executeSend(
 
       const gapInfo = await detectDiaryGaps();
       if (gapInfo.totalMissing > 0) {
-        if (state.isAutoDiaryBackfillEnabled()) {
-          void state.runAutoDiaryBackfill(gapInfo);
+        const latest = useAppStore.getState();
+        if (latest.isAutoDiaryBackfillEnabled()) {
+          void latest.runAutoDiaryBackfill(gapInfo);
+        } else if (ctx.origin === 'desktop' && ctx.waitForBackfillGate) {
+          latest.setBackfillGapInfo(gapInfo);
+          await ctx.waitForBackfillGate();
         } else {
-          state.setBackfillGapInfo(gapInfo);
-          await new Promise<void>(resolve => { refs.pendingSendRef.current = resolve; });
+          // Mobile has no BackfillDialog yet (Phase 4 Part B). Broadcast
+          // the gap info for the phone to surface, then auto-run to
+          // avoid stalling the chat turn.
+          latest.setBackfillGapInfo(gapInfo);
+          void latest.runAutoDiaryBackfill(gapInfo);
         }
       }
     }
 
-    // --- DYNAMIC DELAY (BUSY STATE) INTERCEPTOR ---
+    // --- A-3 DYNAMIC DELAY (BUSY STATE) INTERCEPTOR ---
     const { getDetailedScheduleSlot } = await import('../../services/kumikoStateMachine');
     const scheduleSlot = getDetailedScheduleSlot(locationConfig.modelTimezone, isCurrentHoliday);
 
@@ -654,36 +825,39 @@ export async function executeSend(
       const followUpDelay = scheduleSlot.slotType === 'teaching'
         ? 10 * 60000 + Math.random() * 20 * 60000
         : 5 * 60000 + Math.random() * 10 * 60000;
-      setTimeout(() => {
-        triggerNativeProactiveMessage(refs, 0, language === 'zh' ? '忙完了，继续刚才的话题' : 'Done with that, where were we?');
-      }, followUpDelay);
-
+      const followUpEvent = language === 'zh' ? '忙完了，继续刚才的话题' : 'Done with that, where were we?';
+      if (ctx.triggerBusyFollowUp) {
+        setTimeout(() => { ctx.triggerBusyFollowUp!(followUpEvent); }, followUpDelay);
+      }
+      ctx.markPendingRead();
       return;
     }
 
-    // --- MEMORY / RAG RESOLUTION ---
+    // --- A-4 MEMORY / RAG RESOLUTION ---
     const currentLooksHistoryLike = isLikelyHistoricalRecallQuery(userTextForRag)
       || isLikelyTemporalHistoryQuery(userTextForRag)
       || isLikelyHistoricalFollowUp(userTextForRag)
       || isLikelyHistoricalSessionCarry(userTextForRag)
       || isLikelySemanticRecallQuery(userTextForRag);
-    if (!currentLooksHistoryLike
-      && !(refs.memoryQuerySessionRef.current?.kind === 'topic_search'
-           && isMemoryQuerySessionActive(refs.memoryQuerySessionRef.current))) {
-      updateMemoryQuerySessionRef(refs, null);
+    {
+      const s = ctx.getMemoryQuerySession();
+      if (!currentLooksHistoryLike
+        && !(s?.kind === 'topic_search' && isMemoryQuerySessionActive(s))) {
+        ctx.setMemoryQuerySession(null);
+      }
     }
 
-    const historyQueryContextResolution = buildHistoricalRecallQueryContext(allMessages, userTextForRag, refs.memoryQuerySessionRef.current);
+    const historyQueryContextResolution = buildHistoricalRecallQueryContext(allMessages, userTextForRag, ctx.getMemoryQuerySession());
     const rawHistoryQueryContext = historyQueryContextResolution.queryText;
     let historyQueryContext = rawHistoryQueryContext;
     let historyQueryRewrite: HistoricalQueryRewrite | null = null;
     let historyQueryRewriteError: string | null = null;
     const shouldRewriteHistoricalQuery = currentLooksHistoryLike
       || historyQueryContextResolution.source !== 'self'
-      || isMemoryQuerySessionActive(refs.memoryQuerySessionRef.current);
+      || isMemoryQuerySessionActive(ctx.getMemoryQuerySession());
     if (shouldRewriteHistoricalQuery) {
       const rewriteResult = await rewriteHistoricalRecallQueryDetailed(rawHistoryQueryContext, locationConfig, {
-        bypassGate: refs.memoryQuerySessionRef.current?.kind === 'topic_search',
+        bypassGate: ctx.getMemoryQuerySession()?.kind === 'topic_search',
         recentMessages: allMessages.slice(-6),
       });
       historyQueryRewrite = rewriteResult.rewrite;
@@ -693,10 +867,10 @@ export async function executeSend(
       }
     }
     const historicalQueryIntent = mapHistoricalRewriteIntent(historyQueryRewrite?.intent)
-      ?? resolveHistoricalQueryIntent(userTextForRag, historyQueryContext, refs.memoryQuerySessionRef.current);
+      ?? resolveHistoricalQueryIntent(userTextForRag, historyQueryContext, ctx.getMemoryQuerySession());
     const shouldLoadHistoryEvidence = historicalQueryIntent === 'exact'
       || historicalQueryIntent === 'temporal'
-      || (isMemoryQuerySessionActive(refs.memoryQuerySessionRef.current) && historyQueryContextResolution.source !== 'self');
+      || (isMemoryQuerySessionActive(ctx.getMemoryQuerySession()) && historyQueryContextResolution.source !== 'self');
     const historyEvidenceMessages = shouldLoadHistoryEvidence
       ? await buildHistoryEvidenceMessages(allMessages)
       : allMessages;
@@ -727,6 +901,7 @@ export async function executeSend(
       useAppStore.getState().setRagStatus('RECALLING');
       try {
         const shouldAnalyzeTemporal = historicalQueryIntent === 'temporal';
+        const sessionForLog = ctx.getMemoryQuerySession();
         console.log('[TEMPORAL ROUTE CHECK]', {
           likelyTemporal: isLikelyTemporalHistoryQuery(userTextForRag),
           likelyHistoricalRecall: isLikelyHistoricalRecallQuery(historyQueryContext),
@@ -745,17 +920,17 @@ export async function executeSend(
           rewrittenSearchRole: historyQueryRewrite?.searchRole ?? null,
           rewriteError: historyQueryRewriteError,
           previousQueryPreview: historyQueryContextResolution.previousQueryPreview,
-          activeQuerySession: refs.memoryQuerySessionRef.current ? {
-            kind: refs.memoryQuerySessionRef.current.kind,
-            lookupMode: refs.memoryQuerySessionRef.current.lookupMode,
-            targetSpeaker: refs.memoryQuerySessionRef.current.targetSpeaker,
-            reusable: isReusableHistoricalSession(refs.memoryQuerySessionRef.current),
-            parserStatus: refs.memoryQuerySessionRef.current.parserStatus ?? null,
-            parserSource: refs.memoryQuerySessionRef.current.parserSource ?? null,
-            parserPrecision: refs.memoryQuerySessionRef.current.parserPrecision ?? null,
-            parserConfidence: refs.memoryQuerySessionRef.current.parserConfidence ?? null,
-            lastEvidenceSource: refs.memoryQuerySessionRef.current.lastEvidenceSource ?? 'none',
-            confidenceLevel: refs.memoryQuerySessionRef.current.confidenceLevel ?? 'low',
+          activeQuerySession: sessionForLog ? {
+            kind: sessionForLog.kind,
+            lookupMode: sessionForLog.lookupMode,
+            targetSpeaker: sessionForLog.targetSpeaker,
+            reusable: isReusableHistoricalSession(sessionForLog),
+            parserStatus: sessionForLog.parserStatus ?? null,
+            parserSource: sessionForLog.parserSource ?? null,
+            parserPrecision: sessionForLog.parserPrecision ?? null,
+            parserConfidence: sessionForLog.parserConfidence ?? null,
+            lastEvidenceSource: sessionForLog.lastEvidenceSource ?? 'none',
+            confidenceLevel: sessionForLog.confidenceLevel ?? 'low',
           } : null,
         });
         const temporalAnalysisResult = shouldAnalyzeTemporal
@@ -763,15 +938,16 @@ export async function executeSend(
           : null;
         temporalIntent = temporalAnalysisResult?.analysis ?? null;
         temporalDiagnostics = temporalAnalysisResult?.diagnostics ?? null;
-        if (!temporalIntent && shouldAnalyzeTemporal && isReusableHistoricalSession(refs.memoryQuerySessionRef.current) && refs.memoryQuerySessionRef.current?.kind === 'temporal_history') {
+        const sessionForFallback = ctx.getMemoryQuerySession();
+        if (!temporalIntent && shouldAnalyzeTemporal && isReusableHistoricalSession(sessionForFallback) && sessionForFallback?.kind === 'temporal_history') {
           temporalIntent = {
             isTemporalQuery: true,
-            startTimestampJST: refs.memoryQuerySessionRef.current.startTimestampJST ?? null,
-            endTimestampJST: refs.memoryQuerySessionRef.current.endTimestampJST ?? null,
-            searchRole: refs.memoryQuerySessionRef.current.searchRole ?? 'any',
-            precision: refs.memoryQuerySessionRef.current.parserPrecision ?? null,
-            source: refs.memoryQuerySessionRef.current.parserSource ?? 'local_heuristic',
-            confidence: refs.memoryQuerySessionRef.current.parserConfidence ?? 'low',
+            startTimestampJST: sessionForFallback.startTimestampJST ?? null,
+            endTimestampJST: sessionForFallback.endTimestampJST ?? null,
+            searchRole: sessionForFallback.searchRole ?? 'any',
+            precision: sessionForFallback.parserPrecision ?? null,
+            source: sessionForFallback.parserSource ?? 'local_heuristic',
+            confidence: sessionForFallback.parserConfidence ?? 'low',
           };
           temporalDiagnostics = {
             status: 'session_fallback',
@@ -787,7 +963,7 @@ export async function executeSend(
           : [];
         temporalEpisodeCount = temporalEpisodes.length;
         const temporalHistoryLookup = shouldAnalyzeTemporal
-          ? (buildTemporalHistoryLookupBlock(historyEvidenceMessages, temporalIntent, temporalEpisodes, historyQueryContext) || buildTemporalNoEvidenceLookupBlock(historyQueryContext, temporalIntent, refs.memoryQuerySessionRef.current, temporalDiagnostics))
+          ? (buildTemporalHistoryLookupBlock(historyEvidenceMessages, temporalIntent, temporalEpisodes, historyQueryContext) || buildTemporalNoEvidenceLookupBlock(historyQueryContext, temporalIntent, ctx.getMemoryQuerySession(), temporalDiagnostics))
           : null;
         const llmSearchStrategy: HistoricalSearchStrategy | null = historyQueryRewrite?.searchStrategy ?? null;
         const shouldRunSemanticRag = historicalQueryIntent === 'semantic'
@@ -800,8 +976,9 @@ export async function executeSend(
         } else if (shouldRunSemanticRag) {
           const semanticSearchQuery = historyQueryRewrite?.topicQuery || historyQueryContext;
           semanticRoleConstraint = historyQueryRewrite?.searchRole ?? getTemporalSearchRoleFromQuery(historyQueryContext);
+          const sessionForKeywords = ctx.getMemoryQuerySession();
           const effectiveKeywords = historyQueryRewrite?.searchKeywords
-            || (refs.memoryQuerySessionRef.current?.kind === 'topic_search'
+            || (sessionForKeywords?.kind === 'topic_search'
                 ? extractTopicFallbackKeywords(userTextForRag)
                 : undefined);
           const semanticRecall = await searchLocalRagMemoryDetailed(
@@ -856,10 +1033,10 @@ export async function executeSend(
       useAppStore.getState().setRagStatus(backupConfig.ragEnabled ? 'IDLE' : 'OFF');
     }
 
-    // --- SESSION MANAGEMENT ---
+    // --- A-5 SESSION MANAGEMENT ---
     if (historyLookup?.strict) {
       const now = Date.now();
-      const previousSession = refs.memoryQuerySessionRef.current;
+      const previousSession = ctx.getMemoryQuerySession();
       const nextSession: MemoryQuerySession = {
         kind: memoryRoute === 'temporal_history' ? 'temporal_history' : 'exact_history',
         sourceQuery: historyQueryContext,
@@ -884,10 +1061,11 @@ export async function executeSend(
       };
       const canPersistTemporalSession = nextSession.kind !== 'temporal_history'
         || isReusableHistoricalSession(nextSession);
-      updateMemoryQuerySessionRef(refs, canPersistTemporalSession ? nextSession : null);
+      ctx.setMemoryQuerySession(canPersistTemporalSession ? nextSession : null);
     } else if (memoryRoute === 'fuzzy_rag' && historyQueryRewrite?.searchStrategy === 'topic_search') {
       const now = Date.now();
-      updateMemoryQuerySessionRef(refs, {
+      const prev = ctx.getMemoryQuerySession();
+      ctx.setMemoryQuerySession({
         kind: 'topic_search',
         sourceQuery: historyQueryRewrite?.topicQuery || historyQueryContext,
         lookupMode: 'temporal_window',
@@ -896,25 +1074,28 @@ export async function executeSend(
         resultCount: ragContext.length,
         lastEvidenceSource: 'episodes',
         confidenceLevel: semanticConfidenceLevel ?? 'low',
-        createdAt: refs.memoryQuerySessionRef.current?.createdAt ?? now,
+        createdAt: prev?.createdAt ?? now,
         lastUsedAt: now,
       });
     } else if (!currentLooksHistoryLike && historyQueryContextResolution.source === 'self') {
-      updateMemoryQuerySessionRef(refs, null);
-    } else if (refs.memoryQuerySessionRef.current) {
-      updateMemoryQuerySessionRef(refs, {
-        ...refs.memoryQuerySessionRef.current,
-        sourceQuery: historyQueryContextResolution.source === 'self'
-          ? refs.memoryQuerySessionRef.current.sourceQuery
-          : historyQueryContext,
-        parserStatus: temporalDiagnostics?.status ?? historyLookup?.parserStatus ?? refs.memoryQuerySessionRef.current.parserStatus ?? null,
-        parserSource: temporalIntent?.source ?? refs.memoryQuerySessionRef.current.parserSource ?? null,
-        parserPrecision: temporalIntent?.precision ?? refs.memoryQuerySessionRef.current.parserPrecision ?? null,
-        parserConfidence: temporalIntent?.confidence ?? historyLookup?.parserConfidence ?? refs.memoryQuerySessionRef.current.parserConfidence ?? null,
-        lastEvidenceSource: historyLookup?.evidenceMode ?? refs.memoryQuerySessionRef.current.lastEvidenceSource ?? 'none',
-        confidenceLevel: historyLookup?.confidenceLevel ?? refs.memoryQuerySessionRef.current.confidenceLevel ?? 'low',
-        lastUsedAt: Date.now(),
-      });
+      ctx.setMemoryQuerySession(null);
+    } else {
+      const existing = ctx.getMemoryQuerySession();
+      if (existing) {
+        ctx.setMemoryQuerySession({
+          ...existing,
+          sourceQuery: historyQueryContextResolution.source === 'self'
+            ? existing.sourceQuery
+            : historyQueryContext,
+          parserStatus: temporalDiagnostics?.status ?? historyLookup?.parserStatus ?? existing.parserStatus ?? null,
+          parserSource: temporalIntent?.source ?? existing.parserSource ?? null,
+          parserPrecision: temporalIntent?.precision ?? existing.parserPrecision ?? null,
+          parserConfidence: temporalIntent?.confidence ?? historyLookup?.parserConfidence ?? existing.parserConfidence ?? null,
+          lastEvidenceSource: historyLookup?.evidenceMode ?? existing.lastEvidenceSource ?? 'none',
+          confidenceLevel: historyLookup?.confidenceLevel ?? existing.confidenceLevel ?? 'low',
+          lastUsedAt: Date.now(),
+        });
+      }
     }
 
     const strictEvidenceTurn = !!historyLookup?.strict;
@@ -1039,15 +1220,15 @@ export async function executeSend(
       }
     }
 
-    // --- VOICE POLICY ---
+    // --- A-8 VOICE POLICY ---
     const currentVoicePolicy = currentStateCtx.voicePolicy;
     let hybridVoicePrompt = '';
 
-    if (refs.ttsConfigRef.current.voiceMode === 'full') {
+    if (ctx.ttsConfig.voiceMode === 'full') {
       hybridVoicePrompt = language === 'zh'
         ? `[语音模式：全语音]\n你的回复将被翻译成日语并朗读出来。请像真人发语音消息一样保持简短自然：\n- 用 1-3 句话表达核心意思，避免长篇大论和列举清单\n- 像发一条微信语音那样说话，不要写邮件式的长段落\n- 可以用 '$' 分隔不同的短句，但总量要简短`
         : `[Voice Mode: Full Voice]\nYour reply will be translated to Japanese and spoken aloud. Keep it short and natural, like a real voice message:\n- Express your point in 1-3 sentences. Avoid long paragraphs or bullet lists.\n- Talk like you're sending a voice message on LINE, not writing an email.\n- You may use '$' to separate short thoughts, but keep the total brief.`;
-    } else if (refs.ttsConfigRef.current.voiceMode === 'hybrid') {
+    } else if (ctx.ttsConfig.voiceMode === 'hybrid') {
       if (currentVoicePolicy === 'forbid') {
         hybridVoicePrompt = language === 'zh'
           ? `[语音模式：受限]\n你当前的状态（${currentStateCtx.stateDescription}）不方便发送语音。请**强制使用文字**回复。在回复末尾加上 [Voice_Mode: false]。`
@@ -1083,14 +1264,12 @@ export async function executeSend(
       hybridVoicePrompt || undefined,
     );
 
-    if (refs.generationIdRef.current !== currentGenId) {
+    if (ctx.isCancelled()) {
       return;
     }
 
     const s2 = useAppStore.getState();
-    s2.setMessages((prev: Message[]) => prev.map(msg =>
-      currentPendingIds.has(msg.id) ? { ...msg, isRead: true, sendStatus: undefined, failReason: undefined } : msg,
-    ));
+    ctx.markPendingRead();
 
     s2.setIsDisconnected(false);
     s2.setCurrentEmotion(response.emotion);
@@ -1155,8 +1334,8 @@ export async function executeSend(
       }
     }
 
-    // --- VOICE / TEXT DELIVERY ---
-    const currentTtsCfg = refs.ttsConfigRef.current;
+    // --- A-11 VOICE / TEXT DELIVERY ---
+    const currentTtsCfg = ctx.ttsConfig;
     const isVoiceTurn = currentTtsCfg.voiceMode === 'full'
       || (currentTtsCfg.voiceMode === 'hybrid' && response.voiceMode === true);
 
@@ -1164,7 +1343,7 @@ export async function executeSend(
       const combinedVoiceText = response.textParts.join(' ');
       useAppStore.getState().setIsThinking(true);
 
-      const isDocumentHidden = document.hidden || !document.hasFocus();
+      const isDocumentHidden = typeof document !== 'undefined' ? (document.hidden || !document.hasFocus()) : false;
       if (isDocumentHidden && Math.random() < 0.4) {
         const asyncDelay = 15000 + Math.random() * 30000;
         await new Promise(r => setTimeout(r, asyncDelay));
@@ -1176,8 +1355,8 @@ export async function executeSend(
         role: 'user' as const,
       } : undefined;
 
-      const voiceResult = await helpers.runVoicePipeline('pending-' + Date.now(), combinedVoiceText, response.emotion, response.voiceVariant);
-      if (refs.generationIdRef.current !== currentGenId) { useAppStore.getState().setIsThinking(false); return; }
+      const voiceResult = await ctx.runVoicePipeline('pending-' + Date.now(), combinedVoiceText, response.emotion, response.voiceVariant);
+      if (ctx.isCancelled()) { useAppStore.getState().setIsThinking(false); return; }
       useAppStore.getState().setIsThinking(false);
 
       if (voiceResult.success) {
@@ -1196,7 +1375,7 @@ export async function executeSend(
       }
     } else {
       for (let i = 0; i < response.textParts.length; i++) {
-        if (refs.generationIdRef.current !== currentGenId) break;
+        if (ctx.isCancelled()) break;
 
         const textContent = response.textParts[i];
         let delay = 0;
@@ -1204,7 +1383,7 @@ export async function executeSend(
         if (i === 0) {
           useAppStore.getState().setIsThinking(true);
 
-          const isDocumentHidden = document.hidden || !document.hasFocus();
+          const isDocumentHidden = typeof document !== 'undefined' ? (document.hidden || !document.hasFocus()) : false;
           if (isDocumentHidden && Math.random() < 0.4) {
             const asyncDelay = 15000 + Math.random() * 30000;
             await new Promise(r => setTimeout(r, asyncDelay));
@@ -1219,7 +1398,7 @@ export async function executeSend(
             addMessageToStore('model', recallNotice, undefined, undefined, 'recall-' + Date.now());
 
             await new Promise(r => setTimeout(r, 3000 + Math.random() * 2000));
-            if (refs.generationIdRef.current !== currentGenId) break;
+            if (ctx.isCancelled()) break;
             useAppStore.getState().setIsThinking(true);
           }
 
@@ -1232,7 +1411,7 @@ export async function executeSend(
 
         await new Promise(r => setTimeout(r, delay));
 
-        if (refs.generationIdRef.current !== currentGenId) break;
+        if (ctx.isCancelled()) break;
 
         if (i === 0 && ['angry', 'confused', 'surprised', 'shy'].includes(response.emotion) && Math.random() < 0.25) {
           const originalText = textContent;
@@ -1282,18 +1461,18 @@ export async function executeSend(
       }
     }
 
-    if (refs.generationIdRef.current === currentGenId) {
+    if (!ctx.isCancelled()) {
       setTimeout(() => useAppStore.getState().setIsTalking(false), 2000);
     }
 
     if (response.activateSleepMode) {
       console.log('[SLEEP MODE] Activating after topic-ending reply.');
-      refs.hasGoneToSleepRef.current = true;
+      ctx.setHasGoneToSleep(true);
       useAppStore.getState().setCurrentEmotion('sleepy');
     }
 
-    // --- RAG INDEXING ---
-    if (refs.generationIdRef.current === currentGenId && backupConfig.ragEnabled) {
+    // --- A-12 RAG INDEXING ---
+    if (!ctx.isCancelled() && backupConfig.ragEnabled) {
       const fullModelResponse = response.textParts.join(' ');
 
       const d = new Date();
@@ -1303,8 +1482,8 @@ export async function executeSend(
         hour: '2-digit', minute: '2-digit', hour12: false,
       });
       const parts = formatter.formatToParts(d);
-      const p: any = {};
-      parts.forEach(part => p[part.type] = part.value);
+      const p: Record<string, string> = {};
+      parts.forEach(part => { p[part.type] = part.value; });
       const timeStr = `${p.year}/${p.month}/${p.day} ${p.hour}:${p.minute} (JST)`;
 
       const imageDesc = response.imageCaption ? `(Image Description: ${response.imageCaption})` : '';
@@ -1314,10 +1493,10 @@ export async function executeSend(
 
       if (!memoryDecision.shouldStore) {
         console.log(`[RAG FILTER] Skipped turn pair archive (${memoryDecision.reason})`, memoryDecision.flags);
-      } else if (hasRecentRagDuplicate(memoryDecision.dedupeKey, refs.recentRagDedupeKeysRef.current)) {
+      } else if (hasRecentRagDuplicate(memoryDecision.dedupeKey, ctx.getRecentRagDedupeKeys())) {
         console.log('[RAG FILTER] Skipped duplicate turn pair archive.');
       } else {
-        rememberRecentRagDedupeKeyRef(refs, memoryDecision.dedupeKey);
+        ctx.appendRagDedupeKey(memoryDecision.dedupeKey);
 
         useAppStore.getState().setRagStatus('INDEXING');
         saveLocalRagMemory(ragEntry, undefined, {
@@ -1335,7 +1514,7 @@ export async function executeSend(
       }
     }
 
-    // --- SUMMARY BOUNDARY EVALUATION ---
+    // --- A-12 SUMMARY BOUNDARY EVALUATION ---
     const newCount = turnCount + 1;
     const workingSummaryState: SummaryArchiveState = {
       ...summaryArchiveState,
@@ -1364,8 +1543,20 @@ export async function executeSend(
     s3.setTurnCount(newCount);
     s3.setSummaryArchiveState(workingSummaryState);
 
+    const messagesSnapshotRef = {
+      get current() { return ctx.getMessagesSnapshot(); },
+      set current(_v: Message[]) { /* readonly snapshot for summary */ },
+    } as React.MutableRefObject<Message[]>;
+    const summaryRunningLiveRef = {
+      get current() { return ctx.getSummaryRunning(); },
+      set current(v: boolean) { ctx.setSummaryRunning(v); },
+    } as React.MutableRefObject<boolean>;
+    const summaryEmbedCacheRef: React.MutableRefObject<Map<string, Float32Array>> = {
+      current: ctx.summaryEmbeddingCache,
+    };
+
     if (!boundaryDecision.shouldSummarize && boundaryDecision.turnsInSegment >= SUMMARY_SOFT_THRESHOLD) {
-      const semanticSignal = await calculateSummarySemanticSignalStandalone(refs.messagesRef, refs.summarySemanticEmbeddingCacheRef, workingSummaryState);
+      const semanticSignal = await calculateSummarySemanticSignalStandalone(messagesSnapshotRef, summaryEmbedCacheRef, workingSummaryState);
       boundaryDecision = evaluateSummaryBoundary({
         currentTurnCount: newCount,
         archiveState: workingSummaryState,
@@ -1378,7 +1569,7 @@ export async function executeSend(
     }
 
     if (boundaryDecision.shouldSummarize && boundaryDecision.reason) {
-      const continuationSignal = await calculateSummaryContinuationSignalStandalone(refs.messagesRef, refs.summarySemanticEmbeddingCacheRef, workingSummaryState);
+      const continuationSignal = await calculateSummaryContinuationSignalStandalone(messagesSnapshotRef, summaryEmbedCacheRef, workingSummaryState);
       const effectiveArchiveState = continuationSignal?.shouldContinue && workingSummaryState.carryoverStartMessageId
         ? {
             ...workingSummaryState,
@@ -1396,11 +1587,11 @@ export async function executeSend(
         : null;
 
       const summaryRefs: TriggerAutoSummaryRefs = {
-        messagesRef: refs.messagesRef,
-        summaryRunningRef: refs.summaryRunningRef,
+        messagesRef: messagesSnapshotRef,
+        summaryRunningRef: summaryRunningLiveRef,
       };
       const summaryHelpers: TriggerAutoSummaryHelpers = {
-        deriveSummaryTopicLabel: helpers.deriveSummaryTopicLabel,
+        deriveSummaryTopicLabel: ctx.deriveSummaryTopicLabel,
       };
 
       setTimeout(() => {
@@ -1419,38 +1610,36 @@ export async function executeSend(
       }, 1000);
     }
 
-  } catch (e: any) {
-    console.error('ExecuteSend Error:', e);
-    if (e.message === 'RATE_LIMIT_EXCEEDED') {
+  } catch (e: unknown) {
+    const err = e instanceof Error ? e : new Error(String(e));
+    console.error('ExecuteSend Error:', err);
+    if (err.message === 'RATE_LIMIT_EXCEEDED') {
       const config = getCurrentAIConfig();
       if (config.activeKey === 'primary' && config.apiKey_backup) {
         console.warn('[KEY_SWITCH] Primary key rate limited. Switching to backup key.');
-        alert('主 API Key 已达到当日请求上限，将自动切换至备用 Key 并重试...');
+        if (ctx.origin === 'desktop') {
+          alert('主 API Key 已达到当日请求上限，将自动切换至备用 Key 并重试...');
+        }
         const newConfig: AIConfig = {
           ...config,
           activeKey: 'backup',
           keySwitchTimestamp: Date.now(),
         };
         localStorage.setItem('kumiko_ai_config', JSON.stringify(newConfig));
-        executeSend(refs, helpers);
+        ctx.onRetry();
         return;
-      } else {
+      } else if (ctx.origin === 'desktop') {
         alert('API Key(s) have reached the daily request limit.');
       }
     }
 
     if (backupConfig.ragEnabled) useAppStore.getState().setRagStatus('ERROR');
-    if (refs.generationIdRef.current === currentGenId) {
+    if (!ctx.isCancelled()) {
       const s4 = useAppStore.getState();
       s4.setIsThinking(false);
       s4.setIsTalking(false);
-      const failMsg = e.message || 'Unknown error';
-      s4.setMessages((prev: Message[]) => prev.map(msg => {
-        if (currentPendingIds.has(msg.id) || msg.id === currentTurnStartMessageId) {
-          return { ...msg, sendStatus: 'failed' as const, failReason: failMsg };
-        }
-        return msg;
-      }));
+      const failMsg = err.message || 'Unknown error';
+      ctx.markPendingFailed(failMsg);
       s4.setIsDisconnected(true);
     }
   }
@@ -1779,18 +1968,6 @@ export async function sendUserMessageFromMobile(
     return { userMessageId: '', modelMessageIds: [], error: 'Empty message', code: 'E_EMPTY' };
   }
 
-  const state = useAppStore.getState();
-  const {
-    coreMemory,
-    worldBook,
-    contextLimit,
-    locationConfig,
-    anchors,
-    kumikoNotebook,
-    language,
-    turnCount,
-  } = state;
-
   // 1. Persist the user message. We go through addMessageToStore so the
   // Zustand store sees it immediately (and the WS broadcaster pushes a
   // message:added to the phone), then mirror into Dexie for durability.
@@ -1817,139 +1994,184 @@ export async function sendUserMessageFromMobile(
   }
   useAppStore.getState().setMessages((prev) => [...prev, userMessage]);
 
-  // 2. Build the history slice the same way executeSend does: pinned
-  // always-in plus the most recent `contextLimit` messages (excluding
-  // the one we just wrote so the model's own turn doesn't appear as
-  // "previous" context).
-  const latest = useAppStore.getState().messages;
-  const others = latest.filter((m) => m.id !== userMessageId);
-  const recentMessages = others.slice(-contextLimit);
-  const pinnedMessages = others.filter((m) => m.isPinned);
-  const historyMap = new Map<string, Message>();
-  [...pinnedMessages, ...recentMessages].forEach((m) => historyMap.set(m.id, m));
-  const historySlice = Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+  // 2. Snapshot the message list BEFORE the core runs so we can diff
+  // after and return just the IDs the core added. The WS broadcaster
+  // pushes the new messages to the phone independently, but the HTTP
+  // response carries the IDs so the phone can highlight just-sent bubbles.
+  const preCoreIds = new Set(useAppStore.getState().messages.map(m => m.id));
 
-  // 3. RAG recall. Phone-originated turns don't track the memory-query
-  // session, so we take the simple fuzzy-RAG path (same default the
-  // desktop uses when no historical intent is detected).
-  let ragContext: string[] = [];
+  // 3. Build an ExecuteSendCoreContext backed by (a) the chat pipeline
+  // registration when available (for voice + summary helpers wired from
+  // App.tsx), and (b) local fallbacks for mobile-only state (memory
+  // query session, RAG dedup keys, summary embedding cache).
+  //
+  // Phone-originated turns currently don't thread a memory query session
+  // across HTTP calls — each turn starts fresh with no historical intent
+  // active. When Phase 4 Part C lands mobile-side historical recall UI,
+  // this will be hoisted into a per-session store.
+  let mobileMemoryQuerySession: MemoryQuerySession | null = null;
+
+  let mobileRagDedupeKeys: string[] = [];
   try {
-    const result = await searchLocalRagMemoryDetailed(trimmed, 3);
-    ragContext = result?.blocks ?? [];
-  } catch (e) {
-    // RAG failures are non-fatal — we just skip the context block.
-    console.warn('[MOBILE-CHAT] RAG search failed, continuing without context:', e);
+    const stored = await db.getVal<string[]>('kumiko_rag_dedupe_keys', []);
+    mobileRagDedupeKeys = Array.isArray(stored) ? stored : [];
+  } catch {
+    mobileRagDedupeKeys = [];
   }
 
-  // 4. Call the full pipeline. We pass `extraSystemPrompt` so the model
-  // knows this turn came from the phone — lets Kumiko adjust voice
-  // length / formatting slightly without us having to do that policy
-  // here.
-  let chatResponse: ChatResponse;
+  const registration = tryGetChatPipelineRegistration();
+
+  const runVoicePipeline: RunVoicePipelineFn = registration
+    ? registration.runVoicePipeline
+    : async () => ({ success: false, voiceFileId: null, voiceDuration: null, japaneseText: null });
+
+  const deriveSummaryTopicLabel: DeriveSummaryTopicLabelFn = registration
+    ? registration.deriveSummaryTopicLabel
+    : () => '';
+
+  const mobileSummaryEmbeddingCache = registration
+    ? registration.summarySemanticEmbeddingCacheRef.current
+    : new Map<string, Float32Array>();
+
+  let mobileSummaryRunning = registration
+    ? registration.summaryRunningRef.current
+    : false;
+
+  const currentPendingIds = new Set<string>([userMessageId]);
+  const ttsConfigSnapshot = useAppStore.getState().ttsConfig;
+
+  const ctx: ExecuteSendCoreContext = {
+    origin: 'mobile',
+    combinedText: trimmed,
+    userTextForRag: trimmed,
+    finalImage: null,
+    pendingImageMessageId: null,
+    pendingMessageIds: currentPendingIds,
+    currentTurnStartMessageId: userMessageId,
+    generationId: 0,
+    isCancelled: () => false,
+    getMemoryQuerySession: () => mobileMemoryQuerySession,
+    setMemoryQuerySession: (s) => { mobileMemoryQuerySession = s; },
+    getRecentRagDedupeKeys: () => mobileRagDedupeKeys,
+    appendRagDedupeKey: (k) => {
+      if (!k) return;
+      mobileRagDedupeKeys = [k, ...mobileRagDedupeKeys.filter(x => x !== k)].slice(0, 48);
+      void db.setVal('kumiko_rag_dedupe_keys', mobileRagDedupeKeys);
+    },
+    getMessagesSnapshot: () => useAppStore.getState().messages,
+    getSummaryRunning: () => registration ? registration.summaryRunningRef.current : mobileSummaryRunning,
+    setSummaryRunning: (v) => {
+      if (registration) registration.summaryRunningRef.current = v;
+      else mobileSummaryRunning = v;
+    },
+    summaryEmbeddingCache: mobileSummaryEmbeddingCache,
+    setHasGoneToSleep: (v) => {
+      if (registration) registration.hasGoneToSleepRef.current = v;
+    },
+    runVoicePipeline,
+    deriveSummaryTopicLabel,
+    ttsConfig: ttsConfigSnapshot,
+    clearPendingBuffers: () => { /* mobile has no pending buffers */ },
+    markPendingSending: () => {
+      useAppStore.getState().setMessages((prev) => prev.map(m =>
+        m.id === userMessageId ? { ...m, sendStatus: 'sending' as const } : m,
+      ));
+    },
+    markPendingRead: () => {
+      useAppStore.getState().setMessages((prev) => prev.map(m =>
+        m.id === userMessageId ? { ...m, isRead: true, sendStatus: undefined, failReason: undefined } : m,
+      ));
+    },
+    markPendingFailed: (reason) => {
+      useAppStore.getState().setMessages((prev) => prev.map(m =>
+        m.id === userMessageId ? { ...m, sendStatus: 'failed' as const, failReason: reason } : m,
+      ));
+    },
+    // Mobile doesn't expose the BackfillDialog yet; Phase 4 Part B adds
+    // the responsive version. Until then we skip the gate and let the
+    // auto-run path (state.runAutoDiaryBackfill) handle it from within
+    // the core.
+    waitForBackfillGate: undefined,
+    // The busy-state follow-up currently relies on
+    // triggerNativeProactiveMessage which reads the desktop refs. When
+    // a chat pipeline is registered we delegate to it so the follow-up
+    // fires through the same desktop infrastructure (and the phone
+    // hears it via WS broadcast). Otherwise we skip.
+    triggerBusyFollowUp: registration
+      ? (event) => {
+          const fakeRefs: ChatActionRefs = {
+            messagesRef: registration.messagesRef,
+            generationIdRef: registration.generationIdRef,
+            pendingTextRef: registration.pendingTextRef,
+            pendingImageRef: registration.pendingImageRef,
+            pendingImageMessageIdRef: registration.pendingImageMessageIdRef,
+            pendingMessageIdsRef: registration.pendingMessageIdsRef,
+            ttsConfigRef: registration.ttsConfigRef,
+            memoryQuerySessionRef: registration.memoryQuerySessionRef,
+            recentRagDedupeKeysRef: registration.recentRagDedupeKeysRef,
+            countdownIntervalRef: registration.countdownIntervalRef,
+            sendTimerRef: registration.sendTimerRef,
+            preValidationActiveRef: registration.preValidationActiveRef,
+            pendingSendRef: registration.pendingSendRef,
+            welcomeTriggeredRef: registration.welcomeTriggeredRef,
+            hasGoneToSleepRef: registration.hasGoneToSleepRef,
+            sleepWarningTimestampRef: registration.sleepWarningTimestampRef,
+            sleepFarewellSentRef: registration.sleepFarewellSentRef,
+            lateNightWakeRolledRef: registration.lateNightWakeRolledRef,
+            lateNightWakeResultRef: registration.lateNightWakeResultRef,
+            lateNightWakeTimestampRef: registration.lateNightWakeTimestampRef,
+            summaryRunningRef: registration.summaryRunningRef,
+            summarySemanticEmbeddingCacheRef: {
+              current: mobileSummaryEmbeddingCache,
+            } as React.MutableRefObject<Map<string, Float32Array>>,
+            inputRef: registration.inputRef,
+          };
+          triggerNativeProactiveMessage(fakeRefs, 0, event);
+        }
+      : undefined,
+    onRetry: () => { void sendUserMessageFromMobile(text, options); },
+  };
+
+  // 4. Run the shared chat pipeline. Model replies, reminders, anchors,
+  // RAG indexing, summary boundaries, voice delivery — everything that
+  // the desktop path does is exercised here via ctx.
   try {
-    chatResponse = await sendMessageToGemini(
-      trimmed,
-      coreMemory,
-      worldBook,
-      historySlice,
-      locationConfig,
-      undefined, // imageBase64 - phone images travel via imageId + media route
-      undefined, // mimeType
-      0, // retryCount
-      undefined, // previousContextLog
-      ragContext,
-      undefined, // exactHistoryLookup
-      [], // activeReminders - not re-evaluated on the mobile path
-      anchors,
-      kumikoNotebook,
-      undefined, // modelOverride
-      language,
-      'The most recent user turn came in from the phone PWA over Tailscale. Reply concisely and in the same language as the user.',
-    );
+    await executeSendCore(ctx);
   } catch (e) {
     return {
       userMessageId,
       modelMessageIds: [],
-      error: `LLM call failed: ${(e as Error).message}`,
-      code: 'E_LLM',
+      error: `Pipeline failed: ${(e as Error).message}`,
+      code: 'E_PIPELINE',
     };
   }
 
-  // 5. Persist model reply(ies). textParts is a list of chat bubbles the
-  // model wants Kumiko to send; most turns yield 1-3 parts. We persist
-  // each as its own MessageEntity so the desktop's message list + the
-  // phone's list stay byte-identical.
-  const parts = Array.isArray(chatResponse?.textParts) ? chatResponse.textParts : [];
-  const nonEmptyParts = parts.map((p) => (typeof p === 'string' ? p.trim() : '')).filter(Boolean);
-  if (nonEmptyParts.length === 0) {
-    // Defensive: models occasionally return an empty textParts array
-    // when tools fire without text. Drop a single ellipsis rather than
-    // returning a zero-reply state that confuses the phone UI.
-    nonEmptyParts.push('…');
-  }
-
-  const emotion: EmotionType | undefined = chatResponse?.emotion;
-  const groundingSources = chatResponse?.groundingSources;
+  // 5. Diff the messages list to collect IDs the core added so the HTTP
+  // response can return them. The WS broadcaster pushes the same
+  // messages to the phone in real time — the IDs in the HTTP response
+  // just give the phone a hint about which bubbles to highlight.
+  const postCoreMessages = useAppStore.getState().messages;
   const modelMessageIds: string[] = [];
-  const writePromises: Promise<unknown>[] = [];
-  for (const part of nonEmptyParts) {
-    const ts = Date.now();
-    const id = `m-${ts}-${Math.random().toString(36).slice(2, 8)}`;
-    const modelMessage: Message = {
-      id,
-      role: 'model',
-      text: part,
-      timestamp: ts,
-      storedEmotion: emotion,
-      groundingSources: groundingSources && groundingSources.length > 0 ? groundingSources : undefined,
-    };
-    writePromises.push(db.messages.put(mapMessageToEntity(modelMessage)));
-    useAppStore.getState().setMessages((prev) => [...prev, modelMessage]);
-    modelMessageIds.push(id);
-  }
-  try {
-    await Promise.all(writePromises);
-  } catch (e) {
-    // Reply is already in the store so the phone sees it; a Dexie
-    // write failure just means the reply won't survive a reload. We
-    // surface this as a non-fatal warning.
-    console.warn('[MOBILE-CHAT] Persist model reply failed:', e);
-  }
-
-  // 6. Side effects that the WS broadcaster relies on. We intentionally
-  // do these AFTER the message writes so the phone sees messages first
-  // (more visible to the user), then the status changes.
-  if (emotion) {
-    useAppStore.getState().setCurrentEmotion(emotion);
-  }
-
-  if (chatResponse?.anchorAction) {
-    const { type, content } = chatResponse.anchorAction;
-    if (type === 'add' && typeof content === 'string' && content.trim()) {
-      const nextAnchor: AnchorEntry = {
-        id: `anchor-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        content: content.trim(),
-        timestamp: Date.now(),
-        emotion: emotion ?? 'neutral',
-      };
-      useAppStore.getState().setAnchors((prev) => [nextAnchor, ...prev]);
-    } else if (type === 'delete' && typeof content === 'string' && content.trim()) {
-      const target = content.trim();
-      // Mirror the executeSend semantic: substring match, not exact —
-      // the model frequently sends a distinctive phrase rather than
-      // the full anchor text when requesting deletion.
-      useAppStore.getState().setAnchors((prev) => prev.filter((a) => !a.content.includes(target)));
+  for (const m of postCoreMessages) {
+    if (!preCoreIds.has(m.id) && m.id !== userMessageId && m.role === 'model') {
+      modelMessageIds.push(m.id);
     }
   }
 
-  // Turn count tracks summary cadence. Bumping it here keeps the auto-
-  // summary cycle ticking regardless of whether messages originated
-  // from desktop or phone. summaryArchiveState boundary detection is
-  // intentionally NOT run from mobile — that 300-line block in
-  // executeSend guards against re-entrancy via refs that only exist
-  // in the desktop render tree. The next desktop-originated turn will
-  // pick up wherever mobile left off via turnCount alone.
-  useAppStore.getState().setTurnCount(turnCount + 1);
+  // 6. Persist any model messages the core added to Dexie. The desktop
+  // autosave effect in App.tsx will eventually do this via
+  // syncRawHistoryMessages, but we front-run it so the HTTP response
+  // can't race ahead of durability.
+  try {
+    const writePromises: Promise<unknown>[] = [];
+    for (const id of modelMessageIds) {
+      const msg = postCoreMessages.find(m => m.id === id);
+      if (msg) writePromises.push(db.messages.put(mapMessageToEntity(msg)));
+    }
+    await Promise.all(writePromises);
+  } catch (e) {
+    console.warn('[MOBILE-CHAT] Persist model reply to Dexie failed:', e);
+  }
 
   return { userMessageId, modelMessageIds };
 }
