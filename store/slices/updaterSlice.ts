@@ -87,6 +87,14 @@ export const createUpdaterSlice: StateCreator<UpdaterSlice, [], [], UpdaterSlice
     try {
       const result = await window.electronAPI.invoke('app:update:quit-and-install');
       if (result?.success === false && result?.error) {
+        // 'installer-missing' means main has already re-started a download
+        // and pushed a fresher state (status:'available' / 'downloading').
+        // Don't clobber it with status:'error' — just refresh cache info
+        // so the user sees the re-download in progress.
+        if (result?.errorCode === 'installer-missing') {
+          void get().refreshUpdaterCacheInfo();
+          return;
+        }
         get().setAppUpdateState((prev) => ({ ...prev, status: 'error', error: result.error }));
         set({ showAppUpdateModal: true });
         // Install failed — the main process already force-cleaned the

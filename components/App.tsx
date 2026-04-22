@@ -1380,6 +1380,27 @@ export const App = () => {
           </div>
         </div>
       )}
+      {appUpdateState.status === 'installing' && (
+        <div
+          className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/80 backdrop-blur-md px-6"
+          role="dialog"
+          aria-live="assertive"
+          aria-modal="true"
+        >
+          <div className={`w-full max-w-md rounded-2xl border-2 p-6 flex flex-col items-center gap-4 text-center shadow-[0_0_40px_rgba(34,211,238,0.25)] ${isDarkMode ? 'bg-[#140d09] border-cyan-500/50 text-[#f5ebdc]' : 'bg-white border-cyan-400 text-[#49301f]'}`}>
+            <div className="w-12 h-12 border-4 border-cyan-500/30 border-t-cyan-400 rounded-full animate-spin" />
+            <h3 className="font-mincho ka-floating-title tracking-[0.04em] text-cyan-400 font-semibold">
+              {(t as any).updateInstalling}
+            </h3>
+            <p className={`ka-copy-sm leading-relaxed ${isDarkMode ? 'text-[#d9c4a8]' : 'text-[#6d5a47]'}`}>
+              {(t as any).updateInstallingDesc}
+            </p>
+            <p className={`ka-copy-xs leading-snug ${isDarkMode ? 'text-[#a68b6b]' : 'text-[#9c7f62]'}`}>
+              {(t as any).updateInstallingHint}
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -232,6 +232,10 @@ export const UI_TRANSLATIONS = {
     updateCachePathCopied: "已复制下载路径。",
     updateCacheCleared: "已清理 {0} 的下载缓存。",
     updateCacheEmpty: "暂无下载缓存。",
+    updateInstalling: "正在安装新版本...",
+    updateInstallingDesc: "软件将自动关闭并重启。请勿手动关闭窗口。",
+    updateInstallingHint: "若 30 秒后没有自动重启，请到开始菜单中手动启动 Kumiko·Amadeus。",
+    updateInstallerMissingError: "安装包文件已丢失，正在重新下载。请等待「可安装」状态后重试。",
     updateCacheFileCount: "（{0} 个文件）",
 
     // New File System Sync Keys
@@ -782,6 +786,10 @@ export const UI_TRANSLATIONS = {
     updateCachePathCopied: "Download path copied.",
     updateCacheCleared: "Cleared {0} of download cache.",
     updateCacheEmpty: "No download cache yet.",
+    updateInstalling: "Installing new version…",
+    updateInstallingDesc: "The app will close and restart automatically. Please do not close the window manually.",
+    updateInstallingHint: "If it does not relaunch within 30 seconds, open Kumiko·Amadeus from the Start menu.",
+    updateInstallerMissingError: "Installer file was missing; it is being re-downloaded. Please wait for \"Ready\" and click Install again.",
     updateCacheFileCount: "({0} files)",
 
     // New File System Sync Keys

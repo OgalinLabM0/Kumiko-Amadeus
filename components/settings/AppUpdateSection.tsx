@@ -101,6 +101,8 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
     statusText = t.updateDownloading;
   } else if (updateState.status === 'downloaded') {
     statusText = t.updateReady;
+  } else if (updateState.status === 'installing') {
+    statusText = t.updateInstalling;
   } else if (updateState.status === 'not-available') {
     statusText = t.updateUpToDate;
   } else if (updateState.status === 'error') {

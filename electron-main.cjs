@@ -1,5 +1,13 @@
 const { app, BrowserWindow, Menu, ipcMain, dialog, protocol } = require('electron');
 const path = require('path');
+
+// File-based logging for the main process. Install BEFORE anything else so
+// console.* calls in user-data migration, updater init, and boot-time error
+// paths all land in <userData>/logs/main-YYYY-MM-DD.log. Without this,
+// autoUpdater.quitAndInstall() takes stdout/stderr down with the app and
+// post-mortem diagnosis of install failures is impossible.
+require('./electron/logService.cjs').install();
+
 const { initRag, closeRag } = require('./electron-rag.cjs');
 const {
   migrateRegistryToConfigStoreOnce,
@@ -131,34 +139,28 @@ app.commandLine.appendSwitch('enable-features', 'UseSkiaRenderer,CanvasOopRaster
 // setAppUpdaterLifecycleHooks, registered during app initialization
 // below.
 //
-// beforeQuitForInstall MUST be fully awaited before autoUpdater.quitAndInstall
-// runs, otherwise the NSIS installer races the still-live Electron process
-// for file handles (renderer BrowserWindow, Fastify mobile-access server,
-// electron-rag's better-sqlite3 handle, Genie child process, ...). When the
-// installer is launched with perMachine:true + allowElevation:true, the
-// elevated child fails to replace locked files and silently exits -- which
-// is the "installer flashes and closes" bug this block is fixing. So we:
-//   1. Set app.isQuiting so the tray/window-close handlers stop intercepting.
-//   2. Destroy the main window explicitly -- plain hide() keeps it attached
-//      and still holding its GPU + webContents handles.
-//   3. Synchronously close the RAG SQLite handle and terminate the Genie
-//      subprocess (they're owned by this process; if Electron quits before
-//      closeRag() runs, better-sqlite3's finalizer leaves a WAL + SHM file
-//      that the installer can't replace).
-//   4. AWAIT Fastify shutdown — close() is the only async-heavy step and
-//      was the previous fire-and-forget offender.
-// If the install path errors after elevation we must undo app.isQuiting so
-// the user's next window-close still minimizes to tray instead of quitting.
+// prepareForInstall runs right before autoUpdater.quitAndInstall() fires.
+// Its job is to close heavy subsystems (RAG SQLite, Genie subprocess,
+// Fastify mobile-access server) that hold file / socket handles outside
+// Electron's normal window lifecycle, so NSIS can overwrite files once
+// Electron itself exits. DOES NOT destroy the BrowserWindow — that used
+// to happen here but left the install-error UI with nothing to render
+// against when the install flow failed. Instead, we set app.isQuiting =
+// true and let electron-updater's internal setImmediate trigger
+// app.quit(), which closes all windows through the normal shutdown
+// sequence (fast enough because the heavy subsystems are already
+// closed). This has the side benefit of letting the install overlay
+// rendered in AppUpdateSection stay visible right up until Electron
+// actually quits.
+//
+// If the install path errors after we yielded to autoUpdater, the 'error'
+// event handler in app-updater.cjs restores state by calling
+// onQuitAndInstallError, which flips markAutoBackupDone + app.isQuiting
+// back so the user's next window-close still minimizes to tray.
 setAppUpdaterLifecycleHooks({
-  beforeQuitForInstall: async () => {
+  prepareForInstall: async () => {
     markAutoBackupDone(true);
     app.isQuiting = true;
-    const win = BrowserWindow.getAllWindows().find(w => !w.isDestroyed());
-    try {
-      if (win) win.destroy();
-    } catch (e) {
-      console.warn('[UPDATER HOOK] win.destroy failed:', e && e.message);
-    }
     try {
       closeRag();
     } catch (e) {
@@ -177,12 +179,6 @@ setAppUpdaterLifecycleHooks({
   },
   onQuitAndInstallError: () => {
     markAutoBackupDone(false);
-    // App is still alive (autoUpdater.quitAndInstall threw synchronously).
-    // Restore isQuiting so the user can re-try via Settings > App Update
-    // without the tray-minimize behavior staying permanently broken. The
-    // destroyed main window is gone for this session regardless, but a
-    // re-check from the renderer is surfaced through app:update-status
-    // so the user at least sees why it failed.
     app.isQuiting = false;
   },
 });

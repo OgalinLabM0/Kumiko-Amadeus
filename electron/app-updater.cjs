@@ -17,22 +17,39 @@
 // updater, we let the main file register callbacks via
 // setAppUpdaterLifecycleHooks so the updater stays a leaf module.
 //
-// ─ Install UX (2026 Q2 fix) ────────────────────────────────────────
-// Running `autoUpdater.quitAndInstall(false, true)` while the main app
-// is still holding file locks (BrowserWindow, Fastify, RAG, Genie
-// subprocess) causes the NSIS installer to flash and exit silently when
-// `perMachine: true` is set: UAC elevates, the elevated installer fails
-// to replace locked files, and there is no parent process left to surface
-// the error. The fix is two-pronged:
-//   1. beforeQuitForInstall is awaited so electron-main.cjs can destroy
-//      the window and tear down every child process before the installer
-//      spawns.
-//   2. We wait 500ms (instead of the old 120ms) before calling
-//      autoUpdater.quitAndInstall() so the OS finishes releasing handles
-//      from the torn-down window / subprocess tree.
-// If the install still errors out (e.g. user hits Cancel on UAC), we
-// immediately force-clean the downloaded cache so the Setup-*.exe no
-// longer squats on the disk.
+// ─ Install UX (2026 Q2 reliability fix) ────────────────────────────
+// Previous flow awaited a beforeQuitForInstall hook that synchronously
+// destroyed the main window BEFORE calling autoUpdater.quitAndInstall,
+// then used quitAndInstall(false, true) which left NSIS in interactive
+// mode. The result on user machines was: app window goes away, NSIS
+// tries to show a "close application" prompt against a dead parent,
+// spawn race condition leaves installer orphaned, new version never
+// launches — classic "clicked install, nothing happened" bug.
+//
+// New flow (v2.11.1 replanned):
+//   1. Pre-verify the pending installer actually exists on disk. If the
+//      cache was nuked (either by our own 15s idle cleanup or by the user
+//      running a registry-cleaner), fall back to re-download instead of
+//      handing autoUpdater a path to nowhere.
+//   2. Run `prepareForInstall` (was `beforeQuitForInstall`) to close
+//      heavy subsystems (RAG SQLite, Genie subprocess, Fastify mobile
+//      server) but DO NOT destroy BrowserWindows — the UI overlay stays
+//      visible so the user sees the transition, and if quitAndInstall
+//      fails the error message can still be surfaced in-app.
+//   3. Call autoUpdater.quitAndInstall(true, true). Silent mode means
+//      NSIS installs without any modal prompts; forceRunAfter tells
+//      electron-builder's RELAUNCH macro to re-launch the new version.
+//      electron-updater's internal setImmediate triggers app.quit(),
+//      which closes windows through the normal shutdown path (will-quit
+//      hooks run, windows close cleanly, file handles release).
+//   4. If quitAndInstall returns without triggering Electron's shutdown
+//      (spawn failed synchronously, installer path invalid, ...) we stay
+//      alive, restore isQuiting via onQuitAndInstallError, force-clean
+//      the cache, and emit `status: 'error'` so the user can re-try.
+//
+// The 500ms delay between prepareForInstall and quitAndInstall is kept:
+// it gives Windows time to finish releasing handles from closed
+// subsystems before NSIS opens the executable for overwrite.
 //
 // ─ Cache location (2026 Q2 fix) ────────────────────────────────────
 // The default electron-updater cache lives under %LOCALAPPDATA%, which
@@ -108,13 +125,18 @@ let appUpdateState = {
 let updaterWindow = null;
 
 // Cross-module lifecycle hooks. Main file installs callbacks that get
-// called right before autoUpdater.quitAndInstall() (to set
-// isAutoBackupDone + app.isQuiting + tear down windows/children) and
-// when that path errors (to undo isAutoBackupDone + restore the normal
-// window-close behavior). Keeping these flags out of this module avoids
-// leaking backup/tray semantics into the updater.
+// called during the install flow:
+//   - prepareForInstall: close heavy subsystems (RAG, Genie, Fastify),
+//     mark auto-backup done, set app.isQuiting. Does NOT destroy
+//     BrowserWindows — the UI overlay stays visible until Electron's
+//     natural shutdown sequence closes them after quitAndInstall runs.
+//   - onQuitAndInstallError: quitAndInstall failed, app is still alive;
+//     undo isAutoBackupDone and app.isQuiting so the user's next window
+//     close still minimizes to tray instead of quitting.
+// Keeping these flags out of this module avoids leaking backup/tray
+// semantics into the updater.
 let lifecycleHooks = {
-  beforeQuitForInstall: null,
+  prepareForInstall: null,
   onQuitAndInstallError: null,
 };
 
@@ -126,7 +148,7 @@ function setAppUpdaterWindow(win) {
 
 function setAppUpdaterLifecycleHooks(hooks = {}) {
   lifecycleHooks = {
-    beforeQuitForInstall: typeof hooks.beforeQuitForInstall === 'function' ? hooks.beforeQuitForInstall : null,
+    prepareForInstall: typeof hooks.prepareForInstall === 'function' ? hooks.prepareForInstall : null,
     onQuitAndInstallError: typeof hooks.onQuitAndInstallError === 'function' ? hooks.onQuitAndInstallError : null,
   };
 }
@@ -309,8 +331,36 @@ function forceCleanupUpdaterCache({ reason = 'unknown' } = {}) {
   return { removed, failed };
 }
 
+// True if the current cache base has a freshly-downloaded, name-valid
+// installer sitting in pending/. Used by cleanupUpdaterCache() to avoid
+// blowing away a ready-to-install Setup-*.exe during the 15s idle cleanup
+// tick on app startup — which was one of two root causes of the 2026 Q2
+// "clicked install, nothing happened" failure mode: app closed + installer
+// gone + no installer process running.
+function hasReadyPendingInstaller() {
+  try {
+    const pendingDir = getUpdaterCachePendingDir();
+    if (!fs.existsSync(pendingDir)) return false;
+    const entries = fs.readdirSync(pendingDir);
+    return entries.some((name) =>
+      /^Kumiko-Amadeus-Setup-(x64|arm64)\.exe$/i.test(name)
+    );
+  } catch (_e) {
+    return false;
+  }
+}
+
 function cleanupUpdaterCache() {
   if (updateCheckPromise || updateDownloadPromise || isInstallingUpdate) {
+    return;
+  }
+  // Guard: if a fresh installer is already waiting in pending/, keep it.
+  // electron-updater keeps the file around for the user to re-click
+  // Install across restarts; the old behaviour deleted it and left the
+  // renderer stuck in "downloaded" state with no file on disk, so the
+  // next install attempt failed silently inside NsisUpdater.doInstall.
+  if (hasReadyPendingInstaller()) {
+    console.log('[INSTALL CACHE] cleanup skipped: pending installer is ready to install');
     return;
   }
   forceCleanupUpdaterCache({ reason: 'startup' });
@@ -466,48 +516,93 @@ async function quitAndInstallAppUpdate() {
     return { success: false, error: 'No downloaded update is ready to install.' };
   }
 
-  isInstallingUpdate = true;
-
-  // Await the beforeQuitForInstall hook so electron-main.cjs can
-  // synchronously destroy the window + close RAG + terminate Genie
-  // + await Fastify shutdown before we hand control to the installer.
-  // The old fire-and-forget call meant Fastify's close() races against
-  // quitAndInstall(), leaving file handles open and causing the NSIS
-  // installer to silently exit after UAC elevation.
-  try {
-    await lifecycleHooks.beforeQuitForInstall?.();
-  } catch (hookError) {
-    console.warn('[UPDATER] beforeQuitForInstall hook threw:', hookError);
+  // Pre-install verify: NsisUpdater.doInstall's spawn error is reported
+  // asynchronously via the 'error' event AFTER install() has already
+  // returned true, so a missing installer file leads to Electron quitting
+  // with no recovery path. Fall back to re-download here so the user
+  // doesn't end up with a dead app + clean cache + no new version.
+  if (!hasReadyPendingInstaller()) {
+    console.warn('[UPDATER] quitAndInstall aborted: pending installer is missing on disk, triggering re-download');
+    emitAppUpdateState({
+      status: 'available',
+      error: 'The downloaded installer file was missing; re-downloading. Please wait for the "Ready to install" state and click Install again.',
+    });
+    void downloadAppUpdate();
+    // errorCode lets the renderer slice skip the reflexive status:'error'
+    // override since main has already pushed status:'available' and the
+    // download will push 'downloading' next. Without this the renderer
+    // flickers to 'error' for ~1 frame before 'downloading' takes over.
+    return {
+      success: false,
+      errorCode: 'installer-missing',
+      error: 'Installer file was missing on disk. Re-downloading — please wait for the "Ready" state and click Install again.',
+    };
   }
 
-  // 500ms (up from 120ms) gives Windows time to release every file
-  // handle the torn-down Electron process was holding. Without this
-  // delay the installer races the OS and fails to open the .exe for
-  // write, then silently exits — exactly the "flash and close" bug
-  // this fix is targeting.
-  setTimeout(() => {
+  isInstallingUpdate = true;
+  emitAppUpdateState({ status: 'installing', error: null });
+
+  // Fire-and-forget the heavy teardown so the IPC handler returns right
+  // away and the renderer transitions to the install overlay. If we
+  // awaited the hook before returning, the renderer would see the call
+  // hang for >500ms and users assume the app froze.
+  (async () => {
+    // Stage 1: prepare (close RAG, Genie, Fastify; set app.isQuiting;
+    // mark auto-backup done). Keeps every BrowserWindow alive so the
+    // install overlay remains visible until Electron's natural shutdown
+    // takes over after quitAndInstall fires.
     try {
-      autoUpdater.quitAndInstall(false, true);
+      await lifecycleHooks.prepareForInstall?.();
+    } catch (hookError) {
+      console.warn('[UPDATER] prepareForInstall hook threw:', hookError);
+    }
+
+    // 500ms buffer so Windows finishes releasing handles on the
+    // subsystems we just closed (sqlite WAL/SHM, Fastify TCP socket,
+    // Genie child stdin) before NSIS opens the exe for overwrite.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    try {
+      console.log('[UPDATER] invoking autoUpdater.quitAndInstall(isSilent=true, isForceRunAfter=true)');
+      autoUpdater.quitAndInstall(true, true);
+      // Success path: electron-updater's internal setImmediate triggers
+      // app.quit() which fires the 'will-quit' handlers (they close the
+      // remaining subsystems as a belt-and-suspenders measure) and
+      // closes all BrowserWindows through the normal shutdown sequence.
+      // Nothing more to do from userland.
     } catch (error) {
-      console.error('[UPDATER] Failed to quit and install update:', error);
+      // install() caught the error internally and dispatched it through
+      // autoUpdater.emit('error', …); returning false means Electron was
+      // NOT asked to quit, so all windows are still alive and can show
+      // the error banner. We restore state here in case the upstream
+      // 'error' event handler didn't cover the edge case.
+      const message = stringifyUpdateError(error);
+      console.error('[UPDATER] autoUpdater.quitAndInstall threw:', message);
       isInstallingUpdate = false;
       try {
         lifecycleHooks.onQuitAndInstallError?.();
       } catch (hookError) {
         console.warn('[UPDATER] onQuitAndInstallError hook threw:', hookError);
       }
-      // Force-clean the wasted cache so the user isn't stuck with a
-      // 200MB partial/unused installer on disk after a failed attempt.
-      // Do this synchronously inside the error path so the renderer's
-      // next refreshUpdaterCacheInfo() sees the cleared state.
       try {
         forceCleanupUpdaterCache({ reason: 'install-error' });
       } catch (cleanupError) {
         console.warn('[UPDATER] forceCleanupUpdaterCache after install error threw:', cleanupError);
       }
-      emitAppUpdateState({ status: 'error', error: stringifyUpdateError(error) });
+      emitAppUpdateState({ status: 'error', error: message });
     }
-  }, 500);
+  })().catch((orchestrationError) => {
+    // Safety net: the async IIFE above shouldn't throw (every await is
+    // inside try/catch) but never let a bug here leave isInstallingUpdate
+    // stuck at true — the user would otherwise be locked out of retry.
+    const message = stringifyUpdateError(orchestrationError);
+    console.error('[UPDATER] quitAndInstall orchestration failed:', message);
+    isInstallingUpdate = false;
+    try {
+      lifecycleHooks.onQuitAndInstallError?.();
+    } catch (_e) { /* ignore */ }
+    emitAppUpdateState({ status: 'error', error: message });
+  });
 
   return { success: true };
 }
@@ -607,6 +702,25 @@ function setupAutoUpdater() {
   autoUpdater.on('error', (error) => {
     const message = stringifyUpdateError(error);
     console.error('[UPDATER] Error:', message);
+    // install() in BaseUpdater catches doInstall() throws and dispatches
+    // them through this channel — by the time we see the 'error' event,
+    // install() has already returned false and app.quit() was NOT
+    // scheduled. Restore state so the user can re-try from the still-
+    // alive Settings UI.
+    if (isInstallingUpdate) {
+      console.error('[UPDATER] error fired during install flow; restoring state so user can retry');
+      isInstallingUpdate = false;
+      try {
+        lifecycleHooks.onQuitAndInstallError?.();
+      } catch (hookError) {
+        console.warn('[UPDATER] onQuitAndInstallError hook threw during error recovery:', hookError);
+      }
+      try {
+        forceCleanupUpdaterCache({ reason: 'install-error-event' });
+      } catch (cleanupError) {
+        console.warn('[UPDATER] forceCleanupUpdaterCache in error recovery threw:', cleanupError);
+      }
+    }
     emitAppUpdateState({ status: 'error', error: message });
   });
 }
