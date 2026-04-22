@@ -130,6 +130,29 @@ function register(socket) {
   // Greeting frame. The phone's subscribeEvents() uses this as the
   // "connection is healthy" signal and resets its reconnect backoff.
   safeSend(socket, JSON.stringify({ type: 'hello', ts: Date.now(), clients: sockets.size }));
+
+  // Seed the updater store on every WS connection. Without this, a
+  // phone that opens while the desktop is idle keeps the
+  // DEFAULT_APP_UPDATE_STATE.currentVersion='0.0.0' stuck on screen:
+  // the renderer-based app:update-status -> update:state fan-out
+  // (useMobileBroadcaster) only fires on state transitions, and
+  // setupAutoUpdater never emits at boot. The phone's initial HTTP
+  // fetch of app:update:get-state also races the Fastify listen and
+  // often fails with E_NETWORK. So we piggy-back on the proven
+  // liveness of this /ws upgrade to push the authoritative state
+  // from app-updater.cjs, which sets currentVersion = app.getVersion()
+  // at module-load time. Lazy require avoids any load-order hazard;
+  // mobile-fs.cjs already uses the same pattern to reach this file
+  // from the other direction.
+  try {
+    const { getUpdateState } = require('../app-updater.cjs');
+    const state = typeof getUpdateState === 'function' ? getUpdateState() : null;
+    if (state) {
+      safeSend(socket, JSON.stringify({ type: 'update:state', state }));
+    }
+  } catch (e) {
+    console.warn('[MOBILE-WS] register: initial update:state snapshot failed:', e && e.message);
+  }
 }
 
 function getClientCount() {
