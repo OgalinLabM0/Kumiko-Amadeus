@@ -1,8 +1,9 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Settings, Key, Zap, Brain, CheckCircle, RefreshCw, AlertTriangle, Check, ShieldCheck, Activity, Power, Globe, Save, Languages, Eye } from 'lucide-react';
 import { AIConfig, AIProvider, Language } from '../types';
 import { Collapse } from './Collapse';
+import { ThemedSelect, type ThemedSelectItem } from './common/ThemedSelect';
 import { getCurrentAIConfig, validateAIConnection, validateModels, validateSearchCapability } from '../services/geminiService';
 import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel, getDefaultEndpoint } from '../services/appConfig';
 import { setAIConfig } from '../services/llmCore';
@@ -56,7 +57,8 @@ async function persistAIConfig(cfg: AIConfig): Promise<{ ok: boolean; error?: st
 
 interface AIConfigScreenProps {
   onComplete: () => void;
-  language: Language; 
+  language: Language;
+  isDarkMode?: boolean;
 }
 
 const CONFIG_TRANSLATIONS = {
@@ -73,7 +75,7 @@ const CONFIG_TRANSLATIONS = {
         useCustomEndpointDesc: "覆盖默认的 API 地址 (如使用代理)。",
         customEndpointPlaceholder: "https://generativelanguage.googleapis.com",
         keyPlaceHolder: "请输入您的 API Key...",
-        keyLocalDesc: "Key 仅保存在浏览器本地存储中。",
+        keyLocalDesc: "Key 仅保存在本机本地配置中，不会上传到服务器。",
         allocation: "皮层分配",
         slotA: "SLOT A: 主核心 (MAIN CORE)",
         slotA_desc: "负责主要对话逻辑与人格引擎。",
@@ -118,7 +120,7 @@ const CONFIG_TRANSLATIONS = {
         useCustomEndpointDesc: "Override default API URL (e.g., for proxy).",
         customEndpointPlaceholder: "https://generativelanguage.googleapis.com",
         keyPlaceHolder: "Enter your API Key...",
-        keyLocalDesc: "Key is stored locally in your browser.",
+        keyLocalDesc: "Key is stored locally on this device. Nothing is uploaded.",
         allocation: "CORTEX ALLOCATION",
         slotA: "SLOT A: MAIN CORE",
         slotA_desc: "Primary conversation & personality engine.",
@@ -189,30 +191,40 @@ interface ModelCardProps {
     t: any;
     language: string;
     accentColor?: string;
+    isDarkMode?: boolean;
 }
 
-const ModelCard: React.FC<ModelCardProps> = ({ title, icon: Icon, desc, defaultModel, validationResult, value, onChange, onReset, t, language, accentColor = '#785A42' }) => (
-    <div className="cfg-glass rounded-xl p-[clamp(12px,1.8vw,18px)] flex flex-col gap-[clamp(6px,0.8vw,10px)] transition-all duration-200 hover:shadow-md" style={{ borderLeft: `3px solid ${accentColor}` }}>
-        <div className="flex items-center gap-[clamp(6px,1vw,10px)]">
-            <div className="p-[clamp(4px,0.6vw,8px)] rounded-lg" style={{ background: `${accentColor}12` }}>
-                <Icon size={16} style={{ color: accentColor }} />
+const ModelCard: React.FC<ModelCardProps> = ({ title, icon: Icon, desc, defaultModel, validationResult, value, onChange, onReset, t, language, accentColor = '#785A42', isDarkMode = false }) => {
+    const descClass = isDarkMode ? 'ka-copy-sm text-[#b69f87] truncate' : 'ka-copy-sm text-[#785A42]/60 truncate';
+    const inputClass = isDarkMode
+        ? "w-full bg-[#211811] border border-[#8c6a3c] rounded-lg cfg-input-text ka-input-copy text-[#f2e5cf] placeholder-[#8e7659] focus:outline-none focus:border-yellow-500/80 focus:shadow-[0_0_0_3px_rgba(234,179,8,0.08)] transition-all px-[clamp(8px,1.2vw,14px)] py-[clamp(6px,1vw,10px)]"
+        : "w-full bg-white/70 border border-[#785A42]/15 rounded-lg cfg-input-text ka-input-copy text-[#785A42] placeholder-[#785A42]/30 focus:outline-none focus:border-[#785A42]/35 focus:shadow-[0_0_0_3px_rgba(120,90,66,0.06)] transition-all px-[clamp(8px,1.2vw,14px)] py-[clamp(6px,1vw,10px)]";
+    const resetBtnClass = isDarkMode
+        ? 'absolute right-1 top-1/2 -translate-y-1/2 ka-micro text-[#b69f87] hover:text-[#f2e5cf] px-1.5 transition-colors'
+        : 'absolute right-1 top-1/2 -translate-y-1/2 ka-micro text-[#785A42]/50 hover:text-[#785A42] px-1.5 transition-colors';
+    return (
+        <div className="cfg-glass rounded-xl p-[clamp(12px,1.8vw,18px)] flex flex-col gap-[clamp(6px,0.8vw,10px)] transition-all duration-200 hover:shadow-md" style={{ borderLeft: `3px solid ${accentColor}` }}>
+            <div className="flex items-center gap-[clamp(6px,1vw,10px)]">
+                <div className="p-[clamp(4px,0.6vw,8px)] rounded-lg" style={{ background: `${accentColor}${isDarkMode ? '22' : '12'}` }}>
+                    <Icon size={16} style={{ color: accentColor }} />
+                </div>
+                <div className="flex-1 min-w-0">
+                    <h4 className="ka-section-title font-semibold tracking-[0.02em]" style={{ color: accentColor }}>{title}</h4>
+                    {desc && <p className={descClass}>{desc}</p>}
+                </div>
             </div>
-            <div className="flex-1 min-w-0">
-                <h4 className="ka-section-title font-semibold tracking-[0.02em]" style={{ color: accentColor }}>{title}</h4>
-                {desc && <p className="ka-copy-sm text-[#785A42]/60 truncate">{desc}</p>}
+            <div className="relative">
+                <input type="text" value={value} onChange={(e) => onChange(e.target.value)} placeholder={defaultModel}
+                    className={inputClass} />
+                {validationResult === true && <span className="absolute right-[clamp(28px,3.5vw,36px)] top-1/2 -translate-y-1/2" title={t.modelAvailable}><CheckCircle size={15} className="text-green-600" /></span>}
+                {validationResult === false && <span className="absolute right-[clamp(28px,3.5vw,36px)] top-1/2 -translate-y-1/2" title={t.modelUnavailable}><AlertTriangle size={15} className="text-red-600" /></span>}
+                <button onClick={onReset} className={resetBtnClass} title={language === 'zh' ? '重置为推荐值' : 'Reset to Recommended'}>{t.reset}</button>
             </div>
         </div>
-        <div className="relative">
-            <input type="text" value={value} onChange={(e) => onChange(e.target.value)} placeholder={defaultModel}
-                className="w-full bg-white/70 border border-[#785A42]/15 rounded-lg cfg-input-text ka-input-copy text-[#785A42] placeholder-[#785A42]/30 focus:outline-none focus:border-[#785A42]/35 focus:shadow-[0_0_0_3px_rgba(120,90,66,0.06)] transition-all px-[clamp(8px,1.2vw,14px)] py-[clamp(6px,1vw,10px)]" />
-            {validationResult === true && <span className="absolute right-[clamp(28px,3.5vw,36px)] top-1/2 -translate-y-1/2" title={t.modelAvailable}><CheckCircle size={15} className="text-green-600" /></span>}
-            {validationResult === false && <span className="absolute right-[clamp(28px,3.5vw,36px)] top-1/2 -translate-y-1/2" title={t.modelUnavailable}><AlertTriangle size={15} className="text-red-600" /></span>}
-            <button onClick={onReset} className="absolute right-1 top-1/2 -translate-y-1/2 ka-micro text-[#785A42]/50 hover:text-[#785A42] px-1.5 transition-colors" title={language === 'zh' ? '重置为推荐值' : 'Reset to Recommended'}>{t.reset}</button>
-        </div>
-    </div>
-);
+    );
+};
 
-export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, language = 'zh' }) => {
+export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, language = 'zh', isDarkMode = false }) => {
   const t = CONFIG_TRANSLATIONS[language];
   const [config, setConfig] = useState<AIConfig>(getCurrentAIConfig());
   const [isValidating, setIsValidating] = useState(false);
@@ -226,6 +238,26 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
   const [isSecurityOpen, setIsSecurityOpen] = useState(true);
   const [isAllocationOpen, setIsAllocationOpen] = useState(false);
   const [isVisionOpen, setIsVisionOpen] = useState(false);
+
+  const providerSelectOptions = useMemo<ThemedSelectItem[]>(
+    () => [
+      {
+        label: t.providerGroup_intl,
+        options: PROVIDER_OPTIONS.filter(p => p.group === 'intl').map(p => ({
+          value: p.value,
+          label: p.label,
+        })),
+      },
+      {
+        label: t.providerGroup_cn,
+        options: PROVIDER_OPTIONS.filter(p => p.group === 'cn').map(p => ({
+          value: p.value,
+          label: p.label,
+        })),
+      },
+    ],
+    [t.providerGroup_intl, t.providerGroup_cn],
+  );
 
   const styles = `
     .font-elegant { font-family: var(--font-elegant); }
@@ -299,6 +331,34 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
       background: linear-gradient(90deg, transparent, #c5a059, transparent);
       border-radius: 1px;
     }
+
+    /* === DARK MODE (html.ka-dark) === */
+    html.ka-dark .config-bg {
+      background-color: #1b140d;
+      background-image:
+        linear-gradient(rgba(242,217,156,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(242,217,156,0.04) 1px, transparent 1px);
+    }
+    html.ka-dark .cfg-glass {
+      background: rgba(36,26,17,0.72);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+      border: 1px solid rgba(168,130,71,0.35);
+    }
+    html.ka-dark .cfg-section-btn {
+      background: rgba(36,26,17,0.55);
+      border: 1px solid rgba(168,130,71,0.28);
+    }
+    html.ka-dark .cfg-section-btn:hover {
+      background: rgba(46,34,22,0.7);
+      border-color: rgba(201,165,90,0.45);
+    }
+    html.ka-dark .title-accent::after {
+      background: linear-gradient(90deg, transparent, #d4a852, transparent);
+    }
+    html.ka-dark .btn-launch:hover {
+      box-shadow: 0 8px 24px rgba(212,168,82,0.25);
+    }
   `;
 
   useEffect(() => { setConfig(getCurrentAIConfig()); }, []);
@@ -369,7 +429,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
 
   const SectionHeader = ({ label, icon: Icon, isOpen, onToggle }: { label: string, icon: any, isOpen: boolean, onToggle: () => void }) => (
     <button onClick={onToggle} className="cfg-section-btn w-full cfg-section-title font-bold flex items-center justify-between">
-        <div className="flex items-center gap-[clamp(6px,1vw,10px)] text-[#785A42]">
+        <div className={`flex items-center gap-[clamp(6px,1vw,10px)] ${textPrimary}`}>
             <Icon size={16} /> <span className="ka-section-title tracking-[0.02em]">{label}</span>
         </div>
         <span className={`cfg-label-sm opacity-50 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`}>▾</span>
@@ -378,18 +438,42 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
 
   const ToggleCheck = ({ checked, onClick, label }: { checked: boolean, onClick: () => void, label: string }) => (
     <div className="flex items-center gap-[clamp(4px,0.6vw,8px)] cursor-pointer" onClick={onClick}>
-        <div className={`w-[clamp(14px,1.8vw,18px)] h-[clamp(14px,1.8vw,18px)] border rounded flex items-center justify-center transition-all duration-200 ${checked ? 'bg-[#785A42] border-[#785A42]' : 'border-[#785A42]/30 bg-white/60'}`}>
-            {checked && <Check size={11} className="text-[#f9f7f2]" />}
+        <div className={`w-[clamp(14px,1.8vw,18px)] h-[clamp(14px,1.8vw,18px)] border rounded flex items-center justify-center transition-all duration-200 ${checked ? toggleCheckedBoxCls : toggleUncheckedBoxCls}`}>
+            {checked && <Check size={11} className={toggleCheckedIconCls} />}
         </div>
-        {label && <span className="ka-copy-sm text-[#785A42]/80">{label}</span>}
+        {label && <span className={`ka-copy-sm ${text80}`}>{label}</span>}
     </div>
   );
 
-  const inputCls = "w-full bg-white/70 border border-[#785A42]/15 rounded-lg cfg-input-text ka-input-copy text-[#785A42] placeholder-[#785A42]/30 focus:outline-none focus:border-[#785A42]/35 focus:shadow-[0_0_0_3px_rgba(120,90,66,0.06)] transition-all px-[clamp(10px,1.4vw,16px)] py-[clamp(8px,1.2vw,12px)]";
-  const selectCls = "w-full bg-white/70 border border-[#785A42]/15 rounded-lg cfg-input-text ka-input-copy text-[#785A42] focus:ring-1 focus:ring-[#785A42]/20 outline-none px-[clamp(10px,1.4vw,16px)] py-[clamp(8px,1.2vw,12px)] transition-all";
+  const inputCls = isDarkMode
+    ? "w-full bg-[#211811] border border-[#8c6a3c] rounded-lg cfg-input-text ka-input-copy text-[#f2e5cf] placeholder-[#8e7659] focus:outline-none focus:border-yellow-500/80 focus:shadow-[0_0_0_3px_rgba(234,179,8,0.08)] transition-all px-[clamp(10px,1.4vw,16px)] py-[clamp(8px,1.2vw,12px)]"
+    : "w-full bg-white/70 border border-[#785A42]/15 rounded-lg cfg-input-text ka-input-copy text-[#785A42] placeholder-[#785A42]/30 focus:outline-none focus:border-[#785A42]/35 focus:shadow-[0_0_0_3px_rgba(120,90,66,0.06)] transition-all px-[clamp(10px,1.4vw,16px)] py-[clamp(8px,1.2vw,12px)]";
+  const selectCls = isDarkMode
+    ? "w-full bg-[#211811] border border-[#8c6a3c] rounded-lg cfg-input-text ka-input-copy text-[#f2e5cf] focus:ring-1 focus:ring-yellow-500/40 outline-none px-[clamp(10px,1.4vw,16px)] py-[clamp(8px,1.2vw,12px)] transition-all"
+    : "w-full bg-white/70 border border-[#785A42]/15 rounded-lg cfg-input-text ka-input-copy text-[#785A42] focus:ring-1 focus:ring-[#785A42]/20 outline-none px-[clamp(10px,1.4vw,16px)] py-[clamp(8px,1.2vw,12px)] transition-all";
+
+  const textPrimary = isDarkMode ? 'text-[#f2e5cf]' : 'text-[#785A42]';
+  const text90 = isDarkMode ? 'text-[#e8d4ba]' : 'text-[#785A42]/90';
+  const text80 = isDarkMode ? 'text-[#d8beA1]' : 'text-[#785A42]/80';
+  const text70 = isDarkMode ? 'text-[#b69f87]' : 'text-[#785A42]/70';
+  const text65 = isDarkMode ? 'text-[#ac9478]' : 'text-[#785A42]/65';
+  const text60 = isDarkMode ? 'text-[#a38a6f]' : 'text-[#785A42]/60';
+  const text55 = isDarkMode ? 'text-[#998067]' : 'text-[#785A42]/55';
+  const borderFaint = isDarkMode ? 'border-[#8c6a3c]/30' : 'border-[#785A42]/10';
+  const fill5 = isDarkMode ? 'bg-[#d4a852]/10' : 'bg-[#785A42]/5';
+  const fill8 = isDarkMode ? 'bg-[#d4a852]/12' : 'bg-[#785A42]/8';
+  const secondaryBtnCls = isDarkMode
+    ? 'border-[#8c6a3c]/55 text-[#f2e5cf] hover:bg-[#d4a852]/10'
+    : 'border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5';
+  const launchBtnCls = isDarkMode
+    ? 'bg-[#c79a2f] hover:bg-[#d4a852] text-[#1b140d] shadow-[0_4px_16px_rgba(212,168,82,0.22)]'
+    : 'bg-[#785A42] hover:bg-[#8c6045] text-[#f9f7f2] shadow-[0_4px_16px_rgba(120,90,66,0.18)]';
+  const toggleCheckedBoxCls = isDarkMode ? 'bg-[#c79a2f] border-[#c79a2f]' : 'bg-[#785A42] border-[#785A42]';
+  const toggleUncheckedBoxCls = isDarkMode ? 'border-[#8c6a3c]/55 bg-[#211811]/60' : 'border-[#785A42]/30 bg-white/60';
+  const toggleCheckedIconCls = isDarkMode ? 'text-[#1b140d]' : 'text-[#f9f7f2]';
 
   return (
-    <div className="fixed top-0 left-0 w-full z-[80] config-bg text-[#785A42] font-sans overflow-hidden" style={{ height: 'var(--app-height)' }}>
+    <div className={`fixed top-0 left-0 w-full z-[80] config-bg ${textPrimary} font-sans overflow-hidden`} style={{ height: 'var(--app-height)' }}>
       <style>{styles}</style>
       <div className="relative z-10 w-full min-h-full h-full overflow-y-auto touch-scroll">
         <div className="w-full min-h-full flex flex-col items-center justify-center px-[clamp(16px,4vw,40px)] pt-[calc(var(--sat)+1rem)] pb-[calc(var(--sab)+1rem)]">
@@ -398,13 +482,13 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
             {/* HEADER */}
             <div className="mx-auto flex w-full max-w-[34rem] flex-col items-center text-center">
               <div className="relative mb-[clamp(8px,1.2vw,14px)] flex items-center justify-center">
-                <div className="p-[clamp(8px,1.2vw,14px)] bg-[#785A42]/8 rounded-full">
-                  <Settings className="text-[#785A42] gear-icon gear-icon-responsive" />
+                <div className={`p-[clamp(8px,1.2vw,14px)] ${fill8} rounded-full`}>
+                  <Settings className={`${textPrimary} gear-icon gear-icon-responsive`} />
                 </div>
                 <div className="absolute inset-[-8px] border border-dashed border-[#c5a059]/25 rounded-full"></div>
               </div>
-              <h2 className="cfg-title font-semibold tracking-[0.02em] font-mincho text-[#785A42] title-accent text-center leading-[1.08]">{t.title}</h2>
-              <p className="cfg-subtitle ka-copy-sm text-[#785A42]/55 mt-[clamp(10px,1.4vw,16px)] tracking-[0.05em] text-center">{t.subtitle}</p>
+              <h2 className={`cfg-title font-semibold tracking-[0.02em] font-mincho ${textPrimary} title-accent text-center leading-[1.08]`}>{t.title}</h2>
+              <p className={`cfg-subtitle ka-copy-sm ${text55} mt-[clamp(10px,1.4vw,16px)] tracking-[0.05em] text-center`}>{t.subtitle}</p>
             </div>
 
             {/* Security */}
@@ -413,51 +497,47 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                 <Collapse isOpen={isSecurityOpen} duration={180}>
                 <div className="cfg-glass rounded-xl p-[clamp(14px,2vw,22px)] space-y-[clamp(12px,1.6vw,18px)]">
                     <div>
-                        <label className="block ka-label text-[#785A42]/70 mb-[clamp(4px,0.6vw,6px)]">{t.provider}</label>
-                        <select value={config.provider || 'gemini'} onChange={(e) => {
-                            const p = e.target.value as AIProvider;
-                            updateConfig('provider', p);
-                            if (p === 'gemini') {
-                                updateConfig('useCustomEndpoint', false);
-                                updateConfig('customEndpoint', '');
-                            } else {
-                                updateConfig('useCustomEndpoint', true);
-                                updateConfig('customEndpoint', getDefaultEndpoint(p));
-                            }
-                        }} className={selectCls}>
-                            <optgroup label={t.providerGroup_intl}>
-                                {PROVIDER_OPTIONS.filter(p => p.group === 'intl').map(p => (
-                                    <option key={p.value} value={p.value}>{p.label}</option>
-                                ))}
-                            </optgroup>
-                            <optgroup label={t.providerGroup_cn}>
-                                {PROVIDER_OPTIONS.filter(p => p.group === 'cn').map(p => (
-                                    <option key={p.value} value={p.value}>{p.label}</option>
-                                ))}
-                            </optgroup>
-                        </select>
+                        <label className={`block ka-label ${text70} mb-[clamp(4px,0.6vw,6px)]`}>{t.provider}</label>
+                        <ThemedSelect
+                            value={config.provider || 'gemini'}
+                            onChange={(val) => {
+                                const p = val as AIProvider;
+                                updateConfig('provider', p);
+                                if (p === 'gemini') {
+                                    updateConfig('useCustomEndpoint', false);
+                                    updateConfig('customEndpoint', '');
+                                } else {
+                                    updateConfig('useCustomEndpoint', true);
+                                    updateConfig('customEndpoint', getDefaultEndpoint(p));
+                                }
+                            }}
+                            options={providerSelectOptions}
+                            isDarkMode={isDarkMode}
+                            className={selectCls}
+                            ariaLabel={t.provider}
+                        />
                     </div>
-                    <label className="ka-kicker text-[#785A42]/70">API KEYS</label>
+                    <label className={`ka-kicker ${text70}`}>API KEYS</label>
                     <div className="space-y-[clamp(10px,1.4vw,16px)]">
                         <div>
-                           <label className="block ka-label text-[#785A42]/65 mb-[clamp(3px,0.5vw,5px)]">{t.keyLabel}</label>
+                           <label className={`block ka-label ${text65} mb-[clamp(3px,0.5vw,5px)]`}>{t.keyLabel}</label>
                            <input type="password" value={config.apiKey_primary || ''} onChange={(e) => updateConfig('apiKey_primary', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
                         </div>
                          <div>
-                           <label className="block ka-label text-[#785A42]/65 mb-[clamp(3px,0.5vw,5px)]">{t.keyLabel_backup}</label>
+                           <label className={`block ka-label ${text65} mb-[clamp(3px,0.5vw,5px)]`}>{t.keyLabel_backup}</label>
                            <input type="password" value={config.apiKey_backup || ''} onChange={(e) => updateConfig('apiKey_backup', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
                         </div>
-                        <p className="ka-copy-sm text-[#785A42]/55 pl-1">{t.keyLocalDesc}</p>
+                        <p className={`ka-copy-sm ${text55} pl-1`}>{t.keyLocalDesc}</p>
                     </div>
-                    <div className="pt-[clamp(8px,1.2vw,12px)] border-t border-[#785A42]/10">
+                    <div className={`pt-[clamp(8px,1.2vw,12px)] border-t ${borderFaint}`}>
                         <div className="flex items-center justify-between mb-[clamp(6px,0.8vw,10px)]">
-                            <label className="ka-label text-[#785A42]/70 flex items-center gap-[clamp(4px,0.6vw,6px)]"><Globe size={14} /> API ENDPOINT</label>
+                            <label className={`ka-label ${text70} flex items-center gap-[clamp(4px,0.6vw,6px)]`}><Globe size={14} /> API ENDPOINT</label>
                             <ToggleCheck checked={config.useCustomEndpoint} onClick={() => updateConfig('useCustomEndpoint', !config.useCustomEndpoint)} label={t.useCustomEndpoint} />
                         </div>
                         {config.useCustomEndpoint ? (
                             <div className="animate-in slide-in-from-top-1"><input type="text" value={config.customEndpoint || ''} onChange={(e) => updateConfig('customEndpoint', e.target.value)} placeholder={t.customEndpointPlaceholder} className={inputCls} /></div>
                         ) : (
-                            <div className="ka-copy-sm text-[#785A42]/55 italic bg-[#785A42]/5 p-[clamp(8px,1.2vw,12px)] rounded-lg">{t.useCustomEndpointDesc}</div>
+                            <div className={`ka-copy-sm ${text55} italic ${fill5} p-[clamp(8px,1.2vw,12px)] rounded-lg`}>{t.useCustomEndpointDesc}</div>
                         )}
                     </div>
                 </div>
@@ -469,9 +549,9 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                 <SectionHeader label={t.allocation} icon={Brain} isOpen={isAllocationOpen} onToggle={() => setIsAllocationOpen(!isAllocationOpen)} />
                 <Collapse isOpen={isAllocationOpen} duration={180}>
                 <div className="space-y-[clamp(6px,1vw,10px)]">
-                    <ModelCard title={t.slotA} slotKey="model_main" icon={Brain} desc={t.slotA_desc} defaultModel={getDefaultMainModel(config.provider)} validationResult={modelValidationResult.main} value={config.model_main as string} onChange={(v) => updateConfig('model_main', v)} onReset={() => updateConfig('model_main', getDefaultMainModel(config.provider))} t={t} language={language} accentColor={SLOT_ACCENTS.main} />
-                    <ModelCard title={t.slotB} slotKey="model_summary" icon={Zap} desc={t.slotB_desc} defaultModel={getDefaultSummaryModel(config.provider)} validationResult={modelValidationResult.summary} value={config.model_summary as string} onChange={(v) => updateConfig('model_summary', v)} onReset={() => updateConfig('model_summary', getDefaultSummaryModel(config.provider))} t={t} language={language} accentColor={SLOT_ACCENTS.summary} />
-                    <ModelCard title={t.slotC || 'Slot C · TTS Translation'} slotKey="model_translator" icon={Languages} desc={t.slotC_desc || ''} defaultModel="" validationResult={null} value={(config as any).model_translator || ''} onChange={(v) => updateConfig('model_translator' as any, v)} onReset={() => updateConfig('model_translator' as any, '')} t={t} language={language} accentColor={SLOT_ACCENTS.translator} />
+                    <ModelCard title={t.slotA} slotKey="model_main" icon={Brain} desc={t.slotA_desc} defaultModel={getDefaultMainModel(config.provider)} validationResult={modelValidationResult.main} value={config.model_main as string} onChange={(v) => updateConfig('model_main', v)} onReset={() => updateConfig('model_main', getDefaultMainModel(config.provider))} t={t} language={language} accentColor={SLOT_ACCENTS.main} isDarkMode={isDarkMode} />
+                    <ModelCard title={t.slotB} slotKey="model_summary" icon={Zap} desc={t.slotB_desc} defaultModel={getDefaultSummaryModel(config.provider)} validationResult={modelValidationResult.summary} value={config.model_summary as string} onChange={(v) => updateConfig('model_summary', v)} onReset={() => updateConfig('model_summary', getDefaultSummaryModel(config.provider))} t={t} language={language} accentColor={SLOT_ACCENTS.summary} isDarkMode={isDarkMode} />
+                    <ModelCard title={t.slotC || 'Slot C · TTS Translation'} slotKey="model_translator" icon={Languages} desc={t.slotC_desc || ''} defaultModel="" validationResult={null} value={(config as any).model_translator || ''} onChange={(v) => updateConfig('model_translator' as any, v)} onReset={() => updateConfig('model_translator' as any, '')} t={t} language={language} accentColor={SLOT_ACCENTS.translator} isDarkMode={isDarkMode} />
                 </div>
                 </Collapse>
             </div>
@@ -479,47 +559,43 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
             {/* Vision Helper */}
             <div className="space-y-[clamp(6px,1vw,10px)]">
                 <SectionHeader label={t.visionHelper} icon={Eye} isOpen={isVisionOpen} onToggle={() => setIsVisionOpen(!isVisionOpen)} />
-                {!isVisionOpen && <p className="ka-copy-sm text-[#785A42]/55 mt-[clamp(2px,0.4vw,4px)] ml-[clamp(22px,2.6vw,30px)]">{t.visionHelperDesc}</p>}
+                {!isVisionOpen && <p className={`ka-copy-sm ${text55} mt-[clamp(2px,0.4vw,4px)] ml-[clamp(22px,2.6vw,30px)]`}>{t.visionHelperDesc}</p>}
                 <Collapse isOpen={isVisionOpen} duration={180}>
                 <div className="cfg-glass rounded-xl p-[clamp(14px,2vw,22px)] space-y-[clamp(10px,1.4vw,16px)]">
                     <div className="flex items-center justify-between">
-                        <label className="ka-label text-[#785A42]/90">{t.useVisionHelper}</label>
+                        <label className={`ka-label ${text90}`}>{t.useVisionHelper}</label>
                         <ToggleCheck checked={config.useVisionHelper} onClick={() => updateConfig('useVisionHelper', !config.useVisionHelper)} label="" />
                     </div>
                     {config.useVisionHelper && (
-                        <div className="space-y-[clamp(10px,1.4vw,16px)] animate-in slide-in-from-top-1 pt-[clamp(8px,1vw,12px)] border-t border-[#785A42]/10">
-                            <p className="ka-copy-sm text-[#785A42]/60">{t.visionHelperDesc}</p>
+                        <div className={`space-y-[clamp(10px,1.4vw,16px)] animate-in slide-in-from-top-1 pt-[clamp(8px,1vw,12px)] border-t ${borderFaint}`}>
+                            <p className={`ka-copy-sm ${text60}`}>{t.visionHelperDesc}</p>
                             <div>
-                                <label className="block ka-label text-[#785A42]/70 mb-[clamp(4px,0.6vw,6px)]">{t.provider}</label>
-                                <select value={config.visionProvider || config.provider || 'gemini'} onChange={(e) => updateConfig('visionProvider', e.target.value)} className={selectCls}>
-                                    <optgroup label={t.providerGroup_intl}>
-                                        {PROVIDER_OPTIONS.filter(p => p.group === 'intl').map(p => (
-                                            <option key={p.value} value={p.value}>{p.label}</option>
-                                        ))}
-                                    </optgroup>
-                                    <optgroup label={t.providerGroup_cn}>
-                                        {PROVIDER_OPTIONS.filter(p => p.group === 'cn').map(p => (
-                                            <option key={p.value} value={p.value}>{p.label}</option>
-                                        ))}
-                                    </optgroup>
-                                </select>
+                                <label className={`block ka-label ${text70} mb-[clamp(4px,0.6vw,6px)]`}>{t.provider}</label>
+                                <ThemedSelect
+                                    value={config.visionProvider || config.provider || 'gemini'}
+                                    onChange={(val) => updateConfig('visionProvider', val)}
+                                    options={providerSelectOptions}
+                                    isDarkMode={isDarkMode}
+                                    className={selectCls}
+                                    ariaLabel={t.provider}
+                                />
                             </div>
                             <div>
-                               <label className="block ka-label text-[#785A42]/65 mb-[clamp(3px,0.5vw,5px)]">{t.visionApiKeyLabel}</label>
+                               <label className={`block ka-label ${text65} mb-[clamp(3px,0.5vw,5px)]`}>{t.visionApiKeyLabel}</label>
                                <input type="password" value={config.visionApiKey || ''} onChange={(e) => updateConfig('visionApiKey', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
                             </div>
-                            <div className="pt-[clamp(8px,1.2vw,12px)] border-t border-[#785A42]/10">
+                            <div className={`pt-[clamp(8px,1.2vw,12px)] border-t ${borderFaint}`}>
                                 <div className="flex items-center justify-between mb-[clamp(6px,0.8vw,10px)]">
-                                    <label className="ka-label text-[#785A42]/70 flex items-center gap-[clamp(4px,0.6vw,6px)]"><Globe size={14} /> API ENDPOINT</label>
+                                    <label className={`ka-label ${text70} flex items-center gap-[clamp(4px,0.6vw,6px)]`}><Globe size={14} /> API ENDPOINT</label>
                                     <ToggleCheck checked={config.useVisionCustomEndpoint ?? config.useCustomEndpoint} onClick={() => updateConfig('useVisionCustomEndpoint', !(config.useVisionCustomEndpoint ?? config.useCustomEndpoint))} label={t.useCustomEndpoint} />
                                 </div>
                                 {(config.useVisionCustomEndpoint ?? config.useCustomEndpoint) ? (
                                     <div className="animate-in slide-in-from-top-1"><input type="text" value={config.visionCustomEndpoint ?? config.customEndpoint ?? ''} onChange={(e) => updateConfig('visionCustomEndpoint', e.target.value)} placeholder={t.customEndpointPlaceholder} className={inputCls} /></div>
                                 ) : (
-                                    <div className="ka-copy-sm text-[#785A42]/55 italic bg-[#785A42]/5 p-[clamp(8px,1.2vw,12px)] rounded-lg">{t.useCustomEndpointDesc}</div>
+                                    <div className={`ka-copy-sm ${text55} italic ${fill5} p-[clamp(8px,1.2vw,12px)] rounded-lg`}>{t.useCustomEndpointDesc}</div>
                                 )}
                             </div>
-                            <ModelCard title={t.visionModelLabel} slotKey="model_vision" icon={Eye} desc={""} defaultModel={getDefaultVisionModel(config.visionProvider || config.provider)} validationResult={modelValidationResult.vision} value={config.model_vision as string || ''} onChange={(v) => updateConfig('model_vision', v)} onReset={() => updateConfig('model_vision', getDefaultVisionModel(config.visionProvider || config.provider))} t={t} language={language} accentColor={SLOT_ACCENTS.vision} />
+                            <ModelCard title={t.visionModelLabel} slotKey="model_vision" icon={Eye} desc={""} defaultModel={getDefaultVisionModel(config.visionProvider || config.provider)} validationResult={modelValidationResult.vision} value={config.model_vision as string || ''} onChange={(v) => updateConfig('model_vision', v)} onReset={() => updateConfig('model_vision', getDefaultVisionModel(config.visionProvider || config.provider))} t={t} language={language} accentColor={SLOT_ACCENTS.vision} isDarkMode={isDarkMode} />
                         </div>
                     )}
                 </div>
@@ -531,7 +607,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
               {(status || searchStatus) && (
                 <div className="space-y-1">
                   {status && (
-                    <div className={`flex items-center justify-center gap-[clamp(4px,0.6vw,8px)] ka-label font-semibold ${statusType === 'error' ? 'text-red-600' : statusType === 'success' ? 'text-green-700' : 'text-[#785A42]'}`}>
+                    <div className={`flex items-center justify-center gap-[clamp(4px,0.6vw,8px)] ka-label font-semibold ${statusType === 'error' ? 'text-red-600' : statusType === 'success' ? 'text-green-700' : textPrimary}`}>
                         {statusType === 'error' && <span className="status-dot status-dot-err"></span>}
                         {statusType === 'success' && <span className="status-dot status-dot-ok"></span>}
                         {statusType === 'neutral' && <RefreshCw className="animate-spin" size={13} />}
@@ -539,7 +615,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                     </div>
                   )}
                   {searchStatus && (
-                    <div className={`flex items-center justify-center gap-[clamp(4px,0.6vw,8px)] ka-copy-sm font-semibold ${searchStatusType === 'error' ? 'text-red-600' : searchStatusType === 'success' ? 'text-green-700' : 'text-[#785A42]'}`}>
+                    <div className={`flex items-center justify-center gap-[clamp(4px,0.6vw,8px)] ka-copy-sm font-semibold ${searchStatusType === 'error' ? 'text-red-600' : searchStatusType === 'success' ? 'text-green-700' : textPrimary}`}>
                         {searchStatusType === 'success' && <span className="status-dot status-dot-ok"></span>}
                         {searchStatusType === 'error' && <span className="status-dot status-dot-err"></span>}
                         {searchStatus}
@@ -551,17 +627,17 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                 </div>
               )}
               <button onClick={handleValidateAll} disabled={isValidating || isSearchValidating || isModelValidating}
-                  className="w-full py-[clamp(8px,1.4vw,14px)] min-h-[44px] border border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5 font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]">
+                  className={`w-full py-[clamp(8px,1.4vw,14px)] min-h-[44px] border ${secondaryBtnCls} font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]`}>
                   {(isValidating || isSearchValidating || isModelValidating) ? <RefreshCw className="animate-spin" size={15} /> : <ShieldCheck size={15} />}
                   <span>{language === 'zh' ? '全面验证配置 (VALIDATE ALL)' : 'VALIDATE ALL CONFIGURATIONS'}</span>
               </button>
               <div className="flex gap-[clamp(8px,1.2vw,14px)]">
                   <button onClick={handleSaveOnly} disabled={isValidating || isSearchValidating}
-                      className="flex-[0.4] py-[clamp(8px,1.4vw,14px)] min-h-[44px] border border-[#785A42]/15 text-[#785A42] hover:bg-[#785A42]/5 font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.6vw,6px)]">
+                      className={`flex-[0.4] py-[clamp(8px,1.4vw,14px)] min-h-[44px] border ${secondaryBtnCls} font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.6vw,6px)]`}>
                       <Save size={15} /> <span className="hidden sm:inline">{t.saveConfig}</span>
                   </button>
                   <button onClick={handleSaveAndLaunch} disabled={isValidating || isModelValidating || isSearchValidating}
-                      className="flex-[1] py-[clamp(8px,1.4vw,14px)] min-h-[48px] bg-[#785A42] hover:bg-[#8c6045] text-[#f9f7f2] font-bold cfg-btn-text rounded-xl btn-launch shadow-[0_4px_16px_rgba(120,90,66,0.18)] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]">
+                      className={`flex-[1] py-[clamp(8px,1.4vw,14px)] min-h-[48px] ${launchBtnCls} font-bold cfg-btn-text rounded-xl btn-launch disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]`}>
                       <Power size={15} /> <span>{t.launchSystem}</span>
                   </button>
               </div>

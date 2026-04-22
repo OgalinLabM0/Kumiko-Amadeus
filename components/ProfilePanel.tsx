@@ -62,11 +62,9 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
     return language === 'zh' ? `${hrs}小时前` : `${hrs}h ago`;
   }, [psyche.lastUpdated, language]);
 
-  const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-white/95 border-yellow-500/30';
+  const bgClass = isDarkMode ? 'bg-[#1f1711]/96 border-[#a88247]/55' : 'bg-white/95 border-yellow-500/30';
   const textClass = isDarkMode ? 'text-yellow-100' : 'text-gray-800';
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]';
-  const labelClass = isDarkMode ? 'text-yellow-700' : 'text-yellow-600/80';
-  const cardBg = isDarkMode ? 'bg-yellow-900/10' : 'bg-yellow-50';
 
   // Localized Profile Data
   const profileData = {
@@ -81,14 +79,17 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
     likes: language === 'zh' ? '蛋料理、玉米浓汤、意大利面' : 'Egg dishes, Corn soup, Italian pasta'
   };
 
-  const InfoRow = ({ icon: Icon, label, value }: { icon: any, label: string, value: string }) => (
-    <div className={`flex items-center gap-4 p-3 rounded border border-transparent hover:border-yellow-600/20 transition-colors ${cardBg}`}>
-      <div className={`p-2 rounded-full ${isDarkMode ? 'bg-yellow-900/30 text-yellow-500' : 'bg-yellow-100 text-[#b8860b]'}`}>
-        <Icon size={18} />
+  // Phase 7 refresh: BioRow is visually aligned with the PSYCHE /
+  // NEURAL LINK panels below — transparent row inside a bordered card,
+  // ka-micro uppercase label + ka-value line, no per-row card bg.
+  const BioRow = ({ icon: Icon, label, value }: { icon: any, label: string, value: string }) => (
+    <div className="flex items-center gap-3">
+      <div className={`p-1.5 rounded-full flex-shrink-0 ${isDarkMode ? 'bg-yellow-900/30 text-yellow-500' : 'bg-yellow-100 text-[#b8860b]'}`}>
+        <Icon size={14} />
       </div>
-      <div>
-        <p className={`ka-label ${labelClass}`}>{label}</p>
-        <p className={`ka-value ${textClass}`}>{value}</p>
+      <div className="flex-1 min-w-0">
+        <p className={`ka-micro font-bold uppercase ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{label}</p>
+        <p className={`ka-value break-words ${textClass}`}>{value}</p>
       </div>
     </div>
   );
@@ -196,11 +197,28 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
           </div>
           {/* --- END PSYCHE PANEL --- */}
 
-          <InfoRow icon={Calendar} label={t.profileBirthday} value={profileData.birthday} />
-          <InfoRow icon={Ruler} label={t.profileHeight} value={profileData.height} />
-          <InfoRow icon={Music} label={t.profileInstrument} value={profileData.instrument} />
-          <InfoRow icon={User} label={t.profileOccupation} value={profileData.identity} />
-          <InfoRow icon={Heart} label={t.profileLikes} value={profileData.likes} />
+          {/* --- BIO-PROFILE PANEL ---
+              Phase 7 refresh: previously 5 stand-alone `InfoRow` cards
+              that visually broke with the NEURAL LINK / PSYCHE STATUS
+              grids above. Now wrapped in the same kicker + bordered-
+              card container so the three blocks read as one unified
+              telemetry stack. */}
+          <div className={`mb-2 pt-2 border-t border-dashed ${isDarkMode ? 'border-gray-500/20' : 'border-gray-300/40'}`}>
+            <div className={`flex items-center gap-2 mb-2 ${isDarkMode ? 'text-yellow-500' : 'text-yellow-700'}`}>
+              <User size={14} />
+              <h3 className="ka-label">
+                {language === 'zh' ? '档案信息' : 'BIO-PROFILE'}
+              </h3>
+            </div>
+            <div className={`p-3 rounded border space-y-3 ${isDarkMode ? 'bg-black/40 border-yellow-900/50' : 'bg-white border-yellow-400/50'}`}>
+              <BioRow icon={Calendar} label={t.profileBirthday} value={profileData.birthday} />
+              <BioRow icon={Ruler} label={t.profileHeight} value={profileData.height} />
+              <BioRow icon={Music} label={t.profileInstrument} value={profileData.instrument} />
+              <BioRow icon={User} label={t.profileOccupation} value={profileData.identity} />
+              <BioRow icon={Heart} label={t.profileLikes} value={profileData.likes} />
+            </div>
+          </div>
+          {/* --- END BIO-PROFILE --- */}
 
           <div className={`mt-2 p-3 rounded ka-copy-sm italic opacity-80 ${isDarkMode ? 'bg-black/30 text-yellow-200/70' : 'bg-gray-100 text-gray-600'}`}>
             "{t.profileQuote}"

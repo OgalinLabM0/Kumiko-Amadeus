@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'framer-motion';
 
 export const LoadingDataScreen: React.FC = () => {
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-[#f9f7f2] dark:bg-[#161616]">
+    <div className="fixed inset-0 flex items-center justify-center bg-[#f9f7f2] dark:bg-[#1b140d]">
       <div className="animate-pulse flex flex-col items-center">
         <div className="w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
         <p className="mt-4 ka-kicker font-mono text-orange-600 dark:text-orange-400">LOADING DATA...</p>

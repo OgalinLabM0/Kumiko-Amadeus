@@ -1,9 +1,12 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { ChevronDown, ChevronUp, Upload, Play, Square, Trash2, TestTube, Loader2, Volume2, ExternalLink, RotateCcw, Power, PowerOff, Cpu, Cloud, Settings2 } from 'lucide-react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import { ChevronDown, ChevronUp, Upload, Play, Square, Trash2, TestTube, Loader2, Volume2, ExternalLink, RotateCcw, Power, PowerOff, Cpu, Cloud, Settings2, Edit2, Sparkles } from 'lucide-react';
+import { ThemedSelect, type ThemedSelectOption } from '../common/ThemedSelect';
 import type { TtsConfig, VoiceMode, Language, TtsBackend } from '../../types';
 import { UI_TRANSLATIONS, DEFAULT_TTS_CONFIG } from '../../constants';
-import { synthesizeSpeech } from '../../services/fishAudioService';
-import { checkGenieHealth } from '../../services/genieAudioService';
+import { synthesizeSpeech, type TtsErrorKind } from '../../services/fishAudioService';
+import { checkGenieHealth, isSovitsV3V4Model } from '../../services/genieAudioService';
+import { SettingsToggle } from './SettingsToggle';
+import { SovitsRefPromptEditorModal } from './SovitsRefPromptEditorModal';
 import {
   saveRingtoneFile,
   loadRingtoneFileWithName,
@@ -18,6 +21,23 @@ import { Collapse } from '../Collapse';
 import { openExternalUrl } from '../../utils/openExternal';
 import { isMobilePwa } from '../../services/environment';
 import { httpInvoke, subscribeEvents } from '../../services/httpApi';
+
+interface TtsTestErrorInfo {
+  kind: TtsErrorKind;
+  status?: number;
+  message: string;
+}
+
+function renderTtsErrorKindLabel(kind: TtsErrorKind, language: Language): string {
+  const t = UI_TRANSLATIONS[language] as any;
+  switch (kind) {
+    case 'auth': return t.ttsErrorAuth;
+    case 'payment': return t.ttsErrorPayment;
+    case 'validation': return t.ttsErrorValidation;
+    case 'network': return t.ttsErrorNetwork;
+    default: return t.ttsErrorUnknown;
+  }
+}
 
 const BUILT_IN_RINGTONES = [
   { id: '01.mp3', displayNum: '01', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '115-man Kilo no Film - Kumiko Oumae' },
@@ -59,6 +79,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   const t = UI_TRANSLATIONS[language];
   const [isTesting, setIsTesting] = useState(false);
   const [testStatus, setTestStatus] = useState<'idle' | 'playing' | 'error'>('idle');
+  const [testError, setTestError] = useState<TtsTestErrorInfo | null>(null);
   const [hasRingtone, setHasRingtone] = useState(false);
   const [customRingtoneId, setCustomRingtoneId] = useState<string | null>(null);
   const [ringtoneFileName, setRingtoneFileName] = useState<string | null>(null);
@@ -85,10 +106,54 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
   const [pythonTestStatus, setPythonTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
   const [pythonTestMessage, setPythonTestMessage] = useState<string>('');
+  const [showSovitsPromptEditor, setShowSovitsPromptEditor] = useState(false);
+
+  const sovitsSplitOptions = useMemo<ThemedSelectOption[]>(
+    () => [
+      { value: 'cut0', label: language === 'zh' ? '不切' : 'No split' },
+      { value: 'cut1', label: language === 'zh' ? '凑四句一切' : 'Every 4 sentences' },
+      { value: 'cut2', label: language === 'zh' ? '凑50字一切' : 'Every 50 chars' },
+      { value: 'cut3', label: language === 'zh' ? '按中文句号切' : 'Chinese period' },
+      { value: 'cut4', label: language === 'zh' ? '按英文句号切' : 'English period' },
+      { value: 'cut5', label: language === 'zh' ? '按标点符号切' : 'All punctuation' },
+    ],
+    [language],
+  );
+
+  const fishModelOptions = useMemo<ThemedSelectOption[]>(
+    () => [
+      { value: 's2-pro', label: 'S2-Pro' },
+      { value: 's1', label: 'S1' },
+    ],
+    [],
+  );
+
+  const fishLatencyOptions = useMemo<ThemedSelectOption[]>(
+    () => [
+      { value: 'normal', label: 'Normal' },
+      { value: 'balanced', label: 'Balanced' },
+    ],
+    [],
+  );
+
+  const vocuPresetOptions = useMemo<ThemedSelectOption[]>(
+    () => [
+      { value: 'balance', label: (t as any).ttsVocuPresetBalance || 'Balance' },
+      { value: 'vivid', label: (t as any).ttsVocuPresetVivid || 'Vivid (V3.0 only)' },
+    ],
+    [t],
+  );
 
   const update = useCallback((patch: Partial<TtsConfig>) => {
     onTtsConfigChange({ ...ttsConfig, ...patch });
   }, [ttsConfig, onTtsConfigChange]);
+
+  // Upstream GPT-SoVITS (v3v4set) forbids ref-free mode on v3/v4 weights.
+  // When detected we grey out the switch and force it ON at the UI layer;
+  // the inference layer in genieAudioService applies the same lock so the
+  // persisted preference stays untouched.
+  const sovitsV3V4Locked = isSovitsV3V4Model(ttsConfig);
+  const sovitsUseRefTextEffective = sovitsV3V4Locked || (ttsConfig.sovitsUseRefText ?? false);
 
   const getReadableCustomRingtoneName = useCallback((rawName?: string | null) => {
     if (!rawName || isCustomRingtoneId(rawName)) {
@@ -427,6 +492,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     if (isTesting || genieStatus !== 'ready') return;
     setIsTesting(true);
     setTestStatus('idle');
+    setTestError(null);
     try {
       const { synthesizeWithSovits } = await import('../../services/genieAudioService');
       const baseUrl = `http://127.0.0.1:${ttsConfig.sovitsPort || 9880}`;
@@ -453,8 +519,13 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       audio.onerror = () => { stopTestVoicePlayback(); setTestStatus('error'); };
       await audio.play();
       setTestStatus('playing');
-    } catch (e) {
+    } catch (e: any) {
       console.error('[TTS-SoVITS Test]', e);
+      setTestError({
+        kind: (e?.kind as TtsErrorKind) ?? 'unknown',
+        status: typeof e?.status === 'number' ? e.status : undefined,
+        message: e?.message || String(e),
+      });
       setTestStatus('error');
       setIsTesting(false);
     }
@@ -477,9 +548,17 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
   const handleTestVoice = useCallback(async () => {
     if (isTesting) return;
-    if (!ttsConfig.fishAudioApiKey) { setTestStatus('error'); return; }
+    if (!ttsConfig.fishAudioApiKey) {
+      setTestError({
+        kind: 'auth',
+        message: language === 'zh' ? 'Fish Audio API Key 未配置' : 'Fish Audio API key is not configured',
+      });
+      setTestStatus('error');
+      return;
+    }
     setIsTesting(true);
     setTestStatus('idle');
+    setTestError(null);
     try {
       const testText = '全国大会を目指す日々は、決して楽な道のりではありません。しかし、仲間と共に努力する喜びが、私たちを強くしてくれました。';
       const result = await synthesizeSpeech(testText, ttsConfig);
@@ -496,11 +575,61 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       };
       await audio.play();
       setTestStatus('playing');
-    } catch {
+    } catch (e: any) {
+      console.error('[TTS-Fish Test]', e);
+      setTestError({
+        kind: (e?.kind as TtsErrorKind) ?? 'unknown',
+        status: typeof e?.status === 'number' ? e.status : undefined,
+        message: e?.message || String(e),
+      });
       setTestStatus('error');
       setIsTesting(false);
     }
-  }, [isTesting, stopTestVoicePlayback, ttsConfig]);
+  }, [isTesting, language, stopTestVoicePlayback, ttsConfig]);
+
+  const handleTestVocuVoice = useCallback(async () => {
+    if (isTesting) return;
+    if (!ttsConfig.vocuApiKey || !ttsConfig.vocuVoiceId) {
+      setTestError({
+        kind: !ttsConfig.vocuApiKey ? 'auth' : 'validation',
+        message: !ttsConfig.vocuApiKey
+          ? (language === 'zh' ? 'Vocu API Key 未配置' : 'Vocu API key is not configured')
+          : (language === 'zh' ? 'Vocu Voice ID 未配置' : 'Vocu Voice ID is not configured'),
+      });
+      setTestStatus('error');
+      return;
+    }
+    setIsTesting(true);
+    setTestStatus('idle');
+    setTestError(null);
+    try {
+      const { synthesizeWithVocu } = await import('../../services/vocuAudioService');
+      const testText = '全国大会を目指す日々は、決して楽な道のりではありません。しかし、仲間と共に努力する喜びが、私たちを強くしてくれました。';
+      const result = await synthesizeWithVocu(testText, ttsConfig, 'neutral');
+      const blob = new Blob([result.audio], { type: 'audio/mpeg' });
+      const url = URL.createObjectURL(blob);
+      stopTestVoicePlayback();
+      testAudioUrlRef.current = url;
+      const audio = new Audio(url);
+      testAudioRef.current = audio;
+      audio.onended = () => { stopTestVoicePlayback(); };
+      audio.onerror = () => {
+        stopTestVoicePlayback();
+        setTestStatus('error');
+      };
+      await audio.play();
+      setTestStatus('playing');
+    } catch (e: any) {
+      console.error('[TTS-Vocu Test]', e);
+      setTestError({
+        kind: (e?.kind as TtsErrorKind) ?? 'unknown',
+        status: typeof e?.status === 'number' ? e.status : undefined,
+        message: e?.message || String(e),
+      });
+      setTestStatus('error');
+      setIsTesting(false);
+    }
+  }, [isTesting, language, stopTestVoicePlayback, ttsConfig]);
 
   const handleRingtoneUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -542,6 +671,10 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
   const handleResetReferenceId = useCallback(() => {
     update({ fishAudioReferenceId: DEFAULT_TTS_CONFIG.fishAudioReferenceId });
+  }, [update]);
+
+  const handleResetVocuVoiceId = useCallback(() => {
+    update({ vocuVoiceId: DEFAULT_TTS_CONFIG.vocuVoiceId });
   }, [update]);
 
   const handleRingtonePreview = useCallback(async () => {
@@ -685,10 +818,11 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
           <div>
             <div className={fieldLabelClass}>{language === 'zh' ? 'TTS 引擎' : 'TTS Engine'}</div>
-            <div className="grid grid-cols-2 gap-2 mt-2">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
               {([
                 { value: 'fish' as TtsBackend, label: 'Fish Audio', desc: language === 'zh' ? '云端 · 需 API Key' : 'Cloud · API Key required', icon: Cloud },
                 { value: 'sovits' as TtsBackend, label: 'GPT-SoVITS', desc: language === 'zh' ? '本地推理' : 'Local inference', icon: Cpu },
+                { value: 'vocu' as TtsBackend, label: 'Vocu AI', desc: language === 'zh' ? '云端 · 需 API Key' : 'Cloud · API Key required', icon: Sparkles },
               ]).map(opt => (
                 <button key={opt.value}
                   onClick={() => update({ ttsBackend: opt.value })}
@@ -698,7 +832,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                       : actionChipClass
                   }`}>
                   <opt.icon size={16} />
-                  <div>
+                  <div className="min-w-0">
                     <div>{opt.label}</div>
                     <div className={`text-[10px] font-normal ${(ttsConfig.ttsBackend || 'fish') === opt.value ? 'opacity-70' : 'opacity-50'}`}>{opt.desc}</div>
                   </div>
@@ -844,6 +978,66 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                 </div>
               </div>
 
+              <div className={`mt-1 rounded-xl border p-3 ${isDarkMode ? 'bg-[#1a1714] border-[#a88247]/55' : 'bg-white/70 border-[#e6ddcf]'}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 pr-2 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <label className={fieldLabelClass}>
+                        {t.sovitsUseRefTextLabel}
+                      </label>
+                      <span className={`ka-micro font-mono px-1.5 py-0.5 rounded border ${
+                        sovitsUseRefTextEffective
+                          ? (isDarkMode ? 'border-sky-700/60 bg-sky-900/30 text-sky-300' : 'border-sky-400/60 bg-sky-50 text-sky-700')
+                          : (isDarkMode ? 'border-emerald-700/60 bg-emerald-900/30 text-emerald-300' : 'border-emerald-400/60 bg-emerald-50 text-emerald-700')
+                      }`}>
+                        {sovitsUseRefTextEffective
+                          ? t.sovitsUseRefTextModePrecise
+                          : t.sovitsUseRefTextModeSimple}
+                      </span>
+                    </div>
+                    <p className={`${helperClass} mt-1`}>
+                      {sovitsUseRefTextEffective
+                        ? t.sovitsUseRefTextOnDesc
+                        : t.sovitsUseRefTextOffDesc}
+                    </p>
+                    {sovitsV3V4Locked && (
+                      <p className={`ka-copy-sm mt-1 font-semibold ${isDarkMode ? 'text-red-400' : 'text-red-600'}`}>
+                        {t.sovitsV3V4LockNotice}
+                      </p>
+                    )}
+                  </div>
+                  <div className={`flex-shrink-0 pt-0.5 ${sovitsV3V4Locked ? 'opacity-60 pointer-events-none' : ''}`}>
+                    <SettingsToggle
+                      checked={sovitsUseRefTextEffective}
+                      onClick={() => {
+                        if (sovitsV3V4Locked) return;
+                        update({ sovitsUseRefText: !ttsConfig.sovitsUseRefText });
+                      }}
+                      activeTrackClass={isDarkMode ? 'bg-sky-600/80' : 'bg-sky-500/90'}
+                      inactiveTrackClass={isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]'}
+                      ariaLabel={t.sovitsUseRefTextLabel}
+                    />
+                  </div>
+                </div>
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowSovitsPromptEditor(true)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border ka-copy-sm transition-colors ${
+                      isDarkMode
+                        ? 'text-[#d4a852] border-[#4f3b2a] hover:bg-amber-900/20'
+                        : 'text-[#8a6122] border-[#e0c58f] hover:bg-amber-50'
+                    }`}
+                  >
+                    <Edit2 size={12} />
+                    {t.sovitsEditPromptsButton}
+                  </button>
+                  <p className={`${helperClass} mt-1`}>
+                    {t.sovitsEditPromptsHint}
+                  </p>
+                </div>
+              </div>
+
               <div className="flex items-center gap-2 mt-1 flex-wrap">
                 {genieStatus === 'off' || genieStatus === 'error' ? (
                   (() => {
@@ -924,9 +1118,15 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                   </div>
                 </div>
               )}
-              {testStatus === 'error' && (
-                <div className="ka-micro text-red-400 bg-red-500/10 rounded px-2 py-1.5">
-                  {language === 'zh' ? 'GPT-SoVITS 测试失败，请检查服务器状态和参考音频路径。' : 'GPT-SoVITS test failed. Check server status and reference audio path.'}
+              {testStatus === 'error' && testError && (
+                <div className="ka-micro text-red-400 bg-red-500/10 rounded px-2 py-1.5 leading-relaxed break-words">
+                  <div className="font-semibold">
+                    {renderTtsErrorKindLabel(testError.kind, language)}
+                    {typeof testError.status === 'number' ? ` (${testError.status})` : ''}
+                  </div>
+                  <div className="mt-0.5 font-mono opacity-80">
+                    {(t as any).ttsErrorServerMessage}: {testError.message}
+                  </div>
                 </div>
               )}
 
@@ -978,16 +1178,14 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className={fieldLabelClass}>{language === 'zh' ? '切分方式' : 'Split Method'}</label>
-                        <select value={ttsConfig.sovitsTextSplitMethod || 'cut0'}
-                          onChange={e => update({ sovitsTextSplitMethod: e.target.value })}
-                          className={`${inputClass} w-full mt-1`}>
-                          <option value="cut0">{language === 'zh' ? '不切' : 'No split'}</option>
-                          <option value="cut1">{language === 'zh' ? '凑四句一切' : 'Every 4 sentences'}</option>
-                          <option value="cut2">{language === 'zh' ? '凑50字一切' : 'Every 50 chars'}</option>
-                          <option value="cut3">{language === 'zh' ? '按中文句号切' : 'Chinese period'}</option>
-                          <option value="cut4">{language === 'zh' ? '按英文句号切' : 'English period'}</option>
-                          <option value="cut5">{language === 'zh' ? '按标点符号切' : 'All punctuation'}</option>
-                        </select>
+                        <ThemedSelect
+                          value={ttsConfig.sovitsTextSplitMethod || 'cut0'}
+                          onChange={(val) => update({ sovitsTextSplitMethod: val })}
+                          options={sovitsSplitOptions}
+                          isDarkMode={isDarkMode}
+                          className={`${inputClass} mt-1`}
+                          ariaLabel={language === 'zh' ? '切分方式' : 'Split Method'}
+                        />
                       </div>
                       <div>
                         <label className={fieldLabelClass}>{language === 'zh' ? '句间停顿 (秒)' : 'Fragment Interval (s)'}</label>
@@ -1022,7 +1220,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             </div>
           )}
 
-          {(ttsConfig.ttsBackend || 'fish') !== 'sovits' && (
+          {(ttsConfig.ttsBackend || 'fish') === 'fish' && (
             <>
           <div>
             <label className={fieldLabelClass}>{t.ttsFishApiKey}</label>
@@ -1060,19 +1258,25 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="flex-1">
               <label className={fieldLabelClass}>{t.ttsFishModel}</label>
-              <select value={ttsConfig.fishAudioModel} onChange={e => update({ fishAudioModel: e.target.value as 's1' | 's2-pro' })}
-                className={`${inputClass} w-full mt-1`}>
-                <option value="s2-pro">S2-Pro</option>
-                <option value="s1">S1</option>
-              </select>
+              <ThemedSelect
+                value={ttsConfig.fishAudioModel}
+                onChange={(val) => update({ fishAudioModel: val as 's1' | 's2-pro' })}
+                options={fishModelOptions}
+                isDarkMode={isDarkMode}
+                className={`${inputClass} mt-1`}
+                ariaLabel={t.ttsFishModel}
+              />
             </div>
             <div className="flex-1">
               <label className={fieldLabelClass}>{t.ttsLatency}</label>
-              <select value={ttsConfig.latency} onChange={e => update({ latency: e.target.value as 'balanced' | 'normal' })}
-                className={`${inputClass} w-full mt-1`}>
-                <option value="normal">Normal</option>
-                <option value="balanced">Balanced</option>
-              </select>
+              <ThemedSelect
+                value={ttsConfig.latency}
+                onChange={(val) => update({ latency: val as 'balanced' | 'normal' })}
+                options={fishLatencyOptions}
+                isDarkMode={isDarkMode}
+                className={`${inputClass} mt-1`}
+                ariaLabel={t.ttsLatency}
+              />
             </div>
           </div>
 
@@ -1122,11 +1326,197 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               </div>
             </div>
           )}
-          {testStatus === 'error' && (
-            <div className="ka-micro text-red-400">{language === 'zh' ? 'TTS 测试失败，请检查 API Key 和角色 ID。' : 'TTS test failed. Check API Key and Reference ID.'}</div>
+          {testStatus === 'error' && testError && (
+            <div className="ka-micro text-red-400 bg-red-500/10 rounded px-2 py-1.5 leading-relaxed break-words">
+              <div className="font-semibold">
+                {renderTtsErrorKindLabel(testError.kind, language)}
+                {typeof testError.status === 'number' ? ` (${testError.status})` : ''}
+              </div>
+              <div className="mt-0.5 font-mono opacity-80">
+                {(t as any).ttsErrorServerMessage}: {testError.message}
+              </div>
+            </div>
           )}
 
             </>
+          )}
+
+          {(ttsConfig.ttsBackend || 'fish') === 'vocu' && (
+            <div className={`${innerCardClass} p-4 rounded-[1.15rem] flex flex-col gap-3`}>
+              <div className="flex items-center justify-between">
+                <div className={fieldLabelClass}>{language === 'zh' ? 'Vocu AI 配置' : 'Vocu AI Config'}</div>
+                <button
+                  type="button"
+                  onClick={() => openExternalUrl('https://www.vocu.ai/apiKey')}
+                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 ka-micro transition-colors ${externalLinkClass}`}
+                >
+                  <ExternalLink size={11} />
+                  vocu.ai
+                </button>
+              </div>
+
+              <div>
+                <label className={fieldLabelClass}>{(t as any).ttsVocuApiKey || 'Vocu AI API Key'}</label>
+                <input
+                  type="password"
+                  value={ttsConfig.vocuApiKey || ''}
+                  onChange={e => update({ vocuApiKey: e.target.value })}
+                  className={`${inputClass} w-full mt-1`}
+                  placeholder="voc-..."
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between gap-3">
+                  <label className={fieldLabelClass}>{(t as any).ttsVocuVoiceId || 'Vocu Voice ID'}</label>
+                  <button
+                    type="button"
+                    onClick={handleResetVocuVoiceId}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 ka-micro font-semibold transition-colors ${resetButtonClass}`}
+                  >
+                    <RotateCcw size={11} />
+                    {language === 'zh' ? '恢复默认久美子 ID' : 'Restore Kumiko Default ID'}
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={ttsConfig.vocuVoiceId || ''}
+                  onChange={e => update({ vocuVoiceId: e.target.value })}
+                  className={`${inputClass} w-full mt-1`}
+                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                />
+                <div className={`${helperClass} mt-0.5`}>
+                  {(t as any).ttsVocuVoiceIdHint || 'Copy the UUID after creating/selecting a voice on vocu.ai'}
+                </div>
+              </div>
+
+              <div>
+                <label className={fieldLabelClass}>{(t as any).ttsVocuPromptId || 'Prompt ID'}</label>
+                <input
+                  type="text"
+                  value={ttsConfig.vocuPromptId ?? 'default'}
+                  onChange={e => update({ vocuPromptId: e.target.value })}
+                  className={`${inputClass} w-full mt-1`}
+                  placeholder="default"
+                />
+                <div className={`${helperClass} mt-0.5`}>
+                  {(t as any).ttsVocuPromptIdHint || "Default 'default'; override for special emotion/style"}
+                </div>
+              </div>
+
+              <div>
+                <label className={fieldLabelClass}>{(t as any).ttsVocuPreset || 'Preset'}</label>
+                <ThemedSelect
+                  value={ttsConfig.vocuPreset || 'balance'}
+                  onChange={(val) => update({ vocuPreset: val as 'balance' | 'vivid' })}
+                  options={vocuPresetOptions}
+                  isDarkMode={isDarkMode}
+                  className={`${inputClass} mt-1`}
+                  ariaLabel={(t as any).ttsVocuPreset || 'Preset'}
+                />
+              </div>
+
+              <div className={`mt-1 rounded-xl border p-3 ${isDarkMode ? 'bg-[#1a1714] border-[#a88247]/55' : 'bg-white/70 border-[#e6ddcf]'}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 pr-2 flex-1">
+                    <label className={fieldLabelClass}>{(t as any).ttsVocuFlash || 'Low-latency mode'}</label>
+                    <p className={`${helperClass} mt-1`}>
+                      {(t as any).ttsVocuFlashDesc || 'Faster generation, may slightly reduce quality'}
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 pt-0.5">
+                    <SettingsToggle
+                      checked={Boolean(ttsConfig.vocuFlash)}
+                      onClick={() => update({ vocuFlash: !ttsConfig.vocuFlash })}
+                      activeTrackClass={isDarkMode ? 'bg-sky-600/80' : 'bg-sky-500/90'}
+                      inactiveTrackClass={isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]'}
+                      ariaLabel={(t as any).ttsVocuFlash || 'Low-latency mode'}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className={`rounded-xl border p-3 ${isDarkMode ? 'bg-[#1a1714] border-[#a88247]/55' : 'bg-white/70 border-[#e6ddcf]'}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 pr-2 flex-1">
+                    <label className={fieldLabelClass}>{(t as any).ttsVocuEmotionBoost || 'Emotional expression boost'}</label>
+                    <p className={`${helperClass} mt-1`}>
+                      {(t as any).ttsVocuEmotionBoostDesc || 'V3.0 voices only; when enabled, happy/angry/sad/surprised switch to vivid preset automatically (others stay on balance)'}
+                    </p>
+                  </div>
+                  <div className="flex-shrink-0 pt-0.5">
+                    <SettingsToggle
+                      checked={Boolean(ttsConfig.vocuEmotionBoost)}
+                      onClick={() => update({ vocuEmotionBoost: !ttsConfig.vocuEmotionBoost })}
+                      activeTrackClass={isDarkMode ? 'bg-amber-600/80' : 'bg-amber-500/90'}
+                      inactiveTrackClass={isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]'}
+                      ariaLabel={(t as any).ttsVocuEmotionBoost || 'Emotional expression boost'}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {testStatus === 'playing' ? (
+                <button
+                  onClick={stopTestVoicePlayback}
+                  className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
+                    isDarkMode ? 'bg-sky-600 hover:bg-sky-700 text-white' : 'bg-sky-500 hover:bg-sky-600 text-white'
+                  }`}>
+                  <Square size={14} />
+                  {language === 'zh' ? '停止播放' : 'Stop'}
+                </button>
+              ) : (
+                <button
+                  onClick={handleTestVocuVoice}
+                  disabled={isTesting || !ttsConfig.vocuApiKey || !ttsConfig.vocuVoiceId}
+                  className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors ${
+                    isTesting ? 'opacity-50 cursor-wait' : ''
+                  } ${ttsConfig.vocuApiKey && ttsConfig.vocuVoiceId
+                      ? 'bg-[#c79a2f] hover:bg-[#b6881f] text-white'
+                      : isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                  }`}>
+                  {isTesting ? <Loader2 size={14} className="animate-spin" /> : <TestTube size={14} />}
+                  {isTesting ? t.ttsTestPlaying : t.ttsTestButton}
+                </button>
+              )}
+              {testStatus === 'playing' && (
+                <div className={`p-3 rounded-lg border animate-in fade-in ${isDarkMode ? 'bg-[#2a2116] border-[#7e6338]/40' : 'bg-[#fff8eb] border-[#ecd4a9]'}`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="flex items-center gap-0.5">
+                      {Array.from({ length: 4 }).map((_, i) => (
+                        <div key={i} className="w-0.5 bg-purple-400 rounded-full animate-pulse"
+                          style={{ height: `${8 + Math.random() * 10}px`, animationDelay: `${i * 0.15}s` }} />
+                      ))}
+                    </div>
+                    <span className={`ka-micro font-semibold ${isDarkMode ? 'text-[#e5c98f]' : 'text-[#a06b22]'}`}>
+                      {language === 'zh' ? '正在播放测试语音...' : 'Playing test voice...'}
+                    </span>
+                    <button onClick={stopTestVoicePlayback} className="ml-auto p-1 rounded hover:bg-amber-500/20">
+                      <Square size={10} className="text-amber-500" />
+                    </button>
+                  </div>
+                  <div className={`ka-copy-sm leading-relaxed ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <div className="ka-copy-sm">「全国大会を目指す日々は、決して楽な道のりではありません。しかし、仲間と共に努力する喜びが、私たちを強くしてくれました。」</div>
+                    <div className={`mt-1 ${helperClass}`}>
+                      {language === 'zh'
+                        ? '(以全国大赛为目标的每一天，绝不是一段轻松的路程。但是，与伙伴们共同努力的喜悦，让我们变得更加坚强。)'
+                        : '(The days spent aiming for the national competition were never an easy road. But the joy of working hard alongside our friends made us stronger.)'}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {testStatus === 'error' && testError && (
+                <div className="ka-micro text-red-400 bg-red-500/10 rounded px-2 py-1.5 leading-relaxed break-words">
+                  <div className="font-semibold">
+                    {renderTtsErrorKindLabel(testError.kind, language)}
+                    {typeof testError.status === 'number' ? ` (${testError.status})` : ''}
+                  </div>
+                  <div className="mt-0.5 font-mono opacity-80">
+                    {(t as any).ttsErrorServerMessage}: {testError.message}
+                  </div>
+                </div>
+              )}
+            </div>
           )}
 
           <div>
@@ -1277,6 +1667,16 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
         </div>
       </Collapse>
+
+      <SovitsRefPromptEditorModal
+        isOpen={showSovitsPromptEditor}
+        onClose={() => setShowSovitsPromptEditor(false)}
+        language={language}
+        isDarkMode={isDarkMode}
+        refTextEnabled={sovitsUseRefTextEffective}
+        initialPrompts={ttsConfig.sovitsCustomPrompts ?? {}}
+        onSave={(next) => update({ sovitsCustomPrompts: next })}
+      />
     </div>
   );
 };

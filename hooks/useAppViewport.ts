@@ -131,7 +131,7 @@ export const useAppViewport = ({
       // Reference: fozzedout/iphone-pwa-game-guide.md §2 "Height Declaration Trap".
       const hpx = `${h}px`;
       const bg = flowState === 'APP'
-        ? (isDarkMode ? '#121212' : '#ffffff')
+        ? (isDarkMode ? '#1b140d' : '#ffffff')
         : '#f9f7f2';
 
       if (isDesktopElectron()) {
@@ -354,11 +354,16 @@ export const useAppViewport = ({
   }, []);
 
   useEffect(() => {
+    // Keep the <html> ka-dark class in sync across every flow state so global
+    // CSS (e.g. the :-webkit-autofill overrides in index.html, AIConfigScreen's
+    // html.ka-dark selectors) can react to dark mode even before the user
+    // reaches the main APP flow.
+    document.documentElement.classList.toggle('ka-dark', isDarkMode);
     if (flowState !== 'APP') return;
     // NOTE: must match `containerBg` in components/app/appShellStyles.ts so the
     // BrowserWindow fill color painted during window resize is indistinguishable
     // from the app's own background.
-    const themeColor = isDarkMode ? '#121212' : '#ffffff';
+    const themeColor = isDarkMode ? '#1b140d' : '#ffffff';
     document.body.style.backgroundColor = themeColor;
     document.documentElement.style.backgroundColor = themeColor;
     let metaThemeColor = document.querySelector("meta[name='theme-color']");

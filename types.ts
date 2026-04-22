@@ -193,7 +193,7 @@ export interface ChatResponse {
 }
 
 export type VoiceMode = 'full' | 'text' | 'hybrid';
-export type TtsBackend = 'fish' | 'sovits';
+export type TtsBackend = 'fish' | 'sovits' | 'vocu';
 
 export interface TtsConfig {
   ttsBackend: TtsBackend;
@@ -221,6 +221,31 @@ export interface TtsConfig {
   sovitsTemperature?: number;
   sovitsTextSplitMethod?: string;
   sovitsFragmentInterval?: number;
+  // When false (default), prompt_text is sent as an empty string and SoVITS
+  // runs in "ref-free" mode — any emotion-matching WAV works, no per-file
+  // prompt transcript is required. When true, the user asserts that each
+  // WAV's spoken Japanese matches the prompt text exactly (higher quality,
+  // more setup). Forced true at runtime when a v3/v4 weights path is
+  // detected (official limitation), without overwriting this persisted pref.
+  sovitsUseRefText?: boolean;
+  // Per-file custom prompt_text overrides, keyed by the file-name stem
+  // (e.g. "neutral_casual" → "…"). Only used when sovitsUseRefText is true.
+  // The whole map is overwritten on save; an empty map or undefined means
+  // "no customization — fall back to EMOTION_TO_SOVITS_REF defaults".
+  sovitsCustomPrompts?: Record<string, string>;
+
+  // Vocu AI (third TTS backend; https://dev.vocu.ai/).
+  // Sync endpoint: POST /api/tts/simple-generate → returns JSON with
+  // data.streamUrl → GET that URL to fetch the MP3 bytes. Auth: Bearer apiKey.
+  vocuApiKey?: string;
+  vocuVoiceId?: string;
+  vocuPromptId?: string;
+  vocuPreset?: 'balance' | 'vivid';
+  vocuFlash?: boolean;
+  // Plan C: when enabled, strong emotions (happy/angry/sad/surprised) auto-switch
+  // preset → 'vivid'. Other emotions keep `vocuPreset`. Vocu's 'vivid' only works
+  // on V3.0 voices, so the UI warns users to confirm voice version first.
+  vocuEmotionBoost?: boolean;
 }
 
 export type AppUpdateStatus =

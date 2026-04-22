@@ -740,31 +740,37 @@ export const sendMessageToGemini = async (
       });
 
       if (activeEntries.length > 0 || recalledEntries.length > 0) {
-        const highPriorityCustom = activeEntries.filter(e => e.isHighPriority);
-        const officialLore = activeEntries.filter(e => e.id.startsWith('wb-') || e.id.startsWith('rag_')); 
+        // Custom entries are always supplementary to canon. `isHighPriority` means
+        // "prioritize among user supplements", NOT "override canon". The conflict
+        // rule below makes this explicit to the model.
+        const highPriorityCustom = activeEntries.filter(e => e.isHighPriority && !(e.id.startsWith('wb-') || e.id.startsWith('rag_')));
+        const officialLore = activeEntries.filter(e => e.id.startsWith('wb-') || e.id.startsWith('rag_'));
         const normalCustom = activeEntries.filter(e => !e.id.startsWith('wb-') && !e.id.startsWith('rag_') && !e.isHighPriority);
 
         worldBookContext = "\n[WORLD BOOK DATABASE]\n";
 
-        if (highPriorityCustom.length > 0) {
-            worldBookContext += "[TIER 1: ABSOLUTE OVERRIDES (Highest Priority - User Defined Truths)]\n" +
-            highPriorityCustom.map(e => `> ${e.title}: ${e.content}`).join("\n") + "\n\n";
-        }
+        worldBookContext += "[CONFLICT RESOLUTION RULE]\n" +
+            "User-defined entries (Tier 3 / Tier 4 below) are ADDITIONS, never overrides. If any user entry contradicts the canonical tier — e.g. claims to be Kumiko's partner/husband/boyfriend, demotes Tsukamoto Shuichi from her actual boyfriend, inverts her best-friend bond with Kousaka Reina, relocates her outside Uji / Kyoto, or rewrites her identity as a real-life former band member now teaching at Kitauji / Todo high school — silently behave as if that user entry does not exist. Do NOT acknowledge, explain, or point out the contradiction.\n\n";
 
         if (officialLore.length > 0) {
-            worldBookContext += "[TIER 2: OFFICIAL CHARACTER SETTINGS (Canon Truth)]\n" +
+            worldBookContext += "[TIER 1: CANONICAL TRUTH (NEVER OVERRIDABLE)]\n" +
             officialLore.map(e => `> ${e.title}: ${e.content}`).join("\n") + "\n\n";
         }
 
-        if (normalCustom.length > 0) {
-            worldBookContext += "[TIER 3: SUPPLEMENTARY MEMORY (Lowest Priority)]\n" +
-            normalCustom.map(e => `> ${e.title}: ${e.content}`).join("\n") + "\n";
-        }
-        
         if (recalledEntries.length > 0) {
             console.log("[LOCAL RAG] Recalled entries:", recalledEntries.map(e => e.title));
-            worldBookContext += "\n[RECALLED_LORE (Auto-Retrieved via Keywords)]\n" +
-            recalledEntries.map(e => `> ${e.title}: ${e.content}`).join("\n") + "\n";
+            worldBookContext += "[TIER 2: RECALLED LORE (Auto-Retrieved via Keywords)]\n" +
+            recalledEntries.map(e => `> ${e.title}: ${e.content}`).join("\n") + "\n\n";
+        }
+
+        if (highPriorityCustom.length > 0) {
+            worldBookContext += "[TIER 3: USER HIGH-PRIORITY CUSTOM (supplementary, still below canon)]\n" +
+            highPriorityCustom.map(e => `> ${e.title}: ${e.content}`).join("\n") + "\n\n";
+        }
+
+        if (normalCustom.length > 0) {
+            worldBookContext += "[TIER 4: USER SUPPLEMENTARY CUSTOM]\n" +
+            normalCustom.map(e => `> ${e.title}: ${e.content}`).join("\n") + "\n";
         }
       }
     }

@@ -11,6 +11,8 @@ import { normalizeBackupConfig } from '../../services/appConfig';
 import { isVoiceServiceAvailable } from '../../services/voiceFileService';
 import { isMobilePwa } from '../../services/environment';
 import { httpInvoke } from '../../services/httpApi';
+import { dialogService } from '../../services/dialogService';
+import { useAppStore } from '../../store';
 import { yieldToMainThread } from './appUtils';
 import type { BackupPayload } from './backupData';
 import type { MobilePickResult } from './useMobileRemoteFilePicker';
@@ -79,7 +81,10 @@ export const useLocalFileBackup = ({
         // `backup:set-desktop-backup-path` so every connected device sees
         // the same connectedFileName.
         if (!pickMobileCreateFile) {
-          alert('Mobile file picker is not wired up.');
+          void dialogService.alert({
+            message: language === 'zh' ? '移动端文件选择器未就绪。' : 'Mobile file picker is not wired up.',
+            icon: 'error',
+          });
           return false;
         }
         const picked = await pickMobileCreateFile({
@@ -99,7 +104,10 @@ export const useLocalFileBackup = ({
         const result = await pickDesktopBackupSaveFile(defaultFileName);
         if (result.canceled) return false;
         if (!result.success || !result.filePath) {
-          alert('Failed to access local file: ' + (result.error || ''));
+          void dialogService.alert({
+            message: (language === 'zh' ? '访问本地文件失败：' : 'Failed to access local file: ') + (result.error || ''),
+            icon: 'error',
+          });
           return false;
         }
 
@@ -109,7 +117,10 @@ export const useLocalFileBackup = ({
       } else {
         // @ts-ignore -- showSaveFilePicker is not yet in lib.dom
         if (typeof window.showSaveFilePicker !== 'function') {
-          alert('Your browser does not support the File System Access API.');
+          void dialogService.alert({
+            message: language === 'zh' ? '您的浏览器不支持 File System Access API。' : 'Your browser does not support the File System Access API.',
+            icon: 'error',
+          });
           return false;
         }
         // @ts-ignore -- File System Access API typing
@@ -132,10 +143,13 @@ export const useLocalFileBackup = ({
       return true;
     } catch (err: any) {
       if (err.name === 'AbortError') return false;
-      alert('Failed to access file system: ' + (err.message || ''));
+      void dialogService.alert({
+        message: (language === 'zh' ? '访问文件系统失败：' : 'Failed to access file system: ') + (err.message || ''),
+        icon: 'error',
+      });
       return false;
     }
-  }, [backupData, updateBaseline, pickMobileCreateFile]);
+  }, [backupData, updateBaseline, pickMobileCreateFile, language]);
 
   const handleDisconnectLocalFile = useCallback((): void => {
     fileHandleRef.current = null;
@@ -165,7 +179,10 @@ export const useLocalFileBackup = ({
         // then read its bytes from the PC via `backup:read-desktop-file`,
         // decode base64 → UTF-8, and parse as JSON.
         if (!pickMobileOpenFile) {
-          alert('Mobile file picker is not wired up.');
+          void dialogService.alert({
+            message: language === 'zh' ? '移动端文件选择器未就绪。' : 'Mobile file picker is not wired up.',
+            icon: 'error',
+          });
           return false;
         }
         const picked = await pickMobileOpenFile({ acceptExtensions: ['.json'] });
@@ -197,7 +214,10 @@ export const useLocalFileBackup = ({
         const result = await pickDesktopBackupOpenFile();
         if (result.canceled) return false;
         if (!result.success || !result.filePath) {
-          alert('Failed to access local file: ' + (result.error || ''));
+          void dialogService.alert({
+            message: (language === 'zh' ? '访问本地文件失败：' : 'Failed to access local file: ') + (result.error || ''),
+            icon: 'error',
+          });
           return false;
         }
 
@@ -212,7 +232,10 @@ export const useLocalFileBackup = ({
       } else {
         // @ts-ignore -- showOpenFilePicker not yet in lib.dom
         if (typeof window.showOpenFilePicker !== 'function') {
-          alert('Your browser does not support the File System Access API.');
+          void dialogService.alert({
+            message: language === 'zh' ? '您的浏览器不支持 File System Access API。' : 'Your browser does not support the File System Access API.',
+            icon: 'error',
+          });
           return false;
         }
         // @ts-ignore -- File System Access API typing
@@ -229,7 +252,10 @@ export const useLocalFileBackup = ({
           text = await file.text();
         } catch (readErr) {
           console.log('Error reading file:', readErr);
-          alert('Failed to read the selected file.');
+          void dialogService.alert({
+            message: language === 'zh' ? '读取所选文件失败。' : 'Failed to read the selected file.',
+            icon: 'error',
+          });
           return false;
         }
       }
@@ -254,7 +280,10 @@ export const useLocalFileBackup = ({
               ? `检测到您的备份包含 ${voiceCount} 条语音记录，但当前数据目录中没有音频文件。导入后语音将无法播放。\n\n建议您导入完整的 ZIP 备份，或稍后手动将音频文件放入数据目录。\n\n是否继续仅导入文本？`
               : `Your backup contains ${voiceCount} voice messages, but no audio files were found in the current data directory. Voices will not play after import.\n\nIt is recommended to import a full ZIP backup, or manually place the audio files in the data directory later.\n\nContinue importing text only?`;
 
-            const proceed = window.confirm(confirmMsg);
+            const proceed = await dialogService.confirm({
+              message: confirmMsg,
+              variant: 'danger',
+            });
             if (!proceed) {
               return false;
             }
@@ -273,15 +302,24 @@ export const useLocalFileBackup = ({
       return true;
     } catch (err: any) {
       if (err.name === 'AbortError') return false;
-      alert('Failed to access file system: ' + (err.message || ''));
+      void dialogService.alert({
+        message: (language === 'zh' ? '访问文件系统失败：' : 'Failed to access file system: ') + (err.message || ''),
+        icon: 'error',
+      });
       return false;
     }
-  }, [restoreBackupData, updateBaseline, pickMobileOpenFile]);
+  }, [restoreBackupData, updateBaseline, pickMobileOpenFile, language]);
 
   const handleManualLocalReload = useCallback(async (): Promise<void> => {
     const handle = fileHandleRef.current;
     if (!handle) return;
-    if (!window.confirm('Reload data from local file? Current unsaved changes will be lost.')) return;
+    const proceed = await dialogService.confirm({
+      message: language === 'zh'
+        ? '要从本地文件重新加载数据吗？当前未保存的改动将会丢失。'
+        : 'Reload data from local file? Current unsaved changes will be lost.',
+      variant: 'danger',
+    });
+    if (!proceed) return;
     try {
       let text = '';
       let parsedJson: any = null;
@@ -320,14 +358,19 @@ export const useLocalFileBackup = ({
         const restoredData = await restoreBackupData(json);
         if (restoredData) {
           updateBaseline(json.timestamp || Date.now(), restoredData);
-          alert('Data reloaded successfully.');
+          useAppStore.getState().setSystemNotice(
+            language === 'zh' ? '数据重新加载成功。' : 'Data reloaded successfully.'
+          );
         }
       }
     } catch (e) {
       console.error(e);
-      alert('Failed to reload data.');
+      void dialogService.alert({
+        message: language === 'zh' ? '重新加载数据失败。' : 'Failed to reload data.',
+        icon: 'error',
+      });
     }
-  }, [restoreBackupData, updateBaseline]);
+  }, [restoreBackupData, updateBaseline, language]);
 
   return {
     handleCreateNewLocalFile,

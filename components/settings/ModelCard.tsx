@@ -41,7 +41,7 @@ export const ModelCard: React.FC<ModelCardProps> = ({
         <Icon size={16} />
       </div>
       <div className="min-w-0 flex-1">
-        <h4 className={`ka-section-title tracking-[0.02em] ${isDarkMode ? 'text-teal-300' : 'text-teal-700'}`}>{title}</h4>
+        <h4 className={`ka-setting-item-title font-semibold tracking-[0.02em] ${isDarkMode ? 'text-teal-300' : 'text-teal-700'}`}>{title}</h4>
         {desc && <p className={`ka-micro ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{desc}</p>}
       </div>
       {validationResult === true && <CheckCircle size={16} className="text-green-500 shrink-0" />}

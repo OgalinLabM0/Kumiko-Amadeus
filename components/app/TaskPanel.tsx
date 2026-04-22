@@ -1,6 +1,7 @@
-import React from 'react';
-import { BellOff, CalendarClock, Clock3, Pause, Play, Repeat, Trash2, X } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { BellOff, CalendarClock, Clock3, Hourglass, Inbox, Pause, Play, Repeat, Trash2, X } from 'lucide-react';
 import { Language } from '../../types';
+import { useAppStore } from '../../store';
 
 type RelativeReminderItem = {
   id: string;
@@ -122,15 +123,60 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
   onDeleteDailyReminder,
   onToggleDailyReminderPaused,
 }) => {
-  const totalTasks = relativeReminders.length + dailyReminders.length;
+  const busyFollowUp = useAppStore(s => s.busyFollowUp);
+  const pendingApology = useAppStore(s => s.pendingApology);
+
+  // Polling clock so countdowns update live while the panel is open.
+  // We tick every 1 s but only when `isOpen` is true so the panel
+  // doesn't waste cycles in the background.
+  const [, setNowTick] = useState(Date.now());
+  useEffect(() => {
+    if (!isOpen) return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [isOpen]);
+
+  const busyUnreadCount = busyFollowUp?.unreadUserMessageIds.length ?? 0;
+  const apologyUnreadCount = pendingApology
+    ? pendingApology.sources.reduce((sum, s) => sum + s.unreadUserMessageIds.length, 0)
+    : 0;
+  const apologySourceCount = pendingApology?.sources.length ?? 0;
+  const totalTasks = relativeReminders.length + dailyReminders.length + (busyFollowUp ? 1 : 0) + (pendingApology ? 1 : 0);
   const nextOneTime = relativeReminders.slice().sort((a, b) => a.dueAt - b.dueAt)[0];
+
+  const busyStatusLabel = (() => {
+    if (!busyFollowUp) return '';
+    const now = Date.now();
+    const isPrepared = !!busyFollowUp.preparedAt && !!busyFollowUp.preparedTextParts?.length;
+    if (now < busyFollowUp.prepareAt) {
+      return language === 'zh' ? '下课前准备中' : 'Preparing near end of slot';
+    }
+    if (!isPrepared) {
+      if (busyFollowUp.failureCount > 0) {
+        return language === 'zh'
+          ? `接入失败 ${busyFollowUp.failureCount}/4，退避中`
+          : `Draft failed ${busyFollowUp.failureCount}/4, backing off`;
+      }
+      return language === 'zh' ? '正在悄悄组织语言' : 'Drafting silently';
+    }
+    if (now < busyFollowUp.displayAt) {
+      return language === 'zh' ? '准备就绪，等下课后发送' : 'Ready, waiting to send';
+    }
+    return language === 'zh' ? '即将发送' : 'About to send';
+  })();
+  const busyCountdownLabel = (() => {
+    if (!busyFollowUp) return '';
+    const now = Date.now();
+    const target = now < busyFollowUp.displayAt ? busyFollowUp.displayAt : now;
+    return formatCountdown(target, language);
+  })();
   // Dark-mode frosted glass: drop the near-opaque `/96` wash and let
   // `backdrop-blur-md` smear whatever chat bubble sits underneath. 80%
   // fill keeps copy readable but the blur kills the noisy bleed-through
   // users complained about. Light mode stays essentially unchanged and
   // just inherits the same blur class for visual parity.
   const bgClass = isDarkMode
-    ? 'bg-[#161412]/80 backdrop-blur-md border-[#2a2522]/60'
+    ? 'bg-[#1f1711]/80 backdrop-blur-md border-[#a88247]/55'
     : 'bg-white/90 backdrop-blur-md border-yellow-500/30';
   const textClass = isDarkMode ? 'text-yellow-100' : 'text-gray-800';
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]';
@@ -233,6 +279,56 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
           </div>
         )}
 
+        {busyFollowUp && (
+          <div className={`rounded border p-3 ${cardClass}`}>
+            <div className="flex items-start gap-2">
+              <Hourglass size={14} className={`mt-0.5 shrink-0 ${titleClass}`} />
+              <div className="min-w-0 flex-1">
+                <div className={`ka-kicker ${labelClass}`}>
+                  {language === 'zh' ? '待主动回复' : 'Pending auto-reply'}
+                </div>
+                <div className={`mt-1 ka-copy break-words ${textClass}`}>
+                  {busyFollowUp.slotDescription}
+                </div>
+                <div className={`mt-1 ka-copy-sm ${textClass} opacity-80`}>
+                  {busyStatusLabel}
+                </div>
+                <div className={`mt-1 flex items-center gap-2 flex-wrap ka-copy-sm ${textClass} opacity-70`}>
+                  <span>{busyCountdownLabel}</span>
+                  <span className={`px-1.5 py-0.5 rounded ka-micro border ${pillClass}`}>
+                    {language === 'zh'
+                      ? `未读 ${busyUnreadCount}`
+                      : `${busyUnreadCount} unread`}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {pendingApology && apologyUnreadCount > 0 && (
+          <div className={`rounded border p-3 ${cardClass}`}>
+            <div className="flex items-start gap-2">
+              <Inbox size={14} className={`mt-0.5 shrink-0 ${titleClass}`} />
+              <div className="min-w-0 flex-1">
+                <div className={`ka-kicker ${labelClass}`}>
+                  {language === 'zh' ? '积压未读，等下次开口' : 'Backlog awaiting next turn'}
+                </div>
+                <div className={`mt-1 ka-copy break-words ${textClass}`}>
+                  {language === 'zh'
+                    ? `累计 ${apologySourceCount} 段忙碌、${apologyUnreadCount} 条未读`
+                    : `${apologySourceCount} busy blocks, ${apologyUnreadCount} unread`}
+                </div>
+                <div className={`mt-1 ka-copy-sm ${textClass} opacity-70`}>
+                  {language === 'zh'
+                    ? '你再开口时，她会一次性简短道歉并挑几条接上。'
+                    : 'Next time you message her, she will apologise once and weave a few back in.'}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {totalTasks === 0 && (
           <div className={`rounded border p-4 ${cardClass}`}>
             <div className="flex items-center gap-2 ka-setting-item-title">
@@ -241,8 +337,8 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
             </div>
             <p className={`mt-2 ka-copy-sm ${textClass} opacity-70`}>
               {language === 'zh'
-                ? '你对她说“3小时后喊我”或者“每天8点20提醒我”，这里就会开始记录。'
-                : 'Tell her “remind me in 3 hours” or “every day at 8:20”, and she will keep the promise here.'}
+                ? '你对她说"3小时后喊我"或者"每天8点20提醒我"，这里就会开始记录。'
+                : 'Tell her "remind me in 3 hours" or "every day at 8:20", and she will keep the promise here.'}
             </p>
           </div>
         )}

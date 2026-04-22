@@ -1,8 +1,9 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { ChevronDown, ChevronUp, Image as ImageIcon } from 'lucide-react';
 import { Collapse } from '../Collapse';
 import { useAppStore } from '../../store';
 import type { ImageQualityPreset } from '../../constants/imageQualityConfig';
+import { ThemedSelect, type ThemedSelectOption } from '../common/ThemedSelect';
 
 // P1 #36: new SettingsPanel tile for image-related preferences. The first (and
 // currently only) setting it hosts is the image quality preset — this used to
@@ -48,6 +49,17 @@ export const MediaSection: React.FC<MediaSectionProps> = ({
     compact: t.imgQHelp_compact,
   };
 
+  const qualitySelectClass = `w-full rounded-lg px-3 py-2 ka-input-copy border transition-colors ${isDarkMode ? 'bg-[#211811] border-[#8c6a3c] text-[#f2e5cf] focus:border-sky-500' : 'bg-white border-[#d7cebf] text-[#4c3a2b] focus:border-sky-600'}`;
+  const qualityOptions = useMemo<ThemedSelectOption[]>(
+    () => [
+      { value: 'original', label: t.imgQ_original },
+      { value: 'high', label: t.imgQ_high },
+      { value: 'standard', label: t.imgQ_standard },
+      { value: 'compact', label: t.imgQ_compact },
+    ],
+    [t.imgQ_original, t.imgQ_high, t.imgQ_standard, t.imgQ_compact],
+  );
+
   return (
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
       <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
@@ -73,16 +85,14 @@ export const MediaSection: React.FC<MediaSectionProps> = ({
             <label className={`ka-setting-item-title ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
               {t.imageQuality}
             </label>
-            <select
+            <ThemedSelect
               value={preset}
-              onChange={e => setPreset(e.target.value as ImageQualityPreset)}
-              className={`w-full rounded-lg px-3 py-2 ka-value text-sm border transition-colors ${isDarkMode ? 'bg-[#1b1712] border-[#4a3a2a] text-[#f0e6d8] focus:border-sky-500' : 'bg-white border-[#d7cebf] text-[#4c3a2b] focus:border-sky-600'}`}
-            >
-              <option value="original">{t.imgQ_original}</option>
-              <option value="high">{t.imgQ_high}</option>
-              <option value="standard">{t.imgQ_standard}</option>
-              <option value="compact">{t.imgQ_compact}</option>
-            </select>
+              onChange={(val) => setPreset(val as ImageQualityPreset)}
+              options={qualityOptions}
+              isDarkMode={isDarkMode}
+              className={qualitySelectClass}
+              ariaLabel={t.imageQuality}
+            />
             <p className={`ka-copy-xs leading-relaxed ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
               {helpByPreset[preset]}
             </p>

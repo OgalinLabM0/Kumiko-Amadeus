@@ -28,6 +28,7 @@ import {
 const getKumikoLocalRag = (language?: Language) =>
   language === 'en' ? KUMIKO_LOCAL_RAG_EN : KUMIKO_LOCAL_RAG_ZH;
 import { setAIConfig } from '../../services/llmCore';
+import { dialogService } from '../../services/dialogService';
 import {
   sendMessageToGemini,
   getCurrentAIConfig,
@@ -115,6 +116,11 @@ import {
   type TriggerAutoSummaryParams,
 } from './summaryActions';
 import type { RelativeReminder, DailyReminder } from '../../store/slices/reminderSlice';
+import type {
+  BusyFollowUp,
+  BusySlotContext,
+  PendingApologySource,
+} from '../../store/slices/busySlice';
 import type { DeriveSummaryTopicLabelFn } from './chatPipelineRegistry';
 import { tryGetChatPipelineRegistration } from './chatPipelineRegistry';
 import type { RunVoicePipelineFn } from '../../hooks/useVoicePipeline';
@@ -453,6 +459,228 @@ export async function triggerNativeProactiveMessage(
 }
 
 // ---------------------------------------------------------------------------
+// prepareBusyFollowUpResponse
+// ---------------------------------------------------------------------------
+// Silently drafts a reply for a pending `BusyFollowUp` without touching any
+// UI state (no isThinking / isTalking / message insertion). The caller
+// (useBusyRegulator) is expected to store the returned `preparedTextParts`
+// + `preparedEmotion` into the follow-up record and only play them back via
+// `displayPreparedProactiveMessage` once the `displayAt` moment arrives.
+// Returns null on API failure so the regulator can track retry count.
+export async function prepareBusyFollowUpResponse(
+  followUp: BusyFollowUp,
+): Promise<{ textParts: string[]; emotion: EmotionType } | null> {
+  const state = useAppStore.getState();
+  const { coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, language, messages } = state;
+
+  const unreadIds = new Set(followUp.unreadUserMessageIds);
+  const unreadMessages = messages.filter(m => unreadIds.has(m.id));
+  const recentMessages = messages.slice(-contextLimit);
+
+  const now = new Date();
+  const hoursSinceEnd = followUp.slotEndAtMs
+    ? Math.max(0, (now.getTime() - followUp.slotEndAtMs) / 3_600_000)
+    : 0;
+
+  const freshnessHint = language === 'zh'
+    ? (hoursSinceEnd < 0.1
+      ? '刚下课，话题还没凉'
+      : hoursSinceEnd < 1
+        ? '下课没多久，正好能回一下'
+        : '已经过了一段时间，不必逐条复盘')
+    : (hoursSinceEnd < 0.1
+      ? 'just finished, the thread is still warm'
+      : hoursSinceEnd < 1
+        ? 'shortly after class, a natural moment to reply'
+        : 'some time has passed, no need for a full replay');
+
+  const unreadBullets = unreadMessages.length > 0
+    ? unreadMessages.slice(-6).map((m, i) => {
+        const snippet = (m.text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        return `${i + 1}. ${snippet}`;
+      }).join('\n')
+    : (language === 'zh'
+      ? '（没有明确未读，就作为忙完之后随手接上之前的节奏）'
+      : '(no concrete unread — just casually picking back up)');
+
+  const systemPrompt = language === 'zh'
+    ? `[SYSTEM_ACTIVATION_PROTOCOL: 忙完之后的继续对话]
+      之前你在「${followUp.slotDescription}」没空回复，现在忙完了，给用户接上话。
+      时机感：${freshnessHint}。
+
+      用户在你忙的期间留下的未读（按时间顺序）：
+      ${unreadBullets}
+
+      【强制纪律】
+      1. 像真人忙完之后拿起手机自然回一句，不要机械道歉。
+      2. 不要用"抱歉刚刚没空"这种模板开头；可以淡淡提一句"刚下课"或直接切入最想回的那条。
+      3. 未读不必每条都回完，挑 1-2 条最想继续的接上，其余让对话自然推进。
+      4. 控制长度：1-3 句话，不要写小作文，不要条列。
+      5. 不要出现"系统"、"未读队列"、"自动回复"、"定时"、"消息记录"这种让人出戏的字眼。
+      6. 如果未读里有明显情绪（担心、生气、撒娇），可以简短回应情绪本身。`
+    : `[SYSTEM_ACTIVATION_PROTOCOL: Post-busy follow-up]
+      Earlier you were at "${followUp.slotDescription}" and couldn't reply. Now you're free and picking the thread back up.
+      Timing feel: ${freshnessHint}.
+
+      Unread messages the user left while you were busy (chronological):
+      ${unreadBullets}
+
+      [STRICT DISCIPLINE]
+      1. Sound like you just finished and casually picked up your phone — no mechanical apologies.
+      2. Don't open with "Sorry I couldn't reply earlier"; a light "just got out of class" or diving straight into the most compelling line is better.
+      3. You don't have to address every unread message. Pick the 1-2 you most want to respond to and let the rest flow naturally.
+      4. Keep it short — 1-3 sentences. No essays. No bullet lists.
+      5. Do NOT say "system", "queue", "auto-reply", "timer", "message log", or anything that breaks immersion.
+      6. If an unread message carries clear emotion (worry, irritation, affection), acknowledge it briefly.`;
+
+  try {
+    const response = await sendMessageToGemini(
+      systemPrompt,
+      coreMemory,
+      [...worldBook, ...getKumikoLocalRag(language)],
+      recentMessages,
+      locationConfig,
+      undefined, undefined, 0, undefined, [], undefined, [], anchors, kumikoNotebook,
+      undefined,
+      language,
+    );
+    const cleanedParts = (response.textParts || [])
+      .map(t => (t || '').trim())
+      .filter(t => t.length > 0);
+    if (cleanedParts.length === 0) return null;
+    return { textParts: cleanedParts, emotion: response.emotion };
+  } catch (e) {
+    console.warn('[BUSY-PREPARE] Draft generation failed', e);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// displayPreparedProactiveMessage
+// ---------------------------------------------------------------------------
+// Called once the scheduled `displayAt` moment arrives AND
+// `preparedTextParts` is non-empty. Fakes a realistic typing animation
+// (isThinking for 2-8s proportional to length, then isTalking, then drip
+// the parts in) so the playback feels like Kumiko just composed it.
+export async function displayPreparedProactiveMessage(
+  followUp: BusyFollowUp,
+): Promise<boolean> {
+  if (!followUp.preparedTextParts || followUp.preparedTextParts.length === 0) {
+    return false;
+  }
+  const storeState = useAppStore.getState();
+  if (storeState.isTalking || storeState.isThinking) {
+    return false;
+  }
+  const combined = followUp.preparedTextParts.join(' ');
+  const typingMs = Math.max(2000, Math.min(8000, 1500 + combined.length * 60));
+  useAppStore.getState().setIsThinking(true);
+  await new Promise(r => setTimeout(r, typingMs));
+  useAppStore.getState().setIsThinking(false);
+  useAppStore.getState().setIsTalking(true);
+
+  const emotion = followUp.preparedEmotion || 'neutral';
+  const firstText = followUp.preparedTextParts[0];
+  const firstMsgId = addMessageToStore('model', firstText, undefined, undefined, undefined, undefined, undefined, emotion);
+  showBackgroundNotification(firstText, 'proactive', firstMsgId);
+
+  for (let i = 1; i < followUp.preparedTextParts.length; i++) {
+    await new Promise(r => setTimeout(r, 900 + Math.random() * 1200));
+    addMessageToStore('model', followUp.preparedTextParts[i], undefined, undefined, undefined, undefined, undefined, emotion);
+  }
+
+  setTimeout(() => useAppStore.getState().setIsTalking(false), 2000);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// buildPendingApologyInjection
+// ---------------------------------------------------------------------------
+// Merges every `PendingApologySource` currently accumulated in
+// `pendingApology` into a single inline system prompt block. This is
+// threaded into the normal chat pipeline the next time the user sends a
+// message so Kumiko can (a) apologise once, (b) reply primarily to the
+// user's new message, and (c) surface 2-3 of the most relevant unread
+// topics without overwhelming the reply.
+export function buildPendingApologyInjection(
+  sources: PendingApologySource[],
+  allMessages: Message[],
+  language: 'zh' | 'en',
+): string {
+  if (!sources || sources.length === 0) return '';
+  const msgById = new Map<string, Message>();
+  for (const m of allMessages) msgById.set(m.id, m);
+
+  type AggregatedMsg = {
+    id: string;
+    text: string;
+    timestamp: number;
+    slotDescription: string;
+  };
+  const all: AggregatedMsg[] = [];
+  for (const src of sources) {
+    for (const mid of src.unreadUserMessageIds) {
+      const m = msgById.get(mid);
+      if (!m || !m.text) continue;
+      all.push({
+        id: mid,
+        text: m.text.replace(/\s+/g, ' ').trim(),
+        timestamp: typeof m.timestamp === 'number' ? m.timestamp : Date.parse(String(m.timestamp)) || 0,
+        slotDescription: src.slotDescription,
+      });
+    }
+  }
+  all.sort((a, b) => a.timestamp - b.timestamp);
+  const oldest = all[0];
+  const newest = all[all.length - 1];
+  const middle = all.length >= 3 ? all[Math.floor(all.length / 2)] : undefined;
+
+  const highlights: AggregatedMsg[] = [];
+  const pushed = new Set<string>();
+  for (const cand of [oldest, newest, middle]) {
+    if (!cand || pushed.has(cand.id)) continue;
+    highlights.push(cand);
+    pushed.add(cand.id);
+    if (highlights.length >= 3) break;
+  }
+
+  const slotDescriptions = Array.from(new Set(sources.map(s => s.slotDescription)));
+  const slotSummary = slotDescriptions.join(language === 'zh' ? '、' : ' / ');
+  const totalUnread = all.length;
+  const highlightLines = highlights.map((h, i) => {
+    const snippet = h.text.length > 120 ? h.text.slice(0, 120) + '…' : h.text;
+    return `${i + 1}. [${h.slotDescription}] ${snippet}`;
+  }).join('\n');
+
+  if (language === 'zh') {
+    return `\n[SYSTEM_INJECTION: 积压未读消息追赶]
+你之前几段忙碌期（${slotSummary}）没空回复，累计有 ${totalUnread} 条未读。现在用户又发来了新消息，你终于能一起处理。
+
+从所有未读里挑出的几条关键内容（按时间：最早 / 中间 / 最新）：
+${highlightLines}
+
+【本轮必须遵守】
+1. 只轻轻表达一次"这段时间没空回你"的意思，整段回复加起来只能有一次，不要每条都道歉一遍。
+2. 先回应用户【当前这条新消息】，这是主轴。
+3. 在回复中自然地带起上面 2-3 条里最契合话题或情绪最浓的那 1-2 条，不要逐条罗列，不要复述原话。
+4. 其他没提到的未读不用担心，用户之后可能自己提起，你再聊。
+5. 保持正常对话节奏：别写小作文，别开条列清单，不要出现"系统"、"未读队列"、"未读消息"、"追赶"、"补回复"这些破坏沉浸的词。`;
+  }
+  return `\n[SYSTEM_INJECTION: Accumulated unread catch-up]
+You were unavailable during a few busy periods (${slotSummary}) and ${totalUnread} messages piled up unread. The user has just sent a new message, so you can finally respond.
+
+Key unread items picked out (oldest / middle / newest):
+${highlightLines}
+
+[STRICT RULES FOR THIS TURN]
+1. Acknowledge being away at most ONCE across the whole reply — no per-message apologies.
+2. The user's CURRENT new message is the main thread. Respond to it first.
+3. Naturally weave in 1-2 of the highlighted unread items (the ones most relevant or most emotionally charged). Do not list them, do not quote them literally.
+4. Ignore the rest of the unread queue. If the user cares, they will resurface a topic later.
+5. Keep a normal conversational rhythm. No essays, no bullet points. Never mention "system", "unread queue", "backlog", "catch-up", or anything that breaks immersion.`;
+}
+
+// ---------------------------------------------------------------------------
 // triggerTimedReminderMessage
 // ---------------------------------------------------------------------------
 
@@ -515,7 +743,7 @@ export async function triggerTimedReminderMessage(
     const combinedReminderText = response.textParts.join(' ');
     const currentTtsCfg = refs.ttsConfigRef.current;
 
-    if (currentTtsCfg.voiceMode !== 'text' && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'sovits') && isVoiceServiceAvailable()) {
+    if (currentTtsCfg.voiceMode !== 'text' && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'sovits' || (currentTtsCfg.ttsBackend === 'vocu' && !!currentTtsCfg.vocuApiKey && !!currentTtsCfg.vocuVoiceId)) && isVoiceServiceAvailable()) {
       useAppStore.getState().setIsThinking(false);
 
       const isInForeground = !document.hidden && document.hasFocus();
@@ -824,56 +1052,155 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       }
     }
 
-    // --- A-3 DYNAMIC DELAY (BUSY STATE) INTERCEPTOR ---
-    const { getDetailedScheduleSlot } = await import('../../services/kumikoStateMachine');
+    // --- A-3 BUSY STATE INTERCEPTOR ---
+    // Slot-level one-time dice roll: once we enter a busy slot (teaching,
+    // shr, school_prep, after_school) we roll once for the whole slot and
+    // persist the decision. Subsequent user messages in the same slot
+    // reuse the decision. Teaching slot additionally upgrades from
+    // `allow` → `block` after Kumiko has replied 2 round-trips.
+    const { getDetailedScheduleSlot, getBusyEndTimestamp } = await import('../../services/kumikoStateMachine');
     const scheduleSlot = getDetailedScheduleSlot(locationConfig.modelTimezone, isCurrentHoliday);
+    const nowMs = Date.now();
+    const slotEndMs = scheduleSlot.slotKey
+      ? getBusyEndTimestamp(scheduleSlot, new Date(nowMs), locationConfig.modelTimezone)
+      : null;
 
-    if (scheduleSlot.interceptChance > 0 && Math.random() < scheduleSlot.interceptChance) {
-      useAppStore.getState().setIsThinking(true);
-      await new Promise(r => setTimeout(r, 2000 + Math.random() * 3000));
-      useAppStore.getState().setIsThinking(false);
-
-      const getBusyReply = (): string => {
-        const isZh = language === 'zh';
-        if (scheduleSlot.slotType === 'teaching') {
-          const pNum = scheduleSlot.periodNumber || 0;
-          const zhReplies = [
-            `在上课呢，第${pNum}节还没下课，等一下`,
-            `${scheduleSlot.classGroup || ''}的课还没完，下课再说`,
-            '现在不方便，课上呢',
-            '等下课再回你，马上',
-          ];
-          const enReplies = [
-            `In class right now, period ${pNum} isn't over yet. Give me a sec`,
-            "Can't talk, I'm teaching. I'll reply after class",
-            'Hold on, still in the middle of a lesson',
-            'Busy with class, brb',
-          ];
-          const pool = isZh ? zhReplies : enReplies;
-          return pool[Math.floor(Math.random() * pool.length)];
-        } else if (scheduleSlot.slotType === 'shr') {
-          return isZh ? '朝会中，马上回你' : 'In morning assembly, one sec';
+    // --- Stale runtime archive (regulator may not have ticked yet) ---
+    // If the slot key we had in `busySlotRuntime` no longer matches the
+    // current schedule (e.g. the class just ended within the last
+    // second and the 1 s poller hasn't fired), archive the old runtime
+    // inline so its unread-message tracking isn't lost when
+    // `ensureBusySlot` overwrites the record below.
+    {
+      const staleRuntime = useAppStore.getState().busySlotRuntime;
+      if (staleRuntime && staleRuntime.slotKey !== scheduleSlot.slotKey) {
+        if (staleRuntime.unreadUserMessageIds.length > 0 || staleRuntime.mode === 'block') {
+          const staleEndMs = staleRuntime.endAtMs ?? nowMs;
+          const prepareAt = Math.max(staleEndMs - 2 * 60_000, nowMs);
+          const displayAt = Math.max(staleEndMs, nowMs) + 25_000 + Math.floor(Math.random() * 15_000);
+          await useAppStore.getState().archiveBusySlotToFollowUp({ prepareAt, displayAt });
         } else {
-          const zhReplies = ['社团那边有点事，等下回你', '抱歉，现在有点忙，晚点回你'];
-          const enReplies = ["Busy with club stuff, I'll get back to you", 'Sorry, a bit busy right now'];
-          const pool = isZh ? zhReplies : enReplies;
-          return pool[Math.floor(Math.random() * pool.length)];
+          await useAppStore.getState().clearBusySlot();
         }
-      };
-
-      const reply = getBusyReply();
-      const msgId = addMessageToStore('model', reply, undefined, undefined, undefined, undefined, undefined, 'serious');
-      showBackgroundNotification(reply, 'reply', msgId);
-
-      const followUpDelay = scheduleSlot.slotType === 'teaching'
-        ? 10 * 60000 + Math.random() * 20 * 60000
-        : 5 * 60000 + Math.random() * 10 * 60000;
-      const followUpEvent = language === 'zh' ? '忙完了，继续刚才的话题' : 'Done with that, where were we?';
-      if (ctx.triggerBusyFollowUp) {
-        setTimeout(() => { ctx.triggerBusyFollowUp!(followUpEvent); }, followUpDelay);
       }
-      ctx.markPendingRead();
-      return;
+    }
+
+    // --- User-interrupt preemption of a pending busyFollowUp ---
+    // If the user sent a fresh message BEFORE the regulator's
+    // `displayAt` moment fired, convert the still-queued follow-up into
+    // a `pendingApologySource` so the apology-injection block below
+    // surfaces it naturally in this turn instead of double-replying.
+    const pendingFollowUp = useAppStore.getState().busyFollowUp;
+    if (pendingFollowUp) {
+      const { convertBusyFollowUpToApologyForPreemption } = await import('../../hooks/useBusyRegulator');
+      await convertBusyFollowUpToApologyForPreemption();
+    }
+
+    const trackedUserMsgId = currentTurnStartMessageId
+      || Array.from(ctx.pendingMessageIds || [])[0]
+      || null;
+
+    // Only buckets with a non-null slotKey participate in the busy
+    // regulator; everything else (home / free / drowsy / lunch / sleeping
+    // / commuting / cleaning) falls through to the normal pipeline.
+    if (scheduleSlot.slotKey && scheduleSlot.interceptChance > 0) {
+      const busyStore = useAppStore.getState();
+      const slotCtx: BusySlotContext = {
+        slotKey: scheduleSlot.slotKey,
+        slotType: scheduleSlot.slotType,
+        slotDescription: scheduleSlot.description,
+        endAtMs: slotEndMs,
+      };
+      const decision = busyStore.ensureBusySlot(slotCtx, scheduleSlot.interceptChance, nowMs);
+
+      if (decision !== 'allow') {
+        const runtime = useAppStore.getState().busySlotRuntime;
+        const upgradedByRound = runtime?.reason === 'round_limit';
+        const pickBusyReply = (): string => {
+          const isZh = language === 'zh';
+          if (upgradedByRound && scheduleSlot.slotType === 'teaching') {
+            const zhPool = [
+              '先不聊了，下节还有新内容要讲，静音了',
+              '真不能再说了，学生已经看我好几眼，下课再说',
+              '这节课剩下部分要集中，等放学',
+            ];
+            const enPool = [
+              "I really have to stop now, new material coming up. Back after class",
+              "Kids are starting to notice — muting my phone. Talk later.",
+              'Need to focus on the rest of this lesson, catch you after school.',
+            ];
+            const pool = isZh ? zhPool : enPool;
+            return pool[Math.floor(Math.random() * pool.length)];
+          }
+          if (scheduleSlot.slotType === 'teaching') {
+            const pNum = scheduleSlot.periodNumber || 0;
+            const zhPool = [
+              `在上课呢，第${pNum}节还没下课，等一下`,
+              `${scheduleSlot.classGroup || ''}的课还没完，下课再说`,
+              '现在不方便，课上呢',
+              '等下课再回你',
+            ];
+            const enPool = [
+              `In class right now, period ${pNum} isn't over yet. Give me a sec`,
+              "Can't talk, I'm teaching. I'll reply after class",
+              'Hold on, still in the middle of a lesson',
+              'Busy with class, brb',
+            ];
+            const pool = isZh ? zhPool : enPool;
+            return pool[Math.floor(Math.random() * pool.length)];
+          }
+          if (scheduleSlot.slotType === 'shr') {
+            const zhPool = ['朝会中，马上回你', '在朝会，稍等', 'SHR 还没结束，一会儿说'];
+            const enPool = ['In morning assembly, one sec', 'SHR right now, hold on', "Homeroom meeting, I'll reply shortly"];
+            const pool = isZh ? zhPool : enPool;
+            return pool[Math.floor(Math.random() * pool.length)];
+          }
+          if (scheduleSlot.slotType === 'after_school') {
+            const zhPool = ['社团那边有点事，等下回你', '正在部活，稍后说', '放学后部活中，晚点回'];
+            const enPool = ["Busy with club stuff, I'll get back to you", 'In club activities, talk soon', 'After-school duties, reply in a bit'];
+            const pool = isZh ? zhPool : enPool;
+            return pool[Math.floor(Math.random() * pool.length)];
+          }
+          // school_prep
+          const zhPool = ['正在准备上学前的事，等下说', '忙着出门准备，马上', '出勤前有点手忙脚乱，晚点说'];
+          const enPool = ['Getting ready for school, one sec', 'Busy with the morning rush', "Bit hectic before heading out, I'll reply in a moment"];
+          const pool = isZh ? zhPool : enPool;
+          return pool[Math.floor(Math.random() * pool.length)];
+        };
+
+        if (decision === 'block_first') {
+          const replyText = pickBusyReply();
+          // Tiny typing beat so it doesn't feel teleported.
+          useAppStore.getState().setIsThinking(true);
+          await new Promise(r => setTimeout(r, 1400 + Math.random() * 1800));
+          useAppStore.getState().setIsThinking(false);
+          const msgId = addMessageToStore('model', replyText, undefined, undefined, undefined, undefined, undefined, 'serious');
+          showBackgroundNotification(replyText, 'reply', msgId);
+          if (trackedUserMsgId) {
+            await useAppStore.getState().appendBusyUnread(scheduleSlot.slotKey, trackedUserMsgId, {
+              shortReplyText: replyText,
+              markShortReplyIssued: true,
+            });
+          } else {
+            // No pending msg id (rare edge case) — still mark the short
+            // reply as issued so the next user message goes silent.
+            await useAppStore.getState().appendBusyUnread(scheduleSlot.slotKey, `synthetic-${nowMs}`, {
+              shortReplyText: replyText,
+              markShortReplyIssued: true,
+            });
+          }
+        } else {
+          // decision === 'block_silent': no UI response at all. The
+          // message is quietly tracked and will come back as part of the
+          // burst compensation later.
+          if (trackedUserMsgId) {
+            await useAppStore.getState().appendBusyUnread(scheduleSlot.slotKey, trackedUserMsgId);
+          }
+        }
+
+        ctx.markPendingRead();
+        return;
+      }
     }
 
     // --- A-4 MEMORY / RAG RESOLUTION ---
@@ -1263,6 +1590,23 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       }
     }
 
+    // --- PENDING APOLOGY BURST COMPENSATION INJECTION ---
+    // If one or more `busyFollowUp` records expired / failed / were
+    // interrupted by the user, they were appended into `pendingApology`
+    // as sources. When the user finally sends a normal message, inject a
+    // merged catch-up block so Kumiko apologises ONCE and naturally
+    // weaves 2-3 of the old topics back into her reply.
+    const apologyAtInject = useAppStore.getState().pendingApology;
+    const apologyInjectedThisTurn = !strictEvidenceTurn && !!apologyAtInject && apologyAtInject.sources.length > 0;
+    if (apologyInjectedThisTurn) {
+      const injection = buildPendingApologyInjection(
+        apologyAtInject!.sources,
+        ctx.getMessagesSnapshot(),
+        language,
+      );
+      if (injection) modelRagContext.push(injection);
+    }
+
     // --- A-8 VOICE POLICY ---
     const currentVoicePolicy = currentStateCtx.voicePolicy;
     let hybridVoicePrompt = '';
@@ -1313,6 +1657,23 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
 
     const s2 = useAppStore.getState();
     ctx.markPendingRead();
+
+    // --- Teaching-slot round counter bookkeeping ---
+    // Each successful allow-mode AI reply in a teaching slot counts as
+    // one round-trip. Once we hit 2 round-trips, the NEXT user message
+    // in the same slot triggers the round-limit block (see
+    // `ensureBusySlot`), regardless of the initial dice roll.
+    if (scheduleSlot.slotKey && scheduleSlot.slotType === 'teaching') {
+      const runtime = s2.busySlotRuntime;
+      if (runtime && runtime.mode === 'allow' && runtime.slotKey === scheduleSlot.slotKey) {
+        await s2.incrementBusySlotRound(scheduleSlot.slotKey);
+      }
+    }
+
+    // --- Clear pending apology after successful burst compensation ---
+    if (apologyInjectedThisTurn) {
+      await s2.clearPendingApology();
+    }
 
     s2.setIsDisconnected(false);
     s2.setCurrentEmotion(response.emotion);
@@ -1382,7 +1743,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     const isVoiceTurn = currentTtsCfg.voiceMode === 'full'
       || (currentTtsCfg.voiceMode === 'hybrid' && response.voiceMode === true);
 
-    if (isVoiceTurn && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'sovits') && isVoiceServiceAvailable()) {
+    if (isVoiceTurn && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'sovits' || (currentTtsCfg.ttsBackend === 'vocu' && !!currentTtsCfg.vocuApiKey && !!currentTtsCfg.vocuVoiceId)) && isVoiceServiceAvailable()) {
       const combinedVoiceText = response.textParts.join(' ');
       useAppStore.getState().setIsThinking(true);
 
@@ -1661,7 +2022,10 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       if (config.activeKey === 'primary' && config.apiKey_backup) {
         console.warn('[KEY_SWITCH] Primary key rate limited. Switching to backup key.');
         if (ctx.origin === 'desktop') {
-          alert('主 API Key 已达到当日请求上限，将自动切换至备用 Key 并重试...');
+          void dialogService.alert({
+            message: '主 API Key 已达到当日请求上限，将自动切换至备用 Key 并重试...',
+            icon: 'warning',
+          });
         }
         const newConfig: AIConfig = {
           ...config,
@@ -1675,7 +2039,10 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
         ctx.onRetry();
         return;
       } else if (ctx.origin === 'desktop') {
-        alert('API Key(s) have reached the daily request limit.');
+        void dialogService.alert({
+          message: 'API Key(s) have reached the daily request limit.',
+          icon: 'error',
+        });
       }
     }
 

@@ -98,6 +98,23 @@ export const useAppPreferencesSync = ({
       merged.ringtoneFileId = DEFAULT_TTS_CONFIG.ringtoneFileId;
     }
 
+    // ttsBackend must be one of the three supported backends; anything else
+    // (legacy values, garbled localStorage) falls back to 'fish'.
+    if (merged.ttsBackend !== 'fish' && merged.ttsBackend !== 'sovits' && merged.ttsBackend !== 'vocu') {
+      merged.ttsBackend = DEFAULT_TTS_CONFIG.ttsBackend;
+    }
+
+    // Vocu field sanitization: enforce types so UI inputs / API calls never see
+    // undefined or malformed shapes after round-tripping through localStorage.
+    merged.vocuApiKey = typeof merged.vocuApiKey === 'string' ? merged.vocuApiKey : '';
+    merged.vocuVoiceId = typeof merged.vocuVoiceId === 'string' ? merged.vocuVoiceId : '';
+    merged.vocuPromptId = typeof merged.vocuPromptId === 'string' && merged.vocuPromptId.trim().length > 0
+      ? merged.vocuPromptId
+      : (DEFAULT_TTS_CONFIG.vocuPromptId || 'default');
+    merged.vocuPreset = merged.vocuPreset === 'vivid' ? 'vivid' : 'balance';
+    merged.vocuFlash = Boolean(merged.vocuFlash);
+    merged.vocuEmotionBoost = Boolean(merged.vocuEmotionBoost);
+
     return merged as TtsConfig;
   }, []);
 

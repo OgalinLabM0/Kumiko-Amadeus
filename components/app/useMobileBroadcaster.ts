@@ -27,6 +27,66 @@
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../../store';
 import type { Message, VoiceCallOverlayData } from '../../types';
+import type { BusyFollowUp, PendingApology } from '../../store/slices/busySlice';
+
+// Wire-safe projection of a BusyFollowUp. We drop the full
+// `preparedTextParts` payload because phones never *play back* the
+// prepared draft — that only happens on the desktop where the timed
+// display pipeline lives. All the phone UI needs is the metadata to
+// render the TaskPanel card (slot / status / countdown / unread count).
+interface SlimBusyFollowUp {
+  id: string;
+  slotDescription: string;
+  slotType: string;
+  slotEndAtMs: number | null;
+  prepareAt: number;
+  displayAt: number;
+  unreadCount: number;
+  prepared: boolean;
+  failureCount: number;
+}
+
+interface SlimPendingApologySource {
+  slotDescription: string;
+  slotType: string;
+  reason: string;
+  unreadCount: number;
+}
+
+interface SlimPendingApology {
+  id: string;
+  createdAt: number;
+  latestAppendedAt: number;
+  sources: SlimPendingApologySource[];
+}
+
+function slimBusyFollowUp(f: BusyFollowUp): SlimBusyFollowUp {
+  return {
+    id: f.id,
+    slotDescription: f.slotDescription,
+    slotType: f.slotType,
+    slotEndAtMs: f.slotEndAtMs,
+    prepareAt: f.prepareAt,
+    displayAt: f.displayAt,
+    unreadCount: f.unreadUserMessageIds.length,
+    prepared: !!(f.preparedAt && f.preparedTextParts && f.preparedTextParts.length > 0),
+    failureCount: f.failureCount,
+  };
+}
+
+function slimPendingApology(a: PendingApology): SlimPendingApology {
+  return {
+    id: a.id,
+    createdAt: a.createdAt,
+    latestAppendedAt: a.latestAppendedAt,
+    sources: a.sources.map(s => ({
+      slotDescription: s.slotDescription,
+      slotType: s.slotType,
+      reason: s.reason,
+      unreadCount: s.unreadUserMessageIds.length,
+    })),
+  };
+}
 
 // Wire shape for the call overlay — the live Zustand entry carries
 // React closures (onAccept/onReject/onClose) that can't be serialized
@@ -79,7 +139,14 @@ type BroadcastPayload =
   // is fired when the desktop AuthScreen/SettingsPanel connects, creates or
   // disconnects a backup file.
   | { type: 'ai-config:changed' }
-  | { type: 'backup:desktop-path-changed'; filePath: string | null; fileName: string | null };
+  | { type: 'backup:desktop-path-changed'; filePath: string | null; fileName: string | null }
+  // Busy regulator state. The phone renders the TaskPanel "pending
+  // auto-reply" card from these; it never triggers the actual AI
+  // prepare/display pipeline (that is desktop-only).
+  | { type: 'busy:followup:set'; followUp: SlimBusyFollowUp }
+  | { type: 'busy:followup:cleared' }
+  | { type: 'busy:apology:set'; apology: SlimPendingApology }
+  | { type: 'busy:apology:cleared' };
 
 interface SlimMessageQuote {
   id?: string;
@@ -231,15 +298,27 @@ function diffMessageLists(prev: Message[], next: Message[]): BroadcastPayload[] 
 // Generic bridge: subscribe to a renderer-delivered IPC event and
 // re-emit it to every connected phone under `forwardType`. Returns a
 // cleanup that removes the underlying IPC listener on unmount.
+//
+// preload.cjs exposes `electronAPI.on()` as a direct passthrough of
+// `ipcRenderer.on(channel, listener)`. Electron calls listeners with
+// `(event: IpcRendererEvent, ...args)`, so the *real* payload is the
+// second positional argument, not the first. Early versions of this
+// helper treated arg[0] as the payload, then fed the IpcRendererEvent
+// into `shape()`. Because `IpcRendererEvent` carries a native `sender`
+// reference, the resulting broadcast object failed structured-clone at
+// `ipcRenderer.send` time and we saw `[WARN][MOBILE-BROADCAST] send
+// failed: Error: An object could not be cloned.` on every RAG / auto-
+// zip / update / genie tick — even with no phones connected. Skipping
+// the IpcRendererEvent fixes that at the source.
 function bridgeIpcEvent<TPayload>(
   api: NonNullable<typeof window.electronAPI>,
   ipcChannel: string,
   forwardType: BroadcastPayload['type'],
   shape: (p: TPayload) => BroadcastPayload,
 ): () => void {
-  const handler = (payload: TPayload) => {
+  const handler = (_event: unknown, payload?: TPayload) => {
     try {
-      const event = shape(payload);
+      const event = shape(payload as TPayload);
       // Defensive: emission shape mismatch would poison the phone's
       // MobileEvent stream. Assert the forwardType matches the helper's
       // contract before pushing.
@@ -276,6 +355,11 @@ export function useMobileBroadcaster() {
   // so when the user picks / disconnects a backup file at the PC,
   // phones update their "saving to …" indicator in real time.
   const lastBackupNameRef = useRef<string | null | undefined>(undefined);
+  // Busy regulator mirrors. We signature-compare the JSON shape so we
+  // only push deltas — the follow-up's prepareAt / displayAt are
+  // static per follow-up, so most ticks emit nothing.
+  const lastBusyFollowUpSigRef = useRef<string | null>(null);
+  const lastPendingApologySigRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -360,6 +444,37 @@ export function useMobileBroadcaster() {
         if (sig !== lastCallSigRef.current) {
           lastCallSigRef.current = sig;
           emit({ type: 'call:state', state: slim });
+        }
+      }
+
+      // Busy regulator fan-out.
+      const followUp = s.busyFollowUp;
+      if (!followUp) {
+        if (lastBusyFollowUpSigRef.current !== null) {
+          lastBusyFollowUpSigRef.current = null;
+          emit({ type: 'busy:followup:cleared' });
+        }
+      } else {
+        const slim = slimBusyFollowUp(followUp);
+        const sig = JSON.stringify(slim);
+        if (sig !== lastBusyFollowUpSigRef.current) {
+          lastBusyFollowUpSigRef.current = sig;
+          emit({ type: 'busy:followup:set', followUp: slim });
+        }
+      }
+
+      const apology = s.pendingApology;
+      if (!apology || apology.sources.length === 0) {
+        if (lastPendingApologySigRef.current !== null) {
+          lastPendingApologySigRef.current = null;
+          emit({ type: 'busy:apology:cleared' });
+        }
+      } else {
+        const slim = slimPendingApology(apology);
+        const sig = JSON.stringify(slim);
+        if (sig !== lastPendingApologySigRef.current) {
+          lastPendingApologySigRef.current = sig;
+          emit({ type: 'busy:apology:set', apology: slim });
         }
       }
     });

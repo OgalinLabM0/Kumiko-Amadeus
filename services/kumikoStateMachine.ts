@@ -29,6 +29,21 @@ export interface DetailedScheduleSlot {
   description: string;
   canChat: boolean;
   interceptChance: number;
+  // busy-regulator related fields: these are filled in only for slots
+  // that can intercept user messages (teaching / shr / after_school /
+  // school_prep). For everything else they stay null / undefined so the
+  // busy regulator can safely early-out.
+  //
+  // `slotKey` is a stable identity for a single occurrence of the slot
+  // (e.g. `2026-04-15:teaching:p3`). It survives within the slot and
+  // changes when the slot flips to the next one, which is what lets
+  // `ensureBusySlot` implement "one dice roll per slot".
+  //
+  // `endAtMinutes` is the minute-of-day the slot ends in the model
+  // timezone (0..1439). Combine with `getBusyEndTimestamp(slot, now, tz)`
+  // to get an absolute epoch ms for countdown / prepare-ahead logic.
+  slotKey: string | null;
+  endAtMinutes?: number;
 }
 
 interface PeriodTimeDef {
@@ -522,49 +537,58 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
 
   if (prepPhase && !isWeekend && !isHoliday) {
     if (minutesOfDay < 30) {
-      return { slotType: 'drowsy', description: '深夜犯困中', canChat: true, interceptChance: 0 };
+      return { slotType: 'drowsy', description: '深夜犯困中', canChat: true, interceptChance: 0, slotKey: null };
     } else if (minutesOfDay < 6 * 60) {
-      return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0 };
+      return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0, slotKey: null };
     } else if (minutesOfDay < 7 * 60 + 50) {
-      return { slotType: 'commuting', description: '早晨通勤中（7:40左右到校）', canChat: false, interceptChance: 0 };
+      return { slotType: 'commuting', description: '早晨通勤中（7:40左右到校）', canChat: false, interceptChance: 0, slotKey: null };
     } else if (minutesOfDay < 17 * 60) {
-      return { slotType: 'school_prep', freeActivity: prepPhase.description, prepPhaseKey: prepPhase.phase, description: prepPhase.description, canChat: true, interceptChance: 0.05 };
+      return {
+        slotType: 'school_prep',
+        freeActivity: prepPhase.description,
+        prepPhaseKey: prepPhase.phase,
+        description: prepPhase.description,
+        canChat: true,
+        interceptChance: 0.05,
+        slotKey: `${dateStr}:school_prep:${prepPhase.phase}`,
+        endAtMinutes: 17 * 60,
+      };
     } else if (minutesOfDay < 18 * 60 + 30) {
-      return { slotType: 'commuting', description: '傍晚通勤回家', canChat: false, interceptChance: 0 };
+      return { slotType: 'commuting', description: '傍晚通勤回家', canChat: false, interceptChance: 0, slotKey: null };
     } else {
-      return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0 };
+      return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0, slotKey: null };
     }
   }
 
   if (isWeekend || isHoliday || !inSession) {
     if (minutesOfDay < 30) {
-      return { slotType: 'drowsy', description: '深夜犯困中', canChat: true, interceptChance: 0 };
+      return { slotType: 'drowsy', description: '深夜犯困中', canChat: true, interceptChance: 0, slotKey: null };
     } else if (minutesOfDay < 8 * 60) {
-      return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0 };
+      return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0, slotKey: null };
     } else if (minutesOfDay < 18 * 60) {
-      return { slotType: 'home', description: isHoliday ? '节假日休息/外出中' : !inSession ? '假期中，自由安排' : '周末休息/外出中', canChat: true, interceptChance: 0 };
+      return { slotType: 'home', description: isHoliday ? '节假日休息/外出中' : !inSession ? '假期中，自由安排' : '周末休息/外出中', canChat: true, interceptChance: 0, slotKey: null };
     } else {
-      return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0 };
+      return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0, slotKey: null };
     }
   }
 
   // Weekday during school session
   if (minutesOfDay < 30) {
-    return { slotType: 'drowsy', description: '深夜犯困中', canChat: true, interceptChance: 0 };
+    return { slotType: 'drowsy', description: '深夜犯困中', canChat: true, interceptChance: 0, slotKey: null };
   }
   if (minutesOfDay < 6 * 60) {
-    return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0 };
+    return { slotType: 'sleeping', description: '正在睡觉', canChat: false, interceptChance: 0, slotKey: null };
   }
   if (minutesOfDay < 7 * 60 + 50) {
-    return { slotType: 'commuting', description: '早晨通勤中（7:40左右到校）', canChat: false, interceptChance: 0 };
+    return { slotType: 'commuting', description: '早晨通勤中（7:40左右到校）', canChat: false, interceptChance: 0, slotKey: null };
   }
   if (minutesOfDay < 8 * 60 + 30) {
-    return { slotType: 'free', freeActivity: '出勤准备（打印讲义、检查缺席联络）', description: '到校准备中', canChat: true, interceptChance: 0 };
+    return { slotType: 'free', freeActivity: '出勤准备（打印讲义、检查缺席联络）', description: '到校准备中', canChat: true, interceptChance: 0, slotKey: null };
   }
 
   const daySchedule = BASE_TIMETABLE[dayOfWeek];
   if (!daySchedule) {
-    return { slotType: 'home', description: '周末/无课日', canChat: true, interceptChance: 0 };
+    return { slotType: 'home', description: '周末/无课日', canChat: true, interceptChance: 0, slotKey: null };
   }
 
   const assignment = getYearlyAssignment(getSchoolYear(dateStr));
@@ -573,40 +597,70 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
     if (minutesOfDay >= period.startMinute && minutesOfDay < period.endMinute) {
       if (period.id === 'shr_morning') {
         if (daySchedule.shr) {
-          return { slotType: 'shr', description: daySchedule.shrNote || 'SHR朝会', canChat: false, interceptChance: 0.20 };
+          return {
+            slotType: 'shr',
+            description: daySchedule.shrNote || 'SHR朝会',
+            canChat: false,
+            interceptChance: 0.20,
+            slotKey: `${dateStr}:shr:morning`,
+            endAtMinutes: period.endMinute,
+          };
         }
-        return { slotType: 'free', freeActivity: '朝会时间（非班主任日，在办公室准备）', description: '办公室准备', canChat: true, interceptChance: 0 };
+        return { slotType: 'free', freeActivity: '朝会时间（非班主任日，在办公室准备）', description: '办公室准备', canChat: true, interceptChance: 0, slotKey: null };
       }
 
       if (period.id === 'lunch') {
-        return { slotType: 'lunch', description: '午休/午餐时间（在办公室座位上吃便当）', canChat: true, interceptChance: 0 };
+        return { slotType: 'lunch', description: '午休/午餐时间（在办公室座位上吃便当）', canChat: true, interceptChance: 0, slotKey: null };
       }
 
       if (period.id === 'shr_evening') {
         if (daySchedule.shr && daySchedule.shrNote?.includes('归宅')) {
-          return { slotType: 'shr', description: '归宅SHR+清扫监督', canChat: false, interceptChance: 0.20 };
+          return {
+            slotType: 'shr',
+            description: '归宅SHR+清扫监督',
+            canChat: false,
+            interceptChance: 0.20,
+            slotKey: `${dateStr}:shr:evening`,
+            endAtMinutes: period.endMinute,
+          };
         }
-        return { slotType: 'cleaning', description: '归宅时间/清扫', canChat: true, interceptChance: 0 };
+        return { slotType: 'cleaning', description: '归宅时间/清扫', canChat: true, interceptChance: 0, slotKey: null };
       }
 
       if (period.id === 'after_school') {
-        return { slotType: 'after_school', freeActivity: daySchedule.afterSchool, description: `放课后：${daySchedule.afterSchool}`, canChat: true, interceptChance: 0.05 };
+        return {
+          slotType: 'after_school',
+          freeActivity: daySchedule.afterSchool,
+          description: `放课后：${daySchedule.afterSchool}`,
+          canChat: true,
+          interceptChance: 0.05,
+          slotKey: `${dateStr}:after_school`,
+          endAtMinutes: period.endMinute,
+        };
       }
 
-      const slotKey = period.id;
-      const timetableSlot = daySchedule.slots[slotKey];
+      const pId = period.id;
+      const timetableSlot = daySchedule.slots[pId];
       if (!timetableSlot) {
-        return { slotType: 'free', freeActivity: '办公室事务', description: '在办公室', canChat: true, interceptChance: 0 };
+        return { slotType: 'free', freeActivity: '办公室事务', description: '在办公室', canChat: true, interceptChance: 0, slotKey: null };
       }
 
-      const periodNum = PERIOD_INDEX_MAP[slotKey] || 0;
+      const periodNum = PERIOD_INDEX_MAP[pId] || 0;
       const timeRange = `${formatTime(period.startMinute)}-${formatTime(period.endMinute)}`;
 
       if (timetableSlot.kind === 'teaching') {
         const cg = assignment.classGroups[timetableSlot.classGroupKey];
         const sub = assignment.subjectMap[timetableSlot.subjectKey];
         if (!cg || !sub) {
-          return { slotType: 'teaching', periodNumber: periodNum, description: `第${periodNum}校时 上课中`, canChat: false, interceptChance: 0.40 };
+          return {
+            slotType: 'teaching',
+            periodNumber: periodNum,
+            description: `第${periodNum}校时 上课中`,
+            canChat: false,
+            interceptChance: 0.40,
+            slotKey: `${dateStr}:teaching:${pId}`,
+            endAtMinutes: period.endMinute,
+          };
         }
 
         let unitLabel = '';
@@ -627,6 +681,8 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
           description: `第${periodNum}校时（${timeRange}）${cg.label} ${sub.label}${unitLabel ? ` — ${unitLabel}` : ''}`,
           canChat: false,
           interceptChance: 0.40,
+          slotKey: `${dateStr}:teaching:${pId}`,
+          endAtMinutes: period.endMinute,
         };
       } else {
         return {
@@ -636,6 +692,7 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
           description: `第${periodNum}校时（${timeRange}）[空档] ${timetableSlot.activity}`,
           canChat: true,
           interceptChance: 0,
+          slotKey: null,
         };
       }
     }
@@ -643,14 +700,45 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
 
   // After school hours, before commute home
   if (minutesOfDay >= 18 * 60 + 30 && minutesOfDay < 19 * 60 + 30) {
-    return { slotType: 'commuting', description: '傍晚通勤回家', canChat: false, interceptChance: 0 };
+    return { slotType: 'commuting', description: '傍晚通勤回家', canChat: false, interceptChance: 0, slotKey: null };
   }
 
   if (minutesOfDay >= 19 * 60 + 30) {
-    return { slotType: 'home', description: '在家休息/备课或批改作文', canChat: true, interceptChance: 0 };
+    return { slotType: 'home', description: '在家休息/备课或批改作文', canChat: true, interceptChance: 0, slotKey: null };
   }
 
-  return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0 };
+  return { slotType: 'home', description: '在家休息', canChat: true, interceptChance: 0, slotKey: null };
+};
+
+// ---------------------------------------------------------------------------
+// Busy-regulator helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a slot's `endAtMinutes` (minute-of-day in the model timezone) into
+ * an absolute epoch ms based on the provided `now` and `timezone`.
+ *
+ * Returns null when:
+ *   - the slot is not a "busy" slot (endAtMinutes is undefined)
+ *   - the computed end time is already in the past (defensive; in practice
+ *     the caller only asks about the *current* slot, so this should never
+ *     trigger unless there's a clock skew edge case).
+ */
+export const getBusyEndTimestamp = (
+  slot: DetailedScheduleSlot,
+  now: Date,
+  timezone: string = 'Asia/Tokyo',
+): number | null => {
+  if (typeof slot.endAtMinutes !== 'number') return null;
+  const tzNow = new Date(now.toLocaleString('en-US', { timeZone: timezone }));
+  const currentMinutesOfDay = tzNow.getHours() * 60 + tzNow.getMinutes();
+  const currentSeconds = tzNow.getSeconds();
+  const currentMs = tzNow.getMilliseconds();
+  const diffMs = (slot.endAtMinutes - currentMinutesOfDay) * 60_000
+    - currentSeconds * 1000
+    - currentMs;
+  if (diffMs <= 0) return null;
+  return now.getTime() + diffMs;
 };
 
 export const getDayScheduleSummary = (dateStr: string, timezone: string = 'Asia/Tokyo'): string => {

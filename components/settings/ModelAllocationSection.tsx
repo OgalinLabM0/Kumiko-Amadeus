@@ -38,16 +38,19 @@ export const ModelAllocationSection: React.FC<ModelAllocationSectionProps> = ({
   return (
     <div className={innerCardClass}>
       <button onClick={onToggle} className="w-full flex items-center justify-between mb-2">
-        <h4 className={`ka-label font-bold flex items-center gap-2 ${isDarkMode ? 'text-teal-300' : 'text-teal-700'}`}>
-          <Brain size={13} /> {t_local.allocation}
-        </h4>
-        {isOpen ? <ChevronUp size={14} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} /> : <ChevronDown size={14} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} />}
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <div className={`flex h-9 w-9 items-center justify-center rounded-xl border shrink-0 ${isDarkMode ? 'border-teal-500/20 bg-teal-900/20 text-teal-300' : 'border-teal-200 bg-teal-50/90 text-teal-700'}`}>
+            <Brain size={16} />
+          </div>
+          <div className="flex-1 text-left min-w-0">
+            <h4 className={`ka-label font-bold ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{t_local.allocation}</h4>
+            {!isOpen && t_local.allocation_desc && (
+              <p className={`ka-section-desc mt-0.5 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t_local.allocation_desc}</p>
+            )}
+          </div>
+        </div>
+        {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
-      {t_local.allocation_desc && (
-        <p className={`ka-micro mb-3 leading-relaxed ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-          {t_local.allocation_desc}
-        </p>
-      )}
 
       <Collapse isOpen={isOpen} duration={180}>
         <div className="space-y-3">

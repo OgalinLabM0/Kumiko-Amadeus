@@ -490,12 +490,12 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
   }, [refresh]);
 
   const sectionBorder = isDarkMode
-    ? 'border-[#4a3728]/65 bg-[linear-gradient(180deg,rgba(33,25,19,0.9),rgba(18,14,11,0.94))] shadow-[0_18px_40px_rgba(0,0,0,0.24)]'
+    ? 'border-[#8e6a3a]/55 bg-[linear-gradient(180deg,rgba(33,25,19,0.9),rgba(18,14,11,0.94))] shadow-[0_18px_40px_rgba(0,0,0,0.24)]'
     : 'border-[#e6ddd0]/90 bg-[rgba(255,255,255,0.82)] shadow-[0_8px_18px_rgba(44,33,22,0.025)]';
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#9c7425]';
   const mutedClass = isDarkMode ? 'text-[#b8a78f]' : 'text-[#7d6951]';
   const cardClass = isDarkMode
-    ? 'rounded-[0.85rem] border border-[#443324] bg-[linear-gradient(180deg,rgba(24,18,13,0.84),rgba(16,12,10,0.78))] p-3'
+    ? 'rounded-[0.85rem] border border-[#7a5830]/55 bg-[linear-gradient(180deg,rgba(36,26,17,0.84),rgba(26,19,13,0.78))] p-3'
     : 'rounded-[0.85rem] border border-[#ebe1d3] bg-[rgba(255,255,255,0.92)] p-3';
   const btnClass = isDarkMode
     ? 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-[0.65rem] border border-[#58422d]/60 bg-white/[0.03] text-[#eadccf] hover:bg-white/[0.07] transition-colors text-sm disabled:opacity-50'
@@ -533,7 +533,7 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
       >
         <span className="flex items-center gap-2">
           <Smartphone size={18} className={titleClass} />
-          <span className={`font-semibold ${titleClass}`}>{t.title}</span>
+          <span className={`ka-section-title ${titleClass}`}>{t.title}</span>
         </span>
         {isOpen ? <ChevronUp size={16} className={mutedClass} /> : <ChevronDown size={16} className={mutedClass} />}
       </button>
@@ -545,7 +545,7 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
               button to overflow horizontally. Drop to 180px so 320px
               phones still wrap neatly; sm: restores the 240px target. */}
           <div className="flex items-start justify-between gap-3 flex-wrap">
-            <p className={`text-sm ${mutedClass} flex-1 min-w-[180px] sm:min-w-[240px]`}>{t.desc}</p>
+            <p className={`ka-copy-sm ${mutedClass} flex-1 min-w-[180px] sm:min-w-[240px]`}>{t.desc}</p>
             <button
               type="button"
               onClick={() => openGuide()}
@@ -557,15 +557,15 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
           </div>
 
           {!isDesktop ? (
-            <div className={`${cardClass} text-sm ${mutedClass}`}>{t.notDesktop}</div>
+            <div className={`${cardClass} ka-copy-sm ${mutedClass}`}>{t.notDesktop}</div>
           ) : (
             <>
               {/* Service status */}
               <div className={cardClass}>
                 <div className="flex items-center justify-between gap-3 flex-wrap">
-                  <div className="text-sm">
-                    <div className={titleClass + ' font-semibold'}>{t.statusHeadline}</div>
-                    <div className={mutedClass}>
+                  <div>
+                    <div className={`ka-setting-item-title ${titleClass}`}>{t.statusHeadline}</div>
+                    <div className={`ka-copy-sm ${mutedClass}`}>
                       {state
                         ? `${state.enabled ? t.enabledOn : t.enabledOff} · ${state.running ? t.runningYes : t.runningNo}`
                         : t.loading}
@@ -595,8 +595,8 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
 
               {/* Tailscale status */}
               <div className={cardClass}>
-                <div className={titleClass + ' font-semibold text-sm mb-1'}>{t.tailscaleSectionTitle}</div>
-                <div className={`text-sm ${mutedClass} flex items-center gap-2`}>
+                <div className={`ka-setting-item-title mb-1 ${titleClass}`}>{t.tailscaleSectionTitle}</div>
+                <div className={`ka-copy-sm ${mutedClass} flex items-center gap-2`}>
                   {tailscale?.ok && <CheckCircle2 size={14} className={isDarkMode ? 'text-emerald-400' : 'text-emerald-600'} />}
                   {tailscaleStatusMessage}
                 </div>
@@ -615,8 +615,8 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
               {/* Connection info */}
               {state?.enabled && state.running && serverUrl && (
                 <div className={cardClass}>
-                  <div className={titleClass + ' font-semibold text-sm mb-1'}>{t.connectionTitle}</div>
-                  <div className={`text-sm ${mutedClass} break-all`}>
+                  <div className={`ka-setting-item-title mb-1 ${titleClass}`}>{t.connectionTitle}</div>
+                  <div className={`ka-copy-sm ${mutedClass} break-all`}>
                     <div><span className="font-medium">{t.hostnameLabel}:</span> {serverUrl}</div>
                     {state.server?.ipv4 && (
                       <div><span className="font-medium">{t.ipv4Label}:</span> {state.server.ipv4}</div>
@@ -628,7 +628,7 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
               {/* Pairing token */}
               <div className={cardClass}>
                 <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-                  <div className={titleClass + ' font-semibold text-sm'}>{t.tokenTitle}</div>
+                  <div className={`ka-setting-item-title ${titleClass}`}>{t.tokenTitle}</div>
                   <div className="flex items-center gap-2 flex-wrap">
                     {!showToken ? (
                       <button
@@ -661,26 +661,26 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
                 </div>
 
                 {!state?.hasPairingToken ? (
-                  <div className={`text-sm ${mutedClass}`}>{t.tokenMissing}</div>
+                  <div className={`ka-copy-sm ${mutedClass}`}>{t.tokenMissing}</div>
                 ) : (
                   <>
                     {showToken && token ? (
                       <div
-                        className={`text-sm font-mono break-all rounded-md border px-2 py-1.5 ${
-                          isDarkMode ? 'border-[#54402d] bg-[#1a130d]' : 'border-[#e4dacd] bg-[#faf6ed]'
+                        className={`ka-input-copy font-mono break-all rounded-md border px-2 py-1.5 ${
+                          isDarkMode ? 'border-[#7a5830]/45 bg-[#1a130d]' : 'border-[#e4dacd] bg-[#faf6ed]'
                         }`}
                       >
                         {token}
                       </div>
                     ) : (
-                      <div className={`text-sm font-mono ${mutedClass}`}>••••••••••••••••</div>
+                      <div className={`ka-input-copy font-mono ${mutedClass}`}>••••••••••••••••</div>
                     )}
                     {state.pairingTokenCreatedAt && (
-                      <div className={`text-xs mt-2 ${mutedClass}`}>
+                      <div className={`ka-micro mt-2 ${mutedClass}`}>
                         {language === 'zh' ? '生成时间：' : 'Created: '}{formatDate(state.pairingTokenCreatedAt)}
                       </div>
                     )}
-                    <div className={`text-xs mt-2 ${mutedClass}`}>{t.tokenRotateHint}</div>
+                    <div className={`ka-micro mt-2 ${mutedClass}`}>{t.tokenRotateHint}</div>
                   </>
                 )}
               </div>
@@ -689,8 +689,8 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
               <div className={cardClass}>
                 <div className="flex items-center justify-between gap-2 flex-wrap">
                   <div>
-                    <div className={titleClass + ' font-semibold text-sm'}>{t.sessionsTitle}</div>
-                    <div className={`text-sm ${mutedClass}`}>
+                    <div className={`ka-setting-item-title ${titleClass}`}>{t.sessionsTitle}</div>
+                    <div className={`ka-copy-sm ${mutedClass}`}>
                       {state ? `${state.activeSessionCount} ${t.sessionsCount}` : t.loading}
                     </div>
                   </div>
@@ -703,7 +703,7 @@ export const MobileAccessSection: React.FC<MobileAccessSectionProps> = ({
                     {t.revokeAll}
                   </button>
                 </div>
-                <div className={`text-xs mt-2 ${mutedClass}`}>{t.revokeHint}</div>
+                <div className={`ka-micro mt-2 ${mutedClass}`}>{t.revokeHint}</div>
               </div>
 
               {error && (

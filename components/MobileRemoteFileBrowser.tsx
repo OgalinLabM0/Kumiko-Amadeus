@@ -42,6 +42,7 @@ import {
 } from 'lucide-react';
 import type { Language } from '../types';
 import { httpInvoke } from '../services/httpApi';
+import { dialogService } from '../services/dialogService';
 
 const LAST_PATH_KEY = 'kumiko-mobile-last-browsed-path';
 
@@ -329,7 +330,11 @@ export const MobileRemoteFileBrowser: React.FC<MobileRemoteFileBrowserProps> = (
           setError(t.filenameInvalid);
           return;
         }
-        const proceed = window.confirm(t.confirmOverwrite(name));
+        const proceed = await dialogService.confirm({
+          message: t.confirmOverwrite(name),
+          variant: 'danger',
+          confirmText: typeof (t as any).overwrite === 'string' ? (t as any).overwrite : undefined,
+        });
         if (!proceed) return;
       }
     } catch (e) {

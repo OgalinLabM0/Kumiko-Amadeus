@@ -26,4 +26,12 @@ export const DEFAULT_TTS_CONFIG: TtsConfig = {
     sovitsTemperature: 1,
     sovitsTextSplitMethod: 'cut0',
     sovitsFragmentInterval: 0.3,
+    sovitsUseRefText: false,
+    sovitsCustomPrompts: {},
+    vocuApiKey: '',
+    vocuVoiceId: '7c0b5f0c-b421-45db-b6d9-8309d06b8094',
+    vocuPromptId: 'default',
+    vocuPreset: 'balance',
+    vocuFlash: false,
+    vocuEmotionBoost: false,
 };

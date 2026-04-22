@@ -6,6 +6,7 @@ import { getCurrentAIConfig, validateAIConnection } from '../../services/geminiS
 import { getImageBase64 } from '../../services/imageService';
 import { synthesizeSpeech } from '../../services/fishAudioService';
 import { saveVoiceFile } from '../../services/voiceFileService';
+import { dialogService } from '../../services/dialogService';
 
 export interface UseMessageHistoryOperationsParams {
   // Refs
@@ -150,9 +151,12 @@ export const useMessageHistoryOperations = (
     setIsRagHistoryDirty(true);
     if (shouldNotify) {
       setRagDirtyNoticeShown(true);
-      alert(language === 'zh'
-        ? '你刚刚修改了真实历史内容，本地 RAG 记忆索引建议重建。'
-        : 'You just changed real message history. Rebuilding the local RAG index is recommended.');
+      void dialogService.alert({
+        message: language === 'zh'
+          ? '你刚刚修改了真实历史内容，本地 RAG 记忆索引建议重建。'
+          : 'You just changed real message history. Rebuilding the local RAG index is recommended.',
+        icon: 'warning',
+      });
     }
     console.warn(`[LOCAL RAG] Manual history edit marked the current message-linked recall index as stale. Rebuild recommended. reason=${reason}`);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- preserve original deps (ragDirtyNoticeShown intentionally omitted; matches pre-extraction behaviour)
@@ -354,16 +358,32 @@ export const useMessageHistoryOperations = (
     });
 
     try {
-      const textToSpeak = msg.japaneseText || msg.text;
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const emotion = msg.storedEmotion || 'neutral';
-
       const ttsConfigToUse = { ...ttsConfigRef.current };
-      if (!ttsConfigToUse.fishAudioApiKey) {
-        throw new Error('No API key');
-      }
+      const backend = ttsConfigToUse.ttsBackend || 'fish';
 
-      const result = await synthesizeSpeech(textToSpeak, ttsConfigToUse);
+      // Fish keeps inline [emotion] tags for expressiveness; SoVITS / Vocu expect
+      // clean Japanese, so strip bracketed tokens before handing the text off.
+      const rawText = msg.japaneseText || msg.text;
+      const textToSpeak = backend === 'fish'
+        ? rawText
+        : rawText.replace(/\[.*?\]/g, '').trim();
+
+      let result;
+      if (backend === 'sovits') {
+        if (!ttsConfigToUse.sovitsDir) throw new Error('No SoVITS directory');
+        const { genieTtsWithEmotion } = await import('../../services/genieAudioService');
+        result = await genieTtsWithEmotion(textToSpeak, emotion, ttsConfigToUse);
+      } else if (backend === 'vocu') {
+        if (!ttsConfigToUse.vocuApiKey || !ttsConfigToUse.vocuVoiceId) {
+          throw new Error('Missing Vocu credentials');
+        }
+        const { synthesizeWithVocu } = await import('../../services/vocuAudioService');
+        result = await synthesizeWithVocu(textToSpeak, ttsConfigToUse, emotion);
+      } else {
+        if (!ttsConfigToUse.fishAudioApiKey) throw new Error('No API key');
+        result = await synthesizeSpeech(textToSpeak, ttsConfigToUse);
+      }
 
       if (result.audio) {
         const fileId = msg.voiceFileId || msg.id;

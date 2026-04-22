@@ -220,6 +220,13 @@
         letter-spacing: 0.01em;
       }
 
+      .ka-copy-xs {
+        font-family: var(--font-reading);
+        font-size: clamp(11px, 0.7rem + 0.05vw, 12px);
+        line-height: 1.5;
+        letter-spacing: 0.01em;
+      }
+
       .ka-chat-copy {
         font-family: var(--font-reading);
         font-size: var(--type-body);
@@ -240,6 +247,39 @@
         font-size: var(--type-micro);
         line-height: 1.45;
         letter-spacing: 0.05em;
+      }
+
+      /* Lined-notebook texture for MemoryPanel content areas.
+         Renders horizontal guide lines at every 28px via a
+         repeating-linear-gradient. Text baseline is nudged to sit ON
+         the lines by forcing line-height: 28px in the consuming element
+         (already applied here). Padding-top aligns the first row of
+         text with the first visible rule. */
+      .ka-notebook-lined-light {
+        background-color: #fdfcf6;
+        background-image: repeating-linear-gradient(
+          to bottom,
+          transparent 0,
+          transparent 27px,
+          rgba(107, 95, 75, 0.22) 27px,
+          rgba(107, 95, 75, 0.22) 28px
+        );
+        background-attachment: local;
+        line-height: 28px;
+        padding-top: 6px;
+      }
+      .ka-notebook-lined-dark {
+        background-color: #1a1814;
+        background-image: repeating-linear-gradient(
+          to bottom,
+          transparent 0,
+          transparent 27px,
+          rgba(215, 187, 136, 0.14) 27px,
+          rgba(215, 187, 136, 0.14) 28px
+        );
+        background-attachment: local;
+        line-height: 28px;
+        padding-top: 6px;
       }
 
       .ka-settings-shell {
@@ -283,6 +323,13 @@
       .ka-settings-shell .ka-input-copy {
         font-size: clamp(11px, 0.72rem + 0.04vw, 12px);
         line-height: 1.58;
+      }
+
+      .ka-settings-shell .ka-copy-xs {
+        font-family: var(--font-reading);
+        font-size: clamp(10px, 0.66rem + 0.04vw, 11px);
+        line-height: 1.5;
+        letter-spacing: 0.01em;
       }
 
       .ka-settings-shell input,
@@ -656,6 +703,77 @@
           padding-bottom: var(--sab) !important;
           box-sizing: border-box !important;
         }
+      }
+
+      /* === Chromium autofill overrides ===
+         When the browser fills a saved credential (API keys, Tavily, Fish Audio,
+         account username/password, etc.), Chromium paints the field with its
+         native pale yellow/white background via `:-webkit-autofill`. The only
+         way to defeat that is an `inset box-shadow` of 1000px — real bg
+         properties are ignored by the UA. We also freeze the built-in color
+         transition so autofill doesn't flash as the form hydrates. */
+      input:-webkit-autofill,
+      input:-webkit-autofill:hover,
+      input:-webkit-autofill:focus,
+      input:-webkit-autofill:active,
+      textarea:-webkit-autofill {
+        -webkit-box-shadow: 0 0 0 1000px #ffffff inset !important;
+        -webkit-text-fill-color: #3f2f22 !important;
+        caret-color: #3f2f22 !important;
+        transition: background-color 99999s ease-in-out 0s;
+        border-radius: inherit;
+      }
+      html.ka-dark input:-webkit-autofill,
+      html.ka-dark input:-webkit-autofill:hover,
+      html.ka-dark input:-webkit-autofill:focus,
+      html.ka-dark input:-webkit-autofill:active,
+      html.ka-dark textarea:-webkit-autofill {
+        -webkit-box-shadow: 0 0 0 1000px #211811 inset !important;
+        -webkit-text-fill-color: #f2e5cf !important;
+        caret-color: #f2e5cf !important;
+      }
+
+      /* === Dark-mode input bg safety net ===
+         The Tailwind Play CDN runtime JIT is unreliable at compiling
+         `bg-[#hex]/NN` (hex + slash-opacity) arbitrary classes on
+         <input>/<textarea>: in practice the generated stylesheet sometimes
+         omits them, leaving the controls rendered with the UA-default white
+         fill. The "台词" textarea in SovitsRefPromptEditorModal is the canary:
+         it hardcodes a solid `bg-[#0f0d0c]` (no slash opacity) and renders
+         correctly, while every <input> that relied on `bg-[#211811]/94` via
+         SettingsPanel's shared `inputClass` went white. We've also swapped
+         those Tailwind classes to solid `bg-[#211811]` at source; this block
+         is a scoped last-line-of-defense so any future slip (new arbitrary
+         opacity, Tailwind version quirk, temporary JIT miss) still lands on
+         the warm dark fill instead of flashing pure white. */
+      html.ka-dark .ka-settings-shell input[type="text"],
+      html.ka-dark .ka-settings-shell input[type="number"],
+      html.ka-dark .ka-settings-shell input[type="email"],
+      html.ka-dark .ka-settings-shell input[type="password"],
+      html.ka-dark .ka-settings-shell input[type="search"],
+      html.ka-dark .ka-settings-shell input[type="url"],
+      html.ka-dark .ka-settings-shell input[type="tel"],
+      html.ka-dark .ka-settings-shell input:not([type]),
+      html.ka-dark .ka-settings-shell textarea,
+      html.ka-dark .config-bg input[type="text"],
+      html.ka-dark .config-bg input[type="number"],
+      html.ka-dark .config-bg input[type="email"],
+      html.ka-dark .config-bg input[type="password"],
+      html.ka-dark .config-bg input[type="search"],
+      html.ka-dark .config-bg input[type="url"],
+      html.ka-dark .config-bg input[type="tel"],
+      html.ka-dark .config-bg input:not([type]),
+      html.ka-dark .config-bg textarea {
+        background-color: #211811 !important;
+        color: #f2e5cf !important;
+        caret-color: #f2e5cf !important;
+      }
+      html.ka-dark .ka-settings-shell input::placeholder,
+      html.ka-dark .ka-settings-shell textarea::placeholder,
+      html.ka-dark .config-bg input::placeholder,
+      html.ka-dark .config-bg textarea::placeholder {
+        color: #8e7659 !important;
+        opacity: 1;
       }
     </style>
 </head>

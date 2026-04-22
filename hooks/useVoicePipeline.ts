@@ -172,21 +172,26 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
     voiceVariant,
   ) => {
     const cfg = ttsConfigRef.current;
-    const isGenie = cfg.ttsBackend === 'sovits';
+    const backend = cfg.ttsBackend || 'fish';
 
-    if (!isGenie && (!cfg.fishAudioApiKey || !isVoiceServiceAvailable())) {
+    if (backend === 'fish' && (!cfg.fishAudioApiKey || !isVoiceServiceAvailable())) {
       console.warn('[TTS] No API key or voice service unavailable');
       return { success: false };
     }
-    if (isGenie && !cfg.sovitsDir) {
+    if (backend === 'sovits' && !cfg.sovitsDir) {
       console.warn('[TTS-SoVITS] No GPT-SoVITS directory configured');
+      return { success: false };
+    }
+    if (backend === 'vocu' && (!cfg.vocuApiKey || !cfg.vocuVoiceId || !isVoiceServiceAvailable())) {
+      console.warn('[TTS-Vocu] Missing Vocu API key / voiceId or voice service unavailable');
       return { success: false };
     }
 
     try {
-      let jaText = isGenie
-        ? await translateForGenie(chineseText, emotion)
-        : await translateToJapaneseWithEmotion(chineseText, emotion);
+      // Fish Audio needs bracket emotion tags; SoVITS and Vocu want clean Japanese.
+      let jaText = backend === 'fish'
+        ? await translateToJapaneseWithEmotion(chineseText, emotion)
+        : await translateForGenie(chineseText, emotion);
 
       if (!jaText) {
         console.error('[TTS] Translation returned empty result — degrading to text');
@@ -203,9 +208,12 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
       }
 
       let result;
-      if (isGenie) {
+      if (backend === 'sovits') {
         const { genieTtsWithEmotion } = await import('../services/genieAudioService');
         result = await genieTtsWithEmotion(jaText, emotion, cfg, voiceVariant);
+      } else if (backend === 'vocu') {
+        const { synthesizeWithVocu } = await import('../services/vocuAudioService');
+        result = await synthesizeWithVocu(jaText, cfg, emotion);
       } else {
         const emotionTemp = EMOTION_TTS_TEMPERATURE[emotion] ?? 0.6;
         const cfgWithEmotion = { ...cfg, temperature: emotionTemp };
@@ -220,7 +228,8 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
       return { success: true, voiceFileId: messageId, voiceDuration: result.durationEstimate, japaneseText: jaText };
     } catch (err) {
       const label = err instanceof TtsError ? `${err.kind} (${err.status})` : String(err);
-      console.error(`[TTS] Synthesis failed (${isGenie ? 'Genie' : 'Fish'}): ${label}`);
+      const backendLabel = backend === 'sovits' ? 'Genie' : backend === 'vocu' ? 'Vocu' : 'Fish';
+      console.error(`[TTS] Synthesis failed (${backendLabel}): ${label}`);
       return { success: false };
     }
   };

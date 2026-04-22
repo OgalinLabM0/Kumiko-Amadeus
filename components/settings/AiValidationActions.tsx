@@ -51,10 +51,10 @@ const CheckItem: React.FC<{
         ? (isDarkMode ? 'bg-green-950/20' : 'bg-green-50/60')
         : ''
     }`}>
-      <span className={`shrink-0 ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{icon}</span>
-      <span className={`flex-1 ka-copy-sm font-semibold truncate ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}>{label}</span>
+      <span className={`shrink-0 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{icon}</span>
+      <span className={`flex-1 ka-copy-sm font-semibold truncate ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{label}</span>
       {detail && <span className={`ka-micro font-mono truncate max-w-[120px] ${
-        status === 'fail' ? 'text-red-400' : (isDarkMode ? 'text-gray-500' : 'text-gray-400')
+        status === 'fail' ? 'text-red-400' : (isDarkMode ? 'text-[#b69f87]' : 'text-[#9e7c51]')
       }`}>{detail}</span>}
       {statusIcon}
     </div>
@@ -107,11 +107,11 @@ export const AiValidationActions: React.FC<AiValidationActionsProps> = ({
   return (
     <>
       {hasAnyResult && (
-        <div className={`rounded-xl border overflow-hidden animate-in fade-in ${
-          isDarkMode ? 'border-gray-700/50 bg-gray-900/40' : 'border-gray-200 bg-gray-50/60'
+        <div className={`rounded-[1.05rem] border overflow-hidden animate-in fade-in shadow-[inset_0_1px_0_rgba(255,255,255,0.24)] ${
+          isDarkMode ? 'border-[#7a5830]/55 bg-[linear-gradient(180deg,rgba(36,26,17,0.84),rgba(26,19,13,0.78))]' : 'border-[#ebe1d3] bg-[rgba(255,255,255,0.9)]'
         }`}>
-          <div className={`px-3 py-1.5 border-b ka-micro font-bold tracking-wide ${
-            isDarkMode ? 'border-gray-700/50 text-gray-400 bg-gray-800/30' : 'border-gray-200 text-gray-500 bg-gray-100/60'
+          <div className={`px-3 py-2 border-b ka-micro font-semibold tracking-wide ${
+            isDarkMode ? 'border-[#7a5830]/35 text-[#d7c7b5] bg-[#1f1610]/50' : 'border-[#ebe1d3] text-[#8a6b4e] bg-[#faf3e4]/70'
           }`}>
             {language === 'zh' ? '验证结果' : 'VALIDATION RESULTS'}
           </div>
@@ -150,7 +150,9 @@ export const AiValidationActions: React.FC<AiValidationActionsProps> = ({
 
       {validationStatusType === 'success' && (
         <div className="flex flex-col gap-2 animate-in fade-in">
-          <button onClick={onSave} className="w-full py-3 rounded-xl bg-teal-600 text-white font-bold hover:bg-teal-500 transition-colors shadow-lg flex items-center justify-center gap-2">
+          <button onClick={onSave} className={`w-full py-3 rounded-2xl font-semibold transition-colors flex items-center justify-center gap-2 border ${isDarkMode
+            ? 'border-[#c79a2f]/55 bg-[#c79a2f]/12 text-[#f2e5cf] hover:bg-[#c79a2f]/22'
+            : 'border-[#c59142]/45 bg-[#c59142]/10 text-[#8a6b4e] hover:bg-[#c59142]/20'}`}>
             <Save size={16} /> {t_local.saveAndReload}
           </button>
         </div>
@@ -160,11 +162,9 @@ export const AiValidationActions: React.FC<AiValidationActionsProps> = ({
         <button
           onClick={onValidateAll}
           disabled={isValidating || isModelValidating || isSearchValidating}
-          className={`w-full py-3 rounded-xl font-bold transition-colors flex items-center justify-center gap-2 ${
-            isDarkMode
-              ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30 hover:bg-blue-600/30'
-              : 'bg-blue-50 text-blue-600 border border-blue-200 hover:bg-blue-100'
-          } disabled:opacity-50`}
+          className={`relative w-full py-3 rounded-2xl font-semibold transition-all hover:-translate-y-[1px] active:translate-y-0 active:scale-[0.99] disabled:opacity-50 disabled:hover:translate-y-0 flex items-center justify-center gap-2 ${isDarkMode
+            ? 'bg-gradient-to-r from-[#d4a852] via-[#c79a2f] to-[#b8860b] text-[#1b140d] shadow-[0_10px_28px_-12px_rgba(212,168,82,0.55)] hover:shadow-[0_14px_32px_-10px_rgba(212,168,82,0.75)]'
+            : 'bg-gradient-to-r from-[#c59142] via-[#b8860b] to-[#a8743a] text-[#faf3e4] shadow-[0_10px_28px_-12px_rgba(197,145,66,0.5)] hover:shadow-[0_14px_32px_-10px_rgba(197,145,66,0.7)]'}`}
         >
           {(isValidating || isModelValidating || isSearchValidating) ? <RefreshCw className="animate-spin" size={16} /> : <CheckSquare size={16} />}
           {language === 'zh' ? '验证所有配置' : 'VALIDATE ALL'}

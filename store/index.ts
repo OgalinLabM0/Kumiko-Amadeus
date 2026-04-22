@@ -11,8 +11,9 @@ import { createSelectionSlice, type SelectionSlice } from './slices/selectionSli
 import { createRagSlice, type RagSlice } from './slices/ragSlice';
 import { createReminderSlice, type ReminderSlice } from './slices/reminderSlice';
 import { createDiarySlice, type DiarySlice } from './slices/diarySlice';
+import { createBusySlice, type BusySlice } from './slices/busySlice';
 
-export type AppStoreState = UiSlice & StatusSlice & UpdaterSlice & MemorySlice & SummarySlice & ChatSlice & VoiceSlice & BackupSlice & SelectionSlice & RagSlice & ReminderSlice & DiarySlice;
+export type AppStoreState = UiSlice & StatusSlice & UpdaterSlice & MemorySlice & SummarySlice & ChatSlice & VoiceSlice & BackupSlice & SelectionSlice & RagSlice & ReminderSlice & DiarySlice & BusySlice;
 
 export const useAppStore = create<AppStoreState>()((...args) => ({
   ...createUiSlice(...args),
@@ -27,4 +28,5 @@ export const useAppStore = create<AppStoreState>()((...args) => ({
   ...createRagSlice(...args),
   ...createReminderSlice(...args),
   ...createDiarySlice(...args),
+  ...createBusySlice(...args),
 }));

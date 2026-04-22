@@ -510,7 +510,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                                 backup lives on the paired desktop. */}
                             {isMobilePwa() && (
                               <div className="flex items-center gap-1.5 text-[11px] text-[#785A42]/55 ka-copy-sm">
-                                <Monitor size={12} /> <span className="break-words">{language === 'zh' ? '手机上将弹出远程浏览器,浏览并写入 PC 上的文件' : 'A remote browser will let you pick files on the paired PC.'}</span>
+                                <Monitor size={12} /> <span className="break-words">{language === 'zh' ? '手机上将弹出远程文件选择器，浏览并写入 PC 上的文件' : 'A remote file picker will let you browse and write to files on the paired PC.'}</span>
                               </div>
                             )}
                             {connectedFileName ? (

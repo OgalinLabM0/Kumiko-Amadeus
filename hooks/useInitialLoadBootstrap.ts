@@ -20,6 +20,14 @@ import { DEFAULT_BACKUP_CONFIG, normalizeBackupConfig } from '../services/appCon
 import { DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK } from '../constants';
 import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, type RelativeReminder, type DailyReminder } from '../store/slices/reminderSlice';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
+import {
+  BUSY_SLOT_RUNTIME_STORAGE_KEY,
+  BUSY_FOLLOWUP_STORAGE_KEY,
+  PENDING_APOLOGY_STORAGE_KEY,
+  type BusySlotRuntime,
+  type BusyFollowUp,
+  type PendingApology,
+} from '../store/slices/busySlice';
 import type {
   Message,
   Language,
@@ -70,6 +78,9 @@ export interface UseInitialLoadBootstrapParams {
   setIsDataLoaded: (v: boolean) => void;
   setDataLoadError: (v: string | null) => void;
   setSystemNotice: (v: string | null) => void;
+  setBusySlotRuntime: (v: BusySlotRuntime | null) => void;
+  setBusyFollowUp: (v: BusyFollowUp | null) => void;
+  setPendingApology: (v: PendingApology | null) => void;
 }
 
 /**
@@ -120,6 +131,9 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
     setIsDataLoaded,
     setDataLoadError,
     setSystemNotice,
+    setBusySlotRuntime,
+    setBusyFollowUp,
+    setPendingApology,
   } = params;
 
   useEffect(() => {
@@ -190,6 +204,42 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
         const backupCfg = normalizeBackupConfig(await db.getVal('kumiko_backup_config', DEFAULT_BACKUP_CONFIG));
         setBackupConfig(backupCfg);
         setIsRagHistoryDirty(await db.getVal(RAG_HISTORY_DIRTY_STORAGE_KEY, false));
+
+        // --- Busy state hydration ---
+        // Load persisted `busySlotRuntime`, `busyFollowUp`, and
+        // `pendingApology` from `keyval`. Defensive: even if the saved
+        // shape is malformed, we coerce to null rather than throw —
+        // the regulator hook will simply re-fill these on first tick.
+        try {
+          const savedRuntime = await db.getVal(BUSY_SLOT_RUNTIME_STORAGE_KEY, null) as BusySlotRuntime | null;
+          if (savedRuntime && typeof savedRuntime.slotKey === 'string') {
+            setBusySlotRuntime(savedRuntime);
+          } else {
+            setBusySlotRuntime(null);
+          }
+        } catch {
+          setBusySlotRuntime(null);
+        }
+        try {
+          const savedFollowUp = await db.getVal(BUSY_FOLLOWUP_STORAGE_KEY, null) as BusyFollowUp | null;
+          if (savedFollowUp && typeof savedFollowUp.id === 'string') {
+            setBusyFollowUp(savedFollowUp);
+          } else {
+            setBusyFollowUp(null);
+          }
+        } catch {
+          setBusyFollowUp(null);
+        }
+        try {
+          const savedApology = await db.getVal(PENDING_APOLOGY_STORAGE_KEY, null) as PendingApology | null;
+          if (savedApology && Array.isArray(savedApology.sources)) {
+            setPendingApology(savedApology);
+          } else {
+            setPendingApology(null);
+          }
+        } catch {
+          setPendingApology(null);
+        }
 
         ragBufferRef.current = await db.getVal('kumiko_rag_buffer', []);
 

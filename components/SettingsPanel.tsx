@@ -786,23 +786,23 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#9c7425]';
   const sectionBorder = isDarkMode
-    ? 'border-[#4a3728]/65 bg-[linear-gradient(180deg,rgba(33,25,19,0.9),rgba(18,14,11,0.94))] shadow-[0_18px_40px_rgba(0,0,0,0.24)]'
+    ? 'border-[#8e6a3a]/55 bg-[linear-gradient(180deg,rgba(33,25,19,0.9),rgba(18,14,11,0.94))] shadow-[0_18px_40px_rgba(0,0,0,0.24)]'
     : 'border-[#e6ddd0]/90 bg-[rgba(255,255,255,0.82)] shadow-[0_8px_18px_rgba(44,33,22,0.025)]';
-  const inputClass = `w-full rounded-[1rem] border px-3.5 py-2.5 outline-none ka-input-copy transition-all ${isDarkMode ? 'bg-[#17120d]/92 border-[#54402d] text-white placeholder:text-gray-500 focus:border-yellow-500/80 focus:shadow-[0_0_0_3px_rgba(234,179,8,0.08)]' : 'bg-white border-[#e4dacd] text-[#3f2f22] placeholder:text-[#b8a38c] focus:border-[#c59142] focus:shadow-[0_0_0_3px_rgba(197,145,66,0.08)]'}`;
+  const inputClass = `w-full rounded-[1rem] border px-3.5 py-2.5 outline-none ka-input-copy transition-all ${isDarkMode ? 'bg-[#211811] border-[#8c6a3c] text-[#f2e5cf] placeholder:text-[#8e7659] focus:border-yellow-500/80 focus:shadow-[0_0_0_3px_rgba(234,179,8,0.08)]' : 'bg-white border-[#e4dacd] text-[#3f2f22] placeholder:text-[#b8a38c] focus:border-[#c59142] focus:shadow-[0_0_0_3px_rgba(197,145,66,0.08)]'}`;
   const labelClass = `ka-copy-sm font-semibold mb-1 block ${isDarkMode ? 'text-[#d7c7b5]' : 'text-[#8a6b4e]'}`;
-  const innerCardClass = `p-4 rounded-[1.05rem] border ${isDarkMode ? 'bg-[linear-gradient(180deg,rgba(24,18,13,0.84),rgba(16,12,10,0.78))] border-[#443324]' : 'bg-[rgba(255,255,255,0.9)] border-[#ebe1d3]'} shadow-[inset_0_1px_0_rgba(255,255,255,0.24)]`;
+  const innerCardClass = `p-4 rounded-[1.05rem] border ${isDarkMode ? 'bg-[linear-gradient(180deg,rgba(36,26,17,0.84),rgba(26,19,13,0.78))] border-[#7a5830]/55' : 'bg-[rgba(255,255,255,0.9)] border-[#ebe1d3]'} shadow-[inset_0_1px_0_rgba(255,255,255,0.24)]`;
   const shellClass = isExpandedView
     ? 'w-[min(98vw,90rem)] h-[min(95dvh,60rem)] rounded-[1.85rem]'
     : 'w-[min(92vw,60rem)] h-[min(88dvh,50rem)] rounded-[1.5rem]';
   const shellSurfaceClass = isDarkMode
-    ? 'border-[#4d3824]/70 bg-[#161412]/96 shadow-[0_26px_70px_rgba(0,0,0,0.42)]'
+    ? 'border-[#c9a55a]/60 bg-[#1f1711]/96 shadow-[inset_0_1px_0_rgba(242,217,156,0.1),0_26px_70px_rgba(0,0,0,0.42)]'
     : 'border-[#ded5c8]/90 bg-[rgba(255,255,255,0.95)] shadow-[0_24px_52px_rgba(42,31,20,0.08)]';
-  const shellDividerClass = isDarkMode ? 'border-[#4d3824]/60' : 'border-[#ebe2d7]';
+  const shellDividerClass = isDarkMode ? 'border-[#a88247]/35' : 'border-[#ebe2d7]';
   const railClass = isDarkMode
     ? 'bg-[linear-gradient(180deg,rgba(36,27,19,0.74),rgba(16,12,9,0.8))]'
     : 'bg-[rgba(255,255,255,0.62)]';
   const bodyClass = isDarkMode
-    ? 'bg-[#161412]'
+    ? 'bg-[#1f1711]'
     : 'bg-[rgba(255,255,255,0.76)]';
   const navButtonBaseClass = isDarkMode
     ? 'border-transparent bg-transparent text-[#efe3d6] hover:bg-white/[0.04] hover:border-[#5b4630]'
@@ -1337,7 +1337,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           enableProactive={enableProactive}
           onToggleProactive={handleToggleProactive}
           showWebPushFallback={isPushSupported && !isDesktopElectron}
-          webPushTitle={language === 'zh' ? 'Web 浏览器推送订阅' : 'Web Push Subscription'}
+          webPushTitle={language === 'zh' ? '推送订阅 (Web Push)' : 'Push Subscription (Web Push)'}
           pushButtonLabel={isSubscribing ? 'Wait...' : pushSubscription ? 'Enabled' : 'Enable'}
           isPushActionDisabled={!!pushSubscription || isSubscribing}
           onSubscribePush={handleSubscribePush}
@@ -1540,6 +1540,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           isDarkMode={isDarkMode}
           t={t}
           sectionBorder={sectionBorder}
+          innerCardClass={innerCardClass}
         />
       </div>
       )}
@@ -1747,12 +1748,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               <div
                 className={`pointer-events-none absolute bottom-2 left-0 top-0 z-10 w-10 transition-all duration-300 ${
                   topNavFadeState.left ? 'opacity-100' : 'opacity-0'
-                } ${isDarkMode ? 'bg-gradient-to-r from-[rgba(24,18,13,0.92)] via-[rgba(24,18,13,0.72)] to-transparent' : 'bg-gradient-to-r from-[rgba(255,255,255,0.98)] via-[rgba(255,255,255,0.9)] to-transparent'}`}
+                } ${isDarkMode ? 'bg-gradient-to-r from-[rgba(36,26,17,0.92)] via-[rgba(36,26,17,0.72)] to-transparent' : 'bg-gradient-to-r from-[rgba(255,255,255,0.98)] via-[rgba(255,255,255,0.9)] to-transparent'}`}
               />
               <div
                 className={`pointer-events-none absolute bottom-2 right-0 top-0 z-10 w-10 transition-all duration-300 ${
                   topNavFadeState.right ? 'opacity-100' : 'opacity-0'
-                } ${isDarkMode ? 'bg-gradient-to-l from-[rgba(24,18,13,0.92)] via-[rgba(24,18,13,0.72)] to-transparent' : 'bg-gradient-to-l from-[rgba(255,255,255,0.98)] via-[rgba(255,255,255,0.9)] to-transparent'}`}
+                } ${isDarkMode ? 'bg-gradient-to-l from-[rgba(36,26,17,0.92)] via-[rgba(36,26,17,0.72)] to-transparent' : 'bg-gradient-to-l from-[rgba(255,255,255,0.98)] via-[rgba(255,255,255,0.9)] to-transparent'}`}
               />
               <div ref={topNavScrollRef} className="flex gap-2 overflow-x-auto no-scrollbar px-4 pt-3 pb-2">
               {navItems.map(({ id, label, icon: Icon, active, accent }) => (

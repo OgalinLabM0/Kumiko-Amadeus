@@ -1,7 +1,8 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { ChevronDown, ChevronUp, Clock, Globe, Lock, MapPin, Watch } from 'lucide-react';
 import { LocationConfig, Language } from '../../types';
 import { Collapse } from '../Collapse';
+import { ThemedSelect, type ThemedSelectOption } from '../common/ThemedSelect';
 
 interface BilingualOption {
   value: string;
@@ -60,6 +61,14 @@ export const LocationSection: React.FC<LocationSectionProps> = ({
   const l = (opt: BilingualOption) => language === 'zh' ? opt.zh : opt.en;
   const japanLabel = language === 'zh' ? '日本' : 'Japan';
   const tokyoLabel = language === 'zh' ? '亚洲/东京（日本、韩国）' : 'Asia/Tokyo (Japan, Korea)';
+  const countryOptions = useMemo<ThemedSelectOption[]>(
+    () => countries.map(c => ({ value: c.value, label: l(c) })),
+    [countries, language],
+  );
+  const timezoneOptions = useMemo<ThemedSelectOption[]>(
+    () => timezones.map(tz => ({ value: tz.value, label: l(tz) })),
+    [timezones, language],
+  );
   return (
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
       <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
@@ -124,15 +133,25 @@ export const LocationSection: React.FC<LocationSectionProps> = ({
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-2">
                 <div>
                   <label className={labelClass}>{t.country}</label>
-                  <select value={locationConfig.userCountry} onChange={(e) => onLocationUpdate('userCountry', e.target.value)} className={inputClass}>
-                    {countries.map((c) => <option key={c.value} value={c.value}>{l(c)}</option>)}
-                  </select>
+                  <ThemedSelect
+                    value={locationConfig.userCountry}
+                    onChange={(val) => onLocationUpdate('userCountry', val)}
+                    options={countryOptions}
+                    isDarkMode={isDarkMode}
+                    className={inputClass}
+                    ariaLabel={t.country}
+                  />
                 </div>
                 <div>
                   <label className={labelClass}>{t.timezone}</label>
-                  <select value={locationConfig.userTimezone} onChange={(e) => onLocationUpdate('userTimezone', e.target.value)} className={inputClass}>
-                    {timezones.map((tz) => <option key={tz.value} value={tz.value}>{l(tz)}</option>)}
-                  </select>
+                  <ThemedSelect
+                    value={locationConfig.userTimezone}
+                    onChange={(val) => onLocationUpdate('userTimezone', val)}
+                    options={timezoneOptions}
+                    isDarkMode={isDarkMode}
+                    className={inputClass}
+                    ariaLabel={t.timezone}
+                  />
                 </div>
               </div>
               <div className={`flex items-center gap-2 p-2 rounded ka-copy-sm font-mono font-semibold border transition-colors ${isDarkMode ? 'bg-black/40 border-green-500/30 text-green-400' : 'bg-green-50 border-green-300 text-green-700'}`}>

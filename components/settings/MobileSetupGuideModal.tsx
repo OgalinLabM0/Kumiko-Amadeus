@@ -106,11 +106,11 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
 
   if (!isVisible || !activeSection) return null;
 
-  const bgClass = isDarkMode ? 'bg-[#161412] border-[#2a2522]/60' : 'bg-[#faf6f0] border-[#e6ddcf]';
+  const bgClass = isDarkMode ? 'bg-[#1f1711] border-[#a88247]/55' : 'bg-[#faf6f0] border-[#e6ddcf]';
   const titleClass = isDarkMode ? 'text-[#d4a852]' : 'text-[#8a6122]';
   const textClass = isDarkMode ? 'text-[#f1e6d7]' : 'text-[#3d2a18]';
   const mutedClass = isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]';
-  const panelClass = isDarkMode ? 'bg-[#1e1c1a] border-[#2a2522]/40' : 'bg-white border-[#e6ddcf]';
+  const panelClass = isDarkMode ? 'bg-[#1e1c1a] border-[#806033]/35' : 'bg-white border-[#e6ddcf]';
   const panelMutedClass = isDarkMode ? 'bg-[#211912] border-[#4f3b2a]' : 'bg-[#faf5ee] border-[#eadfce]';
   const linkBtnClass = isDarkMode
     ? 'inline-flex items-center gap-1.5 rounded-full border border-[#4f3b2a] bg-[#211912] px-3 py-1.5 text-[13px] font-medium text-[#d4a852] hover:bg-[#2a1e12] transition-colors'
@@ -162,7 +162,7 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
           <div className={`absolute top-0 left-0 w-full h-[2px] ${isDarkMode ? 'bg-gradient-to-r from-transparent via-[#d4a852]/50 to-transparent' : 'bg-gradient-to-r from-transparent via-[#b8860b]/30 to-transparent'}`}></div>
 
           {/* Header */}
-          <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-[#2a2522]/50' : 'border-[#e6ddcf]'}`}>
+          <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-[#806033]/45' : 'border-[#e6ddcf]'}`}>
             <div className="flex items-center gap-3 min-w-0">
               <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-amber-500/20 bg-amber-900/20 text-amber-300' : 'border-amber-200 bg-amber-50/90 text-amber-700'}`}>
                 <Book size={18} />
@@ -192,10 +192,10 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
             {/* Sidebar */}
             <div
               className={`w-full md:w-64 lg:w-72 flex flex-col border-b md:border-b-0 md:border-r min-h-0 ${
-                isDarkMode ? 'bg-[#1c1a18] border-[#2a2522]/50' : 'bg-[#f5f0e8] border-[#e6ddcf]'
+                isDarkMode ? 'bg-[#1c1a18] border-[#806033]/45' : 'bg-[#f5f0e8] border-[#e6ddcf]'
               }`}
             >
-              <div className={`hidden md:block p-4 border-b ${isDarkMode ? 'border-[#2a2522]/40' : 'border-[#e6ddcf]'}`}>
+              <div className={`hidden md:block p-4 border-b ${isDarkMode ? 'border-[#806033]/35' : 'border-[#e6ddcf]'}`}>
                 <div className={`rounded-lg border p-4 ${panelMutedClass}`}>
                   <div className={`ka-kicker ${titleClass}`}>
                     {language === 'zh' ? 'KUMIKO MOBILE SETUP' : 'KUMIKO MOBILE SETUP'}
@@ -242,7 +242,7 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
 
               <div
                 className={`hidden md:flex px-4 py-2 border-t items-center justify-between ka-micro ${
-                  isDarkMode ? 'border-[#2a2522]/40 text-[#6b5a45]' : 'border-[#e6ddcf] text-[#8a7557]'
+                  isDarkMode ? 'border-[#806033]/35 text-[#6b5a45]' : 'border-[#e6ddcf] text-[#8a7557]'
                 }`}
               >
                 <span>MOBILE ACCESS</span>
@@ -252,7 +252,7 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
 
             {/* Article */}
             <div className="relative min-h-0 flex-1 flex flex-col overflow-hidden">
-              <div className={`px-5 md:px-6 py-4 border-b ${isDarkMode ? 'border-[#2a2522]/40 bg-[#161412]' : 'border-[#e6ddcf] bg-[#faf6f0]'}`}>
+              <div className={`px-5 md:px-6 py-4 border-b ${isDarkMode ? 'border-[#806033]/35 bg-[#1f1711]' : 'border-[#e6ddcf] bg-[#faf6f0]'}`}>
                 <div className="flex items-center gap-3">
                   <div className={`flex h-9 w-9 items-center justify-center rounded-xl ${isDarkMode ? 'bg-[#211912] text-[#d4a852]' : 'bg-[#fff5e3] text-[#8a6122]'}`}>
                     <ActiveIcon size={16} />
@@ -274,7 +274,7 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
                 className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:p-8 scrollbar-thin"
               >
                 <div className={`mx-auto max-w-4xl rounded-[1.15rem] border overflow-hidden ${panelClass}`}>
-                  <div className={`px-5 py-4 border-b ${isDarkMode ? 'border-[#2a2522]/30 bg-[#1e1c1a] text-gray-300' : 'border-[#eadfce] bg-[#faf5ee] text-gray-700'}`}>
+                  <div className={`px-5 py-4 border-b ${isDarkMode ? 'border-[#806033]/25 bg-[#1e1c1a] text-gray-300' : 'border-[#eadfce] bg-[#faf5ee] text-gray-700'}`}>
                     <p className="text-[15px] leading-7">{activeSection.intro}</p>
                   </div>
 
@@ -410,7 +410,7 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
 
               <div
                 className={`px-5 md:px-6 py-2 border-t flex items-center justify-between ka-micro ${
-                  isDarkMode ? 'border-[#2a2522]/40 bg-[#1c1a18] text-[#6b5a45]' : 'border-[#e6ddcf] bg-[#f5f0e8] text-[#8d7654]'
+                  isDarkMode ? 'border-[#806033]/35 bg-[#1c1a18] text-[#6b5a45]' : 'border-[#e6ddcf] bg-[#f5f0e8] text-[#8d7654]'
                 }`}
               >
                 <span>KUMIKO·AMADEUS · MOBILE SETUP</span>

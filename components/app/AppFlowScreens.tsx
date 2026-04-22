@@ -11,6 +11,7 @@ interface AppFlowScreensProps {
   flowState: FlowState;
   appState: AppState;
   language: Language;
+  isDarkMode: boolean;
   backupConfig: BackupConfig;
   connectedFileName: string | null;
   onLanguageChange: (lang: Language) => void;
@@ -30,6 +31,7 @@ export const AppFlowScreens: React.FC<AppFlowScreensProps> = ({
   flowState,
   appState,
   language,
+  isDarkMode,
   backupConfig,
   connectedFileName,
   onLanguageChange,
@@ -73,6 +75,7 @@ export const AppFlowScreens: React.FC<AppFlowScreensProps> = ({
         <AIConfigScreen
           onComplete={onShowApp}
           language={language}
+          isDarkMode={isDarkMode}
         />
       )}
 

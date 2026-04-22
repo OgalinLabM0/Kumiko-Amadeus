@@ -33,38 +33,39 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
   return (
     <div className={innerCardClass}>
       <button onClick={onToggle} className="w-full flex items-center justify-between mb-2">
-        <div className="text-left">
-          <h4 className={`ka-label font-bold flex items-center gap-2 ${isDarkMode ? 'text-purple-300' : 'text-purple-700'}`}>
-            <Database size={13} /> {language === 'zh' ? '本地 RAG 记忆' : 'Local RAG Memory'}
-          </h4>
-          {!isOpen && (
-            <div className={`ka-micro mt-1 font-semibold ${backupConfig.ragEnabled ? (isDarkMode ? 'text-purple-400' : 'text-purple-600') : (isDarkMode ? 'text-gray-500' : 'text-gray-400')}`}>
-              {backupConfig.ragEnabled
-                ? (language === 'zh' ? '状态: 已启用' : 'Status: Enabled')
-                : (language === 'zh' ? '状态: 已关闭' : 'Status: Disabled')}
-            </div>
-          )}
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <div className={`flex h-9 w-9 items-center justify-center rounded-xl border shrink-0 ${isDarkMode ? 'border-purple-500/20 bg-purple-900/20 text-purple-300' : 'border-purple-200 bg-purple-50/90 text-purple-700'}`}>
+            <Database size={16} />
+          </div>
+          <div className="flex-1 text-left min-w-0">
+            <h4 className={`ka-label font-bold ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{language === 'zh' ? '本地 RAG 记忆' : 'Local RAG Memory'}</h4>
+            {!isOpen && (
+              <span className={`inline-flex items-center gap-1.5 mt-1 px-2 py-0.5 rounded-full border ${backupConfig.ragEnabled
+                ? (isDarkMode ? 'bg-purple-900/25 border-purple-500/25 text-purple-300' : 'bg-purple-50 border-purple-200 text-purple-700')
+                : (isDarkMode ? 'bg-[#2a1f16]/60 border-[#7a5830]/40 text-[#9a8065]' : 'bg-[#f1e8d9] border-[#d7c7b5] text-[#8a6b4e]')}`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${backupConfig.ragEnabled ? 'bg-purple-500' : (isDarkMode ? 'bg-[#8a6b4e]' : 'bg-[#b8a38c]')}`} />
+                <span className="ka-micro font-semibold">{backupConfig.ragEnabled ? (language === 'zh' ? '已启用' : 'ENABLED') : (language === 'zh' ? '已关闭' : 'DISABLED')}</span>
+              </span>
+            )}
+          </div>
         </div>
-        {isOpen ? <ChevronUp size={14} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} /> : <ChevronDown size={14} className={isDarkMode ? 'text-gray-500' : 'text-gray-400'} />}
+        {isOpen ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
       <Collapse isOpen={isOpen} duration={180}>
         <div>
-          <div className="flex items-center justify-between py-2 border-b border-gray-500/10 mb-4">
-            <div className="flex items-center gap-3">
-              <Database size={18} className={backupConfig.ragEnabled ? (isDarkMode ? 'text-purple-400' : 'text-purple-600') : 'opacity-50'} />
-              <div>
-                <span className={`ka-setting-item-title block ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                  {language === 'zh' ? '启用本地长期记忆' : 'Enable local long-term memory'}
-                </span>
-                <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                  {language === 'zh'
-                    ? '使用本地 ONNX + SQLite 向量检索，不再依赖外部 Embedding API'
-                    : 'Use local ONNX + SQLite vector retrieval without external embedding APIs'}
-                </span>
-              </div>
+          <div className={`flex items-center justify-between py-2 border-b mb-4 ${isDarkMode ? 'border-[#8c6a3c]/30' : 'border-[#ebe1d3]'}`}>
+            <div className="flex-1 min-w-0">
+              <span className={`ka-setting-item-title block ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>
+                {language === 'zh' ? '启用本地长期记忆' : 'Enable local long-term memory'}
+              </span>
+              <span className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
+                {language === 'zh'
+                  ? '使用本地 ONNX + SQLite 向量检索，不再依赖外部 Embedding API'
+                  : 'Use local ONNX + SQLite vector retrieval without external embedding APIs'}
+              </span>
             </div>
-            <div className="flex-shrink-0">
+            <div className="flex-shrink-0 ml-3">
               <SettingsToggle
                 checked={!!backupConfig.ragEnabled}
                 onClick={onToggleRagEnabled}
@@ -75,22 +76,22 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
             </div>
           </div>
 
-          <div className={`ka-copy-sm italic p-3 rounded ${isDarkMode ? 'bg-black/30 text-gray-400' : 'bg-gray-200 text-gray-600'}`}>
+          <div className={`ka-copy-sm italic p-3 rounded-lg ${isDarkMode ? 'bg-[#211811]/60 text-[#b69f87]' : 'bg-[#f5ebd9] text-[#8f7458]'}`}>
             {language === 'zh'
               ? 'RAG 向量模型与接口配置已移除，当前固定使用内置本地模型。'
               : 'RAG model and endpoint inputs have been removed. The built-in local model is now fixed.'}
           </div>
 
           {onRequestRebuildRag && (
-            <div className="mt-4 pt-4 border-t border-gray-500/10">
+            <div className={`mt-4 pt-4 border-t ${isDarkMode ? 'border-[#8c6a3c]/30' : 'border-[#ebe1d3]'}`}>
               <button
                 onClick={onRequestRebuildRag}
                 disabled={isRebuilding}
-                className={`w-full py-2 px-3 rounded flex items-center justify-center gap-2 ka-label transition-colors disabled:opacity-70 disabled:cursor-not-allowed ${isDarkMode ? 'bg-purple-900/30 hover:bg-purple-900/50 text-purple-400 border border-purple-500/30' : 'bg-purple-50 hover:bg-purple-100 text-purple-600 border border-purple-200'}`}
+                className={`w-full py-3 px-4 rounded-xl flex items-center justify-center gap-2 ka-label font-semibold transition-colors disabled:opacity-70 disabled:cursor-not-allowed ${isDarkMode ? 'bg-purple-900/30 hover:bg-purple-900/50 text-purple-300 border border-purple-500/30' : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200'}`}
               >
                 <RefreshCw size={14} className={isRebuilding ? 'animate-spin' : ''} /> {isRebuilding ? (language === 'zh' ? '正在重建 RAG 记忆库' : 'Rebuilding RAG Memory') : (language === 'zh' ? '重建 RAG 记忆库' : 'Rebuild RAG Memory')}
               </button>
-              <p className={`ka-copy-sm mt-2 text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+              <p className={`ka-copy-sm mt-2 text-center ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
                 {ragProgressLabel
                   ? ragProgressLabel
                   : language === 'zh'

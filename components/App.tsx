@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useAppStore } from '../store';
 import { SystemToast } from './SystemToast';
+import { GlobalDialogHost } from './GlobalDialogHost';
 import { AppFlowScreens } from './app/AppFlowScreens';
 import { AppMainView } from './app/AppMainView';
 import { DiaryBackfillDialog as DiaryBackfillDialogLazy } from './DiaryBackfillDialog';
@@ -29,6 +30,7 @@ import { useKumikoStatusLine } from '../hooks/useKumikoStatusLine';
 import { useInitialLoadBootstrap } from '../hooks/useInitialLoadBootstrap';
 import { useVoicePipeline } from '../hooks/useVoicePipeline';
 import { useProactiveLifeCycle } from '../hooks/useProactiveLifeCycle';
+import { useBusyRegulator } from '../hooks/useBusyRegulator';
 import { useBackupWorkflow } from '../hooks/useBackupWorkflow';
 import { useMobileApiProxy } from './app/useMobileApiProxy';
 import { useMobileBroadcaster } from './app/useMobileBroadcaster';
@@ -68,6 +70,7 @@ import {
   refocusDesktopWebContents,
 } from '../services/desktopBackupService';
 import { isMobilePwa } from '../services/environment';
+import { dialogService } from '../services/dialogService';
 import { subscribeEvents as subscribeMobileEvents } from '../services/httpApi';
 import {
   MEMORY_QUERY_SESSION_STORAGE_KEY,
@@ -388,6 +391,10 @@ export const App = () => {
   const messageAlerts = useAppStore(s => s.messageAlerts);
   const setMessageAlerts = useAppStore(s => s.setMessageAlerts);
 
+  const setBusySlotRuntime = useAppStore(s => s.setBusySlotRuntime);
+  const setBusyFollowUp = useAppStore(s => s.setBusyFollowUp);
+  const setPendingApology = useAppStore(s => s.setPendingApology);
+
   usePreferencesPersistence({
     isDataLoaded,
     isBulkRestoreInProgressRef,
@@ -631,6 +638,9 @@ export const App = () => {
     setIsDataLoaded,
     setDataLoadError,
     setSystemNotice,
+    setBusySlotRuntime,
+    setBusyFollowUp,
+    setPendingApology,
   });
 
   const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -823,6 +833,8 @@ export const App = () => {
     showBackgroundMessageNotification,
   });
 
+  useBusyRegulator(flowState === 'APP');
+
   useScheduledReminders({
     flowState,
     isTalking,
@@ -897,7 +909,12 @@ export const App = () => {
         }
       } catch (err) {
         console.error("Failed to process image locally", err);
-        alert("图片处理失败 / Image processing failed");
+        void dialogService.alert({
+          message: language === 'zh'
+            ? '图片处理失败，请检查格式或重新选择。'
+            : 'Image processing failed. Please verify the file and try again.',
+          icon: 'error',
+        });
       }
     }
   };
@@ -1320,6 +1337,7 @@ export const App = () => {
           flowState={flowState}
           appState={appState}
           language={language}
+          isDarkMode={isDarkMode}
           backupConfig={backupConfig}
           connectedFileName={connectedFileName}
           onLanguageChange={setLanguage}
@@ -1353,6 +1371,7 @@ export const App = () => {
         />
       )}
       <SystemToast message={systemNotice} onClose={() => setSystemNotice(null)} isDarkMode={isDarkMode} />
+      <GlobalDialogHost />
       {isAutoZipping && (
         <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/70 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-4 text-white">

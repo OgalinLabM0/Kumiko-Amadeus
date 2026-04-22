@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { BookOpen, ChevronDown, ChevronUp } from 'lucide-react';
 import { Collapse } from '../Collapse';
 import { SettingsToggle } from './SettingsToggle';
 import { useAppStore } from '../../store';
 import type { DiaryLayerPreset } from '../../constants/diaryLayerConfig';
 import { useAutoDiaryBackfill } from '../../hooks/useAutoDiaryBackfill';
+import { ThemedSelect, type ThemedSelectOption } from '../common/ThemedSelect';
 
 interface DiaryLifeSectionTranslations {
   diaryLifeTitle: string;
@@ -50,6 +51,16 @@ export const DiaryLifeSection: React.FC<DiaryLifeSectionProps> = ({
     rich: t.diaryDepthHelp_rich,
   };
 
+  const depthSelectClass = `w-full rounded-lg px-3 py-2 ka-input-copy border transition-colors ${isDarkMode ? 'bg-[#211811] border-[#8c6a3c] text-[#f2e5cf] focus:border-amber-500' : 'bg-white border-[#d7cebf] text-[#4c3a2b] focus:border-amber-600'}`;
+  const depthOptions = useMemo<ThemedSelectOption[]>(
+    () => [
+      { value: 'economy', label: t.diaryDepth_economy },
+      { value: 'balanced', label: t.diaryDepth_balanced },
+      { value: 'rich', label: t.diaryDepth_rich },
+    ],
+    [t.diaryDepth_economy, t.diaryDepth_balanced, t.diaryDepth_rich],
+  );
+
   const toggleTrackActive = 'bg-green-600/95';
   const toggleTrackInactive = isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]';
 
@@ -79,15 +90,14 @@ export const DiaryLifeSection: React.FC<DiaryLifeSectionProps> = ({
             <label className={`ka-setting-item-title ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
               {t.diaryMemoryDepth}
             </label>
-            <select
+            <ThemedSelect
               value={diaryLayerPreset}
-              onChange={e => setDiaryLayerPreset(e.target.value as DiaryLayerPreset)}
-              className={`w-full rounded-lg px-3 py-2 ka-value text-sm border transition-colors ${isDarkMode ? 'bg-[#1b1712] border-[#4a3a2a] text-[#f0e6d8] focus:border-amber-500' : 'bg-white border-[#d7cebf] text-[#4c3a2b] focus:border-amber-600'}`}
-            >
-              <option value="economy">{t.diaryDepth_economy}</option>
-              <option value="balanced">{t.diaryDepth_balanced}</option>
-              <option value="rich">{t.diaryDepth_rich}</option>
-            </select>
+              onChange={(val) => setDiaryLayerPreset(val as DiaryLayerPreset)}
+              options={depthOptions}
+              isDarkMode={isDarkMode}
+              className={depthSelectClass}
+              ariaLabel={t.diaryMemoryDepth}
+            />
             <p className={`ka-copy-xs leading-relaxed ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
               {descByPreset[diaryLayerPreset]}
             </p>

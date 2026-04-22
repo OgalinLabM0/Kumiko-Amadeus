@@ -93,6 +93,25 @@ export async function synthesizeWithSovits(
   return { audio: arrayBuffer, durationEstimate };
 }
 
+/**
+ * Detect whether the user is currently running a GPT-SoVITS v3 or v4
+ * checkpoint. Official upstream (`TTS_infer_pack/TTS.py` → `v3v4set`)
+ * forbids `no_prompt_text` mode on v3/v4 weights — calling ref-free would
+ * throw `NO_PROMPT_ERROR`. When this returns true the UI should lock
+ * `sovitsUseRefText` to ON and the inference layer forces prompt_text
+ * regardless of the persisted toggle.
+ *
+ * Matches the same `v2ProPlus`-safe substring heuristic used in the
+ * settings UI, so the two layers stay consistent.
+ */
+export function isSovitsV3V4Model(
+  ttsConfig: Pick<TtsConfig, 'sovitsGptWeights' | 'sovitsVitsWeights'>,
+): boolean {
+  const gpt = ttsConfig.sovitsGptWeights || '';
+  const vits = ttsConfig.sovitsVitsWeights || '';
+  return /v[34]/i.test(gpt) || /v[34]/i.test(vits);
+}
+
 export async function genieTtsWithEmotion(
   text: string, emotion: EmotionType, ttsConfig: TtsConfig,
   voiceVariant?: string,
@@ -117,7 +136,17 @@ export async function genieTtsWithEmotion(
 
   const separator = refDir.includes('/') ? '/' : '\\';
   const refAudioPath = refDir ? `${refDir}${separator}${pick.file}.wav` : '';
-  const promptText = pick.promptText;
+
+  // Resolve prompt_text:
+  // - v3/v4 weights: upstream forbids no_prompt_text mode → force prompt.
+  // - Otherwise honour persisted toggle: OFF → "" (ref-free), ON → custom
+  //   override if non-empty, else the built-in default.
+  const v3v4 = isSovitsV3V4Model(ttsConfig);
+  const useRefText = v3v4 || (ttsConfig.sovitsUseRefText ?? false);
+  const customPrompt = ttsConfig.sovitsCustomPrompts?.[pick.file];
+  const promptText = useRefText
+    ? (customPrompt && customPrompt.trim().length > 0 ? customPrompt : pick.promptText)
+    : '';
 
   return synthesizeWithSovits(text, baseUrl, refAudioPath, promptText, {
     speed: ttsConfig.speed,

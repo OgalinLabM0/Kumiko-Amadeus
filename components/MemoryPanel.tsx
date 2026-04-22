@@ -9,6 +9,7 @@ import { DEFAULT_WORLD_BOOK, UI_TRANSLATIONS, KUMIKO_EMOTION_IMAGES, LOCALIZED_W
 import { useAppStore } from '../store';
 import { isWideViewport } from '../services/datetimeFormat';
 import { useModalPortal } from '../hooks/useModalPortal';
+import { dialogService } from '../services/dialogService';
 
 interface MemoryPanelProps {
   isOpen: boolean;
@@ -113,7 +114,7 @@ const PinnedModal: React.FC<PinnedModalProps> = ({
   isDarkMode, t,
 }) => {
   const renderPortal = useModalPortal();
-  const bgClass = isDarkMode ? 'bg-[#161412]/96 border-[#2a2522]/60' : 'bg-[rgba(255,255,255,0.98)] border-[#e6ded3]';
+  const bgClass = isDarkMode ? 'bg-[#1f1711]/96 border-[#a88247]/55' : 'bg-[rgba(255,255,255,0.98)] border-[#e6ded3]';
   const textClass = isDarkMode ? 'text-[#f0e6d8]' : 'text-[#4c3a2b]';
   const titleClass = isDarkMode ? 'text-[#e5c992]' : 'text-[#a97832]';
   const closeButtonClass = isDarkMode ? 'hover:bg-red-500/10 hover:text-red-400' : 'hover:bg-red-500/10 hover:text-red-500';
@@ -253,6 +254,9 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
   // Anchor Deletion Confirmation
   const [confirmAnchorDeleteId, setConfirmAnchorDeleteId] = useState<string | null>(null);
 
+  // Template picker for custom lore: show choices above the "+" button
+  const [isTemplatePickerOpen, setIsTemplatePickerOpen] = useState(false);
+
   // --- MESSAGE EDITING STATE ---
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editMessageText, setEditMessageText] = useState('');
@@ -391,20 +395,89 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
     });
   };
 
-  const handleAddCustomEntry = () => {
+  // Starter templates for new custom entries. Each one seeds title + content
+  // with a non-conflict example so users are naturally steered away from the
+  // forbidden categories (partner / location / canonical relationships).
+  type CustomLoreTemplate = {
+    key: 'sharedExperience' | 'interestExtension' | 'futurePromise' | 'lifeHabit' | 'offscreenEvent' | 'blank';
+    titleSeed: string;
+    contentSeed: string;
+    icon: React.ComponentType<{ size?: number; className?: string }>;
+  };
+
+  const customLoreTemplates: CustomLoreTemplate[] = useMemo(() => {
+    if (language === 'zh') {
+      return [
+        { key: 'sharedExperience', titleSeed: '共同经历：',
+          contentSeed: '例：我们一起在暑假去了琵琶湖边的小音乐节，她帮我调了整场的混音。', icon: History },
+        { key: 'interestExtension', titleSeed: '兴趣延伸：',
+          contentSeed: '例：她最近迷上了用家里那台小收音机听 FM，说比流媒体更有年代感。', icon: NotebookPen },
+        { key: 'futurePromise', titleSeed: '未来小约定：',
+          contentSeed: '例：我们约定等她下一场校内演奏会结束，一起去吃三条通那家可丽饼。', icon: Clock },
+        { key: 'lifeHabit', titleSeed: '生活小习惯：',
+          contentSeed: '例：她泡咖啡前会先把马克杯用热水暖一圈，说这样香气更稳。', icon: Star },
+        { key: 'offscreenEvent', titleSeed: '场外事件：',
+          contentSeed: '例：去年冬天我给她寄过一盒出町枡形的和果子，她拍了张截图发回来。', icon: StickyNote },
+        { key: 'blank', titleSeed: '新条目', contentSeed: '', icon: Plus },
+      ];
+    }
+    return [
+      { key: 'sharedExperience', titleSeed: 'Shared Experience: ',
+        contentSeed: 'Example: We went to a small summer festival by Lake Biwa; she ended up mixing the whole set.', icon: History },
+      { key: 'interestExtension', titleSeed: 'Taste & Interest: ',
+        contentSeed: 'Example: She has been hooked on FM radio through an old receiver at home — says it feels more analog than streaming.', icon: NotebookPen },
+      { key: 'futurePromise', titleSeed: 'Small Promise: ',
+        contentSeed: 'Example: We promised that after her next school concert we would grab crepes on Sanjo-dori.', icon: Clock },
+      { key: 'lifeHabit', titleSeed: 'Daily Habit: ',
+        contentSeed: 'Example: She warms the mug with hot water before pouring coffee — claims the aroma sits better that way.', icon: Star },
+      { key: 'offscreenEvent', titleSeed: 'Offscreen Event: ',
+        contentSeed: 'Example: I sent her a box of wagashi from Demachi-masugata last winter; she sent back a photo.', icon: StickyNote },
+      { key: 'blank', titleSeed: 'New Entry', contentSeed: '', icon: Plus },
+    ];
+  }, [language]);
+
+  const handleAddCustomEntry = (template?: CustomLoreTemplate) => {
+    const t0 = template ?? customLoreTemplates[customLoreTemplates.length - 1]; // blank
     const newId = Date.now().toString();
     const newEntry: WorldBookEntry = {
       id: newId,
-      title: 'New Entry',
-      content: '',
+      title: t0.titleSeed,
+      content: t0.contentSeed,
       isActive: true,
-      isHighPriority: false
+      isHighPriority: false,
     };
-    // Append to end
     setLocalWorldBook([...localWorldBook, newEntry]);
     setIsCustomBookOpen(true);
-    // Auto expand new entry
     setExpandedEntryIds(prev => new Set(prev).add(newId));
+    setIsTemplatePickerOpen(false);
+  };
+
+  // --- Keyword helpers ---
+  // Keep the existing storage format (`【关键词：xxx】` prefix line inside
+  // `content`) so geminiService.ts's recall regex keeps working, but surface
+  // it to the UI as a dedicated "Trigger Keywords" field.
+  const KEYWORDS_RE = /^\s*【关键词：([^】]*)】\s*\n?/;
+  const splitKeywords = (raw: string): { keywords: string; body: string } => {
+    const match = raw.match(KEYWORDS_RE);
+    if (!match) return { keywords: '', body: raw };
+    return { keywords: match[1].trim(), body: raw.slice(match[0].length) };
+  };
+  const joinKeywords = (keywords: string, body: string): string => {
+    const trimmedKw = keywords.trim();
+    if (!trimmedKw) return body;
+    return `【关键词：${trimmedKw}】\n${body}`;
+  };
+  const updateEntryBody = (id: string, newBody: string) => {
+    const entry = localWorldBook.find(e => e.id === id);
+    if (!entry) return;
+    const { keywords } = splitKeywords(entry.content);
+    updateEntry(id, 'content', joinKeywords(keywords, newBody));
+  };
+  const updateEntryKeywords = (id: string, newKeywords: string) => {
+    const entry = localWorldBook.find(e => e.id === id);
+    if (!entry) return;
+    const { body } = splitKeywords(entry.content);
+    updateEntry(id, 'content', joinKeywords(newKeywords, body));
   };
 
   const updateEntry = (id: string, field: keyof WorldBookEntry, value: any) => {
@@ -423,24 +496,33 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
     }
   };
 
-  const handleResetEntry = (id: string) => {
+  const handleResetEntry = async (id: string) => {
       const defaultEntry = DEFAULT_WORLD_BOOK.find(d => d.id === id);
-      
-      const confirmMsg = defaultEntry 
-        ? `Reset this official entry to original system values?`
-        : `Clear content of this entry?`;
 
-      if (confirm(confirmMsg)) {
-          if (defaultEntry) {
-             setLocalWorldBook(prev => prev.map(entry => 
-                entry.id === id ? { ...defaultEntry } : entry
-             ));
-             setExpandedEntryIds(prev => new Set(prev).add(id));
-          } else {
-             setLocalWorldBook(prev => prev.map(entry => 
-                entry.id === id ? { ...entry, title: 'New Entry', content: '' } : entry
-             ));
-          }
+      const confirmMsg = defaultEntry
+        ? (language === 'zh'
+            ? '确定要将此官方条目重置为系统原始值吗？此操作会覆盖你在本条目上的所有编辑。'
+            : 'Reset this official entry to original system values? All local edits to this entry will be overwritten.')
+        : (language === 'zh'
+            ? '确定要清空此条目的全部内容吗？'
+            : 'Clear all content of this entry?');
+
+      const confirmed = await dialogService.confirm({
+        message: confirmMsg,
+        variant: 'danger',
+        confirmText: language === 'zh' ? (defaultEntry ? '重置' : '清空') : (defaultEntry ? 'Reset' : 'Clear'),
+      });
+      if (!confirmed) return;
+
+      if (defaultEntry) {
+         setLocalWorldBook(prev => prev.map(entry =>
+            entry.id === id ? { ...defaultEntry } : entry
+         ));
+         setExpandedEntryIds(prev => new Set(prev).add(id));
+      } else {
+         setLocalWorldBook(prev => prev.map(entry =>
+            entry.id === id ? { ...entry, title: 'New Entry', content: '' } : entry
+         ));
       }
   };
 
@@ -531,7 +613,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
   // backdrop-blur would have negligible visible effect at 98% alpha, and
   // we don't want to pay the compositor cost for a no-op.
   const bgClass = isDarkMode
-    ? 'bg-[#161412]/80 backdrop-blur-md border-[#2a2522]/60'
+    ? 'bg-[#1f1711]/80 backdrop-blur-md border-[#a88247]/55'
     : 'bg-[rgba(255,255,255,0.98)] border-[#e6ded3]';
   const textClass = isDarkMode ? 'text-[#f0e6d8]' : 'text-[#4c3a2b]';
   const titleClass = isDarkMode ? 'text-[#e5c992]' : 'text-[#a97832]';
@@ -844,25 +926,20 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                       {anchors.map((anchor) => (
                           <div
                             key={anchor.id}
-                            className={`relative p-4 rounded-[1rem] border shadow-sm group transition-all hover:-translate-y-0.5 overflow-hidden ${isDarkMode ? 'bg-[#1a1215] border-[#6a4b51]/35 text-[#eadfce]' : 'bg-[#fffdfb] border-[#ecdce0] text-[#4b392a]'}`}
+                            className={`relative p-3 pl-4 rounded border group transition-colors overflow-hidden ${isDarkMode ? 'bg-[#1a1215] border-[#6a4b51]/35 text-[#eadfce]' : 'bg-[#fffdfb] border-[#ecdce0] text-[#4b392a]'}`}
                           >
-                              <div className={`absolute left-0 top-0 h-full w-1 ${isDarkMode ? 'bg-gradient-to-b from-[#d47a9a] to-[#9a5a7a]' : 'bg-gradient-to-b from-[#d58da1] to-[#b87a8a]'}`} />
-                              <div className={`absolute top-3 right-3 h-2.5 w-2.5 rounded-full ${isDarkMode ? 'bg-[#d47a9a]/70 shadow-[0_0_10px_rgba(212,122,154,0.25)]' : 'bg-[#d58da1]/70 shadow-[0_0_10px_rgba(213,141,161,0.2)]'}`}></div>
-                              <div className={`flex justify-between items-start mb-2 text-[10px] font-mono border-b pb-2 ${isDarkMode ? 'border-white/8 text-[#c8a0a8]' : 'border-black/8 text-[#8a6a7a]'}`}>
+                              <div className={`absolute left-0 top-0 bottom-0 w-[3px] rounded-l bg-gradient-to-b ${isDarkMode ? 'from-[#d47a9a] to-[#9a5a7a]' : 'from-[#d58da1] to-[#b87a8a]'}`} />
+                              <div className={`flex justify-between items-center mb-2 text-[10px] font-mono border-b pb-1.5 ${isDarkMode ? 'border-white/8 text-[#c8a0a8]' : 'border-black/8 text-[#8a6a7a]'}`}>
                                   <span>{new Date(anchor.timestamp).toLocaleDateString()}</span>
                                   {anchor.emotion && KUMIKO_EMOTION_IMAGES[anchor.emotion] && (
-                                       <img src={KUMIKO_EMOTION_IMAGES[anchor.emotion]} className="w-4 h-4 rounded-full object-cover opacity-80" alt="mood" />
+                                      <img src={KUMIKO_EMOTION_IMAGES[anchor.emotion]} className="w-4 h-4 rounded-full object-cover opacity-80" alt="mood" />
                                   )}
                               </div>
                               <p className="text-sm font-medium leading-relaxed">{anchor.content}</p>
                               {onDeleteAnchor && (
-                                  // Phase 7 Part t8_memory_panel: the Anchor delete button
-                                  // was `opacity-0 group-hover:opacity-100` — hidden entirely
-                                  // on phones which have no hover. Show at 60% on `< md`
-                                  // (mobile) and keep the hover-reveal on desktop.
                                   <button
                                     onClick={(e) => handleDeleteAnchorClick(e, anchor.id)}
-                                    className={`absolute bottom-2 right-2 p-1 rounded-full transition-all opacity-60 md:opacity-0 md:group-hover:opacity-100 ${confirmAnchorDeleteId === anchor.id ? 'bg-red-500 text-white w-auto px-2 text-[10px] font-bold' : (isDarkMode ? 'text-[#b7a08a] hover:text-red-400 hover:bg-white/5' : 'text-[#a08b75] hover:text-red-500 hover:bg-black/5')}`}
+                                    className={`absolute bottom-2 right-2 p-1 rounded transition-all opacity-60 md:opacity-0 md:group-hover:opacity-100 ${confirmAnchorDeleteId === anchor.id ? 'bg-red-500 text-white w-auto px-2 text-[10px] font-bold' : (isDarkMode ? 'text-[#b7a08a] hover:text-red-400 hover:bg-white/5' : 'text-[#a08b75] hover:text-red-500 hover:bg-black/5')}`}
                                     title={t.deleteAnchorConfirm}
                                   >
                                       {confirmAnchorDeleteId === anchor.id ? t.deleteAnchorConfirm : <Trash2 size={14} />}
@@ -1084,9 +1161,8 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                   <p className={`ka-copy-sm opacity-70 ${textClass}`}>{t.officialLoreHelp}</p>
                   {systemEntries.map((entry) => {
                     const isExpanded = expandedEntryIds.has(entry.id);
-                    // Determine if this is a recommended Core Entry
                     const isCore = CORE_MEMORY_IDS.has(entry.id);
-                    
+
                     return (
                       <div key={entry.id} className={`relative rounded border flex flex-col transition-all overflow-hidden ${isDarkMode ? 'bg-[#1c1a20] border-[#2a2830]/60' : 'bg-[#fcfaff] border-[#e0d8ec]'} ${!entry.isActive ? 'opacity-80' : ''}`}>
                           <div className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l bg-gradient-to-b from-[#b0a0d0] to-[#8a7ab5]" />
@@ -1101,9 +1177,9 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                                 )}
                             </div>
                             <div className="flex items-center gap-2 flex-shrink-0">
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); updateEntry(entry.id, 'isActive', !entry.isActive); }} 
-                                className={`p-1.5 rounded-full transition-all flex items-center gap-1 ${entry.isActive ? 'bg-green-500/10 text-green-500 hover:bg-green-500/20' : 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'}`} 
+                              <button
+                                onClick={(e) => { e.stopPropagation(); updateEntry(entry.id, 'isActive', !entry.isActive); }}
+                                className={`p-1.5 rounded-full transition-all flex items-center gap-1 ${entry.isActive ? 'bg-green-500/10 text-green-500 hover:bg-green-500/20' : 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'}`}
                                 title={entry.isActive ? (language === 'zh' ? '常驻激活 (上下文)' : 'Always Active (Context)') : (language === 'zh' ? '自动搜索 (RAG 模式)' : 'Auto-Search (RAG Mode)')}
                               >
                                   {entry.isActive ? <Power size={14} /> : <Search size={14} />}
@@ -1124,7 +1200,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                                       <p>{t.coreRecommendation}</p>
                                   </div>
                               )}
-                              <div className={`w-full max-h-48 p-2 rounded text-base md:text-sm ka-input-copy overflow-y-auto scrollbar-thin whitespace-pre-wrap ${isDarkMode ? 'bg-[#16141a] text-[#cfc4db]' : 'bg-[#f5f2f8] text-[#524866]'}`}>
+                              <div className={`w-full max-h-48 px-3 pb-3 rounded text-base md:text-sm ka-input-copy overflow-y-auto scrollbar-thin whitespace-pre-wrap ${isDarkMode ? 'ka-notebook-lined-dark text-[#cfc4db]' : 'ka-notebook-lined-light text-[#524866]'}`}>
                                 {entry.content || t.contentPlaceholder}
                               </div>
                             </div>
@@ -1164,36 +1240,160 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
               <Collapse isOpen={isCustomBookOpen}>
                 <div className="p-3 flex flex-col gap-3">
                   <p className={`ka-copy-sm opacity-70 ${textClass}`}>{t.customLoreHelp}</p>
+
+                  {/* FORBIDDEN-REWRITE BANNER: left-square / right-rounded, the
+                      left "spine" is baked into a 3px solid border-left so the
+                      corner always matches the outer shell seamlessly. */}
+                  <div
+                    className={`relative rounded-r-[0.85rem] border p-3 pl-4 ${isDarkMode ? 'bg-[#1e1a12] border-[#6b5030]/60 text-[#f3d9a3]' : 'bg-[#fff8e8] border-[#e8d3a0] text-[#7a5a1d]'}`}
+                    style={{
+                      borderLeftWidth: '3px',
+                      borderLeftStyle: 'solid',
+                      borderLeftColor: isDarkMode ? '#d4a75c' : '#b07f28',
+                    }}
+                  >
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                      <div className="flex-1 min-w-0">
+                        <div className="ka-label font-semibold tracking-[0.04em] mb-1.5">
+                          {t.customLoreForbiddenTitle}
+                        </div>
+                        <ul className="ka-copy-xs leading-relaxed space-y-0.5 list-disc pl-4 opacity-90">
+                          {t.customLoreForbiddenItems.map((item, i) => (
+                            <li key={i}>{item}</li>
+                          ))}
+                        </ul>
+                        <p className="ka-copy-xs opacity-70 mt-2 italic">
+                          {t.customLoreForbiddenFooter}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
                   {customEntries.length === 0 && <div className={`text-center py-4 ka-copy-sm border border-dashed rounded ${isDarkMode ? 'border-[#252a34] text-[#8eaac8]/50' : 'border-[#d5e0ec] text-[#6882a8]/60'}`}>{t.noCustomEntries}</div>}
+
                   {customEntries.map((entry) => {
                     const isExpanded = expandedEntryIds.has(entry.id);
+                    const { keywords, body } = splitKeywords(entry.content);
+                    const isConfirmingDelete = confirmDeleteId === entry.id;
                     return (
                       <div key={entry.id} className={`relative rounded border flex flex-col transition-all overflow-hidden ${isDarkMode ? 'bg-[#14161c] border-[#252a34]/50' : 'bg-[#f7f9fc] border-[#d5e0ec]'} ${!entry.isActive ? 'opacity-80' : ''}`}>
                           <div className="absolute left-0 top-0 bottom-0 w-[3px] rounded-l bg-gradient-to-b from-[#8eaac8] to-[#6882a8]" />
-                          <div className={`flex items-center justify-between p-3 pl-4 cursor-pointer ${isDarkMode ? 'hover:bg-white/4' : 'hover:bg-black/[0.02]'}`} onClick={() => toggleEntryExpansion(entry.id)}>
-                            <div className="flex items-center gap-2 flex-1 mr-2">
-                               {entry.isHighPriority ? <Zap size={12} className="text-yellow-500 fill-yellow-500" /> : <Bookmark size={12} className="opacity-50" />}
-                               <input value={entry.title} onChange={(e) => updateEntry(entry.id, 'title', e.target.value)} onClick={(e) => e.stopPropagation()} className={`bg-transparent border-b border-transparent focus:border-[#6882a8] outline-none ka-label font-semibold uppercase truncate ${isDarkMode ? 'text-[#8eaac8]' : 'text-[#4a6080]'} ${!entry.isActive ? 'line-through opacity-50' : ''}`} placeholder="Title" />
+                          <div className={`flex items-center justify-between p-3 pl-4 ${isDarkMode ? 'hover:bg-white/4' : 'hover:bg-black/[0.02]'}`}>
+                            <div className="flex items-center gap-2 flex-1 mr-2 min-w-0">
+                                {entry.isHighPriority ? <Zap size={12} className="text-yellow-500 fill-yellow-500 flex-shrink-0" /> : <Bookmark size={12} className="opacity-50 flex-shrink-0" />}
+                                <input
+                                  value={entry.title}
+                                  onChange={(e) => updateEntry(entry.id, 'title', e.target.value)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className={`flex-1 min-w-0 bg-transparent border-b border-transparent focus:border-[#6882a8] outline-none font-mincho font-semibold text-sm tracking-[0.02em] ${isDarkMode ? 'text-[#d7e1f0]' : 'text-[#2f3a4e]'} ${!entry.isActive ? 'line-through opacity-50' : ''}`}
+                                  placeholder={language === 'zh' ? '为此条目起一个标题' : 'Give this entry a title'}
+                                />
                             </div>
-                            <div className="flex items-center gap-2">
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); updateEntry(entry.id, 'isActive', !entry.isActive); }} 
-                                className={`p-1.5 rounded-full transition-all flex items-center gap-1 ${entry.isActive ? 'bg-green-500/10 text-green-500 hover:bg-green-500/20' : 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'}`} 
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); updateEntry(entry.id, 'isActive', !entry.isActive); }}
+                                className={`p-1.5 rounded-full transition-all flex items-center gap-1 ${entry.isActive ? 'bg-green-500/10 text-green-500 hover:bg-green-500/20' : 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'}`}
                                 title={entry.isActive ? (language === 'zh' ? '常驻激活 (上下文)' : 'Always Active (Context)') : (language === 'zh' ? '自动搜索 (RAG 模式)' : 'Auto-Search (RAG Mode)')}
                               >
                                   {entry.isActive ? <Power size={14} /> : <Search size={14} />}
                                   {!entry.isActive && <span className="text-[9px] font-bold">RAG</span>}
                               </button>
-                              <button onClick={(e) => { e.stopPropagation(); updateEntry(entry.id, 'isHighPriority', !entry.isHighPriority); }} className={`p-1 rounded hover:bg-white/10 ${entry.isHighPriority ? 'text-yellow-500' : 'text-gray-500'}`} title={entry.isHighPriority ? t.highPriorityTooltip : t.normalPriorityTooltip}><Zap size={14} /></button>
-                              <button onClick={(e) => { e.stopPropagation(); handleDeleteEntry(entry.id); }} className={`p-1 rounded hover:bg-red-900/50 ${confirmDeleteId === entry.id ? 'text-red-500' : 'text-gray-500'}`}><Trash2 size={14} /></button>
-                              {isExpanded ? <ChevronUp size={14} className="opacity-50" /> : <ChevronDown size={14} className="opacity-50" />}
+                              <button
+                                onClick={(e) => { e.stopPropagation(); updateEntry(entry.id, 'isHighPriority', !entry.isHighPriority); }}
+                                className={`p-1 rounded transition-colors ${entry.isHighPriority ? 'text-yellow-500 hover:bg-yellow-500/10' : (isDarkMode ? 'text-gray-500 hover:bg-white/5' : 'text-gray-400 hover:bg-black/5')}`}
+                                title={entry.isHighPriority ? t.highPriorityTooltip : t.normalPriorityTooltip}
+                              >
+                                <Zap size={14} className={entry.isHighPriority ? 'fill-current' : ''} />
+                              </button>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); handleDeleteEntry(entry.id); }}
+                                className={`rounded transition-all duration-150 flex items-center gap-1 ${isConfirmingDelete
+                                  ? 'px-2 py-1 bg-red-600 text-white shadow-sm'
+                                  : `p-1 ${isDarkMode ? 'text-gray-500 hover:bg-red-500/15 hover:text-red-400' : 'text-gray-400 hover:bg-red-500/10 hover:text-red-500'} hover:scale-110`
+                                }`}
+                                title={t.hardDeleteTooltip}
+                              >
+                                <Trash2 size={14} />
+                                {isConfirmingDelete && (
+                                  <span className="text-[10px] font-bold tracking-wide whitespace-nowrap">{t.confirmDeleteHint}</span>
+                                )}
+                              </button>
+                              <button onClick={(e) => { e.stopPropagation(); toggleEntryExpansion(entry.id); }} className={`p-1 rounded ${isDarkMode ? 'hover:bg-white/5 text-[#8eaac8]' : 'hover:bg-black/5 text-[#6882a8]'}`}>
+                                {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                              </button>
                             </div>
                           </div>
-                          <Collapse isOpen={isExpanded} duration={180}><div className="p-3 pl-4 pt-0"><textarea value={entry.content} onChange={(e) => updateEntry(entry.id, 'content', e.target.value)} className={`w-full h-32 p-2 rounded text-base md:text-sm ka-input-copy resize-y scrollbar-thin outline-none focus:ring-1 focus:ring-[#6882a8]/40 ${isDarkMode ? 'bg-[#12141a] border-[#252a34]' : 'bg-[#f5f7fb] border-[#d5e0ec]'} border ${textClass}`} placeholder={t.contentPlaceholder} /></div></Collapse>
+                          <Collapse isOpen={isExpanded} duration={180}>
+                            <div className="p-3 pl-4 pt-0 flex flex-col gap-2.5">
+                              <div>
+                                <div className={`ka-label font-semibold tracking-[0.06em] mb-1 ${isDarkMode ? 'text-[#8eaac8]/70' : 'text-[#6882a8]/90'}`}>
+                                  {t.contentSectionLabel}
+                                </div>
+                                <textarea
+                                  value={body}
+                                  onChange={(e) => updateEntryBody(entry.id, e.target.value)}
+                                  className={`w-full h-36 px-3 pb-3 rounded text-base md:text-sm ka-input-copy resize-y scrollbar-thin outline-none focus:ring-1 focus:ring-[#6882a8]/40 ${isDarkMode ? 'ka-notebook-lined-dark text-[#d7e1f0]' : 'ka-notebook-lined-light text-[#34405a]'}`}
+                                  placeholder={t.contentPlaceholder}
+                                />
+                              </div>
+                              <div>
+                                <div className={`ka-label font-semibold tracking-[0.06em] mb-1 ${isDarkMode ? 'text-[#8eaac8]/70' : 'text-[#6882a8]/90'}`}>
+                                  {t.keywordsSectionLabel}
+                                </div>
+                                <input
+                                  value={keywords}
+                                  onChange={(e) => updateEntryKeywords(entry.id, e.target.value)}
+                                  className={`w-full px-2 py-2 text-base md:text-sm ka-input-copy outline-none border-b border-dashed focus:border-solid transition-colors ${isDarkMode ? 'bg-[#1a1814]/60 border-[#4a4030] text-[#e3dcc7] focus:border-[#d0b878]' : 'bg-[#fdfaf1] border-[#b8a978] text-[#5a4a20] focus:border-[#7a6028]'}`}
+                                  placeholder={t.keywordsPlaceholder}
+                                />
+                              </div>
+                            </div>
+                          </Collapse>
                       </div>
                     );
                   })}
-                  <button onClick={handleAddCustomEntry} className={`w-full py-2 border-2 border-dashed rounded text-xs font-bold transition-all flex items-center justify-center gap-2 ${isDarkMode ? 'border-[#252a34] text-[#8eaac8]/60 hover:border-[#6882a8] hover:text-[#8eaac8]' : 'border-[#d5e0ec] text-[#6882a8]/60 hover:border-[#6882a8] hover:text-[#6882a8]'}`}><Plus size={14} /> {t.addCustomEntry}</button>
+
+                  {/* Template picker: inline grid above the "+" button. Selecting a
+                      card pre-fills the new entry and closes the picker. */}
+                  <div className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between">
+                      <span className={`ka-label font-semibold tracking-[0.08em] uppercase ${isDarkMode ? 'text-[#8eaac8]/80' : 'text-[#6882a8]'}`}>{t.customLoreTemplateHint}</span>
+                      <button
+                        onClick={() => setIsTemplatePickerOpen(v => !v)}
+                        className={`ka-micro font-semibold tracking-[0.08em] uppercase px-2 py-1 rounded transition-colors ${isDarkMode ? 'text-[#8eaac8] hover:bg-white/5' : 'text-[#6882a8] hover:bg-black/5'}`}
+                      >
+                        {isTemplatePickerOpen ? (language === 'zh' ? '收起' : 'COLLAPSE') : (language === 'zh' ? '展开' : 'SHOW')}
+                      </button>
+                    </div>
+                    <Collapse isOpen={isTemplatePickerOpen} duration={180}>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {customLoreTemplates.map((tpl) => {
+                          const TplIcon = tpl.icon;
+                          const labelMap: Record<CustomLoreTemplate['key'], string> = {
+                            sharedExperience: t.templateSharedExperience,
+                            interestExtension: t.templateInterestExtension,
+                            futurePromise: t.templateFuturePromise,
+                            lifeHabit: t.templateLifeHabit,
+                            offscreenEvent: t.templateOffscreenEvent,
+                            blank: t.templateBlank,
+                          };
+                          return (
+                            <button
+                              key={tpl.key}
+                              onClick={() => handleAddCustomEntry(tpl)}
+                              className={`flex items-center gap-2 px-3 py-2 rounded-[0.5rem] border text-left transition-all hover:-translate-y-0.5 hover:shadow-md ${isDarkMode ? 'bg-[#14161c] border-[#252a34] text-[#8eaac8] hover:border-[#6882a8]' : 'bg-[#fbfcfe] border-[#d5e0ec] text-[#4a6080] hover:border-[#6882a8]'}`}
+                            >
+                              <TplIcon size={14} className="flex-shrink-0 opacity-80" />
+                              <span className="ka-copy-sm font-semibold truncate">{labelMap[tpl.key]}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </Collapse>
+                  </div>
+
+                  <button onClick={() => handleAddCustomEntry()} className={`w-full py-2 border-2 border-dashed rounded text-xs font-bold transition-all flex items-center justify-center gap-2 ${isDarkMode ? 'border-[#252a34] text-[#8eaac8]/60 hover:border-[#6882a8] hover:text-[#8eaac8]' : 'border-[#d5e0ec] text-[#6882a8]/60 hover:border-[#6882a8] hover:text-[#6882a8]'}`}><Plus size={14} /> {t.addCustomEntry}</button>
                 </div>
               </Collapse>
             </div>

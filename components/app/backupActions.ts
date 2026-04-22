@@ -57,6 +57,7 @@ import {
 } from '../../services/desktopBackupService';
 import { isMobilePwa } from '../../services/environment';
 import { httpBackupExport, httpBackupImport } from '../../services/httpApi';
+import { dialogService } from '../../services/dialogService';
 import { syncTemporalEpisodes } from '../../services/temporalEpisodeService';
 import { imageService } from '../../services/imageService';
 import {
@@ -489,10 +490,13 @@ export async function handleExportBackup(backupData: any) {
       if (!result.success) {
         const detail = result.error ? ` (${result.error})` : '';
         console.error('[EXPORT] Desktop backup zip build failed:', result);
-        alert((language === 'zh' ? '备份导出失败。' : 'Failed to export backup.') + detail);
+        void dialogService.alert({
+          message: (language === 'zh' ? '备份导出失败。' : 'Failed to export backup.') + detail,
+          icon: 'error',
+        });
         return;
       }
-      alert(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
+      state.setSystemNotice(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
       return;
     }
 
@@ -507,11 +511,14 @@ export async function handleExportBackup(backupData: any) {
       if (!result.ok || !result.blob) {
         const detail = result.error ? ` (${result.error})` : '';
         console.error('[EXPORT] Mobile backup export failed:', result);
-        alert((language === 'zh' ? '备份导出失败。' : 'Failed to export backup.') + detail);
+        void dialogService.alert({
+          message: (language === 'zh' ? '备份导出失败。' : 'Failed to export backup.') + detail,
+          icon: 'error',
+        });
         return;
       }
       saveAs(result.blob, defaultFileName);
-      alert(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
+      state.setSystemNotice(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
       return;
     }
 
@@ -519,10 +526,13 @@ export async function handleExportBackup(backupData: any) {
     // saver download. Rare — just dev-server previews.
     const content = await buildWebBackupZipBlob(jsonString);
     saveAs(content, defaultFileName);
-    alert(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
+    state.setSystemNotice(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
   } catch (e) {
     console.error('Failed to export backup', e);
-    alert(language === 'zh' ? '备份导出失败。' : 'Failed to export backup.');
+    void dialogService.alert({
+      message: language === 'zh' ? '备份导出失败。' : 'Failed to export backup.',
+      icon: 'error',
+    });
   }
 }
 
@@ -690,7 +700,10 @@ export async function handleImportBackup(
             ? `检测到您的备份包含 ${voiceCount} 条语音记录，但当前数据目录中没有音频文件。导入后语音将无法播放。\n\n建议您导入完整的 ZIP 备份，或稍后手动将音频文件放入数据目录。\n\n是否继续仅导入文本？`
             : `Your backup contains ${voiceCount} voice messages, but no audio files were found in the current data directory. Voices will not play after import.\n\nIt is recommended to import a full ZIP backup, or manually place the audio files in the data directory later.\n\nContinue importing text only?`;
 
-          const proceed = window.confirm(confirmMsg);
+          const proceed = await dialogService.confirm({
+            message: confirmMsg,
+            variant: 'danger',
+          });
           if (!proceed) {
             return false;
           }
@@ -769,7 +782,7 @@ export async function handleImportBackup(
       }
       deps.updateBaseline(json.timestamp || Date.now(), restoredData);
       if (flowState === 'APP') {
-        alert('Backup restored successfully!');
+        state.setSystemNotice(language === 'zh' ? '备份恢复成功！' : 'Backup restored successfully!');
       }
       if (autoZipDegradedMessage) {
         state.setSystemNotice(autoZipDegradedMessage);
@@ -777,14 +790,20 @@ export async function handleImportBackup(
       return true;
     } else {
       if (flowState === 'APP') {
-        alert('Failed to restore backup: Invalid file format.');
+        void dialogService.alert({
+          message: language === 'zh' ? '恢复备份失败：文件格式无效。' : 'Failed to restore backup: Invalid file format.',
+          icon: 'error',
+        });
       }
       return false;
     }
   } catch (e) {
     console.error('Failed to import backup', e);
     if (flowState === 'APP') {
-      alert('Failed to import backup: Not a valid JSON or ZIP file.');
+      void dialogService.alert({
+        message: language === 'zh' ? '导入备份失败：不是有效的 JSON 或 ZIP 文件。' : 'Failed to import backup: Not a valid JSON or ZIP file.',
+        icon: 'error',
+      });
     }
     return false;
   }

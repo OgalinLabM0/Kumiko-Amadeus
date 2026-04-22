@@ -30,7 +30,7 @@ export const SystemToast: React.FC<SystemToastProps> = ({ message, onClose, isDa
           initial={{ y: -50, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: -50, opacity: 0 }}
-          className="fixed left-1/2 -translate-x-1/2 z-[250] pointer-events-none"
+          className="fixed left-1/2 -translate-x-1/2 z-[1000000] pointer-events-none"
           style={{ top: 'calc(3rem + var(--sat))' }}
         >
           {/* P2 #43: screen readers need role="status" + aria-live to announce

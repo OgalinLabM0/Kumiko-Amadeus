@@ -62,7 +62,7 @@ export const MessageCenterPanel: React.FC<MessageCenterPanelProps> = ({
   // chat canvas there is already paper-cream so readability was never a
   // problem, we just pick up the same blur class for visual parity.
   const bgClass = isDarkMode
-    ? 'bg-[#161412]/80 backdrop-blur-md border-[#2a2522]/60'
+    ? 'bg-[#1f1711]/80 backdrop-blur-md border-[#a88247]/55'
     : 'bg-white/90 backdrop-blur-md border-yellow-500/30';
   const textClass = isDarkMode ? 'text-yellow-100' : 'text-gray-800';
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]';

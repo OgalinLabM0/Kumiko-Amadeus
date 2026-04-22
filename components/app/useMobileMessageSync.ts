@@ -313,6 +313,75 @@ export function useMobileMessageSync() {
           useAppStore.getState().setConnectedFileName(fileName);
           return;
         }
+        // Busy regulator mirrors. The phone only renders UI from
+        // these events; it never runs the prepare/display AI
+        // pipeline (desktop is authoritative). We reconstruct
+        // minimum-viable BusyFollowUp / PendingApology shapes so
+        // TaskPanel's existing component code Just Works on mobile.
+        if (event.type === 'busy:followup:set') {
+          const payload = event as unknown as { followUp?: {
+            id: string;
+            slotDescription: string;
+            slotType: string;
+            slotEndAtMs: number | null;
+            prepareAt: number;
+            displayAt: number;
+            unreadCount: number;
+            prepared: boolean;
+            failureCount: number;
+          } };
+          const f = payload.followUp;
+          if (f && typeof f.id === 'string') {
+            useAppStore.getState().setBusyFollowUp({
+              id: f.id,
+              createdAt: f.prepareAt - 2 * 60 * 1000,
+              slotKey: f.id,
+              slotType: f.slotType as never,
+              slotDescription: f.slotDescription,
+              slotEndAtMs: f.slotEndAtMs,
+              prepareAt: f.prepareAt,
+              displayAt: f.displayAt,
+              unreadUserMessageIds: new Array(f.unreadCount).fill('').map((_, i) => `phone-${f.id}-${i}`),
+              preparedTextParts: f.prepared ? ['__desktop_prepared__'] : undefined,
+              preparedAt: f.prepared ? Date.now() : undefined,
+              failureCount: f.failureCount,
+            });
+          }
+          return;
+        }
+        if (event.type === 'busy:followup:cleared') {
+          useAppStore.getState().setBusyFollowUp(null);
+          return;
+        }
+        if (event.type === 'busy:apology:set') {
+          const payload = event as unknown as { apology?: {
+            id: string;
+            createdAt: number;
+            latestAppendedAt: number;
+            sources: Array<{ slotDescription: string; slotType: string; reason: string; unreadCount: number }>;
+          } };
+          const a = payload.apology;
+          if (a && Array.isArray(a.sources)) {
+            useAppStore.getState().setPendingApology({
+              id: a.id,
+              createdAt: a.createdAt,
+              latestAppendedAt: a.latestAppendedAt,
+              sources: a.sources.map((s, i) => ({
+                slotKey: `phone-${a.id}-${i}`,
+                slotType: s.slotType as never,
+                slotDescription: s.slotDescription,
+                unreadUserMessageIds: new Array(s.unreadCount).fill('').map((_, j) => `phone-${a.id}-${i}-${j}`),
+                reason: s.reason as never,
+                convertedAt: a.latestAppendedAt,
+              })),
+            });
+          }
+          return;
+        }
+        if (event.type === 'busy:apology:cleared') {
+          useAppStore.getState().setPendingApology(null);
+          return;
+        }
         // status:unread intentionally unhandled — see header comment.
       } catch (e) {
         console.warn('[MOBILE-SYNC] Failed to apply event:', event.type, e);
