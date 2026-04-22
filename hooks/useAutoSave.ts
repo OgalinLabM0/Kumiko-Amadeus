@@ -2,6 +2,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { BackupConfig } from '../types';
 import { isDesktopElectron, writeDesktopBackupFile } from '../services/desktopBackupService';
+import { isMobilePwa } from '../services/environment';
+import { httpInvoke } from '../services/httpApi';
 
 export type SyncStatus = 'IDLE' | 'DIRTY' | 'SAVING' | 'SAVED' | 'ERROR' | 'CONFLICT';
 
@@ -105,7 +107,22 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
           if (!result.success) {
             throw new Error(result.error || 'Failed to write desktop backup file.');
           }
+        } else if (isMobilePwa() && typeof currentHandle === 'string') {
+          // Mobile PWA: handle is a PC-side path from MobileRemoteFileBrowser.
+          // Route through backup:write-desktop-file so the desktop actually
+          // persists the snapshot. Previously this fell into the File System
+          // Access API branch below and crashed with "createWritable is not a
+          // function" because strings have no createWritable method.
+          const res: any = await httpInvoke('backup:write-desktop-file', {
+            path: currentHandle,
+            contentText: serializedPayload,
+          });
+          if (!res || !res.ok) {
+            throw new Error(res?.error || 'Failed to write desktop backup file from mobile.');
+          }
         } else {
+          // Browser (Chromium desktop) with FileSystemFileHandle from
+          // showSaveFilePicker / showOpenFilePicker.
           // @ts-ignore
           const writable = await currentHandle.createWritable();
           await writable.write(serializedPayload);
