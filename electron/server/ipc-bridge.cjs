@@ -176,6 +176,22 @@ const ALLOWED_CHANNELS = new Set([
 
 const DEFAULT_TIMEOUT_MS = 60000; // chat responses can stream for a while
 
+// Per-channel timeout overrides for the renderer round-trip. The Fastify
+// route calls `dispatch(channel, body)` with no extra options, so the map
+// is consulted here to keep the route code dumb and the tuning local. RAG
+// rebuild / sync channels can legitimately take multi-minute round trips
+// on larger accounts; a 60s default used to manifest as the phone PWA
+// stalling on "1/6" because the desktop-side await never completed before
+// the bridge cut the request with E_TIMEOUT. Must stay aligned with
+// services/httpApi.ts `CHANNEL_TIMEOUTS`.
+const CHANNEL_TIMEOUTS = {
+  'rag:sync-messages': 300_000,
+  'rag:rebuild:start': 300_000,
+  'rag:rebuild:status': 30_000,
+  'backup:parse-import-file': 300_000,
+  'backup:build-zip-from-payload': 300_000,
+};
+
 const pending = new Map();
 let targetWebContents = null;
 
@@ -191,30 +207,56 @@ function isChannelAllowed(channel) {
   return typeof channel === 'string' && ALLOWED_CHANNELS.has(channel);
 }
 
-function dispatch(channel, args, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+function dispatch(channel, args, options = {}) {
   if (!isChannelAllowed(channel)) {
     return Promise.reject(Object.assign(new Error(`Channel not allowed: ${channel}`), { code: 'E_CHANNEL' }));
   }
   if (!targetWebContents || targetWebContents.isDestroyed()) {
     return Promise.reject(Object.assign(new Error('Renderer target not available'), { code: 'E_NO_RENDERER' }));
   }
+  const timeoutMs = typeof options.timeoutMs === 'number'
+    ? options.timeoutMs
+    : (CHANNEL_TIMEOUTS[channel] || DEFAULT_TIMEOUT_MS);
   const requestId = crypto.randomBytes(12).toString('base64url');
+  const isRagChannel = typeof channel === 'string' && channel.startsWith('rag:');
+  const startedAt = isRagChannel ? Date.now() : 0;
+  if (isRagChannel) {
+    let payloadSize = 0;
+    try { payloadSize = JSON.stringify(args ?? {}).length; } catch { payloadSize = -1; }
+    console.log(`[IPC BRIDGE] dispatch channel=${channel} timeoutMs=${timeoutMs} payloadBytes=${payloadSize} requestId=${requestId}`);
+  }
   return new Promise((resolve, reject) => {
     const timeoutHandle = setTimeout(() => {
       if (pending.has(requestId)) {
         pending.delete(requestId);
+        if (isRagChannel) {
+          console.warn(`[IPC BRIDGE] dispatch TIMEOUT channel=${channel} requestId=${requestId} elapsedMs=${Date.now() - startedAt}`);
+        }
         reject(Object.assign(new Error('Renderer response timeout'), { code: 'E_TIMEOUT' }));
       }
     }, timeoutMs);
     if (typeof timeoutHandle.unref === 'function') timeoutHandle.unref();
 
-    pending.set(requestId, { resolve, reject, timeoutHandle });
+    const wrappedResolve = (value) => {
+      if (isRagChannel) {
+        console.log(`[IPC BRIDGE] dispatch ok channel=${channel} requestId=${requestId} elapsedMs=${Date.now() - startedAt}`);
+      }
+      resolve(value);
+    };
+    const wrappedReject = (err) => {
+      if (isRagChannel) {
+        console.warn(`[IPC BRIDGE] dispatch error channel=${channel} requestId=${requestId} elapsedMs=${Date.now() - startedAt} code=${err && err.code} msg=${err && err.message}`);
+      }
+      reject(err);
+    };
+
+    pending.set(requestId, { resolve: wrappedResolve, reject: wrappedReject, timeoutHandle });
     try {
       targetWebContents.send('mobile-api-proxy', { requestId, channel, args });
     } catch (e) {
       pending.delete(requestId);
       clearTimeout(timeoutHandle);
-      reject(Object.assign(new Error(`Renderer dispatch failed: ${e.message}`), { code: 'E_DISPATCH' }));
+      wrappedReject(Object.assign(new Error(`Renderer dispatch failed: ${e.message}`), { code: 'E_DISPATCH' }));
     }
   });
 }

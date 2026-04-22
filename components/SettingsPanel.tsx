@@ -1284,6 +1284,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         <div id="settings-section-tts" >
           <TtsConfigSection
             isOpen={isTtsOpen}
+            isPanelOpen={isOpen}
             onToggle={() => handleSectionToggle('tts', isTtsOpen)}
             isDarkMode={isDarkMode}
             language={language}

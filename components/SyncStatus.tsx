@@ -131,5 +131,26 @@ export const RagStatusIndicator: React.FC<RagStatusIndicatorProps> = ({ status, 
         );
     }
 
-    return null;
+    // Unknown status fallback. Historically this silently rendered null,
+    // meaning any future RAG state added to the state machine would make
+    // the indicator vanish entirely. Surface the unknown value as a muted
+    // debug badge + single console.warn (ref + dedupe) so the next state
+    // gets noticed during development without spamming production logs.
+    if (typeof (globalThis as any).__kaUnknownRagStatuses === 'undefined') {
+        (globalThis as any).__kaUnknownRagStatuses = new Set<string>();
+    }
+    const seenSet: Set<string> = (globalThis as any).__kaUnknownRagStatuses;
+    if (!seenSet.has(status as string)) {
+        seenSet.add(status as string);
+        console.warn('[SYNC STATUS] Unhandled RAG status value, rendering fallback badge:', status);
+    }
+    return (
+        <button
+            className={`relative opacity-40 cursor-default ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}
+            title={withDetail(`RAG: ${String(status)}`)}
+        >
+            <Database size={18} />
+            <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-gray-400 rounded-full"></div>
+        </button>
+    );
 };

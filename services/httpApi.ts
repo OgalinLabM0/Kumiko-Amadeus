@@ -116,6 +116,21 @@ export const PWA_ALLOWED_CHANNELS: ReadonlySet<string> = new Set([
 
 const DEFAULT_FETCH_TIMEOUT_MS = 60_000;
 
+// Per-channel timeout overrides. These apply only when the caller does not
+// pass an explicit `options.timeoutMs`. The default 60s fits most channels,
+// but RAG rebuild / sync and large backup parsing can legitimately take
+// several minutes on bigger accounts. A too-small timeout here manifests as
+// the phone UI stalling on "1/6 Syncing raw messages to desktop SQLite"
+// forever because `httpInvoke` throws `E_ABORT` only after 60s and the
+// error used to be silently swallowed (see `rawHistorySync.syncRawHistoryMessages`).
+const CHANNEL_TIMEOUTS: Record<string, number> = {
+  'rag:sync-messages': 300_000,
+  'rag:rebuild:start': 300_000,
+  'rag:rebuild:status': 30_000,
+  'backup:parse-import-file': 300_000,
+  'backup:build-zip-from-payload': 300_000,
+};
+
 function assertMobileContext() {
   if (!isMobilePwa()) {
     throw new HttpApiError('httpApi called outside PWA context', { code: 'E_CONTEXT' });
@@ -148,7 +163,8 @@ export async function httpInvoke<TResult = unknown>(
   }
   const url = `${getApiBaseUrl()}/api/ipc/${encodeURIComponent(channel)}`;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS);
+  const effectiveTimeoutMs = options.timeoutMs ?? CHANNEL_TIMEOUTS[channel] ?? DEFAULT_FETCH_TIMEOUT_MS;
+  const timeoutId = setTimeout(() => controller.abort(), effectiveTimeoutMs);
   let upstreamSignalCleanup: (() => void) | null = null;
   if (options.signal) {
     const external = options.signal;

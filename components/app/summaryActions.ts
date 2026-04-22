@@ -382,7 +382,26 @@ export async function handleRebuildRag() {
       total: fixedMessages.length,
       extra: language === 'zh' ? '同步原始消息到桌面 SQLite' : 'Syncing raw messages to desktop SQLite',
     });
-    await syncRawHistoryMessages(fixedMessages, { forceFull: true });
+    const syncStartedAt = Date.now();
+    console.log(`[RAG REBUILD] sync start messages=${fixedMessages.length}`);
+    try {
+      await syncRawHistoryMessages(fixedMessages, { forceFull: true, throwOnSyncError: true });
+    } catch (syncError) {
+      const syncErrorMessage = syncError instanceof Error ? syncError.message : String(syncError);
+      console.error(`[RAG REBUILD] sync FAILED elapsedMs=${Date.now() - syncStartedAt} error=${syncErrorMessage}`);
+      // Short-circuit with a specific notice; the generic outer catch would
+      // otherwise overwrite this with "重建记忆库失败。" and hide the real
+      // cause (usually E_TIMEOUT from the HTTP/IPC bridge on large sync
+      // payloads, which is exactly what stranded the mobile UI at 1/6).
+      const s2 = useAppStore.getState();
+      s2.setRagStatus('ERROR');
+      s2.setRagProgressLabel(null);
+      s2.setSystemNotice(language === 'zh'
+        ? `原始消息同步失败，无法开始重建。${syncErrorMessage}`
+        : `Raw message sync failed; rebuild aborted. ${syncErrorMessage}`);
+      return;
+    }
+    console.log(`[RAG REBUILD] sync done elapsedMs=${Date.now() - syncStartedAt}`);
 
     const completion = new Promise<LocalRagRebuildEvent>((resolve, reject) => {
       unsubscribeRebuild = subscribeLocalRagRebuild((event) => {

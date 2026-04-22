@@ -22,6 +22,8 @@ import { callLLMRaw, getCurrentAIConfig } from './geminiService';
 import { verifyAgainstHistory, type DiaryDateMetadata } from './diaryValidatorService';
 import { getCurrentKumikoState, getSchoolTermContext, getDetailedScheduleSlot, getDayScheduleSummary, getSchoolPrepPhase } from './kumikoStateMachine';
 import { updatePsycheState } from './psycheStateService';
+import { isMobilePwa } from './environment';
+import { httpInvoke } from './httpApi';
 
 type DiaryChatMessage = {
   role: 'user' | 'model';
@@ -600,11 +602,19 @@ const hardWeekdayCheck = (content: string, dateStr: string): string[] => {
 
 const fetchHistoricalWeather = async (dateStr: string): Promise<string | undefined> => {
   try {
-    if (typeof window !== 'undefined' && window.electronAPI) {
-      const res = await window.electronAPI.invoke('app:get-historical-weather', dateStr);
-      if (res && res.success && res.weather) {
-        return `久美子所在地 (日本宇治市) 当前天气: ${res.weather}`;
-      }
+    const api = (typeof window !== 'undefined' ? (window as any).electronAPI : null);
+    let res: any = null;
+    if (api && typeof api.invoke === 'function') {
+      res = await api.invoke('app:get-historical-weather', dateStr);
+    } else if (isMobilePwa()) {
+      // Mobile PWA reaches `app:get-historical-weather` over the Fastify
+      // HTTP bridge (whitelisted in ipc-bridge / httpApi). Previously the
+      // function short-circuited when `window.electronAPI` was missing, so
+      // diary backfill on mobile had no historical weather at all.
+      res = await httpInvoke('app:get-historical-weather', dateStr);
+    }
+    if (res && res.success && res.weather) {
+      return `久美子所在地 (日本宇治市) 当前天气: ${res.weather}`;
     }
   } catch (e) {
     console.warn(`[LifeStream] Failed to fetch historical weather for ${dateStr}:`, e);

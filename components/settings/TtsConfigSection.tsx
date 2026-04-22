@@ -52,6 +52,7 @@ const BUILT_IN_RINGTONES = [
 
 interface TtsConfigSectionProps {
   isOpen: boolean;
+  isPanelOpen?: boolean;
   onToggle: () => void;
   isDarkMode: boolean;
   language: Language;
@@ -65,6 +66,7 @@ interface TtsConfigSectionProps {
 
 export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   isOpen,
+  isPanelOpen = true,
   onToggle,
   isDarkMode,
   language,
@@ -277,11 +279,17 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     };
   }, [CUSTOM_RINGTONE_PREVIEW_ID, hasRingtone, isOpen, ringtoneDurations, ringtoneFileName]);
 
+  // Stop preview when EITHER the whole settings panel is closed, OR the TTS
+  // accordion section is collapsed. Historically only `isOpen` (the accordion
+  // flag) was watched, but the settings panel itself hides via opacity +
+  // visibility without unmounting, so closing settings with the TTS block still
+  // expanded would leave the ringtone preview playing forever. See audit
+  // findings for the regression details.
   useEffect(() => {
-    if (isOpen) return;
+    if (isOpen && isPanelOpen) return;
     stopRingtonePlayback();
     stopTestVoicePlayback();
-  }, [isOpen, stopRingtonePlayback, stopTestVoicePlayback]);
+  }, [isOpen, isPanelOpen, stopRingtonePlayback, stopTestVoicePlayback]);
 
   useEffect(() => {
     return () => {

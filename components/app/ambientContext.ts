@@ -1,12 +1,34 @@
-import { isDesktopElectron } from '../../services/desktopBackupService';
+import { isMobilePwa } from '../../services/environment';
+import { httpInvoke } from '../../services/httpApi';
 
 // Environment cache to avoid spamming the main process
 let cachedEnvironmentStr: string | null = null;
 let lastEnvironmentFetchTime = 0;
 
+// Unified invoker. Desktop Electron goes through `window.electronAPI.invoke`;
+// the mobile PWA goes through the Fastify `httpInvoke` for the same channel
+// names (both `app:get-weather` and `app:get-japan-holidays` are whitelisted
+// in `services/httpApi.ts` + `electron/server/ipc-bridge.cjs`). Before this
+// helper existed, the function exited early when `isDesktopElectron()` was
+// false, so the phone's prompt had no weather / holiday context even though
+// the server can answer those channels — see audit report for details.
+type AmbientInvoker = (channel: string, args?: unknown) => Promise<any>;
+
+const resolveAmbientInvoker = (): AmbientInvoker | null => {
+  const api = (typeof window !== 'undefined' ? (window as any).electronAPI : null);
+  if (api && typeof api.invoke === 'function') {
+    return (channel: string, args?: unknown) => api.invoke(channel, args);
+  }
+  if (isMobilePwa()) {
+    return (channel: string, args?: unknown) => httpInvoke(channel, args);
+  }
+  return null;
+};
+
 export const getAmbientEnvironmentContext = async (): Promise<string> => {
-  if (!isDesktopElectron() || !window.electronAPI) return '';
-  
+  const invoke = resolveAmbientInvoker();
+  if (!invoke) return '';
+
   const now = Date.now();
   if (cachedEnvironmentStr && (now - lastEnvironmentFetchTime < 30 * 60 * 1000)) {
     return cachedEnvironmentStr;
@@ -16,7 +38,7 @@ export const getAmbientEnvironmentContext = async (): Promise<string> => {
   let hasData = false;
 
   try {
-    const res = await window.electronAPI.invoke('app:get-weather');
+    const res = await invoke('app:get-weather');
     if (res && res.success) {
       const uji = res.uji;
       const user = res.user;
@@ -47,7 +69,7 @@ export const getAmbientEnvironmentContext = async (): Promise<string> => {
   }
 
   try {
-    const holidayRes = await window.electronAPI.invoke('app:get-japan-holidays');
+    const holidayRes = await invoke('app:get-japan-holidays');
     const jstDate = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Tokyo"}));
     const year = jstDate.getFullYear();
     const month = String(jstDate.getMonth() + 1).padStart(2, '0');

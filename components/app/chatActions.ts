@@ -126,14 +126,6 @@ import { tryGetChatPipelineRegistration } from './chatPipelineRegistry';
 import type { RunVoicePipelineFn } from '../../hooks/useVoicePipeline';
 
 // ---------------------------------------------------------------------------
-// Cross-reference note for code archaeologists:
-//   起床整理 / 夜间 settlement / 日记一致性 used to live in the
-//   deleted `services/sleepConsolidation.ts`. Commit 0a82cba moved those
-//   responsibilities into `services/lifeStreamService.ts`,
-//   `services/psycheStateService.ts` and `services/diaryValidatorService.ts`.
-//   If `git status` shows `sleepConsolidation.ts` as deleted, that's the
-//   working-tree echo of that refactor — there is nothing to restore.
-//
 // Mobile-path note:
 //   Phone turns hit `sendUserMessageFromMobile` below (search for the
 //   big banner comment). The "What this DOES NOT do" section used to

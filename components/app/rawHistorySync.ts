@@ -68,7 +68,21 @@ export const formatTemporalEpisodeRange = (startTimestamp: number, endTimestamp:
   return start === end ? start : `${start} -> ${end}`;
 };
 
-export const syncRawHistoryMessages = async (messages: Message[], options: { forceFull?: boolean } = {}) => {
+// Callers that are part of an interactive / user-visible pipeline (e.g.
+// `summaryActions.handleRebuildRag`) should pass `throwOnSyncError: true`
+// so a failed main-process SQLite sync aborts the outer operation and
+// surfaces a real error to the user. Callers on non-critical paths
+// (`App.tsx` autosave, backup import) should omit the flag so a flaky
+// sync degrades gracefully with only a console.warn. This exists because
+// the mobile RAG rebuild was silently stalling at "1/6 Syncing raw
+// messages to desktop SQLite" whenever the 60s HTTP/IPC bridge timeout
+// fired — the error was swallowed here and the outer `completion`
+// Promise in `summaryActions` then waited forever for a rebuild that
+// had never started.
+export const syncRawHistoryMessages = async (
+  messages: Message[],
+  options: { forceFull?: boolean; throwOnSyncError?: boolean } = {},
+) => {
   const entities = messages.map(mapMessageToEntity);
 
   await db.setVal('kumiko_chat_history', messages);
@@ -85,6 +99,7 @@ export const syncRawHistoryMessages = async (messages: Message[], options: { for
       await syncRawHistoryMessagesToMain([], { replaceAll: true });
     } catch (e) {
       console.warn('[RAW HISTORY] Failed to clear main-process SQLite raw history.', e);
+      if (options.throwOnSyncError) throw e;
     }
     return;
   }
@@ -95,5 +110,6 @@ export const syncRawHistoryMessages = async (messages: Message[], options: { for
     await syncRawHistoryMessagesToMain(messages, { replaceAll: !!options.forceFull });
   } catch (e) {
     console.warn('[RAW HISTORY] Failed to sync messages to main-process SQLite.', e);
+    if (options.throwOnSyncError) throw e;
   }
 };

@@ -534,6 +534,34 @@ export const clearAllLocalRagMemory = async () => {
   }
 };
 
+// Remove RAG vectors associated with specific message ids. Wraps the
+// `rag:clear-message-vectors` channel that preload.cjs and electron-rag.cjs
+// already expose. Before this wrapper existed, the channel was whitelisted
+// on both the Electron IPC side and the mobile Fastify bridge but had no
+// renderer entry point — callers would have to invoke the raw IPC channel
+// directly. Exposing it here lets UI code (e.g. batch-delete flows in the
+// history editor) drop stale vectors without needing to do a full rebuild.
+export const clearLocalRagMessageVectors = async (messageIds: string[]) => {
+  const invoker = getRagInvoker();
+  if (!invoker) return { success: false, removed: 0, reason: 'no-ipc' as const };
+  if (!Array.isArray(messageIds) || messageIds.length === 0) {
+    return { success: true, removed: 0 };
+  }
+  try {
+    const result = await invoker.invoke<any>('rag:clear-message-vectors', { messageIds });
+    if (result?.success === false) {
+      return { success: false, removed: 0, reason: 'handler-error' as const, error: result.error };
+    }
+    return {
+      success: true,
+      removed: Number.isFinite(result?.removed) ? Number(result.removed) : 0,
+    };
+  } catch (e) {
+    console.warn('[LOCAL RAG] Failed to clear message vectors via IPC.', e);
+    return { success: false, removed: 0, reason: 'exception' as const, error: e instanceof Error ? e.message : String(e) };
+  }
+};
+
 export const startLocalRagRebuild = async () => {
   const invoker = getRagInvoker();
   if (!invoker) {
@@ -602,17 +630,47 @@ export const subscribeLocalRagRebuild = (
   // bridges the four rag:rebuild:* IPC events into the WebSocket fan-
   // out (Phase 3 Part D). We hook into that stream so mobile RAG UIs
   // see the exact same event sequence desktop UI sees.
+  //
+  // Plus a polling watchdog: if the desktop renderer isn't running /
+  // WS disconnects / the broadcaster fails to forward an event, the
+  // phone would otherwise stall forever on whatever stage it last saw
+  // (the classic "stuck at 1/6" symptom). Every 5s we check whether a
+  // real WS event has arrived in the last 10s; if not, we fall back to
+  // an HTTP `rag:rebuild:status` poll so the UI keeps moving. Polling
+  // also stops automatically once any real WS event resumes, so we
+  // don't double-emit progress.
   if (isMobilePwa()) {
-    const unsubscribe = subscribeEvents((event) => {
+    console.log('[LOCAL RAG][mobile] subscribeLocalRagRebuild installing WS + poll fallback');
+    let lastEventAt = Date.now();
+    let pollCheckTimer: ReturnType<typeof setInterval> | null = null;
+    let unsubscribed = false;
+    let terminal = false; // once we see done / error we stop polling
+    let lastObservedActive = false;
+
+    const unsubscribeWs = subscribeEvents((event) => {
       const type = event?.type;
+      if (
+        type === 'rag:rebuild:started' ||
+        type === 'rag:rebuild:progress' ||
+        type === 'rag:rebuild:done' ||
+        type === 'rag:rebuild:error'
+      ) {
+        lastEventAt = Date.now();
+        if (type === 'rag:rebuild:done' || type === 'rag:rebuild:error') {
+          terminal = true;
+        }
+      }
       if (type === 'rag:rebuild:started') {
         const payload = (event as { job?: unknown }).job;
+        lastObservedActive = true;
         listener({ type: 'started', ...normalizeLocalRagRebuildSnapshot(payload) });
       } else if (type === 'rag:rebuild:progress') {
         const payload = (event as { job?: unknown }).job;
+        lastObservedActive = true;
         listener({ type: 'progress', ...normalizeLocalRagRebuildSnapshot(payload) });
       } else if (type === 'rag:rebuild:done') {
         const payload = (event as { job?: any }).job;
+        lastObservedActive = false;
         listener({
           type: 'done',
           ...normalizeLocalRagRebuildSnapshot(payload),
@@ -620,6 +678,7 @@ export const subscribeLocalRagRebuild = (
         });
       } else if (type === 'rag:rebuild:error') {
         const payload = (event as { job?: any }).job;
+        lastObservedActive = false;
         listener({
           type: 'error',
           ...normalizeLocalRagRebuildSnapshot(payload),
@@ -627,7 +686,53 @@ export const subscribeLocalRagRebuild = (
         });
       }
     });
-    return unsubscribe;
+
+    const runPoll = async () => {
+      if (unsubscribed || terminal) return;
+      try {
+        const res: any = await httpInvoke('rag:rebuild:status');
+        if (unsubscribed || terminal) return;
+        const active = !!res?.active;
+        const snapshot = res?.snapshot;
+        console.log(`[LOCAL RAG][mobile] poll fallback tick active=${active} stage=${snapshot?.stage ?? 'n/a'}`);
+        if (active && snapshot) {
+          lastObservedActive = true;
+          listener({ type: 'progress', ...normalizeLocalRagRebuildSnapshot(snapshot) });
+        } else if (!active && lastObservedActive) {
+          // The desktop no longer has an active job but we never saw a
+          // terminal WS event. Surface this as an error so the caller
+          // can unwind — otherwise the `completion` Promise in
+          // `summaryActions.handleRebuildRag` would await forever. The
+          // error is deliberately worded so the user can act on it (most
+          // likely cause: desktop app restarted or WS disconnected).
+          terminal = true;
+          console.warn('[LOCAL RAG][mobile] poll fallback: job ended without WS done/error; emitting synthetic error');
+          listener({
+            type: 'error',
+            ...normalizeLocalRagRebuildSnapshot({}),
+            error: 'Connection to desktop app lost during rebuild; please verify the PC client is running and retry.',
+          });
+        }
+      } catch (e) {
+        console.warn('[LOCAL RAG][mobile] poll fallback http error', e);
+      }
+    };
+
+    pollCheckTimer = setInterval(() => {
+      if (unsubscribed || terminal) return;
+      if (Date.now() - lastEventAt >= 10_000) {
+        runPoll();
+      }
+    }, 5_000);
+
+    return () => {
+      unsubscribed = true;
+      if (pollCheckTimer !== null) {
+        clearInterval(pollCheckTimer);
+        pollCheckTimer = null;
+      }
+      unsubscribeWs();
+    };
   }
 
   return () => {};

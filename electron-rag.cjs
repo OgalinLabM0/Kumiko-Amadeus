@@ -1701,6 +1701,18 @@ function flushRebuildProgress(job) {
 
 function updateRebuildJobProgress(job, update = {}, force = false) {
     if (!job || activeRebuildJob !== job) return;
+    // Log stage transitions (but not every throttled progress tick) so the
+    // main-process log file has a running timeline when someone needs to
+    // diagnose a stall — e.g. the mobile "stuck at 1/6" symptom. A stage
+    // transition is any call where `update.stage` is set and differs from
+    // the previous stage.
+    if (typeof update.stage === 'string' && update.stage !== job.stage) {
+        const processed = typeof update.processed === 'number' ? update.processed
+            : (typeof job.processed === 'number' ? job.processed : null);
+        const total = typeof update.total === 'number' ? update.total
+            : (typeof job.total === 'number' ? job.total : null);
+        console.log(`[RAG REBUILD] stage transition ${job.stage ?? 'init'} -> ${update.stage} processed=${processed ?? '?'} total=${total ?? '?'} elapsedMs=${Date.now() - (job.startedAt || Date.now())}`);
+    }
     Object.assign(job, update);
 
     const payload = buildRebuildJobPayload(job);
@@ -1928,9 +1940,12 @@ function applyRebuildVectorWrites(pendingWrites) {
 }
 
 async function runRagRebuildJob(job) {
+    const jobStartedAt = Date.now();
+    console.log(`[RAG REBUILD] job=${job?.jobId ?? 'unknown'} starting`);
     try {
         const { buildRebuildCandidates } = await loadRebuildCoreModule();
         const rawMessages = getAllRawMessages();
+        console.log(`[RAG REBUILD] job=${job?.jobId ?? 'unknown'} loaded rawMessages=${rawMessages.length} elapsedMs=${Date.now() - jobStartedAt}`);
         updateRebuildJobProgress(job, {
             stage: 'loading_source_history',
             processed: rawMessages.length,
@@ -2232,7 +2247,7 @@ async function runRagRebuildJob(job) {
         });
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        console.error('[RAG REBUILD] failed:', error);
+        console.error(`[RAG REBUILD] job=${job?.jobId ?? 'unknown'} failed elapsedMs=${Date.now() - jobStartedAt} stage=${job?.stage ?? 'unknown'} error=${message}`, error);
         finishRebuildJob(job, 'rag:rebuild:error', {
             error: message,
         });

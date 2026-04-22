@@ -142,7 +142,15 @@ export function useProactiveLifeCycle(
 
           // --- GRADUAL SLEEP PROTOCOL (heartbeat) ---
           {
-            let sleepHour = 12, sleepMin = 0;
+            // Fallback values deliberately chosen to be OUTSIDE the sleep
+            // window (22:00, not midday 12:00). If Intl / DateTimeFormat
+            // ever throws because of a bad `modelTimezone` (e.g. a typo
+            // like "Asia/Tokyoo"), the protocol used to silently act as
+            // if it was noon and therefore never trigger sleep at all,
+            // which masked the config bug. Using 22:00 keeps sleep
+            // behavior close to normal for a JST-aligned user while we
+            // surface the misconfiguration in the log.
+            let sleepHour = 22, sleepMin = 0;
             try {
               const tp = new Date().toLocaleTimeString('en-GB', {
                 timeZone: locationConfig.modelTimezone,
@@ -150,7 +158,12 @@ export function useProactiveLifeCycle(
               }).split(':');
               sleepHour = parseInt(tp[0], 10);
               sleepMin = parseInt(tp[1], 10);
-            } catch (_) {}
+            } catch (e) {
+              console.warn('[SLEEP-HB] Failed to parse model-timezone clock, falling back to 22:00', {
+                modelTimezone: locationConfig?.modelTimezone,
+                error: e instanceof Error ? e.message : String(e),
+              });
+            }
 
             const sleepWindowNow = (sleepHour === 0 && sleepMin >= 30) || (sleepHour >= 1 && sleepHour < 6);
             const lastMsgTime = messages.length > 0 ? messages[messages.length - 1].timestamp : 0;
