@@ -11,7 +11,8 @@ const DEFAULT_PASSWORD = '0821';
 export const useAccountSettings = (
   isOpen: boolean,
   language: Language,
-  showDialog: ShowDialog
+  showDialog: ShowDialog,
+  closeDialog: () => void
 ) => {
   const [authUsername, setAuthUsername] = useState('');
   const [authPassword, setAuthPassword] = useState('');
@@ -57,6 +58,7 @@ export const useAccountSettings = (
         setAuthUsername(DEFAULT_USERNAME);
         setAuthPassword(DEFAULT_PASSWORD);
         setIsEditingAccount(false);
+        closeDialog();
       }
     });
   };

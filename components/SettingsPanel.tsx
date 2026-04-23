@@ -183,7 +183,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     cancelEditingAccount,
     handleSaveAccount,
     resetAccountToDefaults
-  } = useAccountSettings(isOpen, language, showDialog);
+  } = useAccountSettings(isOpen, language, showDialog, closeDialog);
   // useBackupSettings simplified after cloud-sync removal: only local toggle + time formatter.
   const {
     toggleBackup,
