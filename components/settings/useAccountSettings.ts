@@ -1,8 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Language } from '../../types';
+import { UI_TRANSLATIONS } from '../../constants';
 import { SettingsDialogConfig } from './useSettingsDialog';
 
 type ShowDialog = (config: Omit<SettingsDialogConfig, 'isOpen'>) => void;
+
+const DEFAULT_USERNAME = 'Kumiko';
+const DEFAULT_PASSWORD = '0821';
 
 export const useAccountSettings = (
   isOpen: boolean,
@@ -17,8 +21,8 @@ export const useAccountSettings = (
   // panel toggles open) so the Account section never renders with blank
   // fields during the first paint.
   useEffect(() => {
-    const storedUser = localStorage.getItem('kumiko_auth_username') || 'Kumiko';
-    const storedPass = localStorage.getItem('kumiko_auth_password') || '0821';
+    const storedUser = localStorage.getItem('kumiko_auth_username') || DEFAULT_USERNAME;
+    const storedPass = localStorage.getItem('kumiko_auth_password') || DEFAULT_PASSWORD;
     setAuthUsername(storedUser);
     setAuthPassword(storedPass);
   }, [isOpen]);
@@ -40,6 +44,23 @@ export const useAccountSettings = (
     });
   };
 
+  const resetAccountToDefaults = () => {
+    const t = UI_TRANSLATIONS[language];
+    showDialog({
+      title: t.accountResetConfirmTitle,
+      message: t.accountResetConfirmBody,
+      type: 'confirm',
+      confirmText: t.accountResetButton,
+      onConfirm: () => {
+        localStorage.setItem('kumiko_auth_username', DEFAULT_USERNAME);
+        localStorage.setItem('kumiko_auth_password', DEFAULT_PASSWORD);
+        setAuthUsername(DEFAULT_USERNAME);
+        setAuthPassword(DEFAULT_PASSWORD);
+        setIsEditingAccount(false);
+      }
+    });
+  };
+
   return {
     authUsername,
     authPassword,
@@ -48,6 +69,7 @@ export const useAccountSettings = (
     setAuthPassword,
     startEditingAccount: () => setIsEditingAccount(true),
     cancelEditingAccount: () => setIsEditingAccount(false),
-    handleSaveAccount
+    handleSaveAccount,
+    resetAccountToDefaults
   };
 };

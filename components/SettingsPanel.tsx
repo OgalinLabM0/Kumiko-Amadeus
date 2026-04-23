@@ -181,7 +181,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     setAuthPassword,
     startEditingAccount,
     cancelEditingAccount,
-    handleSaveAccount
+    handleSaveAccount,
+    resetAccountToDefaults
   } = useAccountSettings(isOpen, language, showDialog);
   // useBackupSettings simplified after cloud-sync removal: only local toggle + time formatter.
   const {
@@ -1526,6 +1527,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           saveLabel={t.save}
           cancelLabel={t.cancel}
           editLabel={t.edit}
+          resetLabel={t.accountResetButton}
           authUsername={authUsername}
           authPassword={authPassword}
           isEditing={isEditingAccount}
@@ -1534,6 +1536,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           onSave={handleSaveAccount}
           onStartEdit={startEditingAccount}
           onCancelEdit={cancelEditingAccount}
+          onResetToDefaults={resetAccountToDefaults}
         />
       </div>
       )}

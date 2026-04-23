@@ -1,5 +1,5 @@
 import React from 'react';
-import { ChevronDown, ChevronUp, Edit2, Key, UserCircle } from 'lucide-react';
+import { ChevronDown, ChevronUp, Edit2, Key, RotateCcw, UserCircle } from 'lucide-react';
 import { Collapse } from '../Collapse';
 
 interface AccountSectionProps {
@@ -18,6 +18,7 @@ interface AccountSectionProps {
   saveLabel: string;
   cancelLabel: string;
   editLabel: string;
+  resetLabel: string;
   authUsername: string;
   authPassword: string;
   isEditing: boolean;
@@ -26,6 +27,7 @@ interface AccountSectionProps {
   onSave: () => void;
   onStartEdit: () => void;
   onCancelEdit: () => void;
+  onResetToDefaults: () => void;
 }
 
 export const AccountSection: React.FC<AccountSectionProps> = ({
@@ -44,6 +46,7 @@ export const AccountSection: React.FC<AccountSectionProps> = ({
   saveLabel,
   cancelLabel,
   editLabel,
+  resetLabel,
   authUsername,
   authPassword,
   isEditing,
@@ -51,7 +54,8 @@ export const AccountSection: React.FC<AccountSectionProps> = ({
   onPasswordChange,
   onSave,
   onStartEdit,
-  onCancelEdit
+  onCancelEdit,
+  onResetToDefaults
 }) => {
   return (
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
@@ -90,9 +94,21 @@ export const AccountSection: React.FC<AccountSectionProps> = ({
                   <button onClick={onCancelEdit} className={`flex-1 py-2 rounded-xl ka-label transition-colors ${isDarkMode ? 'bg-white/10 text-[#eadfce] hover:bg-white/15' : 'bg-[#f3eee7] text-[#6c5440] hover:bg-[#ece4d9]'}`}>{cancelLabel}</button>
                 </div>
               ) : (
-                <button onClick={onStartEdit} className={`mt-2 py-2 border border-dashed rounded-xl ka-label flex items-center justify-center gap-2 ${isDarkMode ? 'border-[#6e5a44] text-[#c9b8a3] hover:text-white hover:border-[#b89361]' : 'border-[#d8ccbc] text-[#7a6247] hover:text-[#523c28] hover:border-[#c6ab7e]'}`}>
-                  <Edit2 size={12} /> {editLabel}
-                </button>
+                <div className="flex flex-col gap-2 mt-2">
+                  <button onClick={onStartEdit} className={`py-2 border border-dashed rounded-xl ka-label flex items-center justify-center gap-2 ${isDarkMode ? 'border-[#6e5a44] text-[#c9b8a3] hover:text-white hover:border-[#b89361]' : 'border-[#d8ccbc] text-[#7a6247] hover:text-[#523c28] hover:border-[#c6ab7e]'}`}>
+                    <Edit2 size={12} /> {editLabel}
+                  </button>
+                  <button
+                    onClick={onResetToDefaults}
+                    className={`py-1.5 rounded-xl ka-label flex items-center justify-center gap-2 text-[0.72rem] tracking-[0.08em] transition-colors ${
+                      isDarkMode
+                        ? 'text-[#9a7d5e] hover:text-[#d4a852]'
+                        : 'text-[#a18566] hover:text-[#8a6122]'
+                    }`}
+                  >
+                    <RotateCcw size={11} /> {resetLabel}
+                  </button>
+                </div>
               )}
             </div>
           </div>
