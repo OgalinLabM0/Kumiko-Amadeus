@@ -26,7 +26,7 @@
 // typography, so a phone landing on the PWA never sees a "demo" dark
 // screen before the app kicks in.
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   httpCheckSession,
   httpInvoke,
@@ -256,10 +256,30 @@ function PairingView({
   );
 }
 
+// Watchdog + auto-retry tuning. The 5s per-probe timeout lives in
+// services/httpApi.ts (httpStatus / httpCheckSession wrap fetch with
+// AbortController). Any individual refresh() therefore resolves within
+// ~10s worst case (status + session back-to-back). The gate adds two
+// safety nets on top:
+//   WATCHDOG: if we've been stuck in loading/hydrating for this long,
+//     drop the user into the pairing view with a diagnostic hint so
+//     they stop staring at an opaque spinner.
+//   RETRY: while the gate is showing the pairing error card (PC not
+//     reachable, token rejected, etc.) we silently re-probe every 10s
+//     so the phone auto-heals the moment the PC process + Fastify +
+//     mobile-access tunnel come back up. No user interaction needed.
+const LOADING_WATCHDOG_MS = 10_000;
+const PAIRING_RETRY_INTERVAL_MS = 10_000;
+const ELAPSED_TICK_MS = 500;
+
 export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [state, setState] = useState<GateState>({ kind: 'loading' });
+  const [loadingElapsedMs, setLoadingElapsedMs] = useState(0);
+  const loadingStartedAtRef = useRef<number>(Date.now());
 
   const refresh = useCallback(async () => {
+    loadingStartedAtRef.current = Date.now();
+    setLoadingElapsedMs(0);
     const status = await httpStatus();
     if (!status) {
       setState({
@@ -304,12 +324,63 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
     void refresh();
   }, [refresh]);
 
+  // Tick the loading/hydrating elapsed counter so MobilePairingLoading
+  // can show "已等待 X 秒 · Elapsed Xs" — turns an opaque "connecting…"
+  // into an obvious "still alive" signal for the user while we wait for
+  // the PC handshake.
+  useEffect(() => {
+    if (state.kind !== 'loading' && state.kind !== 'hydrating') {
+      return;
+    }
+    const interval = setInterval(() => {
+      setLoadingElapsedMs(Date.now() - loadingStartedAtRef.current);
+    }, ELAPSED_TICK_MS);
+    return () => clearInterval(interval);
+  }, [state.kind]);
+
+  // Watchdog: if we've been stuck in loading/hydrating past
+  // LOADING_WATCHDOG_MS, assume the PC side is non-responsive (Fastify
+  // never listened / renderer dispatch hanging) and expose the pairing
+  // view with a diagnostic hint so the user can at least re-paste a
+  // fresh token. The auto-retry effect below then silently re-probes
+  // every 10s; the user does not have to reload.
+  useEffect(() => {
+    if (state.kind !== 'loading' && state.kind !== 'hydrating') {
+      return;
+    }
+    const timer = setTimeout(() => {
+      setState({
+        kind: 'pairing',
+        hint: '长时间未能连接桌面端。请确认 PC 端软件已打开，且"设置 → 手机访问"处于启用状态。稍后会自动重试。',
+      });
+    }, LOADING_WATCHDOG_MS);
+    return () => clearTimeout(timer);
+  }, [state.kind]);
+
+  // Auto-retry while the gate is showing the pairing error card. When
+  // the PC software re-opens / mobile access gets re-enabled / the
+  // Tailscale tunnel heals, the phone picks it up within 10s and falls
+  // through to the hydrating/paired branches on its own. The user's
+  // token input in <PairingView /> is preserved across these ticks:
+  // setState with a matching shape just re-renders the subtree, React
+  // keeps PairingView's local state alive.
+  useEffect(() => {
+    if (state.kind !== 'pairing') {
+      return;
+    }
+    const interval = setInterval(() => {
+      void refresh();
+    }, PAIRING_RETRY_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [state.kind, refresh]);
+
   if (state.kind === 'loading') {
     return (
       <MobilePairingChrome>
         <MobilePairingLoading
           label="正在连接桌面端"
           subLabel="Connecting with your desktop"
+          elapsedMs={loadingElapsedMs}
         />
       </MobilePairingChrome>
     );

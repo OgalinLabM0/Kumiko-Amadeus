@@ -249,10 +249,28 @@ export interface ServerStatus {
   hostname: string | null;
 }
 
+// Abort the handshake probes after 5s so the pairing gate never hangs on
+// a silently-dead Fastify (PC not launched / mobile access disabled /
+// Tailscale tunnel resolving). The gate's 10s watchdog + 10s auto-retry
+// (see MobilePairingGate) depends on these probes resolving quickly.
+const HTTP_PROBE_TIMEOUT_MS = 5000;
+
+async function fetchWithTimeout(input: string, init: RequestInit & { timeoutMs?: number }): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutMs = init.timeoutMs ?? HTTP_PROBE_TIMEOUT_MS;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const { timeoutMs: _omit, ...rest } = init;
+    return await fetch(input, { ...rest, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function httpStatus(): Promise<ServerStatus | null> {
   assertMobileContext();
   try {
-    const response = await fetch(`${getApiBaseUrl()}/api/status`, { credentials: 'include' });
+    const response = await fetchWithTimeout(`${getApiBaseUrl()}/api/status`, { credentials: 'include' });
     if (!response.ok) return null;
     const body = await parseJson(response) as ServerStatus;
     return body;
@@ -267,7 +285,7 @@ export async function httpStatus(): Promise<ServerStatus | null> {
 export async function httpCheckSession(): Promise<boolean> {
   assertMobileContext();
   try {
-    const response = await fetch(`${getApiBaseUrl()}/api/auth/me`, { credentials: 'include' });
+    const response = await fetchWithTimeout(`${getApiBaseUrl()}/api/auth/me`, { credentials: 'include' });
     return response.ok;
   } catch {
     return false;

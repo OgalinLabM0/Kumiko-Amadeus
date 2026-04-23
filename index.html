@@ -778,7 +778,59 @@
     </style>
 </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!--
+        Pre-React inline splash. Shown while the JS bundle is still
+        downloading / parsing / running bootstrap(). React's createRoot
+        replaces this subtree on the first root.render() call, so on a
+        healthy boot the splash is never visible for more than a frame.
+        When the bundle genuinely fails to load (iOS PWA stuck on a
+        stale service worker, network blackhole, main.tsx throws
+        before render), the user sees this brand shell + a live-ticking
+        "Booting Xs" counter instead of the previous pure-beige blank.
+        That counter is what tells us "React never ran" vs "React ran
+        but something later is holding up the first paint". The inline
+        IIFE below self-terminates via MutationObserver once React
+        swaps the subtree out, so it can't leak into the running app.
+      -->
+      <div id="ka-boot-splash" style="position:fixed; inset:0; background:#f9f7f2; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; font-family: 'Cormorant Garamond', 'Plus Jakarta Sans', Georgia, serif;">
+        <img src="/favicon-KA.png" width="88" height="88" alt="Kumiko·Amadeus" style="width:88px; height:88px; object-fit:contain; margin-bottom:18px;" />
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+          <span style="display:inline-block; width:2.5rem; height:1px; background-color:#785A42; opacity:0.4;"></span>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size:10px; font-weight:600; color:rgba(120,90,66,0.55); letter-spacing:0.14em; text-transform:uppercase;">移动端伴侣 · Mobile Companion</span>
+          <span style="display:inline-block; width:2.5rem; height:1px; background-color:#785A42; opacity:0.4;"></span>
+        </div>
+        <div style="font-size:28px; color:#785A42; font-weight:bold; letter-spacing:0.1em; line-height:1;">AMADEUS</div>
+        <div style="font-size:13px; color:#785A42; letter-spacing:0.04em; opacity:0.8; margin-top:6px; font-weight:300;">Kumiko·Amadeus</div>
+        <div style="margin-top:28px; padding:10px 18px; background:rgba(255,255,255,0.72); border:1px solid rgba(120,90,66,0.18); border-radius:4px; font-family: 'Noto Sans SC', 'PingFang SC', 'Plus Jakarta Sans', sans-serif; font-size:13px; color:rgba(120,90,66,0.88);">
+          正在启动 · Booting <span id="ka-boot-timer" style="font-family: 'IBM Plex Mono', monospace; margin-left:4px;">0s</span>
+        </div>
+      </div>
+    </div>
+    <script>
+      (function(){
+        try {
+          var start = Date.now();
+          var tick = function(){
+            var el = document.getElementById('ka-boot-timer');
+            if (!el) return;
+            var s = Math.floor((Date.now() - start) / 1000);
+            el.textContent = s + 's';
+          };
+          var t = setInterval(tick, 500);
+          var root = document.getElementById('root');
+          if (root && typeof MutationObserver === 'function') {
+            var mo = new MutationObserver(function(){
+              if (!document.getElementById('ka-boot-timer')) {
+                clearInterval(t);
+                mo.disconnect();
+              }
+            });
+            mo.observe(root, { childList: true, subtree: true });
+          }
+        } catch (_e) { /* splash is optional; never block bootstrap */ }
+      })();
+    </script>
   <script type="module" src="/index.tsx"></script>
 </body>
 </html>

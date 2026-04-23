@@ -558,7 +558,7 @@ export const App = () => {
   
   const pendingMessageIdsRef = useRef<Set<string>>(new Set());
   const generationIdRef = useRef<number>(0);
-
+  
   // hasPerformedInitialPull was used by the removed cloud sync initial-pull flow.
 
   // FIX: Restore truncated ragBufferRef logic with try-catch
@@ -741,11 +741,11 @@ export const App = () => {
 
   useEffect(() => {
     if (isDesktopElectron() && window.electronAPI?.on) {
-      const handler = (_event: any, payload: any) => {
-        if (payload?.status === 'start') setIsAutoZipping(true);
-      };
-      window.electronAPI.on('app:auto-zip-progress', handler);
-      return () => { window.electronAPI?.removeListener?.('app:auto-zip-progress', handler); };
+    const handler = (_event: any, payload: any) => {
+      if (payload?.status === 'start') setIsAutoZipping(true);
+    };
+    window.electronAPI.on('app:auto-zip-progress', handler);
+    return () => { window.electronAPI?.removeListener?.('app:auto-zip-progress', handler); };
     }
 
     // Mobile PWA: auto-zip progress is bridged by useMobileBroadcaster
@@ -821,7 +821,7 @@ export const App = () => {
     isTalking,
     isThinking,
     language,
-    locationConfig,
+              locationConfig,
     coreMemory,
     worldBook,
     contextLimit,
@@ -850,9 +850,9 @@ export const App = () => {
     markDailyReminderRetry,
     language,
     contextLimit,
-    coreMemory,
+              coreMemory,
     worldBook,
-    locationConfig,
+              locationConfig,
     anchors,
     kumikoNotebook,
     addMessage,
@@ -896,7 +896,7 @@ export const App = () => {
   const handleSelectMessage = (id: string) => { setSelectedIds(prev => { const newSet = new Set(prev); if (newSet.has(id)) { newSet.delete(id); } else { newSet.add(id); } return newSet; }); };
   const initiateDeleteSelected = () => { if (selectedIds.size === 0) return; setShowDeleteConfirm(true); };
   const initiateClearAll = () => { setShowClearFlow(true); };
-
+  
   const handleImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -931,8 +931,8 @@ export const App = () => {
     const turnsInSegment = getTurnsInActiveSummarySegment(turnCount, summaryArchiveState);
     if (turnsInSegment < 1) {
       setSystemNotice(language === 'zh' ? '当前没有需要整理的对话' : 'No conversations to archive right now.');
-      return;
-    }
+            return;
+        }
     setSystemNotice(language === 'zh' ? '正在手动整理记忆……' : 'Manually archiving memories...');
     await triggerAutoSummary({
       currentCount: turnCount,
@@ -1045,10 +1045,10 @@ export const App = () => {
       applyVisualHistoryMutation(nextMessages);
       setShowClearFlow(false);
       setIsSelectionMode(false);
-      pendingTextRef.current = "";
-      pendingImageRef.current = null;
-      pendingMessageIdsRef.current.clear();
-      pendingImageMessageIdRef.current = null;
+    pendingTextRef.current = "";
+    pendingImageRef.current = null;
+    pendingMessageIdsRef.current.clear();
+    pendingImageMessageIdRef.current = null; 
   };
 
   const handleSend = useCallback(() => {
@@ -1087,8 +1087,8 @@ export const App = () => {
           // re-pulls PC state.
           try { sessionStorage.removeItem('kumiko_mobile_hydrated'); } catch { /* ignore */ }
           window.location.reload();
-          return;
-        }
+        return;
+      }
         if (!result.ok) {
           useAppStore.getState().setSystemNotice(result.error || 'Failed to send message');
           // Restore the text so the user can retry without retyping.
@@ -1118,7 +1118,7 @@ export const App = () => {
           { duration: 400, easing: 'cubic-bezier(0.33, 1, 0.68, 1)', pseudoElement: '::view-transition-new(root)' }
         );
       }).catch(() => {});
-    } else {
+        } else {
       setIsDarkMode(prev => !prev);
     }
   };

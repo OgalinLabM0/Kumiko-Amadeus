@@ -210,11 +210,20 @@ export function MobilePairingChrome({ children }: MobilePairingChromeProps) {
 interface MobilePairingLoadingProps {
   label?: string;
   subLabel?: string;
+  // Optional elapsed milliseconds since the gate started probing. When
+  // > 2000ms, we render an extra line so the user can *see* that the
+  // app is still ticking — a silent "connecting…" forever feels the
+  // same as a frozen React tree. The gate passes this in on every
+  // 500ms tick; MobilePairingGate's watchdog flips to the pairing
+  // view at ~10s regardless.
+  elapsedMs?: number;
 }
 
-export function MobilePairingLoading({ label, subLabel }: MobilePairingLoadingProps) {
+export function MobilePairingLoading({ label, subLabel, elapsedMs }: MobilePairingLoadingProps) {
   const primary = label ?? '正在连接桌面端';
   const secondary = subLabel ?? 'Connecting with your desktop';
+  const showElapsed = typeof elapsedMs === 'number' && elapsedMs >= 2000;
+  const elapsedSeconds = showElapsed ? Math.floor(elapsedMs! / 1000) : 0;
   return (
     <div className="ka-pair-card px-5 py-6 text-center">
       <div className="ka-pair-body text-[14px] leading-relaxed">
@@ -228,6 +237,11 @@ export function MobilePairingLoading({ label, subLabel }: MobilePairingLoadingPr
       <div className="ka-pair-micro text-[10px] mt-1 opacity-70">
         {secondary}
       </div>
+      {showElapsed && (
+        <div className="ka-pair-micro text-[10px] mt-3 opacity-60">
+          已等待 {elapsedSeconds} 秒 · Elapsed {elapsedSeconds}s
+        </div>
+      )}
     </div>
   );
 }
