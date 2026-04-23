@@ -22,7 +22,14 @@ import {
   WifiOff,
   X,
   Zap,
-  Info
+  Info,
+  BookOpen,
+  Moon,
+  Sun,
+  User,
+  BellRing,
+  Clock3,
+  Signal
 } from 'lucide-react';
 import { Language } from '../../types';
 import { SOFTWARE_GUIDE_SECTIONS } from '../../constants';
@@ -50,7 +57,14 @@ const INLINE_ICONS: Record<string, React.ElementType> = {
   CheckSquare,
   Zap,
   Send,
-  Database
+  Database,
+  BookOpen,
+  Moon,
+  Sun,
+  User,
+  BellRing,
+  Clock3,
+  Signal
 };
 
 interface FullGuideModalProps {
