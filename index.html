@@ -780,7 +780,15 @@
   <body>
     <div id="root">
       <!--
-        Pre-React inline splash. Shown while the JS bundle is still
+        Pre-React inline splash. **Mobile-PWA / browser only** — the
+        inline IIFE below checks navigator.userAgent for "Electron"
+        and immediately removes this subtree on desktop so the
+        "移动端伴侣 · MOBILE COMPANION" copy never flashes on a
+        Windows/macOS/Linux window. Desktop doesn't need the splash
+        anyway: BrowserWindow paints backgroundColor '#f9f7f2' (same
+        cream as the splash) and the local file:// bundle loads in
+        milliseconds before React mounts IntroScreen.
+        On mobile the shell is shown while the JS bundle is still
         downloading / parsing / running bootstrap(). React's createRoot
         replaces this subtree on the first root.render() call, so on a
         healthy boot the splash is never visible for more than a frame.
@@ -790,8 +798,8 @@
         "Booting Xs" counter instead of the previous pure-beige blank.
         That counter is what tells us "React never ran" vs "React ran
         but something later is holding up the first paint". The inline
-        IIFE below self-terminates via MutationObserver once React
-        swaps the subtree out, so it can't leak into the running app.
+        IIFE self-terminates via MutationObserver once React swaps
+        the subtree out, so it can't leak into the running app.
       -->
       <div id="ka-boot-splash" style="position:fixed; inset:0; background:#f9f7f2; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; font-family: 'Cormorant Garamond', 'Plus Jakarta Sans', Georgia, serif;">
         <img src="/favicon-KA.png" width="88" height="88" alt="Kumiko·Amadeus" style="width:88px; height:88px; object-fit:contain; margin-bottom:18px;" />
@@ -810,6 +818,20 @@
     <script>
       (function(){
         try {
+          // Electron desktop has no bundle-load window (file:// reads
+          // finish in ms and BrowserWindow.backgroundColor already
+          // paints the cream base), so the "MOBILE COMPANION"-subtitled
+          // splash would only flash awkwardly. Detect Electron via UA
+          // — it always contains "Electron/<ver>" regardless of
+          // contextIsolation or whether preload has exposed anything.
+          if (typeof navigator !== 'undefined' && navigator.userAgent &&
+              navigator.userAgent.indexOf('Electron') !== -1) {
+            var splashEl = document.getElementById('ka-boot-splash');
+            if (splashEl && splashEl.parentNode) {
+              splashEl.parentNode.removeChild(splashEl);
+            }
+            return;
+          }
           var start = Date.now();
           var tick = function(){
             var el = document.getElementById('ka-boot-timer');
