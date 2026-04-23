@@ -183,9 +183,28 @@ const DIARY_WEEKDAY_FOCUS_ROTATION: Array<{
 
 const uniqueStrings = (items: string[]): string[] => Array.from(new Set(items.map(item => item.trim()).filter(Boolean)));
 
-const stripDiaryHeaderLine = (content: string): string => (
-  content.replace(/^\d{4}年\d+月\d+日[^\n]*\n*/u, '').trim()
-);
+// LLM 偶尔会无视 prompt 的"第一行就是 {diaryDateHeader}"约束，吐出
+// 各种带样式的日期 header：`**2026年4月13日 月曜日 多云**`、
+// `## 2026年4月13日 ...`、`> 2026/4/13 ...`、甚至连写两行（标题 + 副标题）。
+// 这两个正则覆盖 ATX header + 任何 markdown 包裹/引用前缀的日期行；
+// 调用方循环最多 3 次以处理多行 header，超过即跳出避免病态正则死循环。
+const ATX_HEADER_RE = /^[\s>]*#+[^\n\r]*\r?\n/u;
+const WRAPPED_DATE_HEADER_RE =
+  /^[\s>*_`~]*20\d{2}[年\-/.]\s*(?:0?[1-9]|1[0-2])[月\-/.]\s*(?:0?[1-9]|[12]\d|3[01])日?[^\n\r]*?[\s>*_`~]*\r?\n/u;
+const MAX_HEADER_STRIP_PASSES = 3;
+
+const stripLeadingDiaryHeaders = (input: string): string => {
+  let out = input;
+  for (let pass = 0; pass < MAX_HEADER_STRIP_PASSES; pass++) {
+    const before = out.length;
+    out = out.replace(ATX_HEADER_RE, '').replace(WRAPPED_DATE_HEADER_RE, '');
+    out = out.replace(/^\s+/u, '');
+    if (out.length === before) break;
+  }
+  return out;
+};
+
+const stripDiaryHeaderLine = (content: string): string => stripLeadingDiaryHeaders(content).trim();
 
 const splitDiarySentences = (text: string): string[] => (
   text
@@ -516,16 +535,15 @@ const parseDiaryModelResponse = (
   }
 
   let content = rawContent;
-  
-  // Clean potential residual headers or markdown formatting from LLM
-  content = content.replace(/^#+.*?\n/g, '').trim(); 
-  // Unconditionally strip ANY date-format first line (even if LLM wrote wrong date)
-  const potentialHeaderMatch = content.match(/^(20\d{2}年\d+月\d+日[^\n]*)\n/);
-  if (potentialHeaderMatch) {
-      content = content.substring(potentialHeaderMatch[0].length).trim();
-  }
-  // Always force the correct date header
-  content = `${diaryDateHeader}\n\n${content.replace(/^\s+/u, '')}`;
+
+  // Strip any LLM-produced date header up front, covering bare text,
+  // ATX (`#` / `##`), bold/italic wrap (`**…**`, `__…__`), blockquote
+  // (`> …`), and up to 3 stacked header lines. We then force the
+  // canonical `${diaryDateHeader}` ourselves so downstream code
+  // (stripDiaryHeaderLine, summary fallback, DiaryPanel render) sees
+  // a single, well-formed header regardless of what the model wrote.
+  content = stripLeadingDiaryHeaders(content);
+  content = `${diaryDateHeader}\n\n${content}`;
 
   const contentForSummary = content.startsWith(diaryDateHeader)
     ? content.slice(diaryDateHeader.length).trim()
