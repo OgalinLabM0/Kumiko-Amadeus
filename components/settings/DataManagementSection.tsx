@@ -158,7 +158,7 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
       <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
         <div className="flex items-center gap-3">
-          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-red-500/20 bg-red-900/20 text-red-300' : 'border-red-200 bg-red-50/90 text-red-700'}`}>
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border shrink-0 ${isDarkMode ? 'border-red-500/20 bg-red-900/20 text-red-300' : 'border-red-200 bg-red-50/90 text-red-700'}`}>
             <Database size={18} />
           </div>
           <div className="text-left">

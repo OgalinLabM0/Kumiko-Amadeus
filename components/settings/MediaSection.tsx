@@ -64,7 +64,7 @@ export const MediaSection: React.FC<MediaSectionProps> = ({
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
       <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
         <div className="flex items-center gap-3">
-          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-sky-500/20 bg-sky-900/20 text-sky-300' : 'border-sky-200 bg-sky-50/90 text-sky-700'}`}>
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border shrink-0 ${isDarkMode ? 'border-sky-500/20 bg-sky-900/20 text-sky-300' : 'border-sky-200 bg-sky-50/90 text-sky-700'}`}>
             <ImageIcon size={18} />
           </div>
           <div className="text-left">

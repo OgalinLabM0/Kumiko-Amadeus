@@ -164,7 +164,7 @@ export const MobileSetupGuideModal: React.FC<MobileSetupGuideModalProps> = ({
           {/* Header */}
           <div className={`flex items-center justify-between px-6 py-4 border-b ${isDarkMode ? 'border-[#806033]/45' : 'border-[#e6ddcf]'}`}>
             <div className="flex items-center gap-3 min-w-0">
-              <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-amber-500/20 bg-amber-900/20 text-amber-300' : 'border-amber-200 bg-amber-50/90 text-amber-700'}`}>
+              <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border shrink-0 ${isDarkMode ? 'border-amber-500/20 bg-amber-900/20 text-amber-300' : 'border-amber-200 bg-amber-50/90 text-amber-700'}`}>
                 <Book size={18} />
               </div>
               <div className="min-w-0">

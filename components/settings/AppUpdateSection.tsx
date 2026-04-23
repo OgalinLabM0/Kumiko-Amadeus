@@ -224,7 +224,7 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
       <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
         <div className="flex items-center gap-3">
-          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-cyan-500/20 bg-cyan-900/20 text-cyan-300' : 'border-cyan-200 bg-cyan-50/90 text-cyan-700'}`}>
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border shrink-0 ${isDarkMode ? 'border-cyan-500/20 bg-cyan-900/20 text-cyan-300' : 'border-cyan-200 bg-cyan-50/90 text-cyan-700'}`}>
             <Rocket size={18} />
           </div>
           <div className="text-left">

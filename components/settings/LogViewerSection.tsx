@@ -42,7 +42,7 @@ export const LogViewerSection: React.FC<LogViewerSectionProps> = ({
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
       <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
         <div className="flex items-center gap-3">
-          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border ${isDarkMode ? 'border-white/10 bg-white/[0.04] text-gray-300' : 'border-[#d8d6d2] bg-[#f5f3ef] text-gray-700'}`}>
+          <div className={`flex h-10 w-10 items-center justify-center rounded-2xl border shrink-0 ${isDarkMode ? 'border-white/10 bg-white/[0.04] text-gray-300' : 'border-[#d8d6d2] bg-[#f5f3ef] text-gray-700'}`}>
             <Terminal size={18} />
           </div>
           <div className="text-left">
