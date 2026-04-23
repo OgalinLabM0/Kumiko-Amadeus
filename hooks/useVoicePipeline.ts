@@ -3,6 +3,7 @@ import { EMOTION_TO_FISH_AUDIO_TAGS, EMOTION_TTS_TEMPERATURE } from '../constant
 import { callLLMRaw, getCurrentAIConfig } from '../services/geminiService';
 import { synthesizeSpeech, TtsError } from '../services/fishAudioService';
 import { isVoiceServiceAvailable, saveVoiceFile } from '../services/voiceFileService';
+import { useAppStore } from '../store';
 import type { EmotionType, TtsConfig } from '../types';
 
 export interface UseVoicePipelineParams {
@@ -11,32 +12,34 @@ export interface UseVoicePipelineParams {
 
 export type RunVoicePipelineFn = (
   messageId: string,
-  chineseText: string,
+  sourceText: string,
   emotion: EmotionType,
   voiceVariant?: string,
 ) => Promise<{ success: boolean; voiceFileId?: string; voiceDuration?: number; japaneseText?: string }>;
 
 export interface UseVoicePipelineReturn {
-  translateToJapaneseWithEmotion: (chineseText: string, emotion: EmotionType) => Promise<string | null>;
-  translateForGenie: (chineseText: string, emotion: EmotionType) => Promise<string | null>;
+  translateToJapaneseWithEmotion: (sourceText: string, emotion: EmotionType) => Promise<string | null>;
+  translateForGenie: (sourceText: string, emotion: EmotionType) => Promise<string | null>;
   runVoicePipeline: RunVoicePipelineFn;
 }
 
 export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseVoicePipelineReturn {
-  const translateToJapaneseWithEmotion = async (chineseText: string, emotion: EmotionType): Promise<string | null> => {
+  const translateToJapaneseWithEmotion = async (sourceText: string, emotion: EmotionType): Promise<string | null> => {
     try {
       const config = getCurrentAIConfig();
       const emotionTags = EMOTION_TO_FISH_AUDIO_TAGS[emotion] ?? [];
       const tagList = emotionTags.length > 0 ? emotionTags.join(', ') : 'none';
+      const language = useAppStore.getState().language;
+      const sourceLabel = language === 'en' ? 'English' : 'Chinese';
 
       const systemPrompt = [
-        'You are a Chinese-to-Japanese translator. You are NOT a character. Do NOT respond in-character.',
+        `You are a ${sourceLabel}-to-Japanese translator. You are NOT a character. Do NOT respond in-character.`,
         'Do NOT add greetings, commentary, explanations, or anything beyond the translation.',
         'Output EXACTLY one block of natural spoken Japanese. Nothing else.',
         '',
         'ZERO SEMANTIC DRIFT (HIGHEST PRIORITY):',
         'Your output MUST convey the EXACT same meaning as the input. Do NOT add, remove, embellish, or paraphrase.',
-        'SENTENCE COUNT RULE: Output MUST have the same number of sentences/clauses as the input. One Chinese sentence = one Japanese sentence. Do NOT split or merge.',
+        `SENTENCE COUNT RULE: Output MUST have the same number of sentences/clauses as the input. One ${sourceLabel} sentence = one Japanese sentence. Do NOT split or merge.`,
         'If the input is short (e.g. a greeting), the output MUST be equally short. Do NOT expand a 3-word input into a full sentence.',
         '',
         'CRITICAL — unpronounceable text handling:',
@@ -67,7 +70,11 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
         '   If the original says "remind", translate as "remind". If it says "wake up", translate as "wake up". ZERO semantic drift allowed.',
         '8. GENERAL ACCURACY: Maintain the EXACT meaning and nuance of the original Chinese text. Do not alter the semantics (e.g., "才睡" = "just went to sleep", NOT "还醒着" "still awake").',
         '9. PRONUNCIATION: Write character names using Hiragana/Katakana ONLY to prevent TTS mispronunciation. Example: 黄前久美子 -> おうまえ くみこ, 秀一 -> しゅういち, 丽奈 -> れいな, 明日香 -> あすか.',
-        '10. GREETINGS LOCK (CRITICAL): If the input is a standard greeting like "早上好", "中午好", or "晚上好", you MUST use standard casual greetings (おはよう, こんにちは, こんばんは, ヤッホー). NEVER translate them literally as time states like "朝だよ" or "お昼だよ".',
+        '10. GREETINGS LOCK (CRITICAL): If the input is a standard greeting, you MUST use standard casual greetings. NEVER translate literally as time states like "朝だよ" or "お昼だよ". Map:',
+        '    - 早上好 / Good morning / Morning → おはよう',
+        '    - 中午好 / Good afternoon → こんにちは',
+        '    - 晚上好 / Good evening → こんばんは',
+        '    - 哈喽 / Hi / Hey → ヤッホー or やあ',
         '11. BANNED ROMANTIC TERMS: NEVER output ダーリン, ハニー, 愛しい人, or any romantic pet name. These are reserved for Shuichi ONLY. If the source text contains 亲爱的 addressing the user, translate it neutrally (e.g., ねえ, あんたさ, or omit it).',
         '',
         'Fish Audio S2-Pro emotion tags (MANDATORY — the TTS engine REQUIRES these to produce expressive speech):',
@@ -110,9 +117,15 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
         '',
         'Input: "哇！真的假的！" | Emotion: surprised',
         'Output: [surprised]えっ！？[excited]マジで！？',
+        '',
+        'Input: "Good afternoon" | Emotion: smiling',
+        'Output: [happy]こんにちは～',
+        '',
+        'Input: "I feel so frustrated..." | Emotion: sad',
+        'Output: [sad]悔しい……[sighs]悔しくて……死にそう……',
       ].join('\n');
 
-      const jaText = await callLLMRaw(systemPrompt, chineseText, config.model_translator || ttsConfigRef.current.model_translator || config.model_main);
+      const jaText = await callLLMRaw(systemPrompt, sourceText, config.model_translator || ttsConfigRef.current.model_translator || config.model_main);
       if (!jaText || jaText.length < 2) return null;
       return jaText;
     } catch (err) {
@@ -121,11 +134,13 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
     }
   };
 
-  const translateForGenie = async (chineseText: string, emotion: EmotionType): Promise<string | null> => {
+  const translateForGenie = async (sourceText: string, emotion: EmotionType): Promise<string | null> => {
     try {
       const config = getCurrentAIConfig();
+      const language = useAppStore.getState().language;
+      const sourceLabel = language === 'en' ? 'English' : 'Chinese';
       const systemPrompt = [
-        'You are a Chinese-to-Japanese translator. Output EXACTLY one block of natural spoken Japanese.',
+        `You are a ${sourceLabel}-to-Japanese translator. Output EXACTLY one block of natural spoken Japanese.`,
         'Do NOT add greetings, commentary, or anything beyond the translation.',
         '',
         'Target voice style: Oumae Kumiko (黄前久美子) — casual Japanese (タメ口), first person 私.',
@@ -135,7 +150,11 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
         'ZERO SEMANTIC DRIFT: Same meaning, same sentence count, same length proportion.',
         'Do NOT output any bracket tags like [happy] or [pause] — output pure Japanese text only.',
         'PRONUNCIATION: Character names in Hiragana/Katakana only.',
-        'GREETINGS: 早上好→おはよう, 中午好→こんにちは, 晚上好→こんばんは.',
+        'GREETINGS:',
+        '  - 早上好 / Good morning / Morning → おはよう',
+        '  - 中午好 / Good afternoon → こんにちは',
+        '  - 晚上好 / Good evening → こんばんは',
+        '  - 哈喽 / Hi / Hey → ヤッホー or やあ',
         'BANNED ROMANTIC TERMS: NEVER output ダーリン, ハニー, 愛しい人, or any romantic pet name. These are reserved for Shuichi ONLY. If the source text contains 亲爱的 addressing the user, translate it neutrally (e.g., ねえ, あんたさ, or omit it).',
         '',
         'PUNCTUATION FOR EMOTION (CRITICAL — GPT-SoVITS reads punctuation to control voice expression):',
@@ -156,7 +175,7 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
         '- neutral: Natural mix, avoid all-。endings.',
         'Do NOT end every sentence with flat 。— that produces emotionless TTS output.',
       ].join('\n');
-      const jaText = await callLLMRaw(systemPrompt, chineseText, config.model_translator || ttsConfigRef.current.model_translator || config.model_main);
+      const jaText = await callLLMRaw(systemPrompt, sourceText, config.model_translator || ttsConfigRef.current.model_translator || config.model_main);
       if (!jaText || jaText.length < 2) return null;
       return jaText;
     } catch (err) {
@@ -167,7 +186,7 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
 
   const runVoicePipeline: RunVoicePipelineFn = async (
     messageId,
-    chineseText,
+    sourceText,
     emotion,
     voiceVariant,
   ) => {
@@ -190,8 +209,8 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
     try {
       // Fish Audio needs bracket emotion tags; SoVITS and Vocu want clean Japanese.
       let jaText = backend === 'fish'
-        ? await translateToJapaneseWithEmotion(chineseText, emotion)
-        : await translateForGenie(chineseText, emotion);
+        ? await translateToJapaneseWithEmotion(sourceText, emotion)
+        : await translateForGenie(sourceText, emotion);
 
       if (!jaText) {
         console.error('[TTS] Translation returned empty result — degrading to text');
