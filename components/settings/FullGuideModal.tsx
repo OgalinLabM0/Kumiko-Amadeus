@@ -294,8 +294,8 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                 </div>
                 <p className={`mt-1 ka-copy-sm ${mutedClass}`}>
                   {language === 'zh'
-                    ? '功能结构、数据链路、回复逻辑与桌面行为的完整系统档案。'
-                    : 'Full archive for features, data flow, reply logic, and desktop behavior.'}
+                    ? '功能结构、数据链路、回复逻辑与真实运行行为的完整系统档案。'
+                    : 'Full archive for features, data flow, reply logic, and runtime behavior.'}
                 </p>
               </div>
             </div>
@@ -320,8 +320,8 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                   </div>
                   <p className={`mt-2 text-[14px] leading-7 md:text-[14.5px] ${mutedClass}`}>
                     {language === 'zh'
-                      ? '这里写的是软件真正如何运转，而不是宣传页摘要。每一章都对应当前桌面版的一条实际链路。'
-                      : 'This archive documents how the desktop build actually works, not just what it claims to do.'}
+                      ? '这里写的是软件真正如何运转，而不是宣传页摘要。每一章都对应当前软件里的一条实际链路。'
+                      : 'This archive documents how the app actually works, not just what it claims to do.'}
                   </p>
                 </div>
               </div>
@@ -363,7 +363,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                   isDarkMode ? 'border-[#806033]/35 text-[#6b5a45]' : 'border-[#e6ddcf] text-[#8a7557]'
                 }`}
               >
-                <span>DESKTOP ARCHIVE</span>
+                <span>SYSTEM ARCHIVE</span>
                 <span>LOCAL FIRST</span>
               </div>
             </div>
@@ -420,7 +420,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                   isDarkMode ? 'border-[#806033]/35 bg-[#1c1a18] text-[#6b5a45]' : 'border-[#e6ddcf] bg-[#f5f0e8] text-[#8d7654]'
                 }`}
               >
-                <span>KUMIKO·AMADEUS DESKTOP MANUAL</span>
+                <span>KUMIKO·AMADEUS SYSTEM MANUAL</span>
                 <span>AMADEUS ARCHIVE</span>
               </div>
             </div>
