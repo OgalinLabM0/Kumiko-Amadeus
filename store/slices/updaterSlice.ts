@@ -29,6 +29,11 @@ export interface UpdaterSlice {
   setShowAppUpdateModal: (v: boolean) => void;
   handleCheckForAppUpdates: () => Promise<void>;
   handleDownloadAppUpdate: () => Promise<void>;
+  // Returns success/cancelled/error so the UI layer can decide what to
+  // render (inline toast success vs failure message) without having to
+  // re-read the store state, which races with the main-process emit
+  // that follows `app:update:cancel-download`.
+  handleCancelAppUpdate: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>;
   handleInstallAppUpdate: () => Promise<void>;
   // v2.10.1: pending/ directory inspection + manual cleanup. All three
   // no-op on non-desktop-Electron runtimes.
@@ -78,6 +83,53 @@ export const createUpdaterSlice: StateCreator<UpdaterSlice, [], [], UpdaterSlice
       const message = error instanceof Error ? error.message : String(error);
       console.error('[UPDATER] Failed to start update download:', error);
       get().setAppUpdateState((prev) => ({ ...prev, status: 'error', error: message }));
+    }
+  },
+
+  handleCancelAppUpdate: async () => {
+    if (!isDesktopElectron() || !window.electronAPI) {
+      return { success: false, error: 'unsupported' };
+    }
+    const currentStatus = get().appUpdateState.status;
+    if (currentStatus !== 'downloading') {
+      // Idempotent no-op: button should already be hidden if status is
+      // not 'downloading', but guard anyway so double-clicks or races
+      // don't land us in a stuck state.
+      return { success: true, cancelled: false };
+    }
+
+    // Optimistic transitional state: disables the cancel button and
+    // swaps its label to "正在取消…". Main process will overwrite with
+    // `status: 'available'` once cancelAppUpdateDownload returns.
+    get().setAppUpdateState((prev) => ({ ...prev, status: 'cancelling', error: null }));
+
+    try {
+      const result = await window.electronAPI.invoke('app:update:cancel-download');
+      if (result?.success === false) {
+        // IPC returned failure (e.g. no active download, unsupported
+        // runtime). Revert to `downloading` so the user can see the
+        // original progress and retry — main is still downloading.
+        get().setAppUpdateState((prev) => ({
+          ...prev,
+          status: 'downloading',
+          error: result?.error || null,
+        }));
+        return { success: false, error: result?.error || 'cancel-failed' };
+      }
+      // Success: main already emitted `status: 'available'` + wiped
+      // pending/. Refresh the cache-info card so the 0 B / 0 files
+      // reflect the wipe without waiting for the collapse to re-open.
+      void get().refreshUpdaterCacheInfo();
+      return { success: true, cancelled: result?.cancelled !== false };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[UPDATER] Failed to cancel update download:', error);
+      get().setAppUpdateState((prev) => ({
+        ...prev,
+        status: 'downloading',
+        error: message,
+      }));
+      return { success: false, error: message };
     }
   },
 

@@ -98,6 +98,7 @@ interface BuildAppMainViewPropsParams {
   appUpdateState: AppUpdateState;
   handleCheckForAppUpdates: () => Promise<void>;
   handleDownloadAppUpdate: () => Promise<void>;
+  handleCancelAppUpdate: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>;
   handleInstallAppUpdate: () => Promise<void>;
   // v2.10.1 Download Cache plumbing. Source of truth is the
   // updaterSlice; we accept them as closure params so the settings
@@ -248,6 +249,7 @@ export const buildAppMainViewProps = (
     appUpdateState,
     handleCheckForAppUpdates,
     handleDownloadAppUpdate,
+    handleCancelAppUpdate,
     handleInstallAppUpdate,
     updaterCacheInfo,
     refreshUpdaterCacheInfo,
@@ -366,6 +368,7 @@ export const buildAppMainViewProps = (
       onTtsConfigChange: handleTtsConfigChange,
       onCheckForUpdates: handleCheckForAppUpdates,
       onDownloadUpdate: handleDownloadAppUpdate,
+      onCancelAppUpdate: handleCancelAppUpdate,
       onInstallUpdate: handleInstallAppUpdate,
       updaterCacheInfo,
       onRefreshUpdaterCacheInfo: refreshUpdaterCacheInfo,

@@ -466,6 +466,7 @@ export const App = () => {
   const setShowAppUpdateModal = useAppStore(s => s.setShowAppUpdateModal);
   const handleCheckForAppUpdates = useAppStore(s => s.handleCheckForAppUpdates);
   const handleDownloadAppUpdate = useAppStore(s => s.handleDownloadAppUpdate);
+  const handleCancelAppUpdate = useAppStore(s => s.handleCancelAppUpdate);
   const handleInstallAppUpdate = useAppStore(s => s.handleInstallAppUpdate);
   const updaterCacheInfo = useAppStore(s => s.updaterCacheInfo);
   const refreshUpdaterCacheInfo = useAppStore(s => s.refreshUpdaterCacheInfo);
@@ -1232,6 +1233,7 @@ export const App = () => {
     appUpdateState,
     handleCheckForAppUpdates,
     handleDownloadAppUpdate,
+    handleCancelAppUpdate,
     handleInstallAppUpdate,
     updaterCacheInfo,
     refreshUpdaterCacheInfo,

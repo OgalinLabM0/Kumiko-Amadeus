@@ -9,12 +9,14 @@ import {
   RefreshCw,
   Rocket,
   Trash2,
+  XCircle,
 } from 'lucide-react';
 import { UI_TRANSLATIONS } from '../../constants';
 import type { AppUpdateState, Language, UpdaterCacheInfo } from '../../types';
 import { Collapse } from '../Collapse';
 import { isMobilePwa } from '../../services/environment';
 import { isDesktopElectron } from '../../services/desktopBackupService';
+import { dialogService } from '../../services/dialogService';
 
 type UpdatePlatform = 'desktop' | 'mobile' | 'web';
 
@@ -33,6 +35,7 @@ interface AppUpdateSectionProps {
   updateState: AppUpdateState;
   onCheckForUpdates: () => void;
   onDownloadUpdate: () => void;
+  onCancelAppUpdate: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>;
   onInstallUpdate: () => void;
   // v2.10.1 Download Cache block. `updaterCacheInfo` may be null on
   // mobile / web / before the first refresh; the UI falls back to the
@@ -65,6 +68,7 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
   updateState,
   onCheckForUpdates,
   onDownloadUpdate,
+  onCancelAppUpdate,
   onInstallUpdate,
   updaterCacheInfo,
   onRefreshUpdaterCacheInfo,
@@ -99,6 +103,8 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
     statusText = t.updateAvailable;
   } else if (updateState.status === 'downloading') {
     statusText = t.updateDownloading;
+  } else if (updateState.status === 'cancelling') {
+    statusText = t.updateCancelling;
   } else if (updateState.status === 'downloaded') {
     statusText = t.updateReady;
   } else if (updateState.status === 'installing') {
@@ -118,8 +124,18 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
     : platform === 'web'
       ? t.updateUnsupported
       : t.updateUnsupportedDev;
-  const checkDisabled = buttonsDisabledByPlatform || updateState.status === 'checking' || updateState.status === 'downloading';
-  const downloadDisabled = buttonsDisabledByPlatform || updateState.status !== 'available';
+  const checkDisabled = buttonsDisabledByPlatform || updateState.status === 'checking' || updateState.status === 'downloading' || updateState.status === 'cancelling';
+  const isDownloadingLive = updateState.status === 'downloading';
+  const isCancelling = updateState.status === 'cancelling';
+  // Download-button-morph policy:
+  //   idle/available → "立即下载" (cyan, triggers onDownloadUpdate)
+  //   downloading   → "取消下载" (rose, triggers cancel-confirm flow)
+  //   cancelling    → "正在取消…" (rose, disabled + pulse while main acks)
+  //   downloaded/installing/error → original "立即下载" but disabled
+  const isDownloadMorphedToCancel = isDownloadingLive || isCancelling;
+  const downloadDisabled = isDownloadMorphedToCancel
+    ? isCancelling
+    : (buttonsDisabledByPlatform || updateState.status !== 'available');
   const installDisabled = buttonsDisabledByPlatform || updateState.status !== 'downloaded';
 
   // Banner display: packaged desktop never shows it; mobile shows a
@@ -158,6 +174,29 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
     const timer = window.setTimeout(() => setCacheToast(null), 3000);
     return () => window.clearTimeout(timer);
   }, [cacheToast]);
+
+  // Cancel flow: secondary confirmation via dialogService so the user
+  // reads the "current progress will be discarded" warning before we
+  // tear down the download; success/failure surface in the same inline
+  // toast that the cache buttons already use, keeping the UI footprint
+  // in the section constant.
+  const handleCancelClick = useCallback(async () => {
+    const ok = await dialogService.confirm({
+      title: t.updateCancelConfirmTitle,
+      message: t.updateCancelConfirmMessage,
+      confirmText: t.updateCancelConfirmButton,
+      cancelText: t.updateCancelConfirmKeepButton,
+      variant: 'danger',
+      icon: 'warning',
+    });
+    if (!ok) return;
+    const result = await onCancelAppUpdate();
+    if (result?.success) {
+      setCacheToast({ tone: 'success', text: t.updateToastCancelled });
+    } else if (result?.error) {
+      setCacheToast({ tone: 'error', text: result.error });
+    }
+  }, [onCancelAppUpdate, t]);
 
   const handleCopyCachePath = useCallback(async () => {
     const pathToCopy = updaterCacheInfo?.path;
@@ -289,19 +328,35 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
               <RefreshCw size={14} className={updateState.status === 'checking' ? 'animate-spin' : ''} />
               {t.updateCheck}
             </button>
-            <button
-              onClick={onDownloadUpdate}
-              disabled={downloadDisabled}
-              title={buttonsDisabledByPlatform ? platformDisabledTitle : undefined}
-              className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
-                downloadDisabled
-                  ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
-                  : (isDarkMode ? 'bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30' : 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200')
-              }`}
-            >
-              <Download size={14} className={updateState.status === 'downloading' ? 'animate-bounce' : ''} />
-              {t.updateDownload}
-            </button>
+            {isDownloadMorphedToCancel ? (
+              <button
+                onClick={isCancelling ? undefined : handleCancelClick}
+                disabled={downloadDisabled}
+                title={isCancelling ? t.updateCancelling : t.updateCancel}
+                className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
+                  downloadDisabled
+                    ? (isDarkMode ? 'bg-rose-500/10 text-rose-300/60' : 'bg-rose-100/70 text-rose-400')
+                    : (isDarkMode ? 'bg-rose-500/20 text-rose-200 hover:bg-rose-500/30' : 'bg-rose-100 text-rose-700 hover:bg-rose-200')
+                }`}
+              >
+                <XCircle size={14} className={isCancelling ? 'animate-pulse' : ''} />
+                {isCancelling ? t.updateCancelling : t.updateCancel}
+              </button>
+            ) : (
+              <button
+                onClick={onDownloadUpdate}
+                disabled={downloadDisabled}
+                title={buttonsDisabledByPlatform ? platformDisabledTitle : undefined}
+                className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
+                  downloadDisabled
+                    ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
+                    : (isDarkMode ? 'bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30' : 'bg-cyan-100 text-cyan-700 hover:bg-cyan-200')
+                }`}
+              >
+                <Download size={14} />
+                {t.updateDownload}
+              </button>
+            )}
             <button
               onClick={onInstallUpdate}
               disabled={installDisabled}

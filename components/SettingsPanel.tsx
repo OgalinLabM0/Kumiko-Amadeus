@@ -59,6 +59,10 @@ interface SettingsPanelProps {
   onTtsConfigChange?: (config: TtsConfig) => void;
   onCheckForUpdates: () => void;
   onDownloadUpdate: () => void;
+  // Async so callers can chain inline toast / error UI after the main
+  // process resolves the IPC; resolves even when the user already
+  // cancelled — see updaterSlice.handleCancelAppUpdate.
+  onCancelAppUpdate: () => Promise<{ success: boolean; cancelled?: boolean; error?: string }>;
   onInstallUpdate: () => void;
   // v2.10.1 Download Cache block. Optional so we don't have to
   // retrofit every call-site in storybook / test harnesses, though
@@ -110,6 +114,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   onTtsConfigChange,
   onCheckForUpdates,
   onDownloadUpdate,
+  onCancelAppUpdate,
   onInstallUpdate,
   updaterCacheInfo = null,
   onRefreshUpdaterCacheInfo,
@@ -1493,6 +1498,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           updateState={appUpdateState}
           onCheckForUpdates={onCheckForUpdates}
           onDownloadUpdate={onDownloadUpdate}
+          onCancelAppUpdate={onCancelAppUpdate}
           onInstallUpdate={onInstallUpdate}
           updaterCacheInfo={updaterCacheInfo}
           onRefreshUpdaterCacheInfo={onRefreshUpdaterCacheInfo ?? (async () => { /* no-op fallback (non-electron) */ })}
@@ -1609,6 +1615,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     onCloudRestore,
     onDisconnectLocalFile,
     onDownloadUpdate,
+    onCancelAppUpdate,
     onExportBackup,
     onImportBackup,
     onInstallUpdate,

@@ -66,6 +66,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:update:get-state',
       'app:update:check',
       'app:update:download',
+      'app:update:cancel-download',
       'app:update:quit-and-install',
       // v2.10.1 download-cache inspection + manual cleanup. Desktop
       // renderer only — intentionally NOT added to services/httpApi.ts

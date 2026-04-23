@@ -40,6 +40,7 @@ const {
   getUpdateState,
   checkForAppUpdates,
   downloadAppUpdate,
+  cancelAppUpdateDownload,
   quitAndInstallAppUpdate,
   setupAutoUpdater,
   cleanupUpdaterCache,
@@ -231,6 +232,10 @@ if (!singleInstanceLock) {
 
   ipcMain.handle('app:update:download', async () => {
     return downloadAppUpdate();
+  });
+
+  ipcMain.handle('app:update:cancel-download', async () => {
+    return cancelAppUpdateDownload();
   });
 
   ipcMain.handle('app:update:quit-and-install', async () => {

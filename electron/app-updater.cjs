@@ -72,7 +72,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { app, shell } = require('electron');
-const { autoUpdater } = require('electron-updater');
+const { autoUpdater, CancellationToken } = require('electron-updater');
 
 const isDev = !app.isPackaged;
 
@@ -100,11 +100,25 @@ const STALE_INSTALLER_IMAGE_NAMES = [
   'Kumiko-Amadeus-Setup.exe',
 ];
 
+// Filename of the one-shot "cleanup on next startup" flag. Written as
+// part of quitAndInstall() and consumed by cleanupUpdaterCache() on the
+// next cold start; its presence means "the last install succeeded, the
+// leftover installer in pending/ is now stale — delete it even though
+// it still looks like a ready-to-install artifact, so disk usage does
+// not balloon across updates".
+const POST_INSTALL_FLAG_FILENAME = 'post-install-cleanup.flag';
+
 // Internal state ────────────────────────────────────────────────────
 
 let isInstallingUpdate = false;
 let updateCheckPromise = null;
 let updateDownloadPromise = null;
+// CancellationToken for the in-flight downloadUpdate() call. We hand it
+// to electron-updater at download-start and hold the reference here so
+// the IPC-driven cancel button can reach in and call cancel() without
+// needing to await the returned promise. Cleared in the downloadUpdate
+// `finally` to avoid stale tokens persisting across runs.
+let activeCancellationToken = null;
 let appUpdateState = {
   status: isDev ? 'unsupported' : 'idle',
   currentVersion: app.getVersion(),
@@ -350,8 +364,71 @@ function hasReadyPendingInstaller() {
   }
 }
 
+// Post-install flag file ────────────────────────────────────────────
+//
+// The flag is an empty marker file written into the updater-cache base
+// directory right before quitAndInstall fires. When the new version
+// cold-boots, cleanupUpdaterCache() at the top of its execution checks
+// for this flag; if present, it bypasses the hasReadyPendingInstaller
+// guard and forces a full wipe of pending/ (the ~200MB Setup-*.exe that
+// the freshly-installed version no longer needs). This closes the
+// "installer never cleaned up after successful install" leak without
+// running destructive rmSync on every single startup.
+//
+// Writing happens in quitAndInstallAppUpdate(); consumption happens
+// exactly once per install event in cleanupUpdaterCache(). Write failures
+// are logged-and-swallowed — the worst case is the installer hangs
+// around one extra cycle, which is strictly better than refusing to
+// quit-and-install because a status file could not be persisted.
+
+function getPostInstallFlagPath() {
+  return path.join(getUpdaterCacheBaseDir(), POST_INSTALL_FLAG_FILENAME);
+}
+
+function writePostInstallFlag() {
+  const flagPath = getPostInstallFlagPath();
+  try {
+    fs.mkdirSync(path.dirname(flagPath), { recursive: true });
+    fs.writeFileSync(flagPath, String(Date.now()), 'utf8');
+    console.log('[UPDATER] post-install cleanup flag written at', flagPath);
+  } catch (error) {
+    console.warn('[UPDATER] Failed to write post-install flag:', error && error.message);
+  }
+}
+
+// Returns true iff the flag existed AND we successfully deleted it, so
+// the cleanup only fires once regardless of how many restarts follow.
+function consumePostInstallFlag() {
+  const flagPath = getPostInstallFlagPath();
+  try {
+    if (!fs.existsSync(flagPath)) return false;
+    try {
+      fs.unlinkSync(flagPath);
+    } catch (unlinkError) {
+      console.warn('[UPDATER] Failed to delete post-install flag after consuming:', unlinkError && unlinkError.message);
+      // Deleting failed but the flag was there. Treat as consumed anyway
+      // so we don't loop wiping pending/ every startup; the orphan file
+      // costs nothing and the next writePostInstallFlag overwrites it.
+    }
+    return true;
+  } catch (error) {
+    console.warn('[UPDATER] Failed to read post-install flag:', error && error.message);
+    return false;
+  }
+}
+
 function cleanupUpdaterCache() {
   if (updateCheckPromise || updateDownloadPromise || isInstallingUpdate) {
+    return;
+  }
+  // Post-install sweep: last run wrote the flag right before
+  // quitAndInstall, meaning the current process is the freshly-installed
+  // version. The Setup-*.exe in pending/ is stale — we no longer need
+  // it — so bypass the hasReadyPendingInstaller guard and wipe it out
+  // to free the ~200MB of disk space.
+  if (consumePostInstallFlag()) {
+    console.log('[INSTALL CACHE] post-install flag detected, wiping stale installer from previous version');
+    forceCleanupUpdaterCache({ reason: 'post-install' });
     return;
   }
   // Guard: if a fresh installer is already waiting in pending/, keep it.
@@ -497,18 +574,84 @@ async function downloadAppUpdate() {
     bytesPerSecond: 0,
   });
 
-  updateDownloadPromise = autoUpdater.downloadUpdate()
+  // Fresh token per download so cancel() from an earlier, aborted run
+  // cannot bleed into this one. Stored at module scope so
+  // cancelAppUpdateDownload() can reach it without needing the returned
+  // promise.
+  const cancellationToken = new CancellationToken();
+  activeCancellationToken = cancellationToken;
+
+  updateDownloadPromise = autoUpdater.downloadUpdate(cancellationToken)
     .then(() => ({ success: true }))
     .catch((error) => {
       const message = stringifyUpdateError(error);
+      // CancellationError is the intended outcome when the renderer
+      // asked us to cancel; cancelAppUpdateDownload already emitted
+      // `status: 'available'`, so we must NOT overwrite that with
+      // `status: 'error'` here. Detect the upstream class name rather
+      // than relying on a direct `instanceof` import — electron-updater
+      // doesn't export CancellationError as a public constructor.
+      const isCancellation =
+        (error && error.name === 'CancellationError') ||
+        /cancell?ed/i.test(message);
+      if (isCancellation) {
+        console.log('[UPDATER] downloadUpdate rejected with CancellationError — ignoring (status already reset by cancel flow)');
+        return { success: false, cancelled: true };
+      }
       emitAppUpdateState({ status: 'error', error: message });
       return { success: false, error: message };
     })
     .finally(() => {
       updateDownloadPromise = null;
+      if (activeCancellationToken === cancellationToken) {
+        activeCancellationToken = null;
+      }
     });
 
   return updateDownloadPromise;
+}
+
+async function cancelAppUpdateDownload() {
+  if (!app.isPackaged || isDev) {
+    return { success: false, error: 'Automatic updates are only available in packaged desktop builds.' };
+  }
+
+  if (!updateDownloadPromise || !activeCancellationToken) {
+    // Nothing in-flight. Still a successful no-op so the renderer can
+    // uniformly clear the `cancelling` UI state without branching on
+    // error strings — status is already whatever it was.
+    return { success: true, cancelled: false, idle: true };
+  }
+
+  try {
+    activeCancellationToken.cancel();
+  } catch (error) {
+    console.warn('[UPDATER] activeCancellationToken.cancel() threw (continuing):', error && error.message);
+  }
+
+  // Immediately reflect the cancelled state in the renderer instead of
+  // waiting for the downloadUpdate().catch() path. This keeps the UI
+  // responsive even if electron-updater delays its internal teardown.
+  emitAppUpdateState({
+    status: 'available',
+    progressPercent: 0,
+    transferred: 0,
+    total: 0,
+    bytesPerSecond: 0,
+    error: null,
+  });
+
+  // Wipe the partial bytes so a subsequent retry does not try to resume
+  // a possibly-corrupt segment — electron-updater's resume logic does
+  // checksum validation, but on Windows a half-flushed file can leave
+  // the NSIS installer in a broken state. Fire-and-forget; log failures.
+  try {
+    forceCleanupUpdaterCache({ reason: 'download-cancelled' });
+  } catch (cleanupError) {
+    console.warn('[UPDATER] cleanup after cancel threw:', cleanupError && cleanupError.message);
+  }
+
+  return { success: true, cancelled: true };
 }
 
 async function quitAndInstallAppUpdate() {
@@ -563,6 +706,15 @@ async function quitAndInstallAppUpdate() {
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     try {
+      // Arm the post-install cleanup one-shot BEFORE quitAndInstall: the
+      // flag is read by the freshly-installed version's
+      // cleanupUpdaterCache() on next cold start, which then bypasses
+      // the pending-installer guard and wipes the ~200MB Setup-*.exe we
+      // just ran. Writing before quitAndInstall (rather than inside
+      // `will-quit`) avoids a race where Electron exits before the
+      // synchronous write flushes.
+      writePostInstallFlag();
+
       console.log('[UPDATER] invoking autoUpdater.quitAndInstall(isSilent=true, isForceRunAfter=true)');
       autoUpdater.quitAndInstall(true, true);
       // Success path: electron-updater's internal setImmediate triggers
@@ -701,6 +853,19 @@ function setupAutoUpdater() {
 
   autoUpdater.on('error', (error) => {
     const message = stringifyUpdateError(error);
+    // CancellationError is emitted both to the promise and to this
+    // channel when the user-initiated cancelAppUpdateDownload() fires.
+    // cancelAppUpdateDownload already pushed `status: 'available'` and
+    // wiped pending/, so we must not overwrite that state with 'error'
+    // here. Detect by class name — electron-updater does not export
+    // CancellationError as a public constructor for instanceof checks.
+    const isCancellation =
+      (error && error.name === 'CancellationError') ||
+      /cancell?ed/i.test(message);
+    if (isCancellation) {
+      console.log('[UPDATER] error event fired for CancellationError — ignoring (cancel flow already reset state)');
+      return;
+    }
     console.error('[UPDATER] Error:', message);
     // install() in BaseUpdater catches doInstall() throws and dispatches
     // them through this channel — by the time we see the 'error' event,
@@ -733,6 +898,7 @@ module.exports = {
   emitAppUpdateState,
   checkForAppUpdates,
   downloadAppUpdate,
+  cancelAppUpdateDownload,
   quitAndInstallAppUpdate,
   setupAutoUpdater,
   cleanupUpdaterCache,

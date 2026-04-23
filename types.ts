@@ -254,6 +254,7 @@ export type AppUpdateStatus =
   | 'available'
   | 'not-available'
   | 'downloading'
+  | 'cancelling'
   | 'downloaded'
   | 'installing'
   | 'error'

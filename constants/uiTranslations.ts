@@ -237,6 +237,13 @@ export const UI_TRANSLATIONS = {
     updateInstallingHint: "若 30 秒后没有自动重启，请到开始菜单中手动启动 Kumiko·Amadeus。",
     updateInstallerMissingError: "安装包文件已丢失，正在重新下载。请等待「可安装」状态后重试。",
     updateCacheFileCount: "（{0} 个文件）",
+    updateCancel: "取消下载",
+    updateCancelling: "正在取消…",
+    updateToastCancelled: "已取消本次下载",
+    updateCancelConfirmTitle: "取消这次下载？",
+    updateCancelConfirmMessage: "取消后本次进度全部作废，重新下载要从头再来。",
+    updateCancelConfirmButton: "取消下载",
+    updateCancelConfirmKeepButton: "继续下载",
 
     // New File System Sync Keys
     advancedLocalSync: "高级本地同步 (文件系统)",
@@ -791,6 +798,13 @@ export const UI_TRANSLATIONS = {
     updateInstallingHint: "If it does not relaunch within 30 seconds, open Kumiko·Amadeus from the Start menu.",
     updateInstallerMissingError: "Installer file was missing; it is being re-downloaded. Please wait for \"Ready\" and click Install again.",
     updateCacheFileCount: "({0} files)",
+    updateCancel: "Cancel download",
+    updateCancelling: "Cancelling…",
+    updateToastCancelled: "Download cancelled.",
+    updateCancelConfirmTitle: "Cancel this download?",
+    updateCancelConfirmMessage: "Current progress will be discarded. A re-download starts from zero.",
+    updateCancelConfirmButton: "Cancel download",
+    updateCancelConfirmKeepButton: "Keep downloading",
 
     // New File System Sync Keys
     advancedLocalSync: "ADVANCED LOCAL SYNC (CUSTOM FILE)",
