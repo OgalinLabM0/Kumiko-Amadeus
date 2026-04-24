@@ -9,13 +9,15 @@ import {
 } from '../../services/desktopBackupService';
 import { normalizeBackupConfig } from '../../services/appConfig';
 import { isVoiceServiceAvailable } from '../../services/voiceFileService';
-import { isMobilePwa } from '../../services/environment';
-import { httpInvoke } from '../../services/httpApi';
 import { dialogService } from '../../services/dialogService';
 import { useAppStore } from '../../store';
 import { yieldToMainThread } from './appUtils';
 import type { BackupPayload } from './backupData';
-import type { MobilePickResult } from './useMobileRemoteFilePicker';
+// F2B.1: dropped `MobilePickResult` import + `isMobilePwa` / `httpInvoke`
+// imports from this file. The Phase 6 mobile-PWA-via-PC remote file
+// picker is gone (no MobileRemoteFileBrowser, no useMobileRemoteFilePicker
+// hook). Desktop Electron now owns 100% of the LOCAL backup tab; Capacitor
+// Android hides it via F2A.4 in BackupSection.
 
 export interface UseLocalFileBackupInput {
   /** Holds the current local backup target: File System Access `FileSystemFileHandle`
@@ -29,11 +31,6 @@ export interface UseLocalFileBackupInput {
   updateBaseline: (timestamp?: number, baselineData?: any) => void;
   performFileSave: (handle: any, data: any) => Promise<boolean>;
   restoreBackupData: (backup: any) => Promise<any>;
-  // Phase 6 Part C4: mobile PWA replaces the File System Access API + desktop
-  // dialogs with the MobileRemoteFileBrowser overlay. When the picker returns
-  // `null` the user canceled (same semantics as AbortError).
-  pickMobileOpenFile?: (opts?: { acceptExtensions?: string[] }) => Promise<MobilePickResult | null>;
-  pickMobileCreateFile?: (opts?: { defaultFileName?: string; acceptExtensions?: string[] }) => Promise<MobilePickResult | null>;
 }
 
 export interface UseLocalFileBackupResult {
@@ -67,40 +64,15 @@ export const useLocalFileBackup = ({
   updateBaseline,
   performFileSave,
   restoreBackupData,
-  pickMobileOpenFile,
-  pickMobileCreateFile,
 }: UseLocalFileBackupInput): UseLocalFileBackupResult => {
   const handleCreateNewLocalFile = useCallback(async (): Promise<boolean> => {
     try {
       const defaultFileName = `kumiko_backup_${new Date().toISOString().slice(0, 10)}.json`;
 
-      if (isMobilePwa()) {
-        // Phase 6 Part C4: phone never spawns a native dialog. We delegate
-        // to MobileRemoteFileBrowser for the (folder, filename) pair, then
-        // commit the backup target to the PC via
-        // `backup:set-desktop-backup-path` so every connected device sees
-        // the same connectedFileName.
-        if (!pickMobileCreateFile) {
-          void dialogService.alert({
-            message: language === 'zh' ? '移动端文件选择器未就绪。' : 'Mobile file picker is not wired up.',
-            icon: 'error',
-          });
-          return false;
-        }
-        const picked = await pickMobileCreateFile({
-          defaultFileName,
-          acceptExtensions: ['.json'],
-        });
-        if (!picked) return false;
-        fileHandleRef.current = picked.filePath;
-        setConnectedFileName(picked.fileName);
-        localStorage.setItem(LOCAL_BACKUP_PATH_STORAGE_KEY, picked.filePath);
-        try {
-          await httpInvoke('backup:set-desktop-backup-path', { path: picked.filePath });
-        } catch (e) {
-          console.warn('[LOCAL BACKUP] Mobile register desktop path failed:', e);
-        }
-      } else if (isDesktopElectron()) {
+      // F2B.1: removed the `if (isMobilePwa())` branch that delegated to
+      // MobileRemoteFileBrowser via `pickMobileCreateFile`. PWA is gone;
+      // BackupSection hides this button on Capacitor (F2A.4).
+      if (isDesktopElectron()) {
         const result = await pickDesktopBackupSaveFile(defaultFileName);
         if (result.canceled) return false;
         if (!result.success || !result.filePath) {
@@ -149,21 +121,16 @@ export const useLocalFileBackup = ({
       });
       return false;
     }
-  }, [backupData, updateBaseline, pickMobileCreateFile, language]);
+  }, [backupData, updateBaseline, language]);
 
   const handleDisconnectLocalFile = useCallback((): void => {
     fileHandleRef.current = null;
     setConnectedFileName(null);
     localStorage.removeItem(LOCAL_BACKUP_PATH_STORAGE_KEY);
     setBackupConfig((prev) => normalizeBackupConfig({ ...prev, localEnabled: false }));
-    // Phase 6 Part C4: when a phone disconnects, tell the PC so it can
-    // broadcast `backup:desktop-path-changed` and every other phone
-    // clears its own connectedFileName / handle too.
-    if (isMobilePwa()) {
-      void httpInvoke('backup:disconnect-desktop-file').catch((err) => {
-        console.warn('[LOCAL BACKUP] Mobile disconnect broadcast failed:', err);
-      });
-    }
+    // F2B.1: removed the `if (isMobilePwa())` `backup:disconnect-desktop-file`
+    // broadcast. With no more multi-device PWA fan-out, disconnect is purely
+    // a local state reset.
   }, []);
 
   const handleOpenLocalFile = useCallback(async (): Promise<boolean> => {
@@ -171,46 +138,9 @@ export const useLocalFileBackup = ({
       let text = '';
       let parsedJson: any = null;
 
-      if (isMobilePwa()) {
-        // Phase 6 Part C4: the mobile LOCAL tab supports plain .json
-        // backups (the ZIP-with-images path is the MANUAL tab, which
-        // already routes through `POST /api/backup/import` regardless of
-        // the active client). Here we ask the phone's picker for a file,
-        // then read its bytes from the PC via `backup:read-desktop-file`,
-        // decode base64 → UTF-8, and parse as JSON.
-        if (!pickMobileOpenFile) {
-          void dialogService.alert({
-            message: language === 'zh' ? '移动端文件选择器未就绪。' : 'Mobile file picker is not wired up.',
-            icon: 'error',
-          });
-          return false;
-        }
-        const picked = await pickMobileOpenFile({ acceptExtensions: ['.json'] });
-        if (!picked) return false;
-
-        fileHandleRef.current = picked.filePath;
-        setConnectedFileName(picked.fileName);
-        localStorage.setItem(LOCAL_BACKUP_PATH_STORAGE_KEY, picked.filePath);
-        try {
-          await httpInvoke('backup:set-desktop-backup-path', { path: picked.filePath });
-        } catch (e) {
-          console.warn('[LOCAL BACKUP] Mobile register desktop path failed:', e);
-        }
-
-        const readRes: any = await httpInvoke('backup:read-desktop-file', { path: picked.filePath });
-        if (!readRes || !readRes.ok) {
-          throw new Error(readRes?.error || 'Failed to read desktop backup file from mobile.');
-        }
-        const b64 = String(readRes.content || '');
-        try {
-          const binary = atob(b64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-          text = new TextDecoder('utf-8').decode(bytes);
-        } catch {
-          try { text = atob(b64); } catch { text = b64; }
-        }
-      } else if (isDesktopElectron()) {
+      // F2B.1: removed the `if (isMobilePwa())` branch that delegated to
+      // MobileRemoteFileBrowser + `backup:read-desktop-file`.
+      if (isDesktopElectron()) {
         const result = await pickDesktopBackupOpenFile();
         if (result.canceled) return false;
         if (!result.success || !result.filePath) {
@@ -308,7 +238,7 @@ export const useLocalFileBackup = ({
       });
       return false;
     }
-  }, [restoreBackupData, updateBaseline, pickMobileOpenFile, language]);
+  }, [restoreBackupData, updateBaseline, language]);
 
   const handleManualLocalReload = useCallback(async (): Promise<void> => {
     const handle = fileHandleRef.current;
@@ -324,24 +254,10 @@ export const useLocalFileBackup = ({
       let text = '';
       let parsedJson: any = null;
 
-      if (isMobilePwa() && typeof handle === 'string') {
-        // Phase 6 Part C4: mobile reload reads the same sandboxed path
-        // via `backup:read-desktop-file`. Path traversal is enforced on
-        // the PC, so a compromised phone can't get outside mobileBrowseRoot.
-        const readRes: any = await httpInvoke('backup:read-desktop-file', { path: handle });
-        if (!readRes || !readRes.ok) {
-          throw new Error(readRes?.error || 'Failed to read desktop backup file from mobile.');
-        }
-        const b64 = String(readRes.content || '');
-        try {
-          const binary = atob(b64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-          text = new TextDecoder('utf-8').decode(bytes);
-        } catch {
-          try { text = atob(b64); } catch { text = b64; }
-        }
-      } else if (isDesktopElectron() && typeof handle === 'string') {
+      // F2B.1: dropped the `if (isMobilePwa() && typeof handle === 'string')`
+      // branch — that path used `backup:read-desktop-file` over HTTP IPC,
+      // which is gone with the PWA bridge.
+      if (isDesktopElectron() && typeof handle === 'string') {
         const parsedResult = await parseDesktopBackupImportFile(handle);
         if (!parsedResult.success || !parsedResult.json) {
           throw new Error(parsedResult.error || 'Failed to parse desktop backup file.');

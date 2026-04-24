@@ -1,6 +1,8 @@
 import { db, INITIAL_WORLD_CHARACTER_STATUS, type KeyValEntity } from './db';
 import { useAppStore } from '../store';
-import { isElectron, isMobilePwa } from './environment';
+import { isElectron } from './environment';
+// F2B.3: dropped `isMobilePwa` import + the `httpApi` dynamic import below.
+// Mobile PWA preference fan-out (`preferences:set-from-mobile`) is gone.
 import { DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK } from '../constants';
 import { DEFAULT_BACKUP_CONFIG, normalizeBackupConfig } from './appConfig';
 import { sanitizeTtsConfig } from './ttsConfigSanitize';
@@ -101,9 +103,9 @@ const DESKTOP_BROADCAST_CHANNEL = 'mobile-event-broadcast';
 let syncSuppressionDepth = 0;
 let queuedDesktopKeys = new Set<string>();
 let desktopFlushScheduled = false;
-let queuedMobileLocalStorage = new Map<SyncedLocalStorageKey, string | null>();
-let queuedMobileKeyval = new Map<string, unknown>();
-let mobileFlushScheduled = false;
+// F2B.3: removed `queuedMobile*` + `mobileFlushScheduled` state. PWA HTTP
+// fan-out is gone, so the only remaining transport is the Electron
+// `mobile-event-broadcast` ping.
 
 function dispatchPreferencesUpdated(detail: PreferencesUpdatedDetail): void {
   if (typeof window === 'undefined') return;
@@ -440,36 +442,20 @@ function scheduleDesktopPreferencesFlush(): void {
   }, 0);
 }
 
-function scheduleMobilePatchFlush(): void {
-  if (mobileFlushScheduled) return;
-  mobileFlushScheduled = true;
-  setTimeout(() => {
-    mobileFlushScheduled = false;
-    const localStoragePatch = queuedMobileLocalStorage.size > 0
-      ? Object.fromEntries(queuedMobileLocalStorage)
-      : undefined;
-    const keyvalPatch = queuedMobileKeyval.size > 0
-      ? [...queuedMobileKeyval.entries()].map(([key, value]) => ({ key, value }))
-      : undefined;
-    queuedMobileLocalStorage = new Map<SyncedLocalStorageKey, string | null>();
-    queuedMobileKeyval = new Map<string, unknown>();
-    if (!localStoragePatch && !keyvalPatch) return;
-    void import('./httpApi')
-      .then(({ httpInvoke }) => httpInvoke('preferences:set-from-mobile', {
-        localStorage: localStoragePatch,
-        keyval: keyvalPatch,
-      }))
-      .catch((e) => {
-        console.warn('[preferencesSync] mobile preferences sync failed:', e);
-      });
-  }, 0);
-}
+// F2B.3: `scheduleMobilePatchFlush` deleted. PWA used to forward queued
+// localStorage + keyval mutations through `httpInvoke('preferences:set-from-mobile', ...)`,
+// but the bridge endpoint is gone. Capacitor writes its own localStorage
+// + Dexie copies and never needed remote propagation.
 
 export function queueLocalStoragePreferenceSync(
   key: SyncedLocalStorageKey,
   value: string | null,
   options: {
-    /** Mobile PWA only: forward this change up to the PC. Defaults to true. */
+    /**
+     * Historical PWA-only flag; ignored after F2B.3 since the only sync
+     * transport left is the Electron in-process broadcast. Kept in the
+     * signature so existing callers don't need to be touched.
+     */
     propagateToDesktop?: boolean;
     /**
      * Re-apply the new value to the in-process Zustand store. Defaults to
@@ -503,26 +489,19 @@ export function queueLocalStoragePreferenceSync(
   if (isElectron()) {
     queuedDesktopKeys.add(key);
     scheduleDesktopPreferencesFlush();
-    return;
-  }
-
-  if (isMobilePwa() && options.propagateToDesktop !== false) {
-    queuedMobileLocalStorage.set(key, normalized);
-    scheduleMobilePatchFlush();
   }
 }
 
-export function noteKeyvalPreferenceWrite(key: string, value: unknown): void {
+export function noteKeyvalPreferenceWrite(key: string, _value: unknown): void {
+  // F2B.3: `_value` parameter is preserved for backwards-compatibility with
+  // existing callers (services/db.ts forwards both args). PWA used to push
+  // the value upstream as a `keyval` patch entry, but Electron only needs
+  // the key name to schedule a `preferences:changed` broadcast.
   if (!shouldSyncKeyvalKey(key)) return;
   if (isPreferencesSyncSuppressed()) return;
   if (isElectron()) {
     queuedDesktopKeys.add(key);
     scheduleDesktopPreferencesFlush();
-    return;
-  }
-  if (isMobilePwa()) {
-    queuedMobileKeyval.set(key, value);
-    scheduleMobilePatchFlush();
   }
 }
 

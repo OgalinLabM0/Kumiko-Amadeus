@@ -17,6 +17,7 @@ import {
 import { BackupConfig } from '../../types';
 import { Collapse } from '../Collapse';
 import { SettingsToggle } from './SettingsToggle';
+import { isCapacitorNative } from '../../services/environment';
 
 // Cloud-sync-related translation keys (cloudPush / cloudRestore / bucketConnected /
 // backendService etc.) have been removed from this interface along with the cloud-sync
@@ -67,6 +68,10 @@ interface BackupSectionProps {
   autoZipEnabled: boolean;
   onToggleAutoZip: () => void;
   onDisconnectLocalFile?: () => void;
+  // F2A.4: language is needed only for the Android-only "save to cloud /
+  // SD card" hint under the export button. On PC the existing translation
+  // strings already cover everything inside this component.
+  language?: 'zh' | 'en';
 }
 
 export const BackupSection: React.FC<BackupSectionProps> = ({
@@ -90,7 +95,16 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
   autoZipEnabled,
   onToggleAutoZip,
   onDisconnectLocalFile,
+  language = 'zh',
 }) => {
+  // F2A.4: Android (Capacitor) cannot use the File System Access API
+  // (window.showSaveFilePicker / showOpenFilePicker do not exist in the
+  // WebView), and the PC `app:set-auto-zip-backup` Electron IPC is also
+  // unreachable. So on Android we hide every row that depends on those
+  // (Local Backup toggle, Advanced Local Sync panel with new/open file
+  // buttons, Auto ZIP toggle) and only show the universal "manual export
+  // / import ZIP" actions plus a hint to save to cloud or SD card.
+  const isAndroid = isCapacitorNative();
   return (
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
       <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
@@ -110,139 +124,155 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
         <div className="px-4 pb-4 pt-0 overflow-visible">
           <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#cdbca9]' : 'text-[#7c6245]'}`}>{t.backupDesc}</p>
 
-          <div className="flex flex-col py-2 border-t border-gray-500/10">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-3">
-                <HardDrive size={18} className={backupConfig.localEnabled ? (isDarkMode ? 'text-green-400' : 'text-green-600') : 'opacity-50'} />
-                <div>
-                  <span className={`ka-setting-item-title block ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>{t.localBackup}</span>
-                  <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>{t.localStorageHelp}</span>
-                </div>
-              </div>
-              <div className="flex-shrink-0">
-                <button onClick={onToggleLocalBackup} className={`relative inline-flex h-6 w-11 shrink-0 items-center overflow-hidden rounded-full p-[2px] transition-colors ${backupConfig.localEnabled ? 'justify-end bg-green-600/95' : `justify-start ${isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]'}`}`}>
-                  <div className="h-5 w-5 rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,0.18)] transition-all duration-200"></div>
-                </button>
-              </div>
-            </div>
-            
-            {/* Status feedback for Local Backup */}
-            <div className="ml-8 flex items-center gap-1.5 p-1.5 rounded bg-black/5 dark:bg-white/5">
-              {backupConfig.localEnabled ? (
-                <>
-                  <Check size={12} className="text-green-500" />
-                  <span className={`ka-micro ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
-                    {t.localBackupStatusOn}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <AlertCircle size={12} className="text-gray-400" />
-                  <span className={`ka-micro ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                    {t.localBackupStatusOff}
-                  </span>
-                </>
-              )}
-            </div>
-          </div>
-
-          <div className={`mt-2 mb-2 p-3 rounded border border-dashed transition-all ${connectedFileName ? (isDarkMode ? 'border-green-500/30 bg-green-500/5' : 'border-green-500/30 bg-green-50') : (isDarkMode ? 'border-gray-700 bg-black/20' : 'border-gray-300 bg-gray-50')}`}>
-            <div className="flex items-center gap-2 mb-2">
-              <FileJson size={16} className={connectedFileName ? (isDarkMode ? 'text-green-400' : 'text-green-600') : (isDarkMode ? 'text-gray-400' : 'text-gray-600')} />
-              <span className={`ka-setting-item-title ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>{t.advancedLocalSync}</span>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <div className="flex flex-col gap-2">
-                {!connectedFileName ? (
-                  <div className="flex gap-2">
-                    <button onClick={onSelectLocalFile} className={`flex-1 py-2 px-1 rounded ka-label border transition-colors flex items-center justify-center gap-1 ${isDarkMode ? 'border-gray-600 text-gray-400 hover:border-green-500 hover:text-green-500' : 'border-gray-300 text-gray-600 hover:border-green-600 hover:text-green-600'}`}>
-                      <FilePlus size={12} /> {t.btnCreateFile}
-                    </button>
-                    {onOpenLocalFile && (
-                      <button onClick={onOpenLocalFile} className={`flex-1 py-2 px-1 rounded ka-label border transition-colors flex items-center justify-center gap-1 ${isDarkMode ? 'border-gray-600 text-gray-400 hover:border-blue-500 hover:text-blue-500' : 'border-gray-300 text-gray-600 hover:border-blue-600 hover:text-blue-600'}`}>
-                        <FileSearch size={12} /> {t.btnOpenFile}
-                      </button>
-                    )}
-                  </div>
-                ) : (
-                  <div className="flex gap-2">
-                    <button onClick={onSelectLocalFile} className={`flex-1 py-1.5 px-3 rounded ka-copy-sm font-semibold border transition-colors ${connectedFileName ? 'border-green-500/50 text-green-500 hover:bg-green-500/10' : ''}`}>
-                      {t.changeFile} (Create New)
-                    </button>
-                    <button onClick={onOpenLocalFile} className={`flex-1 py-1.5 px-3 rounded ka-copy-sm font-semibold border transition-colors ${connectedFileName ? 'border-blue-500/50 text-blue-500 hover:bg-blue-500/10' : ''}`}>
-                      {t.btnOpenFile}
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {!connectedFileName && isInIframe && (
-                <div className="flex items-start gap-2 p-2 rounded bg-orange-500/10 border border-orange-500/20 text-orange-500">
-                  <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
-                  <p className="ka-copy-sm leading-tight">{t.iframeWarning}</p>
-                </div>
-              )}
-
-              {connectedFileName ? (
-                <div className={`ka-copy-sm font-mono space-y-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2 text-green-500 truncate pr-2">
-                      <Check size={10} className="flex-shrink-0" /> 
-                      <span className="truncate">{t.savingTo}<span className="underline">{connectedFileName}</span></span>
+          {/* F2A.4: PC-only — depends on File System Access API
+              (window.showSaveFilePicker / showOpenFilePicker), which is
+              not available in Android Capacitor's WebView. The toggle,
+              the FilePlus / FileSearch / changeFile / openFile actions
+              and the auto-zip toggle below all rely on Electron IPC
+              (`app:set-auto-zip-backup`), so the entire FS-handle flow
+              is hidden on Android. */}
+          {!isAndroid && (
+            <>
+              <div className="flex flex-col py-2 border-t border-gray-500/10">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-3">
+                    <HardDrive size={18} className={backupConfig.localEnabled ? (isDarkMode ? 'text-green-400' : 'text-green-600') : 'opacity-50'} />
+                    <div>
+                      <span className={`ka-setting-item-title block ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>{t.localBackup}</span>
+                      <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>{t.localStorageHelp}</span>
                     </div>
-                    {onDisconnectLocalFile && (
-                      <button 
-                        onClick={onDisconnectLocalFile}
-                        className={`flex-shrink-0 px-2 py-0.5 rounded ka-micro flex items-center gap-1 transition-colors ${isDarkMode ? 'bg-red-900/40 hover:bg-red-800/60 text-red-400' : 'bg-red-50 hover:bg-red-100 text-red-500 border border-red-200'}`}
-                      >
-                        <RotateCcw size={10} /> {t.disconnect}
-                      </button>
+                  </div>
+                  <div className="flex-shrink-0">
+                    <button onClick={onToggleLocalBackup} className={`relative inline-flex h-6 w-11 shrink-0 items-center overflow-hidden rounded-full p-[2px] transition-colors ${backupConfig.localEnabled ? 'justify-end bg-green-600/95' : `justify-start ${isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]'}`}`}>
+                      <div className="h-5 w-5 rounded-full bg-white shadow-[0_2px_8px_rgba(0,0,0,0.18)] transition-all duration-200"></div>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Status feedback for Local Backup */}
+                <div className="ml-8 flex items-center gap-1.5 p-1.5 rounded bg-black/5 dark:bg-white/5">
+                  {backupConfig.localEnabled ? (
+                    <>
+                      <Check size={12} className="text-green-500" />
+                      <span className={`ka-micro ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
+                        {t.localBackupStatusOn}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertCircle size={12} className="text-gray-400" />
+                      <span className={`ka-micro ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                        {t.localBackupStatusOff}
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className={`mt-2 mb-2 p-3 rounded border border-dashed transition-all ${connectedFileName ? (isDarkMode ? 'border-green-500/30 bg-green-500/5' : 'border-green-500/30 bg-green-50') : (isDarkMode ? 'border-gray-700 bg-black/20' : 'border-gray-300 bg-gray-50')}`}>
+                <div className="flex items-center gap-2 mb-2">
+                  <FileJson size={16} className={connectedFileName ? (isDarkMode ? 'text-green-400' : 'text-green-600') : (isDarkMode ? 'text-gray-400' : 'text-gray-600')} />
+                  <span className={`ka-setting-item-title ${isDarkMode ? 'text-gray-300' : 'text-gray-800'}`}>{t.advancedLocalSync}</span>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-2">
+                    {!connectedFileName ? (
+                      <div className="flex gap-2">
+                        <button onClick={onSelectLocalFile} className={`flex-1 py-2 px-1 rounded ka-label border transition-colors flex items-center justify-center gap-1 ${isDarkMode ? 'border-gray-600 text-gray-400 hover:border-green-500 hover:text-green-500' : 'border-gray-300 text-gray-600 hover:border-green-600 hover:text-green-600'}`}>
+                          <FilePlus size={12} /> {t.btnCreateFile}
+                        </button>
+                        {onOpenLocalFile && (
+                          <button onClick={onOpenLocalFile} className={`flex-1 py-2 px-1 rounded ka-label border transition-colors flex items-center justify-center gap-1 ${isDarkMode ? 'border-gray-600 text-gray-400 hover:border-blue-500 hover:text-blue-500' : 'border-gray-300 text-gray-600 hover:border-blue-600 hover:text-blue-600'}`}>
+                            <FileSearch size={12} /> {t.btnOpenFile}
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex gap-2">
+                        <button onClick={onSelectLocalFile} className={`flex-1 py-1.5 px-3 rounded ka-copy-sm font-semibold border transition-colors ${connectedFileName ? 'border-green-500/50 text-green-500 hover:bg-green-500/10' : ''}`}>
+                          {t.changeFile} (Create New)
+                        </button>
+                        <button onClick={onOpenLocalFile} className={`flex-1 py-1.5 px-3 rounded ka-copy-sm font-semibold border transition-colors ${connectedFileName ? 'border-blue-500/50 text-blue-500 hover:bg-blue-500/10' : ''}`}>
+                          {t.btnOpenFile}
+                        </button>
+                      </div>
                     )}
                   </div>
-                  {lastBackupTime && <div className="opacity-80">{t.lastAutoSave}{formatLastBackup(lastBackupTime)}</div>}
-                  <div className="flex gap-2 mt-2 pt-2 border-t border-dashed border-gray-500/30">
-                    {onManualLocalSave && (
-                    <button onClick={onManualLocalSave} className={`flex-1 py-1.5 rounded flex items-center justify-center gap-1.5 ka-copy-sm font-semibold transition-colors shadow-sm ${isDarkMode ? 'bg-green-800/50 hover:bg-green-700 text-green-100' : 'bg-green-100 hover:bg-green-200 text-green-800'}`} title="Force Save to Local File">
-                      <Upload size={12} /> {t.manualSave}
-                    </button>
+
+                  {!connectedFileName && isInIframe && (
+                    <div className="flex items-start gap-2 p-2 rounded bg-orange-500/10 border border-orange-500/20 text-orange-500">
+                      <AlertTriangle size={12} className="mt-0.5 flex-shrink-0" />
+                      <p className="ka-copy-sm leading-tight">{t.iframeWarning}</p>
+                    </div>
                   )}
-                  {onManualLocalLoad && (
-                    <button onClick={onManualLocalLoad} className={`flex-1 py-1.5 rounded flex items-center justify-center gap-1.5 ka-copy-sm font-semibold transition-colors shadow-sm ${isDarkMode ? 'bg-blue-800/50 hover:bg-blue-700 text-blue-100' : 'bg-blue-100 hover:bg-blue-200 text-blue-800'}`} title="Reload from Local File">
-                      <Download size={12} /> {t.manualLoad}
-                    </button>
+
+                  {connectedFileName ? (
+                    <div className={`ka-copy-sm font-mono space-y-1 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-green-500 truncate pr-2">
+                          <Check size={10} className="flex-shrink-0" />
+                          <span className="truncate">{t.savingTo}<span className="underline">{connectedFileName}</span></span>
+                        </div>
+                        {onDisconnectLocalFile && (
+                          <button
+                            onClick={onDisconnectLocalFile}
+                            className={`flex-shrink-0 px-2 py-0.5 rounded ka-micro flex items-center gap-1 transition-colors ${isDarkMode ? 'bg-red-900/40 hover:bg-red-800/60 text-red-400' : 'bg-red-50 hover:bg-red-100 text-red-500 border border-red-200'}`}
+                          >
+                            <RotateCcw size={10} /> {t.disconnect}
+                          </button>
+                        )}
+                      </div>
+                      {lastBackupTime && <div className="opacity-80">{t.lastAutoSave}{formatLastBackup(lastBackupTime)}</div>}
+                      <div className="flex gap-2 mt-2 pt-2 border-t border-dashed border-gray-500/30">
+                        {onManualLocalSave && (
+                        <button onClick={onManualLocalSave} className={`flex-1 py-1.5 rounded flex items-center justify-center gap-1.5 ka-copy-sm font-semibold transition-colors shadow-sm ${isDarkMode ? 'bg-green-800/50 hover:bg-green-700 text-green-100' : 'bg-green-100 hover:bg-green-200 text-green-800'}`} title="Force Save to Local File">
+                          <Upload size={12} /> {t.manualSave}
+                        </button>
+                      )}
+                      {onManualLocalLoad && (
+                        <button onClick={onManualLocalLoad} className={`flex-1 py-1.5 rounded flex items-center justify-center gap-1.5 ka-copy-sm font-semibold transition-colors shadow-sm ${isDarkMode ? 'bg-blue-800/50 hover:bg-blue-700 text-blue-100' : 'bg-blue-100 hover:bg-blue-200 text-blue-800'}`} title="Reload from Local File">
+                          <Download size={12} /> {t.manualLoad}
+                        </button>
+                      )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className={`flex items-start gap-2 ka-copy-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      <AlertTriangle size={12} className="mt-0.5" />
+                      <p>{t.fsSyncDesc}</p>
+                    </div>
                   )}
+                </div>
+              </div>
+
+              {/* Cloud sync section removed - feature permanently disabled */}
+            </>
+          )}
+
+          <div className={`${isAndroid ? 'mt-2' : 'mt-4 pt-3 border-t border-gray-500/20'} flex flex-col gap-2`}>
+            {/* F2A.4: auto-zip toggle is PC-only (Electron `app:set-auto-zip-backup`
+                IPC). Hidden on Android because the toggle would set state in
+                the store but never reach a backend. */}
+            {!isAndroid && (
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-3">
+                  <div className="text-left">
+                    <span className={`ka-setting-item-title block ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>{t.autoZipBackup}</span>
+                    <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.autoZipBackupDesc}</span>
                   </div>
                 </div>
-              ) : (
-                <div className={`flex items-start gap-2 ka-copy-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  <AlertTriangle size={12} className="mt-0.5" />
-                  <p>{t.fsSyncDesc}</p>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Cloud sync section removed - feature permanently disabled */}
-
-          <div className="mt-4 pt-3 border-t border-gray-500/20 flex flex-col gap-2">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-3">
-                <div className="text-left">
-                  <span className={`ka-setting-item-title block ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>{t.autoZipBackup}</span>
-                  <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>{t.autoZipBackupDesc}</span>
+                <div className="flex-shrink-0">
+                  <SettingsToggle
+                    checked={autoZipEnabled}
+                    onClick={onToggleAutoZip}
+                    activeTrackClass="bg-green-600/95"
+                    inactiveTrackClass={isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]'}
+                    ariaLabel={t.autoZipBackup}
+                  />
                 </div>
               </div>
-              <div className="flex-shrink-0">
-                <SettingsToggle
-                  checked={autoZipEnabled}
-                  onClick={onToggleAutoZip}
-                  activeTrackClass="bg-green-600/95"
-                  inactiveTrackClass={isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]'}
-                  ariaLabel={t.autoZipBackup}
-                />
-              </div>
-            </div>
+            )}
             <span className={`ka-setting-item-title mb-1 ${isDarkMode ? 'text-yellow-500' : 'text-[#b8860b]'}`}>{t.manualBackup}</span>
             <div className="flex gap-2">
               <button onClick={onExportBackup} className={`flex-1 py-2 px-3 rounded flex items-center justify-center gap-2 ka-copy-sm font-semibold transition-colors ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-gray-200 hover:bg-gray-300 text-gray-800'}`}>
@@ -252,6 +282,18 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
                 <Download size={14} /> {t.import}
               </button>
             </div>
+            {/* F2A.4: Android-only hint — Capacitor sandbox storage is wiped
+                on uninstall, and the export ZIP goes to a Cache directory
+                that the Share sheet picks up. Reminding users to push it
+                to cloud / SD card is the only durable backup path until
+                we ship a SAF-backed persistent URI flow (deferred). */}
+            {isAndroid && (
+              <p className={`ka-micro mt-1 opacity-70 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#7c6245]'}`}>
+                {language === 'zh'
+                  ? '建议导出到云盘 / 微信 / SD 卡：app 卸载会清空所有数据'
+                  : 'Save to cloud / SD: uninstalling the app wipes all data'}
+              </p>
+            )}
           </div>
         </div>
       </Collapse>

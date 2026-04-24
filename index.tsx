@@ -1,34 +1,17 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './components/App';
-import { MobilePairingGate } from './components/MobilePairingGate';
-import { isElectron, isMobilePwa, waitForRuntimeDetection } from './services/environment';
+// F2B.3: dropped `isElectron`/`waitForRuntimeDetection` — the runtime probe
+// existed to detect the legacy PWA-served-by-PC mode. Electron and
+// Capacitor each set their own globals synchronously, so we mount React
+// directly with no async gate.
 
-// PWA service worker registration. Kept intentionally even though desktop
-// Electron never hits this branch. Phase 7 Part t4_sw_and_notes: enabled
-// immediate takeover + a 60s update pull so users stranded on the
-// Phase 6-era auto-skip build pick up the new INTRO/AUTH/CONFIG flow
-// without having to manually clear Safari storage.
-if ('serviceWorker' in navigator) {
-  import('virtual:pwa-register').then(({ registerSW }) => {
-    const updateSW = registerSW({
-      immediate: true,
-      onNeedRefresh() {
-        // Auto-apply the waiting worker: our own `sw.ts` calls
-        // skipWaiting+clients.claim, so the page refreshes into the new
-        // bundle without a prompt. Phase 6 left some phones stranded on
-        // the pre-Phase-6 JS (which still had the INTRO auto-skip), and
-        // a manual update prompt was easy to miss — hence forced.
-        void updateSW(true);
-      },
-      onRegistered(reg) {
-        if (reg) {
-          setInterval(() => { void reg.update(); }, 60_000);
-        }
-      },
-    });
-  }).catch(() => {});
-}
+// F2B.4: PWA service worker registration removed alongside the
+// MobilePairingGate / mobile-PC bridge cleanup (vite-plugin-pwa is also
+// being uninstalled). Electron + Capacitor both load assets straight
+// from the bundled WebView; neither needs a SW. The historic browser
+// PWA install path is no longer supported — we ship Android as a
+// proper APK now (in-app updater handles upgrades).
 
 class AppErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -135,43 +118,13 @@ if (!rootElement) {
 
 const root = ReactDOM.createRoot(rootElement);
 
-function renderShell() {
-  // Phase 4 Part E + Phase 7 unified entry. Desktop Electron renders
-  // <App /> directly; mobile PWA wraps App in `MobilePairingGate`, which
-  // blocks until the phone has a valid session cookie and then hands
-  // off to <App />. The App component walks the full desktop onboarding
-  // flow (INTRO → AUTH → CONFIG → APP) on mobile as well — Phase 6
-  // removed the previous auto-skip so `pc能用的手机完全都能用` holds
-  // by construction. See docs/mobile-parity.md §9 and §10.
-  const RenderedShell = isMobilePwa()
-    ? <MobilePairingGate><App /></MobilePairingGate>
-    : <App />;
-
-  root.render(
-    <React.StrictMode>
-      <AppErrorBoundary>{RenderedShell}</AppErrorBoundary>
-    </React.StrictMode>
-  );
-}
-
-// Phase 7 Part t3_api_probe: wait for the runtime probe to settle before
-// the first render. Desktop Electron resolves synchronously via
-// `isElectron()` so there's no extra latency. Mobile PWA in HTTP LAN
-// mode (where the sync HTTPS heuristic says "web fallback") still picks
-// the right branch on first paint instead of re-rendering after the
-// probe dispatches `kumiko:runtime-changed`.
-const bootstrap = isElectron()
-  ? Promise.resolve()
-  : waitForRuntimeDetection().catch(() => undefined);
-
-bootstrap.finally(() => {
-  renderShell();
-  // Guard against the probe result differing from the sync fallback AFTER
-  // first paint (e.g. offline → online transitions). A forced reload is
-  // the only way to cleanly re-mount the gate/App tree in the new runtime.
-  if (typeof window !== 'undefined' && !isElectron()) {
-    window.addEventListener('kumiko:runtime-changed', () => {
-      window.location.reload();
-    }, { once: true });
-  }
-});
+// F2B.1/3: dropped the `isMobilePwa() ? <MobilePairingGate><App /> :` fork
+// AND the async runtime probe. Both Electron desktop and Capacitor Android
+// mount <App /> directly and walk the same onboarding flow
+// (IntroScreen → AuthScreen → AIConfigScreen → main app); the Capacitor APK
+// runs standalone without a PC pairing step.
+root.render(
+  <React.StrictMode>
+    <AppErrorBoundary><App /></AppErrorBoundary>
+  </React.StrictMode>
+);

@@ -99,6 +99,16 @@ jobs:
       - name: Clean release directory (prebuild)
         run: node scripts/clean-release.cjs prebuild
 
+      - name: Resolve package.json version
+        # F2B.5: artifactName now includes ${version}, so downstream steps need
+        # to know the version string to build the per-arch path. Read it from
+        # package.json once and stash on $env:PACKAGE_VERSION for later steps.
+        shell: pwsh
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          "PACKAGE_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Resolved PACKAGE_VERSION=$version"
+
       - name: Build NSIS installer (no publish)
         if: inputs.publish != true
         run: npx electron-builder --win --${{ matrix.cli_arch }} --publish never
@@ -111,7 +121,7 @@ jobs:
         # publish=true skips this check: by the time the build finishes
         # electron-builder has already uploaded to the Release, so the canonical
         # flow is publish=false first, publish=true second.
-        run: node scripts/verify-nsis-contents.cjs "release/Kumiko-Amadeus-Setup-${{ matrix.arch }}.exe"
+        run: node scripts/verify-nsis-contents.cjs "release/Kumiko-Amadeus-Setup-${{ matrix.arch }}-${env:PACKAGE_VERSION}.exe"
 
       - name: Build NSIS installer (publish to release)
         if: inputs.publish == true
@@ -136,7 +146,7 @@ jobs:
         with:
           name: kumiko-amadeus-windows-${{ matrix.arch }}
           path: |
-            release/Kumiko-Amadeus-Setup-${{ matrix.arch }}.exe
+            release/Kumiko-Amadeus-Setup-${{ matrix.arch }}-${{ env.PACKAGE_VERSION }}.exe
             release/latest*.yml
           if-no-files-found: error
           retention-days: 14

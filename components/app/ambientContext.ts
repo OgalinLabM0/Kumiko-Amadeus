@@ -1,5 +1,4 @@
-import { isCapacitorNative, isMobilePwa } from '../../services/environment';
-import { httpInvoke } from '../../services/httpApi';
+import { isCapacitorNative } from '../../services/environment';
 import {
   fetchAmbientWeatherDirect,
   fetchJapanHolidaysDirect,
@@ -9,23 +8,12 @@ import {
 let cachedEnvironmentStr: string | null = null;
 let lastEnvironmentFetchTime = 0;
 
-// Unified invoker. Three runtime targets:
+// F2B.3: dropped the `isMobilePwa()` httpInvoke fallback. Two runtime targets remain:
 //   - Electron desktop: `window.electronAPI.invoke` → main process handlers in
 //     electron/weather-calendar.cjs.
-//   - Capacitor native (Android APK / iOS): `services/ambientWeatherDirect.ts`
+//   - Capacitor native (Android APK): `services/ambientWeatherDirect.ts`
 //     calls Open-Meteo / ipapi / holidays-jp directly via CapacitorHttp-rewritten
-//     fetch. NO PC dependency — this is the A2 path that lets the APK keep
-//     showing weather + holiday context even after A7 removes companion mode.
-//   - Mobile PWA (still served by PC's Fastify): Fastify `httpInvoke` for the
-//     same `app:get-weather` / `app:get-japan-holidays` channels; the channels
-//     are whitelisted in `services/httpApi.ts` + `electron/server/ipc-bridge.cjs`.
-//     PWA's WebView origin == PC origin, so going through PC saves us a second
-//     CORS-dependent direct fetch when PC is already handling the round trip.
-//
-// Capacitor branch is checked BEFORE isMobilePwa() because isMobilePwa() returns
-// true for Capacitor too (both use the HTTP bridge model when PC is present),
-// and we want Capacitor to default to direct-fetch even if a PC URL happens to
-// be configured.
+//     fetch. NO PC dependency.
 type AmbientInvoker = (channel: string, args?: unknown) => Promise<any>;
 
 const resolveAmbientInvoker = (): AmbientInvoker | null => {
@@ -37,13 +25,8 @@ const resolveAmbientInvoker = (): AmbientInvoker | null => {
     return (channel: string) => {
       if (channel === 'app:get-weather') return fetchAmbientWeatherDirect();
       if (channel === 'app:get-japan-holidays') return fetchJapanHolidaysDirect();
-      // Other ambient channels (none today) fall through to PC if configured;
-      // returning null lets the caller short-circuit gracefully.
       return Promise.resolve(null);
     };
-  }
-  if (isMobilePwa()) {
-    return (channel: string, args?: unknown) => httpInvoke(channel, args);
   }
   return null;
 };

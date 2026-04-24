@@ -1,7 +1,6 @@
 import { db } from './db';
 import { Message } from '../types';
-import { isCapacitorNative, isMobilePwa } from './environment';
-import { httpInvoke, subscribeEvents } from './httpApi';
+import { isCapacitorNative } from './environment';
 import { invokeAndroidRag } from './androidRagService';
 
 // --- Electron IPC Bridge ---
@@ -16,20 +15,13 @@ const getIpcRenderer = () => {
     return null;
 };
 
-// Unified RAG invoker. Picks the right transport for the current runtime
-// so callers don't have to know whether SQLite + bge-m3 lives in this
-// process (desktop Electron) or behind the desktop's Fastify HTTP IPC
-// bridge (mobile PWA). On a plain web-preview build with no PC pairing
-// the helper returns null and callers fall back to whatever Dexie path
-// they have — for the message store that's the actual data; for the
-// `vectors` table that's a degraded "empty result" fallback because
-// `useMobileApiProxy.ts` deliberately excludes the vectors table from
-// the mobile Dexie sync (vectors live exclusively on the PC). The
-// mobile branch was previously missing entirely, so on phones every
-// `searchLocalRagMemoryDetailed` etc. call was reading the empty
-// IndexedDB and returning zero hits.
+// F2B.3: dropped the PWA HTTP transport. Two routes left:
+//   - Electron desktop: SQLite + bge-m3 ONNX in main process via IPC.
+//   - Capacitor native: brute-force JS RAG over Dexie + cloud embedding
+//     (services/androidRagService.ts owns the dispatch).
+// On a plain web preview build neither is available; helper returns null.
 type RagInvoker = {
-  kind: 'electron' | 'http' | 'android-native';
+  kind: 'electron' | 'android-native';
   invoke: <T = any>(channel: string, payload?: any) => Promise<T>;
 };
 
@@ -41,25 +33,10 @@ const getRagInvoker = (): RagInvoker | null => {
       invoke: <T = any>(channel: string, payload?: any) => ipc.invoke(channel, payload) as Promise<T>,
     };
   }
-  // Capacitor native (A5.1.3): brute-force JS RAG over Dexie + cloud
-  // embedding. The dispatch table covers the essential rag:* channels
-  // (embed / save / search / get-all / clear / stats / status /
-  // expand-context / get-messages). Channels we haven't ported degrade
-  // to `{success:false}` instead of throwing, which is what the existing
-  // PC-failure fallbacks (`if (!result?.success) return [];`) already
-  // expect. Ordering matters: this is checked BEFORE isMobilePwa() because
-  // isMobilePwa() returns true on Capacitor too (so PWA's HTTP bridge
-  // path would otherwise win and try to reach a PC that may not exist).
   if (isCapacitorNative()) {
     return {
       kind: 'android-native',
       invoke: <T = any>(channel: string, payload?: any) => invokeAndroidRag<T>(channel, payload),
-    };
-  }
-  if (isMobilePwa()) {
-    return {
-      kind: 'http',
-      invoke: <T = any>(channel: string, payload?: any) => httpInvoke<T>(channel, payload),
     };
   }
   return null;
@@ -414,11 +391,9 @@ export const getAllVectors = async () => {
     // and the user would see "backup succeeded" with no RAG payload. Surface
     // the failure so handleExportBackup can alert the user.
     //
-    // Mobile PWA goes through the same SQLite store via httpInvoke and
-    // therefore inherits the same "fail loudly on transport error"
-    // semantics — useMobileApiProxy deliberately does not sync the
-    // vectors table to the phone Dexie, so the previous IndexedDB
-    // fallback below would always have returned [] on mobile.
+    // F2B.3: PWA HTTP path is gone. Capacitor native uses the
+    // androidRagService dispatch, which still surfaces the same
+    // `{success, vectors}` contract.
     const result = await invoker.invoke<any>('rag:get-all');
     if (!result?.success) {
       throw new Error(result?.error || 'Failed to read RAG vectors from main process.');
@@ -426,11 +401,9 @@ export const getAllVectors = async () => {
     return result.vectors;
   }
 
-  // Plain web preview (no Electron, no mobile pairing): the phone has
-  // never received vectors, so Dexie is at best empty. Return whatever
-  // we have but warn — callers that genuinely care (backup export,
-  // diary verifier) should detect the empty result and surface a
-  // "RAG unavailable" message rather than treating it as "no matches".
+  // Plain web preview (no Electron, no Capacitor): no real vector store
+  // is wired up. Return whatever Dexie has — likely empty — and warn so
+  // callers can surface a degraded mode message.
   console.warn('[LOCAL RAG] getAllVectors: no Electron / mobile transport available, falling back to (likely empty) IndexedDB vectors.');
   try {
     const allVectors = await db.vectors.toArray();
@@ -529,9 +502,9 @@ export const clearAllLocalRagMemory = async () => {
     // `db.vectors.clear()` was a data-consistency trap — Dexie is almost
     // empty on desktop, so "Dexie cleared successfully" returned OK while
     // SQLite (the real RAG store) still held every vector. Surface the
-    // failure instead so the user can retry or rebuild. The mobile PWA
-    // path hits the same SQLite store via HTTP IPC and therefore
-    // inherits the same "fail loudly" semantics.
+    // failure instead so the user can retry or rebuild. (F2B.3: same logic
+    // applies to Capacitor native, which clears Dexie directly via the
+    // android RAG dispatch.)
     const result = await invoker.invoke<any>('rag:clear-all');
     if (!result?.success) {
       throw new Error(result?.error || 'Failed to clear RAG vectors in main process.');
@@ -581,7 +554,7 @@ export const clearLocalRagMessageVectors = async (messageIds: string[]) => {
 export const startLocalRagRebuild = async () => {
   const invoker = getRagInvoker();
   if (!invoker) {
-    throw new Error('Local RAG rebuild requires Electron IPC or a paired mobile PWA.');
+    throw new Error('Local RAG rebuild requires Electron IPC or Capacitor native runtime.');
   }
 
   const result = await invoker.invoke<any>('rag:rebuild:start');
@@ -642,115 +615,10 @@ export const subscribeLocalRagRebuild = (
     };
   }
 
-  // Mobile PWA: no local IPC, but the desktop's useMobileBroadcaster
-  // bridges the four rag:rebuild:* IPC events into the WebSocket fan-
-  // out (Phase 3 Part D). We hook into that stream so mobile RAG UIs
-  // see the exact same event sequence desktop UI sees.
-  //
-  // Plus a polling watchdog: if the desktop renderer isn't running /
-  // WS disconnects / the broadcaster fails to forward an event, the
-  // phone would otherwise stall forever on whatever stage it last saw
-  // (the classic "stuck at 1/6" symptom). Every 5s we check whether a
-  // real WS event has arrived in the last 10s; if not, we fall back to
-  // an HTTP `rag:rebuild:status` poll so the UI keeps moving. Polling
-  // also stops automatically once any real WS event resumes, so we
-  // don't double-emit progress.
-  if (isMobilePwa()) {
-    console.log('[LOCAL RAG][mobile] subscribeLocalRagRebuild installing WS + poll fallback');
-    let lastEventAt = Date.now();
-    let pollCheckTimer: ReturnType<typeof setInterval> | null = null;
-    let unsubscribed = false;
-    let terminal = false; // once we see done / error we stop polling
-    let lastObservedActive = false;
-
-    const unsubscribeWs = subscribeEvents((event) => {
-      const type = event?.type;
-      if (
-        type === 'rag:rebuild:started' ||
-        type === 'rag:rebuild:progress' ||
-        type === 'rag:rebuild:done' ||
-        type === 'rag:rebuild:error'
-      ) {
-        lastEventAt = Date.now();
-        if (type === 'rag:rebuild:done' || type === 'rag:rebuild:error') {
-          terminal = true;
-        }
-      }
-      if (type === 'rag:rebuild:started') {
-        const payload = (event as { job?: unknown }).job;
-        lastObservedActive = true;
-        listener({ type: 'started', ...normalizeLocalRagRebuildSnapshot(payload) });
-      } else if (type === 'rag:rebuild:progress') {
-        const payload = (event as { job?: unknown }).job;
-        lastObservedActive = true;
-        listener({ type: 'progress', ...normalizeLocalRagRebuildSnapshot(payload) });
-      } else if (type === 'rag:rebuild:done') {
-        const payload = (event as { job?: any }).job;
-        lastObservedActive = false;
-        listener({
-          type: 'done',
-          ...normalizeLocalRagRebuildSnapshot(payload),
-          appliedCount: Number.isFinite(payload?.appliedCount) ? Number(payload.appliedCount) : undefined,
-        });
-      } else if (type === 'rag:rebuild:error') {
-        const payload = (event as { job?: any }).job;
-        lastObservedActive = false;
-        listener({
-          type: 'error',
-          ...normalizeLocalRagRebuildSnapshot(payload),
-          error: typeof payload?.error === 'string' ? payload.error : undefined,
-        });
-      }
-    });
-
-    const runPoll = async () => {
-      if (unsubscribed || terminal) return;
-      try {
-        const res: any = await httpInvoke('rag:rebuild:status');
-        if (unsubscribed || terminal) return;
-        const active = !!res?.active;
-        const snapshot = res?.snapshot;
-        console.log(`[LOCAL RAG][mobile] poll fallback tick active=${active} stage=${snapshot?.stage ?? 'n/a'}`);
-        if (active && snapshot) {
-          lastObservedActive = true;
-          listener({ type: 'progress', ...normalizeLocalRagRebuildSnapshot(snapshot) });
-        } else if (!active && lastObservedActive) {
-          // The desktop no longer has an active job but we never saw a
-          // terminal WS event. Surface this as an error so the caller
-          // can unwind — otherwise the `completion` Promise in
-          // `summaryActions.handleRebuildRag` would await forever. The
-          // error is deliberately worded so the user can act on it (most
-          // likely cause: desktop app restarted or WS disconnected).
-          terminal = true;
-          console.warn('[LOCAL RAG][mobile] poll fallback: job ended without WS done/error; emitting synthetic error');
-          listener({
-            type: 'error',
-            ...normalizeLocalRagRebuildSnapshot({}),
-            error: 'Connection to desktop app lost during rebuild; please verify the PC client is running and retry.',
-          });
-        }
-      } catch (e) {
-        console.warn('[LOCAL RAG][mobile] poll fallback http error', e);
-      }
-    };
-
-    pollCheckTimer = setInterval(() => {
-      if (unsubscribed || terminal) return;
-      if (Date.now() - lastEventAt >= 10_000) {
-        runPoll();
-      }
-    }, 5_000);
-
-    return () => {
-      unsubscribed = true;
-      if (pollCheckTimer !== null) {
-        clearInterval(pollCheckTimer);
-        pollCheckTimer = null;
-      }
-      unsubscribeWs();
-    };
-  }
-
+  // F2B.3: PWA WS + HTTP poll fallback removed. Capacitor's
+  // androidRagService runs the rebuild fully in-process (no background
+  // job, no IPC) so its caller resolves synchronously and doesn't need
+  // an event stream. Web preview / no IPC: noop unsubscribe.
   return () => {};
 };
 

@@ -1,21 +1,18 @@
 import { callLLMRaw, getCurrentAIConfig } from './geminiService';
 import { searchLocalRagMemory } from './localRagService';
 
-// Platform note:
+// Platform note (post F2B.3):
 //   `searchLocalRagMemory` routes through `getRagInvoker()` inside
-//   localRagService, so on mobile PWA builds it hits the desktop's
-//   SQLite vector store via httpInvoke('rag:search', ...) rather than
-//   the (deliberately empty) phone Dexie vector mirror. That means
-//   verifyAgainstHistory is useful on phones too — if the PC is
-//   reachable we get the same continuity / repetition signal the
-//   desktop does; if the PC is offline the invoker throws and the
-//   caller falls through to a partial validation path. See commit
-//   notes in `services/localRagService.ts > getRagInvoker`.
+//   localRagService. With the PWA bridge gone there are exactly two
+//   targets:
+//     - Electron desktop  → IPC into the SQLite vector store.
+//     - Capacitor Android → cosine similarity over the local Dexie
+//       vector mirror (built from cloud embeddings).
+//   In both cases verifyAgainstHistory works without any PC dependency.
 //
 //   `callLLMRaw` is platform-agnostic: AI config is read from
 //   localStorage / desktop refs and the HTTPS request to the LLM
 //   provider is made directly from whichever process owns the config.
-//   There's no dedicated mobile path for the LLM call itself.
 
 export interface DiaryDateMetadata {
   dateStr: string;

@@ -55,8 +55,10 @@ import {
   writeDesktopBackupFile,
   buildDesktopBackupZip,
 } from '../../services/desktopBackupService';
-import { isCapacitorNative, isMobilePwa } from '../../services/environment';
-import { httpBackupExport, httpBackupImport } from '../../services/httpApi';
+import { isCapacitorNative } from '../../services/environment';
+// F2B.3: dropped `isMobilePwa` + `httpApi` imports. Mobile PWA used to
+// export through `/api/backup/export` and import via `/api/backup/import`
+// on the PC; both endpoints are gone with the rest of the bridge.
 import { exportBackupZipNative } from '../../services/capacitorBackupNative';
 import { dialogService } from '../../services/dialogService';
 import { syncTemporalEpisodes } from '../../services/temporalEpisodeService';
@@ -444,74 +446,15 @@ async function buildWebBackupZipBlob(dataJsonString: string): Promise<Blob> {
   return zip.generateAsync({ type: 'blob' });
 }
 
-/**
- * B.5 (A4.3) helper: snapshot the current Dexie + store state into the
- * same zip format `handleExportBackup` produces, but skip every UI
- * side effect (no system notice, no share sheet, no dialog). Used by
- * `services/androidAutoBackup.ts` to write rolling backups to
- * `Filesystem.Directory.Data/auto-backup/{ts}.zip`. The output is
- * bit-identical to a manual export so the user can restore from
- * either path interchangeably.
- *
- * Returns null if the Dexie snapshot fails (don't want a malformed
- * zip on disk that would later look like a successful auto-backup).
- */
-export async function buildAndroidAutoBackupBlob(): Promise<Blob | null> {
-  try {
-    const state = useAppStore.getState();
-    const [vectors, kumikoDiaryExport, dailyFragmentsExport, psycheStateExport, episodesExport] = await Promise.all([
-      getAllVectors(),
-      db.kumikoDiary.orderBy('date').toArray(),
-      db.dailyFragments.orderBy('timestamp').toArray(),
-      db.psycheState.get('current'),
-      db.episodes.orderBy('startTimestamp').toArray(),
-    ]);
-
-    // Mirror buildBackupData's payload shape using live store values.
-    // We DON'T import buildBackupData itself because it requires
-    // localised world-book references that the auto-backup path
-    // doesn't need (the importer fills those in on restore).
-    const lightweightBackupData = {
-      messages: state.messages,
-      coreMemory: state.coreMemory,
-      worldBook: state.worldBook,
-      contextLimit: state.contextLimit,
-      turnCount: state.turnCount,
-      summaryArchiveState: state.summaryArchiveState,
-      currentEmotion: state.currentEmotion,
-      locationConfig: state.locationConfig,
-      language: state.language,
-      anchors: state.anchors,
-      kumikoNotebook: state.kumikoNotebook,
-      relativeReminders: state.relativeReminders,
-      dailyReminders: state.dailyReminders,
-    };
-
-    const fullBackup = {
-      timestamp: Date.now(),
-      version: '1.3',
-      data: lightweightBackupData,
-      vectors,
-      kumikoDiary: kumikoDiaryExport,
-      dailyFragments: dailyFragmentsExport,
-      psycheState: psycheStateExport,
-      episodes: episodesExport,
-      _autoZipMeta: {
-        // B.5: same auto-zip metadata stamp the PC writes during
-        // before-quit auto-backup so the import path can recognise
-        // the backup as auto-generated and surface "this was an
-        // auto-backup, not a manual export" hints.
-        source: 'android-auto-backup',
-        generatedAtMs: Date.now(),
-      },
-    };
-    const jsonString = JSON.stringify(fullBackup, null, 2);
-    return await buildWebBackupZipBlob(jsonString);
-  } catch (e) {
-    console.warn('[backupActions] buildAndroidAutoBackupBlob failed:', e);
-    return null;
-  }
-}
+// F2A.5: removed `buildAndroidAutoBackupBlob` (was the consumer of
+// `services/androidAutoBackup.ts`). The 4h Android auto-zip mechanism
+// had no restore UI and lived inside the app sandbox, so it could not
+// protect against uninstall — the only data path it actually saved
+// against was an IndexedDB corruption that nobody ever hit. The
+// manual `handleExportBackup` flow (above) remains the supported
+// "save before uninstall" path on Android, plus the cloud-save hint
+// surfaced in BackupSection (F2A.4). PC's electron/auto-zip-backup.cjs
+// is unrelated to this helper and remains in place.
 
 export async function handleExportBackup(backupData: any) {
   const state = useAppStore.getState();
@@ -600,33 +543,13 @@ export async function handleExportBackup(backupData: any) {
       return;
     }
 
-    // Mobile PWA: POST the serialized JSON to the desktop's
-    // /api/backup/export route and stream the zip blob back. The PC
-    // reads userData/images|voice|ringtone directly — same code path as
-    // desktop manual export — so the phone doesn't have to re-upload
-    // any media. We trigger a browser download by synthesizing an <a>
-    // click; the object URL is revoked right after to free memory.
-    // `!isCapacitorNative()` guard: isMobilePwa() returns true for both
-    // PWA and Capacitor, but Capacitor went through the native branch
-    // above. This protects against the future case where the Capacitor
-    // path errors and we accidentally fall through into PC HTTP.
-    if (isMobilePwa() && !isCapacitorNative()) {
-      const result = await httpBackupExport(jsonString, defaultFileName);
-      if (!result.ok || !result.blob) {
-        const detail = result.error ? ` (${result.error})` : '';
-        console.error('[EXPORT] Mobile backup export failed:', result);
-        void dialogService.alert({
-          message: (language === 'zh' ? '备份导出失败。' : 'Failed to export backup.') + detail,
-          icon: 'error',
-        });
-        return;
-      }
-      saveAs(result.blob, defaultFileName);
-      state.setSystemNotice(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
-      return;
-    }
+    // F2B.3: removed the PWA `httpBackupExport` branch. PWA proxied
+    // through PC's /api/backup/export so the phone could pick up
+    // userData/images|voice|ringtone server-side. With the bridge gone,
+    // any non-Electron / non-Capacitor caller falls through to the
+    // renderer-side ZIP build below.
 
-    // Web fallback (no electron, no PWA, no Capacitor): renderer-side JSZip
+    // Web fallback (no electron, no Capacitor): renderer-side JSZip
     // + file-saver download. Rare — just dev-server previews.
     const content = await buildWebBackupZipBlob(jsonString);
     saveAs(content, defaultFileName);
@@ -668,22 +591,10 @@ export async function handleImportBackup(
       }
       parsedJson = parsedResult.json;
       importedImages = parsedResult.images || [];
-    } else if (isMobilePwa() && !isCapacitorNative()) {
-      // Mobile PWA only (NOT Capacitor): upload the raw file bytes to
-      // the desktop's /api/backup/import route. The server writes them
-      // to userData/mobile-imports/, runs the same `parseBackupImportFile`
-      // the desktop uses (voice/ringtone land in userData server-side),
-      // and returns the parsed data.json + image dataUrls the renderer
-      // still needs to write into Dexie through imageService.
-      // Capacitor falls through to the web-fallback ZIP parse path below
-      // (JSZip + voiceFileService) so it has zero PC dependency for import.
-      const uploadResult = await httpBackupImport(file, file.name || 'backup.zip');
-      if (!uploadResult.ok || !uploadResult.result || !uploadResult.result.success) {
-        throw new Error(uploadResult.error || 'Failed to parse mobile backup upload.');
-      }
-      parsedJson = uploadResult.result.json;
-      importedImages = uploadResult.result.images || [];
     } else if (file.name.endsWith('.zip')) {
+      // F2B.3: removed the PWA `httpBackupImport` upload branch. The PC
+      // /api/backup/import endpoint is gone; Capacitor + plain web both
+      // parse the ZIP locally with JSZip below.
       const zip = await JSZip.loadAsync(file);
       let dataFile = zip.file('data.json');
       if (!dataFile) {

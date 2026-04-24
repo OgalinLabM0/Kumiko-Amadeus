@@ -49,8 +49,8 @@
 
         <!-- B.4: Direct Reply 接收器，处理通知 RemoteInput 锁屏直回。Android 7+ RemoteInput 走
              这条路：用户在通知栏输入文字 → broadcast 到这里 → 注入到 store messages 队列 →
-             WebView 端 useMobileMessageSync 同款回放路径。exported=true 因为 NotificationManager
-             从 system 进程发 PendingIntent 进来。 -->
+             WebView 收到后走 chatActions 同款回放路径（F2B.2 起 useMobileMessageSync 已删除）。
+             exported=true 因为 NotificationManager 从 system 进程发 PendingIntent 进来。 -->
         <receiver
             android:name=".replies.RemoteReplyReceiver"
             android:exported="true" />

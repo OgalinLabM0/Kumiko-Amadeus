@@ -248,12 +248,13 @@ UI 侧也显式写了：自定义板块顶部有一条琥珀色"禁止改写的�
 
 | 操作系统 / OS | 架构 / Arch | 打包格式 / Format | 自动更新频道文件 |
 | ------------- | ----------- | ----------------- | -------------- |
-| Windows 10/11 | x64         | `Kumiko-Amadeus-Setup-x64.exe`   | `latest.yml` |
-| Windows 10/11 | ARM64       | `Kumiko-Amadeus-Setup-arm64.exe` | `latest-arm64.yml` |
+| Windows 10/11 | x64         | `Kumiko-Amadeus-Setup-x64-<version>.exe`   | `latest.yml` |
+| Windows 10/11 | ARM64       | `Kumiko-Amadeus-Setup-arm64-<version>.exe` | `latest-arm64.yml` |
 | Linux (glibc) | x86_64      | `Kumiko-Amadeus-x86_64.AppImage` | `latest-linux.yml` |
 | Linux (glibc) | ARM64       | `Kumiko-Amadeus-arm64.AppImage`  | `latest-linux-arm64.yml` |
+| Android 7+    | universal   | `Kumiko-Amadeus.apk`             | 应用内 GitHub Releases API 检查 |
 
-手机 PWA 通过已配对的桌面壳访问，不单独打包。
+`<version>` 与 `package.json` 的版本号同步，如 `2.14.0`。Android APK 自 v2.14.0 起完全独立运行，不再依赖 PC 配对。
 
 目前**不提供**的平台：macOS、Linux deb/rpm/flatpak/snap、musl 发行版（Alpine 等）、Windows 32-bit。
 
@@ -283,10 +284,11 @@ UI 侧也显式写了：自定义板块顶部有一条琥珀色"禁止改写的�
 
 | 文件 | 用途 | 谁来下载 |
 | --- | --- | --- |
-| `Kumiko-Amadeus-Setup-x64.exe` | Windows x64 安装器 | Intel / AMD 设备用户 **手动** |
-| `Kumiko-Amadeus-Setup-arm64.exe` | Windows ARM64 安装器 | Snapdragon / Copilot+ PC **手动** |
+| `Kumiko-Amadeus-Setup-x64-<version>.exe` | Windows x64 安装器 | Intel / AMD 设备用户 **手动** |
+| `Kumiko-Amadeus-Setup-arm64-<version>.exe` | Windows ARM64 安装器 | Snapdragon / Copilot+ PC **手动** |
 | `Kumiko-Amadeus-x86_64.AppImage` | Linux x64 AppImage | 绝大多数 Linux 用户 **手动** |
 | `Kumiko-Amadeus-arm64.AppImage` | Linux ARM64 AppImage | 树莓派 / Jetson 等 **手动** |
+| `Kumiko-Amadeus.apk` | Android 通用 APK（armeabi-v7a + arm64-v8a + x86_64） | Android 用户 **手动** |
 | `latest.yml` / `latest-arm64.yml` / `latest-linux.yml` / `latest-linux-arm64.yml` | 自动更新 channel file | 已装应用 electron-updater **后台自动拉** |
 | `kumiko-assets.zip` | 角色资产快照 | 从源码构建时 `npm run fetch-assets` **自动拉** |
 
@@ -294,7 +296,7 @@ installer / AppImage 已经**内置**所有角色立绘、铃声、ONNX 模型�
 
 ### Windows
 
-架构识别：PowerShell 里 `echo $env:PROCESSOR_ARCHITECTURE`，输出 `AMD64` 选 `Setup-x64.exe`，输出 `ARM64` 选 `Setup-arm64.exe`。双击安装即可。详细步骤见 [docs/windows-manual-install.md](docs/windows-manual-install.md)。
+架构识别：PowerShell 里 `echo $env:PROCESSOR_ARCHITECTURE`，输出 `AMD64` 选 `Setup-x64-<version>.exe`，输出 `ARM64` 选 `Setup-arm64-<version>.exe`。双击安装即可。详细步骤见 [docs/windows-manual-install.md](docs/windows-manual-install.md)。
 
 ### Linux
 

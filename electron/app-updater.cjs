@@ -93,6 +93,12 @@ const UPDATER_CACHE_DIRECTORY_NAMES = [
 // the pending/ folder blocks rmSync, so we proactively taskkill these
 // before attempting cleanup. Redundant across renames for the same reason
 // the cache-directory list above is redundant.
+//
+// F2B.5: artifactName became `Kumiko-Amadeus-Setup-${arch}-${version}.exe`,
+// so the static literal list cannot enumerate every future filename. The
+// arch-only variants below stay in the list for legacy installers cached
+// from pre-F2B.5 builds (~2.13.x); newer versioned filenames are matched
+// dynamically by hasReadyPendingInstaller's regex when needed.
 const STALE_INSTALLER_IMAGE_NAMES = [
   'Kumiko-Amadeus-Setup-x64.exe',
   'Kumiko-Amadeus-Setup-arm64.exe',
@@ -356,8 +362,13 @@ function hasReadyPendingInstaller() {
     const pendingDir = getUpdaterCachePendingDir();
     if (!fs.existsSync(pendingDir)) return false;
     const entries = fs.readdirSync(pendingDir);
+    // F2B.5: accept both legacy `Setup-(x64|arm64).exe` and the new
+    // version-suffixed `Setup-(x64|arm64)-X.Y.Z.exe` (e.g.
+    // `Kumiko-Amadeus-Setup-x64-2.14.0.exe`). The trailing `(?:-X.Y.Z…)?`
+    // group is optional so older cached installers keep getting recognised
+    // and we don't blow them away during the startup idle sweep.
     return entries.some((name) =>
-      /^Kumiko-Amadeus-Setup-(x64|arm64)\.exe$/i.test(name)
+      /^Kumiko-Amadeus-Setup-(x64|arm64)(?:-[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.\-+]*)?)?\.exe$/i.test(name)
     );
   } catch (_e) {
     return false;

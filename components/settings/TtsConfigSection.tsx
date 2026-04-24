@@ -20,8 +20,10 @@ import {
 import { Collapse } from '../Collapse';
 import { openExternalUrl } from '../../utils/openExternal';
 import { primeAudioForUserGesture } from '../../utils/audioUnlock';
-import { isCapacitorNative, isMobilePwa } from '../../services/environment';
-import { httpInvoke, subscribeEvents } from '../../services/httpApi';
+import { isCapacitorNative } from '../../services/environment';
+// F2B.3: dropped `isMobilePwa` + `httpApi` imports. The PWA used to mirror
+// PC's GPT-SoVITS process state via `genie:status` HTTP IPC + `genie:state`
+// WS events; that bridge is gone (SoVITS is hidden on Capacitor anyway).
 
 interface TtsTestErrorInfo {
   kind: TtsErrorKind;
@@ -360,27 +362,8 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       return () => { ipc.removeListener('genie:status-changed', handler); };
     }
 
-    // Mobile PWA: fetch initial status via HTTP IPC, then live-update
-    // through the WS `genie:state` fan-out bridged by Phase 3 Part D.
-    if (isMobilePwa()) {
-      let cancelled = false;
-      httpInvoke<{ running?: boolean; pid?: number | null }>('genie:status', {})
-        .then((s) => {
-          if (cancelled) return;
-          if (s?.running) applyStatus(true, s.pid);
-        })
-        .catch(() => {});
-      const unsubscribe = subscribeEvents((event) => {
-        if (event?.type !== 'genie:state') return;
-        const state = (event as { state?: { running?: boolean; pid?: number | null } }).state;
-        if (!state?.running) applyStatus(false);
-      });
-      return () => {
-        cancelled = true;
-        unsubscribe();
-      };
-    }
-
+    // F2B.3: PWA `genie:status` polling removed. SoVITS lives on PC's
+    // 127.0.0.1:9880 — only Electron desktop can reach it.
     return undefined;
   }, [isOpen]);
 

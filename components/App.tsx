@@ -32,11 +32,14 @@ import { useVoicePipeline } from '../hooks/useVoicePipeline';
 import { useProactiveLifeCycle } from '../hooks/useProactiveLifeCycle';
 import { useBusyRegulator } from '../hooks/useBusyRegulator';
 import { useBackupWorkflow } from '../hooks/useBackupWorkflow';
-import { useMobileApiProxy } from './app/useMobileApiProxy';
-import { useMobileBroadcaster } from './app/useMobileBroadcaster';
-import { useMobileMessageSync } from './app/useMobileMessageSync';
-import { sendChatFromMobile } from './app/mobileChatSend';
-import { ensurePushSubscription } from '../services/pushSubscriptionService';
+// F2B.2: deleted useMobileApiProxy / useMobileBroadcaster /
+// useMobileMessageSync. They were the PC↔phone bridge over the local
+// Fastify HTTP+WebSocket server. Capacitor Android is fully standalone
+// (Dexie + Capacitor Filesystem live in-process), and the PWA mode is
+// being deprecated in F2B.4 — neither needs IPC fan-out anymore.
+// F2B.3: dropped sendChatFromMobile (PWA route through PC's mobile-api-proxy)
+// + ensurePushSubscription (PWA Web Push subscription against PC's VAPID).
+// Capacitor runs the full pipeline locally and uses native FCM pushes.
 import { useUnreadAlertsChrome } from '../hooks/useUnreadAlertsChrome';
 import { usePreferencesPersistence } from '../hooks/usePreferencesPersistence';
 import { useWorldBookLocalization } from '../hooks/useWorldBookLocalization';
@@ -69,9 +72,8 @@ import {
   setDesktopBackgroundThrottling,
   refocusDesktopWebContents,
 } from '../services/desktopBackupService';
-import { isMobilePwa } from '../services/environment';
+// F2B.3: dropped `isMobilePwa` and the WS event subscriber. PWA bridge gone.
 import { dialogService } from '../services/dialogService';
-import { subscribeEvents as subscribeMobileEvents } from '../services/httpApi';
 import {
   MEMORY_QUERY_SESSION_STORAGE_KEY,
   SUMMARY_SEMANTIC_CACHE_LIMIT,
@@ -142,32 +144,26 @@ import {
 import { registerChatPipeline, unregisterChatPipeline } from './app/chatPipelineRegistry';
 import { useAppUpdater } from './app/useAppUpdater';
 import { useLocalFileBackup } from './app/useLocalFileBackup';
-import { useMobileRemoteFilePicker } from './app/useMobileRemoteFilePicker';
+// F2B.1: useMobileRemoteFilePicker deleted — was the wrapper that mounted
+// MobileRemoteFileBrowser as the phone-side picker for the LOCAL backup
+// tab. The whole mobile-PC bridge (PWA pairing → remote fs:* IPC) is
+// being removed; on Android we now just write into the app sandbox via
+// Capacitor Filesystem and on PC the desktop dialog still owns the LOCAL tab.
 import { useAppPreferencesSync } from './app/useAppPreferencesSync';
 import { useScheduledReminders } from './app/useScheduledReminders';
 import { useMessageHistoryOperations } from './app/useMessageHistoryOperations';
 import { installGlobalAudioUnlock } from '../utils/audioUnlock';
 import { startForegroundServiceIfNeeded } from '../services/foregroundServiceController';
-import { startAndroidAutoBackup } from '../services/androidAutoBackup';
 import { isCapacitorNative } from '../services/environment';
 import { useAndroidPendingActionsDrainer } from '../hooks/useAndroidPendingActionsDrainer';
 
 
 export const App = () => {
-  // Mount the Phase 1 mobile remote-access IPC listener before any other
-  // state hook so the desktop renderer immediately handles phone HTTP
-  // requests once the Fastify server comes up. Safe no-op in non-Electron
-  // contexts (web / PWA). See docs/mobile-remote-access.md.
-  useMobileApiProxy();
-  // Phase 2 Part C: broadcast store state changes to connected phones.
-  // Must run after useMobileApiProxy so both hooks share the same
-  // electronAPI-not-available early exit pattern.
-  useMobileBroadcaster();
-  // Phase 4 Part E: consume the broadcaster's events on the mobile side.
-  // On the PC (electronAPI present) this is a no-op; on mobile PWA it
-  // subscribes to /ws and applies message/status events to the local
-  // Zustand store so <App /> re-renders in real time.
-  useMobileMessageSync();
+  // F2B.2: removed `useMobileApiProxy()` / `useMobileBroadcaster()` /
+  // `useMobileMessageSync()` calls. They were the bidirectional
+  // Phase 1/2/4 PC↔phone HTTP+WebSocket bridge. With the PWA being
+  // deprecated and the Android APK running standalone, there is no
+  // remote renderer to fan out to and no remote phone to receive from.
   useEffect(() => {
     const cleanup = installGlobalAudioUnlock();
     return () => cleanup();
@@ -184,13 +180,12 @@ export const App = () => {
   useEffect(() => {
     if (!isCapacitorNative()) return;
     void startForegroundServiceIfNeeded({ language: useAppStore.getState().language });
-    // B.5 (A4.3): start the 4h rolling auto-backup loop. Idempotent;
-    // also fires once on cold start if last run > 4h ago. Listens to
-    // App.appStateChange:background to flush a snapshot the moment the
-    // user backgrounds the app (the "before-quit" equivalent on
-    // Android). All gated behind isCapacitorNative() inside the
-    // controller — PC / PWA see no behavior change.
-    void startAndroidAutoBackup();
+    // F2A.5: removed the 4h rolling auto-backup boot call. The auto
+    // backup wrote zips into the app's private sandbox, which is wiped
+    // on uninstall AND had no restore UI — so it cost CPU + storage to
+    // protect against ~zero realistic failure modes. The supported path
+    // is now the manual export ZIP from BackupSection (with the
+    // "save to cloud / SD" hint added in F2A.4).
     // F1.3 hotfix: tell the @capacitor/status-bar plugin to overlay the
     // WebView. Combined with MainActivity.setDecorFitsSystemWindows(false),
     // this is what makes the WebView draw edge-to-edge under the status
@@ -364,37 +359,15 @@ export const App = () => {
     void runAutoDiaryBackfill();
   }, [flowState, isDataLoaded, runAutoDiaryBackfill]);
 
-  // Phase 6: mobile now walks the full desktop onboarding (INTRO →
-  // AUTH → CONFIG → APP). The previous Phase 4E auto-skip is removed so
-  // mobile users get the brand IntroScreen, the Kumiko/0821 LOGIN gate,
-  // the backup SETUP step (LOCAL tab now drives the MobileRemoteFileBrowser
-  // via Part C, MANUAL tab uses httpBackupImport), and the AIConfig page
-  // (Part B proxies validate/update back to the paired PC). Existing
-  // `initialFlowState`/`backupConfig` logic inside App.tsx + AppFlowScreens
-  // already lets returning users skip SETUP/CONFIG if they already have
-  // valid config, identical to the desktop.
+  // F2B.1: dropped the Phase 6 mobile-PC onboarding note — Capacitor
+  // Android now walks the same INTRO → AUTH → CONFIG → APP flow as
+  // desktop, just without the PC pairing step. The LOCAL backup tab is
+  // hidden on Android (see F2A.4) so the only mobile-side backup surface
+  // is the manual ZIP export/import.
 
-  // Phase 5 Part A: opportunistic Web Push refresh on mobile.
-  // MobilePairingGate fires `ensurePushSubscription` the first time the
-  // user taps "Pair phone" (while the iOS user-gesture window is still
-  // open for requestPermission). For every *subsequent* launch — where
-  // notification permission is already 'granted' and no prompt is
-  // needed — this effect rehydrates the subscription so:
-  //   - if the service worker updated and the browser invalidated the
-  //     old push subscription, we rebuild it,
-  //   - if the desktop's VAPID key rotated (e.g. userData wiped and
-  //     regenerated), we re-register against the new key,
-  //   - if the server lost our row (subscriptions.json corruption),
-  //     the first chat push won't be silently dropped — the next boot
-  //     restores it.
-  // Denied / default permissions short-circuit inside the helper so we
-  // never spam the permission prompt outside the pair flow.
-  useEffect(() => {
-    if (!isMobilePwa()) return;
-    if (typeof Notification === 'undefined') return;
-    if (Notification.permission !== 'granted') return;
-    void ensurePushSubscription();
-  }, []);
+  // F2B.3: dropped the PWA Web Push refresh effect. The PWA's
+  // service worker + VAPID-keyed push pipeline is gone with the rest
+  // of the bridge. Capacitor APK uses native FCM channels instead.
 
   const summaryRunningRef = useRef(false);
 
@@ -799,18 +772,9 @@ export const App = () => {
     return () => { window.electronAPI?.removeListener?.('app:auto-zip-progress', handler); };
     }
 
-    // Mobile PWA: auto-zip progress is bridged by useMobileBroadcaster
-    // (Phase 3 Part D) as `backup:auto-zip`. The phone only needs the
-    // "start" edge for the same UI indicator the desktop shows.
-    if (isMobilePwa()) {
-      const unsubscribe = subscribeMobileEvents((event) => {
-        if (event?.type !== 'backup:auto-zip') return;
-        const status = (event as { status?: { status?: string } }).status;
-        if (status?.status === 'start') setIsAutoZipping(true);
-      });
-      return unsubscribe;
-    }
-
+    // F2B.3: PWA `backup:auto-zip` WS subscriber removed. Capacitor's
+    // backup is purely manual (export/import ZIP — see F2A.4); there's
+    // no auto-zip status to fan out anymore.
     return undefined;
   }, []);
 
@@ -818,11 +782,11 @@ export const App = () => {
   // `handleCloudPush`, `handleCloudConnect` used to live here and POST/GET /api/sync.
   // They are intentionally deleted — see P0 #6 notes in the audit plan.
 
-  // Phase 6 Part C4: mount the mobile remote file browser picker so
-  // useLocalFileBackup can delegate (folder, filename) resolution to the
-  // overlay instead of the File System Access API / native dialog.
-  const mobileFilePicker = useMobileRemoteFilePicker({ language, isDarkMode });
-
+  // F2B.1: removed `mobileFilePicker` (was useMobileRemoteFilePicker). The
+  // PWA-only LOCAL-tab remote file browser path is gone — desktop Electron
+  // hits its own File System Access API dialog (handled inside
+  // useLocalFileBackup), and Capacitor Android hides the LOCAL/Advanced
+  // backup buttons entirely (see F2A.4 in BackupSection).
   const {
     handleCreateNewLocalFile,
     handleOpenLocalFile,
@@ -838,8 +802,6 @@ export const App = () => {
     updateBaseline,
     performFileSave,
     restoreBackupData,
-    pickMobileOpenFile: mobileFilePicker.pickOpen,
-    pickMobileCreateFile: mobileFilePicker.pickCreate,
   });
 
   useEffect(() => {
@@ -1103,53 +1065,9 @@ export const App = () => {
   };
 
   const handleSend = useCallback(() => {
-    // Phase 4 Part E: on mobile PWA the full desktop pipeline cannot
-    // run locally (no API keys, no main-process file access, no Dexie
-    // authority). We route chat sends to the PC via /api/ipc/chat; the
-    // PC's useMobileApiProxy calls sendUserMessageFromMobile which runs
-    // the same executeSendCore() desktop does. New messages arrive back
-    // via the WebSocket broadcaster → useMobileMessageSync fold.
-    if (isMobilePwa()) {
-      const state = useAppStore.getState();
-      const text = state.inputValue;
-      const image = state.selectedImage;
-      const imageId = state.selectedImageId;
-      if ((!text || !text.trim()) && !image) return;
-      if (state.isThinking) return;
-      // Clear input immediately so the user sees the send "went through"
-      // even if the PC takes a few seconds to produce the model reply.
-      state.setInputValue('');
-      state.setSelectedImage(null);
-      state.setSelectedImageId(null);
-      state.setReplyingToMsg(null);
-      // The input-listening indicator is managed on PC now (the phone
-      // shows activity via broadcaster events). We still clear any
-      // stale countdown timer on the phone side so the UI doesn't flash
-      // a ghost "9s" badge after send.
-      state.setIsListening(false);
-      state.setTimeLeft(0);
-      void sendChatFromMobile({
-        text: (text || '').trim(),
-        imageId: imageId || undefined,
-      }).then((result) => {
-        if (result.unauthenticated) {
-          // Cookie expired — bounce back to MobilePairingGate which will
-          // re-pair. We also clear the hydration flag so next mount
-          // re-pulls PC state.
-          try { sessionStorage.removeItem('kumiko_mobile_hydrated'); } catch { /* ignore */ }
-          window.location.reload();
-        return;
-      }
-        if (!result.ok) {
-          useAppStore.getState().setSystemNotice(result.error || 'Failed to send message');
-          // Restore the text so the user can retry without retyping.
-          if (text) useAppStore.getState().setInputValue(text);
-          if (image) useAppStore.getState().setSelectedImage(image);
-          if (imageId) useAppStore.getState().setSelectedImageId(imageId);
-        }
-      });
-      return;
-    }
+    // F2B.3: removed the PWA `sendChatFromMobile` proxy branch. Both
+    // Electron desktop and Capacitor Android run the full chat pipeline
+    // in-process via `handleSendAction`.
     handleSendAction(chatRefs);
   }, [inputValue, selectedImage, isThinking, isTalking, executeSend, replyingToMsg, locationConfig, language, messages, t.autoReplyText]);
 
@@ -1405,7 +1323,8 @@ export const App = () => {
               setFlowState('CONFIG');
           }}
       />
-      {mobileFilePicker.browserElement}
+      {/* F2B.1: removed {mobileFilePicker.browserElement} —
+          MobileRemoteFileBrowser overlay is gone. */}
       {voiceCallOverlayData && (
         <VoiceCallOverlay
           reminderEvent={voiceCallOverlayData.reminderEvent}

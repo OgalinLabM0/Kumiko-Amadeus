@@ -2,8 +2,10 @@ import { useEffect, useRef } from 'react';
 import type { AppUpdateState, Language } from '../../types';
 import { UI_TRANSLATIONS } from '../../constants';
 import { isDesktopElectron } from '../../services/desktopBackupService';
-import { isCapacitorNative, isMobilePwa } from '../../services/environment';
-import { httpInvoke, subscribeEvents } from '../../services/httpApi';
+import { isCapacitorNative } from '../../services/environment';
+// F2B.3: dropped `isMobilePwa` + `httpApi` imports. The PWA used to
+// live-mirror desktop updater state via `app:update:get-state` + the
+// WS `update:state` push; that bridge is gone now.
 import { DEFAULT_APP_UPDATE_STATE } from '../../store/slices/updaterSlice';
 import {
   checkForAndroidUpdate,
@@ -103,48 +105,12 @@ export const useAppUpdater = ({
       };
     }
 
-    // Mobile PWA: live-mirror the desktop updater state. The desktop
-    // broadcaster forwards every `app:update-status` payload into the
-    // WS fan-out as `update:state` (Phase 3 Part D). We also fetch the
-    // initial snapshot via HTTP IPC so a phone that opens after a
-    // check has already run still sees the current status.
-    //
-    // The previous version retried with exponential backoff because
-    // `app:update:get-state` was not in PWA_ALLOWED_CHANNELS and every
-    // request failed locally with E_CHANNEL. Now that the channel is
-    // whitelisted in both services/httpApi.ts and ipc-bridge.cjs, a
-    // single fetch + catch-warn is enough — if the desktop happens to
-    // be unreachable on first boot the WS `update:state` push will
-    // catch up the moment the connection comes back.
-    if (isMobilePwa()) {
-      httpInvoke<{ success?: boolean; state?: AppUpdateState }>('app:update:get-state', {})
-        .then((result) => {
-          if (cancelled || !result?.success || !result.state) return;
-          setAppUpdateState((prev) => ({ ...prev, ...(result.state as AppUpdateState) }));
-        })
-        .catch((error: unknown) => {
-          console.warn(
-            '[UPDATER] Mobile initial update state fetch failed (WS update:state will catch up):',
-            error,
-          );
-        });
-
-      const unsubscribe = subscribeEvents((event) => {
-        if (event?.type !== 'update:state') return;
-        const payload = (event as { state?: AppUpdateState }).state;
-        if (!payload) return;
-        setAppUpdateState((prev) => ({ ...prev, ...payload }));
-      });
-      return () => {
-        cancelled = true;
-        unsubscribe();
-      };
-    }
-
-    // Neither desktop nor PWA: legacy web-preview build with no backend.
+    // F2B.3: PWA branch removed. The Capacitor APK has its own GitHub
+    // Releases polling above; anything else (legacy web preview, dev
+    // server) just reports `unsupported` and stays out of the way.
     setAppUpdateState((prev) => ({ ...prev, status: 'unsupported', isPackaged: false }));
     return () => { cancelled = true; };
-  }, [setAppUpdateState]);
+  }, [setAppUpdateState, language]);
 
   useEffect(() => {
     const previousStatus = lastAppUpdateStatusRef.current;

@@ -79,7 +79,7 @@ backlog queued on `main` is free, the 45-minute release run is not.
 | Channel | Workflow | Runs on | Publishes |
 | --- | --- | --- | --- |
 | Linux AppImage | [.github/workflows/linux-appimage.yml](../.github/workflows/linux-appimage.yml) | `ubuntu-24.04` (x64) + `ubuntu-24.04-arm` (arm64) | `Kumiko-Amadeus-x86_64.AppImage`, `Kumiko-Amadeus-arm64.AppImage`, `latest-linux.yml`, `latest-linux-arm64.yml`, `kumiko-assets.zip` |
-| Windows NSIS | [.github/workflows/windows-release.yml](../.github/workflows/windows-release.yml) | `windows-latest` (x64) + `windows-11-arm` (arm64) | `Kumiko-Amadeus-Setup-x64.exe`, `Kumiko-Amadeus-Setup-arm64.exe`, `latest.yml`, `latest-arm64.yml` |
+| Windows NSIS | [.github/workflows/windows-release.yml](../.github/workflows/windows-release.yml) | `windows-latest` (x64) + `windows-11-arm` (arm64) | `Kumiko-Amadeus-Setup-x64-<version>.exe`, `Kumiko-Amadeus-Setup-arm64-<version>.exe`, `latest.yml`, `latest-arm64.yml` |
 | iOS Capacitor bootstrap | [.github/workflows/ios-cap-bootstrap.yml](../.github/workflows/ios-cap-bootstrap.yml) | `macos-latest` | `ios/` project folder as artifact only; **not a user-facing release** |
 
 The Linux x64 matrix job is the **single owner** of `kumiko-assets.zip`
@@ -155,22 +155,29 @@ gh release upload <current-latest-tag> release/kumiko-assets.zip --clobber
 npm run check-assets     # must print "In sync" before proceeding
 ```
 
-## Release asset anatomy (9 files must be present)
+## Release asset anatomy (10 files must be present)
 
 ```
 vX.Y.Z
-├── Kumiko-Amadeus-Setup-x64.exe          Windows x64 installer   ─┐
-├── Kumiko-Amadeus-Setup-arm64.exe        Windows arm64 installer │  user-facing,
+├── Kumiko-Amadeus-Setup-x64-X.Y.Z.exe    Windows x64 installer   ─┐
+├── Kumiko-Amadeus-Setup-arm64-X.Y.Z.exe  Windows arm64 installer │  user-facing,
 ├── Kumiko-Amadeus-x86_64.AppImage        Linux x64 AppImage      │  user downloads
-├── Kumiko-Amadeus-arm64.AppImage         Linux arm64 AppImage    ─┘  one of these
+├── Kumiko-Amadeus-arm64.AppImage         Linux arm64 AppImage    │  one of these
+├── Kumiko-Amadeus.apk                    Android universal APK   ─┘
 ├── latest.yml                            Windows x64 updater     ─┐
 ├── latest-arm64.yml                      Windows arm64 updater   │  electron-updater
-├── latest-linux.yml                      Linux x64 updater       │  pulls these in
-├── latest-linux-arm64.yml                Linux arm64 updater     ─┘  the background
+├── latest-linux.yml                      Linux x64 updater       │  / Android updater
+├── latest-linux-arm64.yml                Linux arm64 updater     ─┘  pull these
 └── kumiko-assets.zip                     shared asset snapshot    — fetched by
                                                                       `fetch-assets`
                                                                       at build time
 ```
+
+F2B.5 (v2.14.0): NSIS `artifactName` now embeds `${arch}-${version}` and
+`differentialPackage: false` is set, so the Windows side no longer ships
+`.blockmap` siblings and never produces a third "merged" `Kumiko-Amadeus-Setup.exe`
+that contains both architectures. Each per-arch installer is fully
+self-contained and the user picks one based on `PROCESSOR_ARCHITECTURE`.
 
 | Missing asset | Blast radius |
 | --- | --- |
@@ -265,13 +272,14 @@ gh release view vX.Y.Z --repo OgalinLabM0/Kumiko-Amadeus \
   --json assets --jq '.assets[].name'
 ```
 
-Expected minimum (9 required files; order varies):
+Expected minimum (10 required files; order varies; substitute the actual version for `X.Y.Z`):
 
 ```
-Kumiko-Amadeus-Setup-x64.exe
-Kumiko-Amadeus-Setup-arm64.exe
+Kumiko-Amadeus-Setup-x64-X.Y.Z.exe
+Kumiko-Amadeus-Setup-arm64-X.Y.Z.exe
 Kumiko-Amadeus-x86_64.AppImage
 Kumiko-Amadeus-arm64.AppImage
+Kumiko-Amadeus.apk
 latest.yml
 latest-arm64.yml
 latest-linux.yml
@@ -279,26 +287,13 @@ latest-linux-arm64.yml
 kumiko-assets.zip
 ```
 
-Also expected but optional (electron-updater uses them for delta
-updates; safe to keep):
-
-```
-Kumiko-Amadeus-Setup-x64.exe.blockmap
-Kumiko-Amadeus-Setup-arm64.exe.blockmap
-```
-
-**Windows workflow currently also uploads a third installer** named
-`Kumiko-Amadeus-Setup.exe` (~1.6 GB, containing both x64 and arm64 in
-one binary) plus its blockmap. This is a side effect of electron-builder
-honouring `package.json#build.win.target.arch = [x64, arm64]` and
-producing a combined NSIS installer alongside the arch-specific ones,
-even when the workflow passes `--x64` or `--arm64`. Delete these to
-avoid confusing users who might download the 1.6 GB file:
-
-```bash
-gh release delete-asset vX.Y.Z "Kumiko-Amadeus-Setup.exe"          --yes --repo OgalinLabM0/Kumiko-Amadeus
-gh release delete-asset vX.Y.Z "Kumiko-Amadeus-Setup.exe.blockmap" --yes --repo OgalinLabM0/Kumiko-Amadeus
-```
+F2B.5: `Kumiko-Amadeus-Setup.exe` (the legacy ~1.6 GB merged installer
+that historically appeared alongside the per-arch ones) is **no longer
+produced**. `package.json#build.nsis.artifactName` now hard-codes
+`${arch}-${version}`, so electron-builder cannot fall back to an
+unsuffixed combined output. `.blockmap` siblings are also gone because
+`differentialPackage: false`. If a future build still emits either,
+treat it as a configuration regression and revert before publishing.
 
 #### Patch: `latest-arm64.yml` missing after Windows publish
 
@@ -310,7 +305,7 @@ hand without re-running the 15-minute arm64 build:
 ```bash
 mkdir -p release
 gh release download vX.Y.Z --repo OgalinLabM0/Kumiko-Amadeus \
-  --pattern "Kumiko-Amadeus-Setup-arm64.exe" --dir release
+  --pattern "Kumiko-Amadeus-Setup-arm64-*.exe" --dir release
 node scripts/generate-latest-yml.cjs        # emits release/latest-arm64.yml
 gh release upload vX.Y.Z release/latest-arm64.yml \
   --repo OgalinLabM0/Kumiko-Amadeus --clobber
@@ -401,12 +396,13 @@ the normal cookbook to move users forward.
 - **After Windows publish: `latest-arm64.yml` missing** → known
   electron-builder edge case with the dual-arch target config. Follow
   the "Patch: `latest-arm64.yml` missing" sub-step in Step 5 to
-  synthesise it locally from the released Setup-arm64.exe.
-- **Combined `Kumiko-Amadeus-Setup.exe` (~1.6 GB) appears on a
-  release** → expected side effect of the same dual-arch config. Delete
-  it with `gh release delete-asset` per Step 5 so users don't
-  accidentally download a 1.6 GB installer when one of the 775 MB
-  arch-specific ones would do.
+  synthesise it locally from the released `Setup-arm64-<version>.exe`.
+- **Combined `Kumiko-Amadeus-Setup.exe` (~1.6 GB) appears on a release**
+  → should not happen since F2B.5 (`artifactName` = `Setup-${arch}-${version}.exe`,
+  `differentialPackage: false`). If you do see one, treat it as a
+  configuration regression: revert any recent change to
+  `package.json#build.nsis` and re-run the windows workflow before
+  publishing.
 - **Concurrent `publish=true` on both workflows racing over zip**
   → cannot happen by design: only Linux x64 matrix job uploads the zip.
   Windows and Linux arm64 skip that step entirely.

@@ -1,5 +1,8 @@
-import { isCapacitorNative, isMobilePwa } from './environment';
-import { httpInvoke, getHttpVoiceUrl, getHttpCustomRingtoneUrl } from './httpApi';
+import { isCapacitorNative } from './environment';
+// F2B.3: dropped `isMobilePwa` + `httpInvoke` + `getHttpVoiceUrl` +
+// `getHttpCustomRingtoneUrl`. PWA voice/ringtone paths went through PC's
+// Fastify; with the bridge gone, only Electron (electronAPI IPC) and
+// Capacitor (Capacitor Filesystem + Dexie keyval) remain.
 import { db } from './db';
 
 // A4.4: Capacitor native ringtone storage. Single user-uploaded ringtone
@@ -33,15 +36,12 @@ const getIpc = () => {
     } catch { return null; }
 };
 
-// On mobile PWA we don't have `window.electronAPI` but we do have the
-// desktop's HTTP IPC bridge. The voice / ringtone channels are already
-// whitelisted in Phase 3 Part B (images:save, voice:save, ringtone:save
-// decode base64 in useMobileApiProxy and forward to the real handlers),
-// so the mobile path is functionally identical to desktop. On Capacitor
-// (A.3) we have a third backend: native @capacitor/filesystem under
+// F2B.3: simplified to Electron (electronAPI) OR Capacitor native. The
+// PWA HTTP-bridge backend is gone with the rest of services/httpApi.ts.
+// On Capacitor we use @capacitor/filesystem under
 // Directory.Data/voices/{id}.mp3, sandboxed to the app and persistent
 // across launches.
-const hasBackend = (): boolean => !!getIpc() || isMobilePwa() || isCapacitorNative();
+const hasBackend = (): boolean => !!getIpc() || isCapacitorNative();
 
 // A.3: voice file storage on Capacitor native (Android APK / iOS .ipa).
 // Uses Capacitor Filesystem (NOT Dexie) because voice clips can total
@@ -115,6 +115,16 @@ async function capacitorVoiceDelete(messageId: string): Promise<boolean> {
 async function capacitorVoiceList(): Promise<VoiceFileInfo[]> {
     try {
         const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        // F2A.1: New install / never-recorded users hit Filesystem.readdir
+        // before the directory exists, which throws OS-PLUG-FILE-0008 and
+        // gets logged as native [ERROR] in logcat / our LogViewer even
+        // though the JS try/catch swallows it. mkdir({ recursive: true })
+        // is idempotent (swallow "exists" error) and prevents the spam.
+        try {
+            await Filesystem.mkdir({ path: VOICE_DIR, directory: Directory.Data, recursive: true });
+        } catch (e: any) {
+            if (e?.message && !/exist/i.test(String(e.message))) throw e;
+        }
         const result = await Filesystem.readdir({ path: VOICE_DIR, directory: Directory.Data });
         const files = (result as { files?: Array<{ name: string; size?: number; mtime?: number }> }).files || [];
         return files
@@ -188,19 +198,9 @@ export async function saveVoiceFile(messageId: string, buffer: ArrayBuffer): Pro
         const result = await ipc.invoke('voice:save', { messageId, buffer: new Uint8Array(buffer) });
         return result?.success === true;
     }
-    // A.3: Capacitor first — branch checked before isMobilePwa() because
-    // isMobilePwa() returns true for Capacitor non-standalone too. We
-    // want voice files local on Capacitor regardless of pairing state
-    // (PC's HTTP path would shrug if standalone has no PC URL).
+    // F2B.3: Capacitor is now the only non-Electron writer (PWA branch removed).
     if (isCapacitorNative()) {
         return capacitorVoiceWrite(messageId, buffer);
-    }
-    if (isMobilePwa()) {
-        const result = await httpInvoke<{ success?: boolean }>('voice:save', {
-            messageId,
-            bufferB64: arrayBufferToBase64(buffer),
-        });
-        return result?.success === true;
     }
     return false;
 }
@@ -218,13 +218,6 @@ export async function loadVoiceFile(messageId: string): Promise<ArrayBuffer | nu
     if (isCapacitorNative()) {
         return capacitorVoiceRead(messageId);
     }
-    if (isMobilePwa()) {
-        try {
-            const response = await fetch(getHttpVoiceUrl(messageId), { credentials: 'include' });
-            if (!response.ok) return null;
-            return await response.arrayBuffer();
-        } catch { return null; }
-    }
     return null;
 }
 
@@ -237,10 +230,6 @@ export async function deleteVoiceFile(messageId: string): Promise<boolean> {
     if (isCapacitorNative()) {
         return capacitorVoiceDelete(messageId);
     }
-    if (isMobilePwa()) {
-        const result = await httpInvoke<{ success?: boolean }>('voice:delete', { messageId });
-        return result?.success === true;
-    }
     return false;
 }
 
@@ -252,10 +241,6 @@ export async function listVoiceFiles(): Promise<VoiceFileInfo[]> {
     }
     if (isCapacitorNative()) {
         return capacitorVoiceList();
-    }
-    if (isMobilePwa()) {
-        const result = await httpInvoke<{ files?: VoiceFileInfo[] }>('voice:list', {});
-        return result?.files ?? [];
     }
     return [];
 }
@@ -276,10 +261,6 @@ export async function getVoiceStorageInfo(): Promise<VoiceStorageInfo> {
         const files = await capacitorVoiceList();
         const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
         return { count: files.length, totalBytes };
-    }
-    if (isMobilePwa()) {
-        const result = await httpInvoke<VoiceStorageInfo>('voice:get-storage-info', {});
-        return { count: result?.count ?? 0, totalBytes: result?.totalBytes ?? 0 };
     }
     return { count: 0, totalBytes: 0 };
 }
@@ -312,14 +293,6 @@ export async function saveRingtoneFile(buffer: ArrayBuffer, ext: string, origina
             console.error('[voiceFileService] Capacitor ringtone save failed:', e);
             return false;
         }
-    }
-    if (isMobilePwa()) {
-        const result = await httpInvoke<{ success?: boolean }>('ringtone:save', {
-            bufferB64: arrayBufferToBase64(buffer),
-            ext,
-            originalName,
-        });
-        return result?.success === true;
     }
     return false;
 }
@@ -404,28 +377,11 @@ export async function resolveRingtoneAudioSource(ringtoneFileId?: string | null)
     }
 
     if (isCustomRingtoneId(ringtoneFileId)) {
-        // Phase 5 Part D: on mobile PWA, stream the custom ringtone
-        // directly from the desktop's /media/ringtone route instead of
-        // shuttling its bytes through a JSON IPC bridge. This matches
-        // the voice-clip and image paths (fetch the blob via HTTP,
-        // let the browser cache and range-request it).
-        // Capacitor branch checked separately so it falls through to the
-        // Dexie blob path below — A4.4 stores the ringtone bytes in
-        // db.keyval, no PC dependency.
-        if (isMobilePwa() && !isCapacitorNative()) {
-            const fileName = ringtoneFileId;
-            const src = getHttpCustomRingtoneUrl();
-            return {
-                kind: 'custom',
-                src,
-                fileName,
-                displayName: fileName,
-            };
-        }
-        // Electron desktop AND Capacitor native both reach this branch:
-        // loadRingtoneFileWithName() returns the bytes from electronAPI
-        // (desktop) or db.keyval (Capacitor). Either way we wrap in a
-        // blob: URL the <audio> element can stream.
+        // F2B.3: dropped the PWA `getHttpCustomRingtoneUrl()` branch
+        // (was streamed from desktop's /media/ringtone route). Both
+        // remaining backends — Electron desktop and Capacitor native —
+        // load the bytes locally via loadRingtoneFileWithName() and wrap
+        // in a blob: URL.
         const loaded = await loadRingtoneFileWithName();
         if (!loaded) return null;
         const blob = new Blob([loaded.buffer], { type: getAudioMimeTypeForFileName(loaded.fileName) });

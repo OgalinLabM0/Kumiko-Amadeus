@@ -104,9 +104,10 @@ const {
   handleRefocusWebcontents,
   handleOpenExternal,
 } = require('./electron/window-manager.cjs');
-const mobileAccessIpc = require('./electron/server/mobile-access-ipc.cjs');
-const mobileAccessAuth = require('./electron/server/auth.cjs');
-const mobileFs = require('./electron/mobile-fs.cjs');
+// F2B.4: dropped mobileAccessIpc / mobileAccessAuth / mobileFs requires.
+// The PC-side Fastify mobile-access server, Tailscale cert helper, and
+// remote-file sandbox have been deleted along with the rest of the
+// PWA / mobile-pairing bridge.
 
 // Platform detection. Used throughout this file to branch registry/PowerShell
 // (Windows-only) vs JSON config store (Linux), drive-letter preference (Windows)
@@ -141,18 +142,17 @@ app.commandLine.appendSwitch('enable-features', 'UseSkiaRenderer,CanvasOopRaster
 // below.
 //
 // prepareForInstall runs right before autoUpdater.quitAndInstall() fires.
-// Its job is to close heavy subsystems (RAG SQLite, Genie subprocess,
-// Fastify mobile-access server) that hold file / socket handles outside
-// Electron's normal window lifecycle, so NSIS can overwrite files once
-// Electron itself exits. DOES NOT destroy the BrowserWindow — that used
-// to happen here but left the install-error UI with nothing to render
-// against when the install flow failed. Instead, we set app.isQuiting =
-// true and let electron-updater's internal setImmediate trigger
-// app.quit(), which closes all windows through the normal shutdown
-// sequence (fast enough because the heavy subsystems are already
-// closed). This has the side benefit of letting the install overlay
-// rendered in AppUpdateSection stay visible right up until Electron
-// actually quits.
+// Its job is to close heavy subsystems (RAG SQLite, Genie subprocess)
+// that hold file / socket handles outside Electron's normal window
+// lifecycle, so NSIS can overwrite files once Electron itself exits.
+// DOES NOT destroy the BrowserWindow — that used to happen here but
+// left the install-error UI with nothing to render against when the
+// install flow failed. Instead, we set app.isQuiting = true and let
+// electron-updater's internal setImmediate trigger app.quit(), which
+// closes all windows through the normal shutdown sequence.
+//
+// F2B.4: dropped the mobileAccessIpc.stopOnQuit() shutdown hook — the
+// Fastify mobile-access server is gone.
 //
 // If the install path errors after we yielded to autoUpdater, the 'error'
 // event handler in app-updater.cjs restores state by calling
@@ -171,11 +171,6 @@ setAppUpdaterLifecycleHooks({
       terminateGenieProcess();
     } catch (e) {
       console.warn('[UPDATER HOOK] terminateGenieProcess failed:', e && e.message);
-    }
-    try {
-      await mobileAccessIpc.stopOnQuit();
-    } catch (e) {
-      console.warn('[UPDATER HOOK] mobileAccessIpc.stopOnQuit failed:', e && e.message);
     }
   },
   onQuitAndInstallError: () => {
@@ -340,37 +335,13 @@ if (!singleInstanceLock) {
   ipcMain.handle('backup:parse-import-file', handleParseImportFile);
   ipcMain.handle('backup:build-zip-from-payload', handleBuildZipFromPayload);
 
-  // ── Phase 6 Part C: mobile remote filesystem + desktop backup I/O ──
-  // Registers:
-  //   fs:get-mobile-browse-root
-  //   fs:set-mobile-browse-root        (desktop-renderer only — not in HTTP allowlist)
-  //   fs:pick-mobile-browse-root       (desktop-renderer only — opens native dialog)
-  //   fs:list-directory
-  //   fs:get-shortcuts
-  //   fs:check-path-exists
-  //   backup:read-desktop-file
-  //   backup:write-desktop-file
-  //   backup:set-desktop-backup-path   (broadcasts backup:desktop-path-changed to phones)
-  //   backup:disconnect-desktop-file   (broadcasts null-path to phones)
-  // Every handler sandboxes paths inside `mobileBrowseRoot` (default = parent
-  // of userData, with fallback to userData itself when the parent is a broad
-  // public OS dir).
-  mobileFs.register(ipcMain);
+  // F2B.4: dropped mobile-fs IPC registrations. The remote-file sandbox
+  // (`fs:list-directory`, `backup:read-desktop-file`, …) and the
+  // mobile-access IPC (`mobile-access:*`) only existed for the PWA
+  // pairing path, which has been removed entirely.
 
   ipcMain.handle('app:set-auto-zip-backup', handleSetAutoZip);
   ipcMain.handle('app:get-auto-zip-backup', handleGetAutoZip);
-
-  // ── Mobile remote-access IPC (Phase 1) ────────────────────────
-  // The handler bodies live in electron/server/mobile-access-ipc.cjs so
-  // electron-main.cjs stays free of Fastify + Tailscale awareness. See
-  // docs/mobile-remote-access.md for the architectural overview.
-  mobileAccessIpc.bind({ getMainWindow });
-  ipcMain.handle('mobile-access:get-state', mobileAccessIpc.handleGetState);
-  ipcMain.handle('mobile-access:get-pairing-token', mobileAccessIpc.handleGetPairingToken);
-  ipcMain.handle('mobile-access:enable', mobileAccessIpc.handleEnable);
-  ipcMain.handle('mobile-access:disable', mobileAccessIpc.handleDisable);
-  ipcMain.handle('mobile-access:rotate-token', mobileAccessIpc.handleRotateToken);
-  ipcMain.handle('mobile-access:revoke-sessions', mobileAccessIpc.handleRevokeSessions);
 
   app.whenReady().then(async () => {
     // Restore persisted backup path + SoVITS authorization registries (paths the user
@@ -418,21 +389,9 @@ if (!singleInstanceLock) {
     applyUnreadShellState();
     setupAutoUpdater();
 
-    // If the user previously enabled Mobile Access, restart the Fastify
-    // server on launch so the phone PWA survives a desktop reboot without
-    // the user having to re-open Settings. A failure here (e.g. Tailscale
-    // not yet running because it launches after Electron) is swallowed —
-    // the Settings UI will surface it on the next state refresh.
-    try {
-      if (mobileAccessAuth.getState().enabled) {
-        const startResult = await mobileAccessIpc.handleEnable();
-        if (!startResult.ok) {
-          console.warn('[MOBILE-ACCESS] Auto-start failed:', startResult.error, startResult.code);
-        }
-      }
-    } catch (e) {
-      console.warn('[MOBILE-ACCESS] Auto-start exception:', e && e.message);
-    }
+    // F2B.4: dropped the mobile-access auto-restart block. The Fastify
+    // mobile-bridge server has been deleted along with the rest of the
+    // PWA pairing path.
 
     setTimeout(() => {
       checkForAppUpdates('startup').catch((error) => {
@@ -467,12 +426,6 @@ if (!singleInstanceLock) {
   app.on('will-quit', () => {
     closeRag();
     terminateGenieProcess();
-    // Fire-and-forget: Fastify close() is async but fast (<500ms) and
-    // resolves against the Electron shutdown timer just fine. Awaiting
-    // here would require event.preventDefault which we can't cleanly
-    // thread through the legacy synchronous will-quit cleanups above.
-    mobileAccessIpc.stopOnQuit().catch((e) => {
-      console.warn('[MOBILE-ACCESS] stopOnQuit raised:', e && e.message);
-    });
+    // F2B.4: dropped mobileAccessIpc.stopOnQuit — Fastify server gone.
   });
 }

@@ -1,10 +1,11 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Fingerprint, Lock, ChevronRight, HardDrive, Download, RefreshCw, Check, AlertTriangle, FileJson, Link as LinkIcon, UserCircle, Rocket, Database, CheckCircle, RotateCcw, Monitor } from 'lucide-react';
+import { Fingerprint, Lock, ChevronRight, HardDrive, Download, RefreshCw, Check, AlertTriangle, FileJson, Link as LinkIcon, UserCircle, Rocket, Database, CheckCircle, RotateCcw } from 'lucide-react';
 import { Language, BackupConfig } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
-import { isMobilePwa } from '../services/environment';
+// F2B.3: dropped `isMobilePwa` import. The "remote file picker" hint copy
+// only ever showed on the PWA, which is gone now.
 import {
   PREFERENCES_UPDATED_EVENT,
   queueLocalStoragePreferenceSync,
@@ -519,18 +520,10 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                         {setupTab === 'LOCAL' && (
                         <div className="w-full h-full flex flex-col gap-[clamp(12px,1.3vw,16px)] items-center justify-center text-center">
                             <p className="auth-hint ka-copy-sm text-[#785A42]/60 leading-relaxed max-w-[28rem] break-words">{t.authLocalDesc}</p>
-                            {/* Phase 7 Part t5_onboarding_mobile: on the phone we
-                                delegate folder/filename pickers to the PC via
-                                MobileRemoteFileBrowser (Phase 6 Part C4).
-                                Callers see the same <HardDrive> button on both
-                                platforms, but the phone label makes it clear
-                                nothing gets written to the handset — the
-                                backup lives on the paired desktop. */}
-                            {isMobilePwa() && (
-                              <div className="flex items-center gap-1.5 text-[11px] text-[#785A42]/55 ka-copy-sm">
-                                <Monitor size={12} /> <span className="break-words">{language === 'zh' ? '手机上将弹出远程文件选择器，浏览并写入 PC 上的文件' : 'A remote file picker will let you browse and write to files on the paired PC.'}</span>
-                              </div>
-                            )}
+                            {/* F2B.1/3: the PWA remote-file-picker hint is gone
+                                with the rest of the mobile-PC bridge. Capacitor
+                                hides the "本地文件" tab via BackupSection so
+                                this branch is never reached on Android. */}
                             {connectedFileName ? (
                                 <div className="flex flex-col gap-3 w-full min-h-[80px] flex-1 justify-center">
                                   <div className="flex items-center justify-center gap-2 text-green-700 ka-copy-sm bg-green-50/80 px-3 py-[clamp(8px,1vw,12px)] rounded-xl border border-green-200/50"> 

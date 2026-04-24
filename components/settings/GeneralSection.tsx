@@ -3,6 +3,12 @@ import { ChevronDown, ChevronUp, Settings } from 'lucide-react';
 import { Collapse } from '../Collapse';
 import { SettingsToggle } from './SettingsToggle';
 
+// F2B.4: dropped Web Push fallback props (`showWebPushFallback`,
+// `webPushTitle`, `pushButtonLabel`, `isPushActionDisabled`,
+// `onSubscribePush`, `isSubscribing`). PWA bridge is gone — Capacitor
+// uses Android Foreground Service + Local Notifications, Electron uses
+// native Windows toasts; neither needs a service-worker push subscription.
+
 interface GeneralSectionProps {
   isOpen: boolean;
   onToggle: () => void;
@@ -18,12 +24,6 @@ interface GeneralSectionProps {
   proactiveDesc: string;
   enableProactive: boolean;
   onToggleProactive: () => void;
-  showWebPushFallback: boolean;
-  webPushTitle: string;
-  pushButtonLabel: string;
-  isPushActionDisabled: boolean;
-  onSubscribePush: () => void;
-  isSubscribing: boolean;
 }
 
 export const GeneralSection: React.FC<GeneralSectionProps> = ({
@@ -41,12 +41,6 @@ export const GeneralSection: React.FC<GeneralSectionProps> = ({
   proactiveDesc,
   enableProactive,
   onToggleProactive,
-  showWebPushFallback,
-  webPushTitle,
-  pushButtonLabel,
-  isPushActionDisabled,
-  onSubscribePush,
-  isSubscribing
 }) => {
   const activeTrackClass = 'bg-green-600/95 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.08)]';
   const inactiveTrackClass = isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]';
@@ -73,21 +67,21 @@ export const GeneralSection: React.FC<GeneralSectionProps> = ({
             <div className="flex flex-col gap-4">
               <span className={`ka-setting-item-title ${isDarkMode ? 'text-[#f1e6d7]' : 'text-[#54402d]'}`}>{languageLabel}</span>
               <div className={`grid grid-cols-2 gap-2 rounded-[1rem] p-1.5 ${isDarkMode ? 'bg-[#120e0c]/70 border border-[#4e3d2e]/55' : 'bg-[#f5f1ea] border border-[#e8dfd1]'}`}>
-                <button 
-                  onClick={() => onLanguageChange('zh')} 
+                <button
+                  onClick={() => onLanguageChange('zh')}
                   className={`relative flex items-center justify-center py-2.5 px-4 rounded-[0.85rem] ka-label font-semibold transition-all duration-300 ${
-                    language === 'zh' 
-                      ? (isDarkMode ? 'bg-[#ead0a0] text-[#25190c] shadow-[0_8px_18px_rgba(228,178,79,0.18)] ring-1 ring-[#e4b24f]/70' : 'bg-white text-[#7b5625] shadow-[0_6px_14px_rgba(119,89,44,0.10)] ring-1 ring-[#dbc398]') 
+                    language === 'zh'
+                      ? (isDarkMode ? 'bg-[#ead0a0] text-[#25190c] shadow-[0_8px_18px_rgba(228,178,79,0.18)] ring-1 ring-[#e4b24f]/70' : 'bg-white text-[#7b5625] shadow-[0_6px_14px_rgba(119,89,44,0.10)] ring-1 ring-[#dbc398]')
                       : (isDarkMode ? 'text-[#b8a38a] hover:text-[#f4e7d7] hover:bg-white/5' : 'text-[#8d7b65] hover:text-[#785a42] hover:bg-white/80')
                   }`}
                 >
                   <span className="relative z-10 tracking-[0.08em] text-[12px]">中文</span>
                 </button>
-                <button 
-                  onClick={() => onLanguageChange('en')} 
+                <button
+                  onClick={() => onLanguageChange('en')}
                   className={`relative flex items-center justify-center py-2.5 px-4 rounded-[0.85rem] ka-label font-semibold transition-all duration-300 ${
-                    language === 'en' 
-                      ? (isDarkMode ? 'bg-[#ead0a0] text-[#25190c] shadow-[0_8px_18px_rgba(228,178,79,0.18)] ring-1 ring-[#e4b24f]/70' : 'bg-white text-[#7b5625] shadow-[0_6px_14px_rgba(119,89,44,0.10)] ring-1 ring-[#dbc398]') 
+                    language === 'en'
+                      ? (isDarkMode ? 'bg-[#ead0a0] text-[#25190c] shadow-[0_8px_18px_rgba(228,178,79,0.18)] ring-1 ring-[#e4b24f]/70' : 'bg-white text-[#7b5625] shadow-[0_6px_14px_rgba(119,89,44,0.10)] ring-1 ring-[#dbc398]')
                       : (isDarkMode ? 'text-[#b8a38a] hover:text-[#f4e7d7] hover:bg-white/5' : 'text-[#8d7b65] hover:text-[#785a42] hover:bg-white/80')
                   }`}
                 >
@@ -110,16 +104,6 @@ export const GeneralSection: React.FC<GeneralSectionProps> = ({
                 />
               </div>
             </div>
-            {showWebPushFallback && (
-              <div className="flex items-center justify-between mt-2 pt-2 border-t border-dashed border-gray-500/10 opacity-70">
-                <div>
-                  <span className={`ka-copy-sm font-semibold block ${isDarkMode ? 'text-[#d7c7b5]' : 'text-[#6f5438]'}`}>{webPushTitle}</span>
-                </div>
-                <button onClick={onSubscribePush} disabled={isPushActionDisabled} className={`px-2 py-1 rounded ka-label transition-all ${isPushActionDisabled && !isSubscribing ? 'bg-green-600 text-white cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-500 text-white shadow-md'}`}>
-                  {pushButtonLabel}
-                </button>
-              </div>
-            )}
           </div>
         </div>
       </Collapse>

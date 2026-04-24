@@ -30,7 +30,6 @@ constants/                  Compile-time configuration and feature flags
 docs/                       Long-form documentation (RELEASE.md, windows-manual-install.md)
 hooks/                      React hooks (useAutoSave, etc.)
 models/bge-m3-onnx/         ONNX tokenizer files tracked; model_int8.onnx is fetched on demand
-ping-server/                Browser-side web-push relay, dev-only
 public/                     Frontend static assets. Includes gitignored character assets
 scripts/                    Release and maintenance scripts (see "Daily commands")
 services/                   Core app services: db, memory, gemini, state machine, etc.
@@ -67,15 +66,15 @@ model is fetched from Hugging Face. See `npm run fetch-assets` and
 
 ## Release asset anatomy
 
-Every release ships **9 files**, grouped by who consumes them:
+Every release ships **10 files**, grouped by who consumes them (substitute `<version>` for the actual semver, e.g. `2.14.0`):
 
 | Group | Files | Consumer |
 | --- | --- | --- |
-| Installers | `Kumiko-Amadeus-Setup-x64.exe`, `Kumiko-Amadeus-Setup-arm64.exe`, `Kumiko-Amadeus-x86_64.AppImage`, `Kumiko-Amadeus-arm64.AppImage` | End user downloads the single file matching their OS + arch. |
-| Auto-update channels | `latest.yml`, `latest-arm64.yml`, `latest-linux.yml`, `latest-linux-arm64.yml` | `electron-updater` in the installed app fetches these in the background. Users never touch them. |
+| Installers | `Kumiko-Amadeus-Setup-x64-<version>.exe`, `Kumiko-Amadeus-Setup-arm64-<version>.exe`, `Kumiko-Amadeus-x86_64.AppImage`, `Kumiko-Amadeus-arm64.AppImage`, `Kumiko-Amadeus.apk` | End user downloads the single file matching their OS + arch. |
+| Auto-update channels | `latest.yml`, `latest-arm64.yml`, `latest-linux.yml`, `latest-linux-arm64.yml` | `electron-updater` in the installed Electron app and the in-app GitHub Releases poller in the Android APK fetch these in the background. Users never touch them. |
 | Shared assets | `kumiko-assets.zip` | `npm run fetch-assets` downloads this when building from source; regular end users never touch it. Installers already bundle everything inside. |
 
-A release with all 9 is complete. See
+A release with all 10 is complete. See
 [docs/RELEASE.md](docs/RELEASE.md) for the effect of a missing file.
 
 ## Daily commands
@@ -166,14 +165,14 @@ that promotes a draft release to GA across both desktop channels.
 
 ## Known gaps
 
-- **Windows dual-arch target side effect**: `package.json#build.win.target.arch`
-  lists both `x64` and `arm64`, so electron-builder produces an extra
-  combined `Kumiko-Amadeus-Setup.exe` (~1.6 GB) next to the
-  arch-specific installers and only emits one `latest.yml` channel
-  file per matrix job. Release cookbook Step 5 covers the manual
-  cleanup + `latest-arm64.yml` synthesis. Longer-term fix is to switch
-  to `electron-builder --win nsis:x64` / `nsis:arm64` target-pinning
-  syntax in the workflow so each matrix job builds exactly one arch.
+- **Windows dual-arch target side effect (FIXED in v2.14.0 / F2B.5)**:
+  `package.json#build.nsis.artifactName` is now
+  `Kumiko-Amadeus-Setup-${arch}-${version}.exe` plus
+  `differentialPackage: false`. The combined ~1.6 GB
+  `Kumiko-Amadeus-Setup.exe` and `.blockmap` siblings are no longer
+  emitted. The arm64 channel file may still need synthesis via
+  `scripts/generate-latest-yml.cjs` if electron-builder skips it on
+  the matrix arm64 leg — see release cookbook Step 5.
 - **macOS desktop**: no channel. Not planned until someone volunteers
   a signed-notarised build pipeline on `macos-latest`.
 - **iOS App Store release**: out of scope. The iOS workflow only

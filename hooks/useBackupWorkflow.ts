@@ -17,8 +17,11 @@ import {
   isDesktopElectron,
   writeDesktopBackupFile,
 } from '../services/desktopBackupService';
-import { isMobilePwa } from '../services/environment';
-import { httpInvoke } from '../services/httpApi';
+// F2B.3: dropped `isMobilePwa` + `httpInvoke` imports. Mobile-PWA
+// auto-reconnect path used `fs:check-path-exists` over the PC bridge
+// (now gone), and `performFileSave`'s mobile branch wrote via
+// `backup:write-desktop-file` (also gone). On Capacitor the LOCAL
+// backup tab is hidden in F2A.4.
 import type {
   DailyFragmentEntity,
   KumikoDiaryEntity,
@@ -211,46 +214,10 @@ export function useBackupWorkflow(params: UseBackupWorkflowParams): UseBackupWor
     };
   }, [clearLocalFileConnection, isDataLoaded]);
 
-  // Phase 6 Part C4: mobile PWA counterpart of the desktop auto-reconnect
-  // above. Mobile cannot call `backup:get-file-info` (not on the HTTP
-  // allowlist), so we re-validate the previously selected desktop path via
-  // the sandboxed `fs:check-path-exists` channel. The LOCAL_BACKUP_PATH_STORAGE_KEY
-  // here is the PHONE's localStorage (each device remembers its own last
-  // target); the PC renderer remembers its own handle independently.
-  useEffect(() => {
-    if (!isDataLoaded || !isMobilePwa()) return;
-
-    let isCancelled = false;
-
-    const restoreMobileBackupConnection = async () => {
-      try {
-        const savedPath = localStorage.getItem(LOCAL_BACKUP_PATH_STORAGE_KEY);
-        if (!savedPath) return;
-
-        const res: any = await httpInvoke('fs:check-path-exists', { path: savedPath });
-        if (isCancelled) return;
-
-        if (res && res.ok && res.exists && res.isFile) {
-          fileHandleRef.current = savedPath;
-          setConnectedFileName(savedPath.split(/[\\/]/).pop() || savedPath);
-          return;
-        }
-
-        clearLocalFileConnection();
-      } catch (error) {
-        console.warn('[LOCAL BACKUP] Failed to restore mobile backup connection:', error);
-        if (!isCancelled) {
-          clearLocalFileConnection();
-        }
-      }
-    };
-
-    restoreMobileBackupConnection();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [clearLocalFileConnection, isDataLoaded]);
+  // F2B.3: removed the Phase 6 mobile-PWA auto-reconnect effect. It used
+  // `fs:check-path-exists` over the PC HTTP bridge to revalidate the
+  // selected desktop path on phone boot. With the PWA bridge gone, this
+  // path no longer exists; Capacitor APK has no LOCAL backup tab at all.
 
   // --- REFINED DATA NORMALIZATION (Business Logic for Restore) ---
   // Implements "Smart Merge" logic:
@@ -267,20 +234,9 @@ export function useBackupWorkflow(params: UseBackupWorkflowParams): UseBackupWor
       const backupContent = { timestamp: Date.now(), version: "1.3", data };
       const serializedContent = JSON.stringify(backupContent, null, 2);
 
-      if (isMobilePwa() && typeof handle === 'string') {
-        // Phase 6 Part C4: mobile PWAs never touch the PC filesystem
-        // directly. They call `backup:write-desktop-file`, which
-        // resolves the path through mobileBrowseRoot (electron/mobile-fs.cjs)
-        // and writes on the desktop. Any path escaping the sandbox is
-        // rejected with E_OUT_OF_ROOT on the PC side.
-        const res: any = await httpInvoke('backup:write-desktop-file', {
-          path: handle,
-          contentText: serializedContent,
-        });
-        if (!res || !res.ok) {
-          throw new Error(res?.error || 'Failed to write desktop backup file from mobile.');
-        }
-      } else if (isDesktopElectron() && typeof handle === 'string') {
+      // F2B.3: removed the `isMobilePwa() && typeof handle === 'string'`
+      // branch (was `backup:write-desktop-file` over the PC HTTP bridge).
+      if (isDesktopElectron() && typeof handle === 'string') {
         const result = await writeDesktopBackupFile(handle, serializedContent);
         if (!result.success) {
           throw new Error(result.error || 'Failed to write desktop backup file.');

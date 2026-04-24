@@ -1,8 +1,6 @@
 /// <reference types="vite/client" />
 
-interface ImportMetaEnv {
-  readonly VITE_VAPID_PUBLIC_KEY?: string;
-}
+// F2B.4: dropped VITE_VAPID_PUBLIC_KEY — Web Push pipeline removed.
 
 interface ImportMeta {
   readonly env: ImportMetaEnv;

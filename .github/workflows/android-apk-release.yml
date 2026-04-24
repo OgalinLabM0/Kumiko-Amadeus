@@ -175,9 +175,10 @@ jobs:
           echo "Built $APK_PATH ($SIZE)"
 
       - name: Rename APK to release-friendly filename
-        # Same naming pattern as windows-release.yml's
-        # `Kumiko-Amadeus-Setup-${arch}.exe`: stable, version-suffixed,
-        # easy to spot on a Release page next to the Windows installers.
+        # Mirrors windows-release.yml's
+        # `Kumiko-Amadeus-Setup-${arch}-${version}.exe` naming so the APK
+        # sits next to the per-arch Windows installers on the Release page
+        # with a consistent version-suffixed scheme.
         id: rename
         run: |
           OUT="release/Kumiko-Amadeus-${{ steps.appver.outputs.version }}-universal-debug.apk"

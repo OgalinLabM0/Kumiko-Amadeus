@@ -1,16 +1,9 @@
 import type { EmotionType, TtsConfig } from '../types';
 import { TtsError, type TtsSynthesisResult } from './fishAudioService';
-import { isCapacitorNative, isMobilePwa } from './environment';
-import { base64ToArrayBuffer, httpInvoke } from './httpApi';
-
-interface VocuProxyResult {
-  ok: boolean;
-  audioB64?: string;
-  mime?: string;
-  durationEstimate?: number;
-  error?: string;
-  code?: string;
-}
+// F2B.3: dropped `isCapacitorNative` + `isMobilePwa` + `httpApi` imports.
+// PWA proxied Vocu through PC Fastify (`tts:vocu-synth`); with the
+// bridge gone, both Electron and Capacitor go direct (CapacitorHttp on
+// Android bypasses CORS).
 
 // Plan C: strong-emotion set. When `vocuEmotionBoost` is enabled and the current
 // emotion belongs to this set, preset is overridden to 'vivid' (only works on
@@ -39,23 +32,10 @@ export async function synthesizeWithVocu(
   config: TtsConfig,
   emotion: EmotionType = 'neutral',
 ): Promise<TtsSynthesisResult> {
-  // Routing matrix mirrors fishAudioService.synthesizeSpeech (A3):
-  //   - Desktop / Capacitor Android → direct fetch (CapacitorHttp on
-  //     Android bypasses CORS so capacitor://localhost can hit Vocu's
-  //     CDN without preflight rejection).
-  //   - Mobile PWA only (NOT Capacitor) → proxy through PC renderer.
-  //   See fishAudioService.synthesizeSpeech for the full rationale.
-  if (isMobilePwa() && !isCapacitorNative()) {
-    const reply = await httpInvoke<VocuProxyResult>('tts:vocu-synth', { text, config, emotion });
-    if (!reply || reply.ok === false || !reply.audioB64) {
-      throw new TtsError('unknown', reply?.error || 'Mobile Vocu TTS proxy failed');
-    }
-    return {
-      audio: base64ToArrayBuffer(reply.audioB64),
-      durationEstimate: reply.durationEstimate ?? 1,
-    };
-  }
-
+  // F2B.3: simplified to direct fetch only. Electron desktop + Capacitor
+  // APK both make the network call themselves; CapacitorHttp on Android
+  // re-routes through native OkHttp to bypass Vocu's CORS preflight
+  // against capacitor://localhost.
   if (!config.vocuApiKey) {
     throw new TtsError('auth', 'Vocu AI API key is not configured');
   }

@@ -10,11 +10,13 @@ const mode = process.argv[2] || 'postbuild';
 // channel files and the auxiliary asset bundle. See package.json build.win /
 // build.linux targets and scripts/generate-latest-yml.cjs for the other ends
 // of this contract. Linux builds produce AppImage files but no blockmaps.
-const keepPostbuild = new Set([
-  'Kumiko-Amadeus-Setup-x64.exe',
-  'Kumiko-Amadeus-Setup-x64.exe.blockmap',
-  'Kumiko-Amadeus-Setup-arm64.exe',
-  'Kumiko-Amadeus-Setup-arm64.exe.blockmap',
+//
+// F2B.5: NSIS artifactName became `Kumiko-Amadeus-Setup-${arch}-${version}.exe`
+// (e.g. `Kumiko-Amadeus-Setup-x64-2.14.0.exe`). The exact version isn't known
+// here, so we keep entries via prefix/suffix patterns instead of literal sets.
+// `differentialPackage: false` removes the `.blockmap` siblings, but if any
+// older builds left them around we keep them too so a re-run is idempotent.
+const keepPostbuildLiteral = new Set([
   'Kumiko-Amadeus-x86_64.AppImage',
   'Kumiko-Amadeus-arm64.AppImage',
   'latest.yml',
@@ -23,6 +25,19 @@ const keepPostbuild = new Set([
   'latest-linux-arm64.yml',
   'kumiko-assets.zip',
 ]);
+
+// F2B.5: keep any per-arch versioned NSIS installer + its (legacy) blockmap.
+// Matches:
+//   Kumiko-Amadeus-Setup-x64-2.14.0.exe          ← new
+//   Kumiko-Amadeus-Setup-arm64-2.14.0.exe        ← new
+//   Kumiko-Amadeus-Setup-x64.exe                 ← legacy fallback (pre-F2B.5)
+//   Kumiko-Amadeus-Setup-arm64.exe               ← legacy fallback (pre-F2B.5)
+// Plus their `.exe.blockmap` siblings (only if differentialPackage somehow
+// re-enables itself).
+function isKeepablePostbuildEntry(name) {
+  if (keepPostbuildLiteral.has(name)) return true;
+  return /^Kumiko-Amadeus-Setup-(x64|arm64)(-[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.\-+]*)?)?\.exe(?:\.blockmap)?$/i.test(name);
+}
 
 function removeEntry(targetPath) {
   if (!fs.existsSync(targetPath)) {
@@ -49,7 +64,7 @@ function prunePostbuild() {
   ensureReleaseDir();
 
   for (const entry of fs.readdirSync(releaseDir)) {
-    if (keepPostbuild.has(entry)) {
+    if (isKeepablePostbuildEntry(entry)) {
       continue;
     }
 

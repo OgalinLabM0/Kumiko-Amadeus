@@ -13,10 +13,17 @@ const releaseDir = path.join(projectRoot, 'release');
 //   Linux (electron-builder renders ${arch} following uname -m, so x64 -> x86_64):
 //     x86_64 -> latest-linux.yml
 //     arm64  -> latest-linux-arm64.yml
+//
+// F2B.5: NSIS artifactName is now `Kumiko-Amadeus-Setup-${arch}-${version}.exe`
+// (e.g. `Kumiko-Amadeus-Setup-x64-2.14.0.exe`). The regex accepts an optional
+// `-<version>` suffix so this script keeps working against both the new layout
+// and any legacy `Kumiko-Amadeus-Setup-<arch>.exe` files left over from older
+// builds. The capture group remains the arch only, since that's what feeds
+// the `channelFile` lookup.
 const PLATFORMS = [
   {
     id: 'win',
-    pattern: /^Kumiko-Amadeus-Setup-(x64|arm64)\.exe$/,
+    pattern: /^Kumiko-Amadeus-Setup-(x64|arm64)(?:-[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.\-+]*)?)?\.exe$/,
     channelFile: {
       x64: 'latest.yml',
       arm64: 'latest-arm64.yml',
@@ -107,7 +114,7 @@ function main() {
       .join(', ');
     throw new Error(
       `No Kumiko-Amadeus installer/AppImage artifacts found in ${releaseDir}.\n` +
-        `Expected one of: Kumiko-Amadeus-Setup-{x64|arm64}.exe or Kumiko-Amadeus-{x86_64|arm64}.AppImage.\n` +
+        `Expected one of: Kumiko-Amadeus-Setup-{x64|arm64}-<version>.exe or Kumiko-Amadeus-{x86_64|arm64}.AppImage.\n` +
         `Found: ${entries || 'none'}`
     );
   }

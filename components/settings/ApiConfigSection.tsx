@@ -6,6 +6,7 @@ import { ApiSecuritySection } from './ApiSecuritySection';
 import { ModelAllocationSection } from './ModelAllocationSection';
 import { RagConfigSection } from './RagConfigSection';
 import { VisionHelperSection } from './VisionHelperSection';
+import { EmbeddingConfigSection } from './EmbeddingConfigSection';
 import { Collapse } from '../Collapse';
 
 interface ModelValidationResult {
@@ -32,6 +33,7 @@ interface ApiConfigSectionProps {
   isSecurityOpen: boolean;
   isAllocationOpen: boolean;
   isVisionOpen: boolean;
+  isEmbeddingOpen: boolean;
   isRagOpen: boolean;
   validationStatus: string;
   validationStatusType: 'neutral' | 'success' | 'error';
@@ -43,6 +45,7 @@ interface ApiConfigSectionProps {
   onToggleSecurity: () => void;
   onToggleAllocation: () => void;
   onToggleVision: () => void;
+  onToggleEmbedding: () => void;
   onToggleRag: () => void;
   onUpdateAiConfig: (key: keyof AIConfig, value: any) => void;
   onToggleRagEnabled: () => void;
@@ -69,6 +72,7 @@ export const ApiConfigSection: React.FC<ApiConfigSectionProps> = ({
   isSecurityOpen,
   isAllocationOpen,
   isVisionOpen,
+  isEmbeddingOpen,
   isRagOpen,
   validationStatus,
   validationStatusType,
@@ -80,6 +84,7 @@ export const ApiConfigSection: React.FC<ApiConfigSectionProps> = ({
   onToggleSecurity,
   onToggleAllocation,
   onToggleVision,
+  onToggleEmbedding,
   onToggleRag,
   onUpdateAiConfig,
   onToggleRagEnabled,
@@ -141,6 +146,24 @@ export const ApiConfigSection: React.FC<ApiConfigSectionProps> = ({
             localAiConfig={localAiConfig}
             modelValidationResult={modelValidationResult}
             onUpdateAiConfig={onUpdateAiConfig}
+          />
+
+          {/* F2A.3c: Cloud Embedding sits right above RAG since it is RAG's
+              upstream dependency on Capacitor (Android RAG retrieves via
+              cloud embedding API; without a key configured RAG can never
+              run). On Electron / PWA EmbeddingConfigSection renders null
+              internally (PC's local bge-m3 ONNX is the embedding backend),
+              so this slot is invisible there with zero layout impact. */}
+          <EmbeddingConfigSection
+            isOpen={isEmbeddingOpen}
+            onToggle={onToggleEmbedding}
+            isDarkMode={isDarkMode}
+            language={language}
+            sectionBorder={sectionBorder}
+            innerCardClass={innerCardClass}
+            inputClass={inputClass}
+            fieldLabelClass={`${isDarkMode ? 'text-gray-400' : 'text-gray-700'} ka-label`}
+            helperClass={`${isDarkMode ? 'text-gray-500' : 'text-gray-500'} ka-micro`}
           />
 
           <RagConfigSection

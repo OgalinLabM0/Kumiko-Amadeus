@@ -6,16 +6,23 @@ import { KeyboardResize, KeyboardStyle } from '@capacitor/keyboard';
  * iOS 首次生成需在 macOS 上执行 `npx cap add ios`，或使用 .github/workflows 中的云端 bootstrap。
  * Android 首次生成在任意平台执行 `npx cap add android`（无需本机 JDK，仅打 APK 时才需要）。
  *
- * 键盘策略：交给 @capacitor/keyboard 插件用 Native resize 模式，
- * iOS 原生层把 WKWebView 高度收缩到键盘上沿，Android 原生层（android:windowSoftInputMode=adjustResize）
- * 同样让 WebView 自动缩；两端 web 层只要监听 visualViewport 同步 --app-vh / --kb-inset 即可。
+ * 键盘策略（F2A.2 切到 None）：
+ *   原本 `KeyboardResize.Native` 让原生层把 WebView 高度收缩到键盘上沿。Android 上配合
+ *   `android:windowSoftInputMode=adjustResize` 会直接缩 WebView frame —— 副作用是
+ *   AppMainView 里 `<div className="absolute inset-0 ...">` 包的立绘也跟着缩，
+ *   于是用户感觉「立绘被键盘顶上去」。
  *
- * 注意：`ios.contentInset` 必须留空（默认 `'never'`），
- * 与 `Keyboard.resize: 'native'` **互斥**——前者会让 iOS 自动给 webview 加 inset，
- * 后者则在 native 层直接缩 webview frame，两套机制叠加会造成布局抖动。
+ *   现在改 `KeyboardResize.None`：原生层不动 WebView 高度，由 web 层监听
+ *   `window.visualViewport` 的 height 变化自己算 `--kb-inset`（已经在 useViewportSync 里）
+ *   并把 footer / chat list 的 padding-bottom 推到键盘上沿。立绘所在的 inset-0 容器不缩，
+ *   原地不动。
  *
- * Android 端：默认 `KeyboardResize.Native` 由 @capacitor/keyboard 自动应用 adjustResize 策略，
- * 不需要再单独配置 windowSoftInputMode。
+ *   iOS 风险：Apple 文档明确说 WKWebView 在 ContentInset 默认 'never' + Keyboard.resize=None
+ *   场景下需要 web 层自己处理键盘遮挡。我们已经走 visualViewport 这套，逻辑跟 Android 一致。
+ *   目前 iOS 还没出包；将来加 iOS 时如果发现行为不一致再分平台 override。
+ *
+ * Android 端：`KeyboardResize.None` 不会调 adjustResize（插件默认在 None 模式下设
+ * `windowSoftInputMode=adjustNothing` + 让 WebView 接管 IME 事件），不需要再单独配置。
  */
 const config: CapacitorConfig = {
   appId: 'com.kumiko.amadeus.app',
@@ -24,12 +31,10 @@ const config: CapacitorConfig = {
   server: {
     // 生产包内为 file/capacitor 协议加载本地 dist；开发时可取消注释并填本机 IP 做真机调试
     // url: 'http://192.168.x.x:3000',
-    // cleartext: true,
-    // PWA / Capacitor 都需要在通过 PC 桥接 (httpApi) 拉数据时连本机 LAN HTTP，
-    // 默认放开 cleartext；A7 切完全独立后可以收紧到 networkSecurityConfig 白名单。
+    // F2B.3: PWA → PC 桥接已删除 (services/httpApi.ts gone)，APK 走 CapacitorHttp
+    // 直连云端 LLM/TTS/embedding 提供商。cleartext 暂时保留以便真机调试期间直连
+    // dev server，发版前如果想最严格可以收紧到 networkSecurityConfig 白名单。
     cleartext: true,
-    // PC HTTP 桥接 (192.168.x.x / 10.x.x.x / Tailscale 100.64.x.x) 走 fetch；
-    // 这个 allowNavigation 只对 location.href 跳转生效，fetch 本身受 cleartext + CORS 控制。
     allowNavigation: ['*.local', '192.168.*.*', '10.*.*.*', '172.*.*.*', '100.*.*.*'],
   },
   ios: {
@@ -46,7 +51,12 @@ const config: CapacitorConfig = {
   },
   plugins: {
     Keyboard: {
-      resize: KeyboardResize.Native,
+      // F2A.2: was Native — caused立绘 to shift up because Android shrinks
+      // the WebView frame on adjustResize, which collapses the absolute
+      // inset-0 container holding the avatar. None keeps the WebView at
+      // full height; visualViewport + useViewportSync push the footer
+      // padding-bottom up to the keyboard top edge.
+      resize: KeyboardResize.None,
       style: KeyboardStyle.Light,
       resizeOnFullScreen: true,
     },

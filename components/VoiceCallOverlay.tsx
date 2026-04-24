@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { Phone, PhoneOff, Loader2, X } from 'lucide-react';
+import { Phone, PhoneOff, Loader2 } from 'lucide-react';
 import { loadVoiceFile, resolveRingtoneAudioSource } from '../services/voiceFileService';
-import { isCapacitorNative, isMobileLikeRuntime } from '../services/environment';
-import { getHttpVoiceUrl } from '../services/httpApi';
+import { isMobileLikeRuntime } from '../services/environment';
+// F2B.3: dropped `getHttpVoiceUrl` + `isCapacitorNative` imports. Capacitor
+// already saved the voice clip to Directory.Data/voices/{id}.mp3 in
+// services/voiceFileService.ts, so on any mobile-like runtime we can just
+// `loadVoiceFile()` and play the resulting blob URL.
 import {
   getSharedUnlockedAudio,
   primeSharedAudioForGesture,
@@ -122,15 +125,11 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
     };
   }, [phase, ringtoneFileId]);
 
-  // Phase 5 Part D + A.3: mobile-side voice playback. When the call
-  // transitions to `isPlayingVoice=true` and we know the voiceFileId,
-  // resolve a playable URL:
-  //   - Mobile PWA: GET /media/voices/:id from PC's Fastify
-  //   - Capacitor (paired or standalone): loadVoiceFile() reads the
-  //     local Filesystem copy saved by services/voiceFileService.ts'
-  //     Capacitor branch and creates a blob: URL
-  //   - Desktop / Electron: never enters here — chatActions owns the
-  //     local ArrayBuffer playback there.
+  // F2B.3: simplified to local Filesystem playback only. Capacitor
+  // saved the voice clip to Directory.Data/voices/{id}.mp3 during TTS;
+  // we read it back as a blob URL and play through the shared
+  // unlocked Audio. Desktop/Electron never enters this effect because
+  // chatActions owns the local ArrayBuffer playback there.
   useEffect(() => {
     if (!isMobileLikeRuntime()) return;
     if (phase !== 'active' || !voiceFileId) return;
@@ -145,32 +144,20 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
     }
 
     const setupAndPlay = async () => {
-      let src: string;
-      if (isCapacitorNative()) {
-        // Standalone or paired Capacitor: voice clip lives in
-        // Directory.Data/voices/{id}.mp3 (see voiceFileService A.3 branch).
-        const buf = await loadVoiceFile(voiceFileId);
-        if (!buf || cancelled) return;
-        const blob = new Blob([buf], { type: 'audio/mpeg' });
-        blobUrl = URL.createObjectURL(blob);
-        src = blobUrl;
-      } else {
-        // PWA: stream from PC HTTP. Same behaviour as before A.3.
-        src = getHttpVoiceUrl(voiceFileId);
-      }
+      const buf = await loadVoiceFile(voiceFileId);
+      if (!buf || cancelled) return;
+      const blob = new Blob([buf], { type: 'audio/mpeg' });
+      blobUrl = URL.createObjectURL(blob);
       if (cancelled) {
-        if (blobUrl) URL.revokeObjectURL(blobUrl);
+        URL.revokeObjectURL(blobUrl);
         return;
       }
-      audio.src = src;
+      audio.src = blobUrl;
       audio.preload = 'auto';
       audio.volume = 1.0;
       voiceAudioRef.current = audio;
       audio.addEventListener('ended', () => {
         if (!cancelled) {
-          // Parent controls the ended flag via PC-side state on PWA;
-          // standalone Capacitor relies on the same external state
-          // shape for symmetry. Either way we don't mutate it here.
           try { audio.src = ''; } catch { /* ignore */ }
         }
       });

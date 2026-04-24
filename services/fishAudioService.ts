@@ -1,19 +1,13 @@
 import type { TtsConfig } from '../types';
-import { isCapacitorNative, isMobilePwa } from './environment';
-import { base64ToArrayBuffer, httpInvoke } from './httpApi';
+// F2B.3: dropped `isCapacitorNative` + `isMobilePwa` + `httpApi` imports.
+// PWA used to proxy Fish TTS through PC's Fastify (`tts:fish-synth`)
+// because the PWA WebView origin can't pass Fish Audio's CORS check;
+// Capacitor APK uses CapacitorHttp to bypass CORS natively. With the PWA
+// bridge gone, both Electron and Capacitor go through direct fetch.
 
 export interface TtsSynthesisResult {
     audio: ArrayBuffer;
     durationEstimate: number;
-}
-
-interface TtsProxyResult {
-    ok: boolean;
-    audioB64?: string;
-    mime?: string;
-    durationEstimate?: number;
-    error?: string;
-    code?: string;
 }
 
 export type TtsErrorKind = 'auth' | 'payment' | 'validation' | 'network' | 'unknown';
@@ -131,31 +125,10 @@ export async function synthesizeSpeech(
     text: string,
     config: TtsConfig,
 ): Promise<TtsSynthesisResult> {
-    // Routing matrix:
-    //   - Desktop Electron / Capacitor Android → fall through to direct
-    //     fetch below. On Capacitor the global CapacitorHttp plugin
-    //     (capacitor.config.ts) re-routes the WebView's fetch through
-    //     native OkHttp, so Fish Audio's CORS preflight against
-    //     capacitor://localhost is bypassed entirely. A3 cuts the PC
-    //     dependency for Fish here so the APK keeps working after A7.
-    //   - Mobile PWA only (NOT Capacitor) → still proxies through the
-    //     PC renderer because the PWA WebView origin (PC's IP / Tailnet
-    //     hostname) IS in CORS rejection territory the same way, and
-    //     the PWA's whole design is "PC handles the heavy lifting".
-    //     `!isCapacitorNative()` guards against the Capacitor case where
-    //     isMobilePwa() returns true (Capacitor uses the HTTP bridge
-    //     model when PC is configured) but we still want direct fetch.
-    if (isMobilePwa() && !isCapacitorNative()) {
-        const reply = await httpInvoke<TtsProxyResult>('tts:fish-synth', { text, config });
-        if (!reply || reply.ok === false || !reply.audioB64) {
-            throw new TtsError('unknown', reply?.error || 'Mobile Fish TTS proxy failed');
-        }
-        return {
-            audio: base64ToArrayBuffer(reply.audioB64),
-            durationEstimate: reply.durationEstimate ?? 1,
-        };
-    }
-
+    // F2B.3: simplified to direct fetch only. Electron desktop hits the
+    // network natively; Capacitor APK uses CapacitorHttp (configured in
+    // capacitor.config.ts) to re-route through native OkHttp and bypass
+    // Fish Audio's CORS preflight against capacitor://localhost.
     const maxRetries = 1;
     let lastError: unknown;
 

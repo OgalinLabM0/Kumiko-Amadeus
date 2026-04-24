@@ -1,18 +1,11 @@
 import type { TtsConfig, EmotionType } from '../types';
-import { TtsError, type TtsSynthesisResult } from './fishAudioService';
+import { type TtsSynthesisResult } from './fishAudioService';
 import { EMOTION_TO_SOVITS_REF } from '../constants';
 import type { SovitsRefVariant } from '../constants';
-import { isMobilePwa } from './environment';
-import { base64ToArrayBuffer, httpInvoke } from './httpApi';
-
-interface SovitsProxyResult {
-  ok: boolean;
-  audioB64?: string;
-  mime?: string;
-  durationEstimate?: number;
-  error?: string;
-  code?: string;
-}
+// F2B.3: dropped `isMobilePwa` + `httpApi` imports. SoVITS lives on PC's
+// 127.0.0.1:9880 — Electron loopback fetch is the only working path. The
+// PWA `tts:sovits-synth` proxy is gone with the rest of the bridge, and
+// Capacitor APK hides SoVITS entirely (it would just hit a dead address).
 
 let lastRefFile: string | null = null;
 
@@ -127,26 +120,9 @@ export async function genieTtsWithEmotion(
   text: string, emotion: EmotionType, ttsConfig: TtsConfig,
   voiceVariant?: string,
 ): Promise<TtsSynthesisResult> {
-  // SoVITS HTTP API listens on `http://127.0.0.1:9880` of the PC; the
-  // phone is on a different host on the LAN so a direct fetch fails with
-  // ECONNREFUSED. Route via the PC renderer's `mobile-api-proxy` —
-  // PC-side `genieTtsWithEmotion` rebuilds baseUrl from `127.0.0.1` (its
-  // own loopback) and runs the existing emotion → ref-audio selection,
-  // returning the WAV bytes as base64. This makes mobile-side SoVITS
-  // identical to desktop as long as the PC's SoVITS python process is up.
-  if (isMobilePwa()) {
-    const reply = await httpInvoke<SovitsProxyResult>('tts:sovits-synth', {
-      text, emotion, ttsConfig, voiceVariant,
-    });
-    if (!reply || reply.ok === false || !reply.audioB64) {
-      throw new TtsError('unknown', reply?.error || 'Mobile SoVITS TTS proxy failed');
-    }
-    return {
-      audio: base64ToArrayBuffer(reply.audioB64),
-      durationEstimate: reply.durationEstimate ?? 1,
-    };
-  }
-
+  // F2B.3: simplified to direct loopback fetch. SoVITS HTTP API listens on
+  // `http://127.0.0.1:9880` of the PC; only Electron desktop can reach
+  // it. Capacitor APK hides the SoVITS section entirely.
   const baseUrl = `http://127.0.0.1:${ttsConfig.sovitsPort || 9880}`;
   const refDir = ttsConfig.sovitsRefAudioDir || '';
 

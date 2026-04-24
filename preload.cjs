@@ -68,11 +68,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:update:download',
       'app:update:cancel-download',
       'app:update:quit-and-install',
-      // v2.10.1 download-cache inspection + manual cleanup. Desktop
-      // renderer only — intentionally NOT added to services/httpApi.ts
-      // or electron/server/ipc-bridge.cjs's ALLOWED_CHANNELS so phones
-      // can't accidentally delete the installer the user is waiting to
-      // run on the PC.
+      // v2.10.1 download-cache inspection + manual cleanup. Desktop only.
       'app:update:get-cache-info',
       'app:update:open-cache-folder',
       'app:update:clear-cache',
@@ -82,29 +78,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'genie:pick-sovits-dir',
       'genie:pick-sovits-python',
       'genie:test-sovits-python',
-      'mobile-access:get-state',
-      'mobile-access:get-pairing-token',
-      'mobile-access:enable',
-      'mobile-access:disable',
-      'mobile-access:rotate-token',
-      'mobile-access:revoke-sessions',
-      // Phase 6 Part C: mobile remote file browser + desktop backup I/O.
-      // All handlers enforce the `mobileBrowseRoot` sandbox server-side,
-      // so exposing the channels here only lets desktop UI (and the
-      // mobile HTTP bridge) traverse / read / write within the configured
-      // root. `fs:set-mobile-browse-root` is the single mutator and is
-      // intentionally absent from the HTTP allowlist in ipc-bridge.cjs
-      // so only a human in front of the PC can change the sandbox.
-      'fs:get-mobile-browse-root',
-      'fs:set-mobile-browse-root',
-      'fs:pick-mobile-browse-root',
-      'fs:list-directory',
-      'fs:get-shortcuts',
-      'fs:check-path-exists',
-      'backup:read-desktop-file',
-      'backup:write-desktop-file',
-      'backup:set-desktop-backup-path',
-      'backup:disconnect-desktop-file'
+      // F2B.4: dropped mobile-access:* + fs:*-mobile-browse-root +
+      // backup:*-desktop-file channels — the Fastify mobile-bridge,
+      // Tailscale cert helper, and remote-file sandbox have all been
+      // deleted along with the rest of the PWA pairing path.
       // Note: 'app:set-bg-color' intentionally omitted here — it's a fire-and-forget
       // one-way signal handled by ipcMain.on in the main process, NOT a request/response
       // handler. Calling electronAPI.invoke('app:set-bg-color', ...) used to land here but
@@ -123,16 +100,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:send-call-notification',
       'app:close-call-notification',
       'app:set-bg-color',
-      // Renderer → main reply for mobile HTTP bridge. Phase 1 pair: the
-      // renderer listens on 'mobile-api-proxy' (see on() below), does the
-      // work locally via existing services, and sends the result back
-      // through this channel. See electron/server/ipc-bridge.cjs.
-      'mobile-api-proxy-reply',
-      // Phase 2 fan-out: renderer emits state-change events here and the
-      // main-process ws-broadcast.cjs relays them to every connected
-      // phone websocket. Events are fire-and-forget; if no phone is
-      // connected, the broadcaster drops them silently.
-      'mobile-event-broadcast'
+      // F2B.4: dropped 'mobile-api-proxy-reply' + 'mobile-event-broadcast'
+      // — Fastify mobile bridge gone.
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.send(channel, data);
@@ -148,7 +117,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:auto-zip-progress',
       'app:update-status',
       'genie:status-changed',
-      'mobile-api-proxy'
+      // F2B.4: dropped 'mobile-api-proxy' — Fastify mobile bridge gone.
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.on(channel, listener);
@@ -163,7 +132,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'app:auto-zip-progress',
       'app:update-status',
       'genie:status-changed',
-      'mobile-api-proxy'
     ];
     if (validChannels.includes(channel)) {
       ipcRenderer.removeListener(channel, listener);
@@ -171,10 +139,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   }
 });
 
-// Separate bridge for a tiny runtime environment flag. The renderer uses
-// this to decide whether to call `window.electronAPI` directly (desktop
-// Electron) or fall back to HTTP via services/httpApi.ts (mobile PWA).
-// Keeping it off electronAPI avoids suggesting anything else lives here.
+// Tiny runtime environment flag. The renderer uses this to detect
+// Electron (vs Capacitor / web preview). Capacitor sets `window.Capacitor`
+// itself; web preview leaves both undefined.
 contextBridge.exposeInMainWorld('__KUMIKO_ENV__', {
   runtime: 'electron',
   platform: process.platform,

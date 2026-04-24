@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, AlertTriangle, RefreshCw } from 'lucide-react';
 import { loadVoiceFile } from '../services/voiceFileService';
-import { isCapacitorNative, isMobilePwa } from '../services/environment';
-import { getHttpVoiceUrl } from '../services/httpApi';
+// F2B.3: dropped `isCapacitorNative`, `isMobilePwa`, `getHttpVoiceUrl`. PWA
+// used to stream voices straight from PC's `/media/voices/{id}`; both
+// runtimes (Electron + Capacitor) now load the bytes through `loadVoiceFile`
+// (Electron IPC fs read or Capacitor Filesystem.readFile in Directory.Data).
 import type { Language } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
 
@@ -109,27 +111,17 @@ export const VoiceBubble: React.FC<VoiceBubbleProps> = ({
 
     try {
       if (!audioRef.current) {
-        let audio: HTMLAudioElement;
-        if (isMobilePwa() && !isCapacitorNative()) {
-          // PWA only (NOT Capacitor): stream directly from the desktop
-          // HTTP server; the browser handles progressive download +
-          // playback without loading the entire buffer into memory.
-          // Same-origin cookie auth, no crossOrigin opt-in.
-          // A.3: Capacitor — paired or standalone — falls through to
-          // loadVoiceFile because saveVoiceFile's Capacitor branch
-          // writes to Directory.Data/voices/{id}.mp3 locally; PC
-          // /media/voices/{id} wouldn't have the file (TTS was generated
-          // direct on phone in A3).
-          const streamUrl = getHttpVoiceUrl(voiceFileId);
-          audio = new Audio(streamUrl);
-        } else {
-          const buf = await loadVoiceFile(voiceFileId);
-          if (!buf) { setAudioError(true); return; }
-          const blob = new Blob([buf], { type: 'audio/mpeg' });
-          const url = URL.createObjectURL(blob);
-          objectUrlRef.current = url;
-          audio = new Audio(url);
-        }
+        // F2B.3: unified to `loadVoiceFile` for both runtimes. Electron
+        // reads the bytes via IPC fs; Capacitor reads them via
+        // Filesystem.readFile from Directory.Data/voices/{id}.mp3 where
+        // saveVoiceFile wrote them locally during TTS synthesis. No more
+        // PWA HTTP-stream branch (PC `/media/voices/{id}` is gone).
+        const buf = await loadVoiceFile(voiceFileId);
+        if (!buf) { setAudioError(true); return; }
+        const blob = new Blob([buf], { type: 'audio/mpeg' });
+        const url = URL.createObjectURL(blob);
+        objectUrlRef.current = url;
+        const audio = new Audio(url);
         audioRef.current = audio;
 
         audio.onended = () => {

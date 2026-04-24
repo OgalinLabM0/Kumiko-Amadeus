@@ -2,7 +2,7 @@
 
 这份文档只按当前主线来写，也就是 `PC 原生端 / Windows 桌面版`。
 
-如果你已经拿到了对应架构的 `Kumiko-Amadeus-Setup-<arch>.exe`，可以直接装；如果你是从源码开始自己打包，再看后面的模型补充部分。
+如果你已经拿到了对应架构的 `Kumiko-Amadeus-Setup-<arch>-<version>.exe`，可以直接装；如果你是从源码开始自己打包，再看后面的模型补充部分。
 
 ## 适用场景
 
@@ -16,8 +16,10 @@
 
 | 架构 | 文件 | 典型机型 |
 | --- | --- | --- |
-| x64（绝大多数情况）| `Kumiko-Amadeus-Setup-x64.exe` | Intel、AMD 台式机 / 笔记本 |
-| ARM64 | `Kumiko-Amadeus-Setup-arm64.exe` | Copilot+ PC、Surface Pro X / Pro 9 5G / Pro 11、Snapdragon X Elite 笔记本等 |
+| x64（绝大多数情况）| `Kumiko-Amadeus-Setup-x64-<version>.exe` | Intel、AMD 台式机 / 笔记本 |
+| ARM64 | `Kumiko-Amadeus-Setup-arm64-<version>.exe` | Copilot+ PC、Surface Pro X / Pro 9 5G / Pro 11、Snapdragon X Elite 笔记本等 |
+
+`<version>` 跟 `package.json` 里的版本号同步，比如 `2.14.0`，所以实际文件名会是 `Kumiko-Amadeus-Setup-x64-2.14.0.exe`。
 
 怎么判断自己的机器？在 PowerShell 里跑：
 
@@ -25,10 +27,10 @@
 echo $env:PROCESSOR_ARCHITECTURE
 ```
 
-- 输出 `AMD64` → 选 **Setup-x64.exe**
-- 输出 `ARM64` → 选 **Setup-arm64.exe**
+- 输出 `AMD64` → 选 **Setup-x64-`<version>`.exe**
+- 输出 `ARM64` → 选 **Setup-arm64-`<version>`.exe**
 
-注：ARM64 Windows 能通过 x64 仿真层跑 `Setup-x64.exe`，但会损失性能，并且 RAG 里某些原生模块（如 `hnswlib-node`、`better-sqlite3`）在仿真层下比原生 ARM64 慢很多；**ARM 机器强烈建议装 ARM64 版本**。
+注：ARM64 Windows 能通过 x64 仿真层跑 x64 版安装器，但会损失性能，并且 RAG 里某些原生模块（如 `hnswlib-node`、`better-sqlite3`）在仿真层下比原生 ARM64 慢很多；**ARM 机器强烈建议装 ARM64 版本**。
 
 应用内自动更新（electron-updater）会根据你当前运行的架构，自动拉取 `latest.yml`（x64）或 `latest-arm64.yml`（arm64）频道，互不串台，所以**装错架构一次，之后不会自动跳回另一边**。
 
@@ -36,7 +38,7 @@ echo $env:PROCESSOR_ARCHITECTURE
 
 安装后主程序文件都叫 `Kumiko-Amadeus.exe`。以 x64 为例：
 
-1. 双击 `Kumiko-Amadeus-Setup-x64.exe`（ARM64 用户换成 `Setup-arm64.exe`）。
+1. 双击 `Kumiko-Amadeus-Setup-x64-<version>.exe`（ARM64 用户换成 `Setup-arm64-<version>.exe`）。
 2. Windows 如果弹出 UAC / 管理员确认，选择允许。
 3. 按安装向导继续。这个安装器不是“一键静默安装”，可以手动改安装目录。
 4. 安装完成后，从桌面快捷方式或开始菜单启动软件。
@@ -149,23 +151,21 @@ D:\Kumiko-Amadeus\resources\models\bge-m3-onnx\model_int8.onnx
 npm run desktop:build
 ```
 
-完成后主要看 `release/` 目录，里面有这 7 个产物：
+完成后主要看 `release/` 目录，里面有这 5 个产物（自 v2.14.0 起 `differentialPackage: false`，不再生成 `.blockmap`）：
 
 ```text
 release/
-├── Kumiko-Amadeus-Setup-x64.exe             # x64 安装器
-├── Kumiko-Amadeus-Setup-x64.exe.blockmap    # x64 差分更新块映射
-├── Kumiko-Amadeus-Setup-arm64.exe           # ARM64 安装器
-├── Kumiko-Amadeus-Setup-arm64.exe.blockmap  # ARM64 差分更新块映射
-├── latest.yml                                # x64 应用内自动更新频道
-├── latest-arm64.yml                          # ARM64 应用内自动更新频道
-└── kumiko-assets.zip                         # 附属资源包
+├── Kumiko-Amadeus-Setup-x64-<version>.exe    # x64 安装器（如 …-x64-2.14.0.exe）
+├── Kumiko-Amadeus-Setup-arm64-<version>.exe  # ARM64 安装器
+├── latest.yml                                 # x64 应用内自动更新频道
+├── latest-arm64.yml                           # ARM64 应用内自动更新频道
+└── kumiko-assets.zip                          # 附属资源包
 ```
 
-x64 用户双击 `Setup-x64.exe`，ARM64 用户双击 `Setup-arm64.exe`。两个 `latest*.yml` 是给应用内 AutoUpdater 用的频道文件，发布时需要一并上传到 GitHub Release。
+x64 用户双击 `Setup-x64-<version>.exe`，ARM64 用户双击 `Setup-arm64-<version>.exe`。两个 `latest*.yml` 是给应用内 AutoUpdater 用的频道文件，发布时需要一并上传到 GitHub Release。
 
 ## 八、最简结论
 
-- 普通用户先确认机型架构，再下载对应的 `Kumiko-Amadeus-Setup-x64.exe` 或 `Kumiko-Amadeus-Setup-arm64.exe`。通常直接安装就行，不需要自己单独处理模型和资源包。
+- 普通用户先确认机型架构，再下载对应的 `Kumiko-Amadeus-Setup-x64-<version>.exe` 或 `Kumiko-Amadeus-Setup-arm64-<version>.exe`。通常直接安装就行，不需要自己单独处理模型和资源包。
 - 只有"从源码自构建"时，才需要手动下载并放置 `model_int8.onnx`，并跑一次 `npm run fetch-assets` 把角色资源拉下来。
 - 模型位置固定为 `models/bge-m3-onnx/model_int8.onnx`；角色资源由脚本自动解压到 `public/` 和 `assets/`。

@@ -7,8 +7,11 @@ import {
 } from '../constants/imageQualityConfig';
 import { useAppStore } from '../store';
 import { isDesktopElectron } from './desktopBackupService';
-import { isCapacitorNative, isMobilePwa } from './environment';
-import { httpInvoke, getHttpImageUrl } from './httpApi';
+// F2B.3: dropped `isMobilePwa` + `httpInvoke` + `getHttpImageUrl` +
+// `isCapacitorNative` imports. Capacitor APK keeps image bytes inside
+// the local Dexie (base64Data), Electron desktop writes to
+// userData/images via IPC. Branching is now `isDesktopElectron()` vs
+// "everything else uses Dexie".
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Image storage service (P1 #36)
@@ -71,15 +74,9 @@ function arrayBufferToBase64(buffer: ArrayBuffer | Uint8Array): string {
   return btoa(binary);
 }
 
-// Ship an image (raw base64 + extension) to the desktop for userData
-// storage. On desktop this goes directly through electronAPI.invoke; on
-// mobile PWA it goes over POST /api/ipc/images:save which is handled on
-// the PC renderer side (useMobileApiProxy.handleImagesSave decodes the
-// base64 and forwards to the real IPC handler). Returns the IPC result
-// shape `{ success, filePath?, error? }`. This lets both mobile image
-// uploads and mobile backup-import image restoration land on the PC's
-// filesystem instead of leaking into a phone-local Dexie shell that
-// will never be read.
+// Ship an image (raw base64 + extension) to the Electron desktop for
+// userData storage. F2B.3 removed the mobile-PWA `images:save` HTTP
+// branch — Capacitor APK falls through to the Dexie base64 path below.
 async function saveImageToBackend(
   imageId: string,
   ext: string,
@@ -88,9 +85,6 @@ async function saveImageToBackend(
   if (isDesktopElectron() && (window as any).electronAPI) {
     const buffer = base64ToArrayBuffer(rawBase64);
     return (window as any).electronAPI.invoke('images:save', { imageId, ext, buffer });
-  }
-  if (isMobilePwa()) {
-    return httpInvoke('images:save', { imageId, ext, bufferB64: rawBase64 });
   }
   return { success: false, error: 'No backend available' };
 }
@@ -112,14 +106,10 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
   const mimeType = processed.type || 'image/jpeg';
   const ext = pickExtFromMime(mimeType);
 
-  // Desktop + Mobile PWA both land the image on the PC's filesystem via
-  // the `images:save` IPC/HTTP bridge. Capacitor native (A4.5) skips this
-  // path and falls through to the Dexie base64 fallback below — phones
-  // can't reach PC's userData filesystem when there's no PC, and the
-  // existing fallback already handles base64-in-Dexie for the dev-server
-  // preview case (typical Kumiko images <200 KB so Dexie can absorb the
-  // 33% base64 overhead without RAM pressure).
-  if ((isDesktopElectron() && (window as any).electronAPI) || (isMobilePwa() && !isCapacitorNative())) {
+  // F2B.3: simplified to "Electron desktop only" for filesystem path.
+  // Capacitor APK + dev-server fallback drop straight to the Dexie base64
+  // path below — both store images self-contained inside IndexedDB.
+  if (isDesktopElectron() && (window as any).electronAPI) {
     try {
       const dataUrl = await blobToDataUrl(processed);
       const rawBase64 = dataUrl.split(',')[1] || '';
@@ -156,21 +146,13 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
 // Resolve a URL we can put into <img src> for a given imageId.
 //   - Desktop: custom kumiko-image:// protocol so Chromium can lazy-load
 //     and cache the file off-renderer.
-//   - Mobile PWA: GET /media/images/:id, same userData/images source
-//     of truth as desktop. The cookie-gated route handles auth.
-//   - Capacitor (A4.5): data URL from Dexie. The kumiko-image:// protocol
-//     can't be registered inside Capacitor's WebView (no Electron protocol
-//     handler). Falls through to the same Dexie path as the dev-server
-//     preview, which is already wired by the saveImage Capacitor branch.
-//   - Web fallback (dev preview): data URL from Dexie, same as before.
+//   - Capacitor APK + dev-server fallback: data URL from Dexie. F2B.3
+//     dropped the PWA `getHttpImageUrl()` branch alongside the rest of
+//     the PC bridge.
 export const getImageDisplayUrl = async (imageId: string): Promise<string | null> => {
   if (!imageId) return null;
   if (isDesktopElectron()) {
-    // Cache-bust with the image id itself — file contents don't mutate in place.
     return `kumiko-image://${encodeURIComponent(imageId)}`;
-  }
-  if (isMobilePwa() && !isCapacitorNative()) {
-    return getHttpImageUrl(imageId);
   }
   const row = await db.images.get(imageId);
   return row?.base64Data || null;
@@ -193,21 +175,10 @@ export const getImageBase64 = async (imageId: string): Promise<string | undefine
       console.warn('[imageService] images:load failed, falling back to Dexie:', err);
     }
   }
-  if (isMobilePwa() && !isCapacitorNative()) {
-    try {
-      const response = await fetch(getHttpImageUrl(imageId), { credentials: 'include' });
-      if (response.ok) {
-        const arr = await response.arrayBuffer();
-        const mime = response.headers.get('Content-Type') || 'image/jpeg';
-        return `data:${mime};base64,${arrayBufferToBase64(arr)}`;
-      }
-    } catch (err) {
-      console.warn('[imageService] /media/images fetch failed, falling back to Dexie:', err);
-    }
-  }
-  // Capacitor (A4.5) and dev-server fallback both reach here: the image
-  // bytes live in db.images.base64Data because the saveImage Capacitor
-  // branch wrote them there. Returns the cached data URL as-is.
+  // F2B.3: dropped the PWA /media/images fetch path. Capacitor APK and
+  // dev-server fallback both reach here: the image bytes live in
+  // db.images.base64Data because the saveImage Capacitor branch wrote
+  // them there. Returns the cached data URL as-is.
   const row = await db.images.get(imageId);
   return row?.base64Data || undefined;
 };
@@ -249,12 +220,9 @@ export const saveImageWithId = async (id: string, base64Data: string) => {
   const mimeType = match ? match[1] : 'image/jpeg';
   const rawBase64 = match ? match[2] : base64Data;
 
-  // Both desktop Electron and mobile PWA persist through the PC's
-  // userData/images/ filesystem — see saveImageToBackend. Mobile can't
-  // keep images in its local Dexie because the PC serves /media/images
-  // from disk, not from Dexie. Falling back to Dexie on failure keeps
-  // dev-preview builds (no PC backend at all) alive.
-  if ((isDesktopElectron() && (window as any).electronAPI) || isMobilePwa()) {
+  // F2B.3: simplified to "Electron desktop only" for filesystem path.
+  // Capacitor APK keeps the bytes in Dexie (base64Data) like dev preview.
+  if (isDesktopElectron() && (window as any).electronAPI) {
     try {
       const ext = pickExtFromMime(mimeType);
       const result = await saveImageToBackend(id, ext, rawBase64);

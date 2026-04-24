@@ -14,14 +14,17 @@ import {
 import { UI_TRANSLATIONS } from '../../constants';
 import type { AppUpdateState, Language, UpdaterCacheInfo } from '../../types';
 import { Collapse } from '../Collapse';
-import { isMobilePwa } from '../../services/environment';
+// F2B.3: dropped `isMobilePwa` import; the PWA path is gone. Capacitor
+// native maps to the same "mobile" surface (the GitHub Releases poll lives
+// in useAppUpdater so this section doesn't need to drive Android updates).
+import { isCapacitorNative } from '../../services/environment';
 import { isDesktopElectron } from '../../services/desktopBackupService';
 import { dialogService } from '../../services/dialogService';
 
 type UpdatePlatform = 'desktop' | 'mobile' | 'web';
 
 function detectPlatform(): UpdatePlatform {
-  if (isMobilePwa()) return 'mobile';
+  if (isCapacitorNative()) return 'mobile';
   if (isDesktopElectron()) return 'desktop';
   return 'web';
 }

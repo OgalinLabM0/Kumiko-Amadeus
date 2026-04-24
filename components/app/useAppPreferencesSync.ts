@@ -2,8 +2,10 @@ import { useCallback, useEffect, useRef, type MutableRefObject } from 'react';
 import type { BackupConfig, EmotionType, Language, TtsConfig } from '../../types';
 import { db } from '../../services/db';
 import { isDesktopElectron } from '../../services/desktopBackupService';
-import { isMobilePwa } from '../../services/environment';
-import { httpInvoke } from '../../services/httpApi';
+// F2B.3: dropped `isMobilePwa` + `httpInvoke` imports. Auto-zip + tts-config
+// were synced PC↔phone via Fastify; with the PWA bridge gone the only
+// runtime that hits this code is Electron desktop (Capacitor APK skips
+// `isDesktopElectron()` and the auto-zip toggle is hidden in F2A.4).
 import {
   emitPreferencesChanged,
   queueLocalStoragePreferenceSync,
@@ -79,27 +81,15 @@ export const useAppPreferencesSync = ({
   }, [currentEmotion, isDataLoaded, isBulkRestoreInProgressRef]);
 
   useEffect(() => {
-    // 自动 ZIP 备份开关在 PC 主进程持久化（electron-store）；
-    // 桌面端走 electronAPI.invoke，手机端走 httpInvoke 通过 PC Fastify
-    // 转发到同一个主进程 handler。`app:get/set-auto-zip-backup` 已经在
-    // electron/server/ipc-bridge.cjs 的 ALLOWED_CHANNELS PASSTHROUGH 里，
-    // 这里只是把"开关 hydration / toggle"两端都接通，让手机端 SettingsPanel
-    // 看见同一个状态、能改并实时同步回 PC。
+    // 自动 ZIP 备份开关在 PC 主进程持久化（electron-store）。F2B.3 删了
+    // `isMobilePwa()` httpInvoke 分支 — Capacitor APK 上这个开关在 F2A.4
+    // 已隐藏（无 restore UI 的 4h 自动备份本来就废了），所以只剩 Electron
+    // desktop 一条路径。
     let cancelled = false;
     if (isDesktopElectron()) {
       window.electronAPI!.invoke('app:get-auto-zip-backup').then((result: any) => {
         if (!cancelled) setAutoZipEnabled(result?.enabled === true);
       });
-    } else if (isMobilePwa()) {
-      void (async () => {
-        try {
-          const result = await httpInvoke<{ enabled?: boolean }>('app:get-auto-zip-backup');
-          if (!cancelled) setAutoZipEnabled(result?.enabled === true);
-        } catch (e) {
-          // PC 未连 / 网络异常 → 默认按 store 当前值显示，不阻塞 UI。
-          console.warn('[useAppPreferencesSync] mobile get-auto-zip-backup failed:', e);
-        }
-      })();
     }
     return () => { cancelled = true; };
   }, [setAutoZipEnabled]);
@@ -115,10 +105,6 @@ export const useAppPreferencesSync = ({
         .catch((e) => {
           console.warn('[useAppPreferencesSync] desktop set-auto-zip-backup failed:', e);
         });
-    } else if (isMobilePwa()) {
-      void httpInvoke('preferences:set-from-mobile', { autoZipEnabled: newValue }).catch((e) => {
-        console.warn('[useAppPreferencesSync] mobile set-auto-zip-backup failed:', e);
-      });
     }
   }, [autoZipEnabled, setAutoZipEnabled]);
 
@@ -144,29 +130,16 @@ export const useAppPreferencesSync = ({
       broadcast: false,
     });
 
-    // Cross-device fan-out (PC ↔ mobile PWA).
-    //
-    // - Desktop: emit `tts-config:changed` over the mobile-event-broadcast
-    //   bus so every connected phone re-pulls via `bootstrap:tts-config`
-    //   (`useMobileMessageSync` does the listen + setTtsConfig). Without
-    //   this, the user's desktop ringtone / Fish key change would never
-    //   reach the phone — exactly the "PC=01 / phone=08" desync we just
-    //   shipped a fix for.
-    // - Mobile PWA: ship the new config to the PC via HTTP IPC. The PC
-    //   handler writes its own localStorage AND emits the broadcast, so
-    //   every OTHER paired phone re-syncs. The initiator phone updated
-    //   itself synchronously above, so its own broadcast echo is a
-    //   harmless re-hydration of the same value.
+    // F2B.3: dropped the `isMobilePwa()` httpInvoke branch + the cross-device
+    // PC↔phone fan-out comment block. Capacitor APK is standalone, no
+    // upstream PC to push to. Electron desktop still emits the in-process
+    // broadcast for any IPC listener that wants it.
     if (isDesktopElectron()) {
       try {
         window.electronAPI?.send?.('mobile-event-broadcast', { type: 'tts-config:changed' });
       } catch (e) {
         console.warn('[useAppPreferencesSync] desktop tts-config:changed broadcast failed:', e);
       }
-    } else if (isMobilePwa()) {
-      void httpInvoke('tts-config:update-from-mobile', sanitized).catch((e) => {
-        console.warn('[useAppPreferencesSync] mobile tts-config:update-from-mobile failed:', e);
-      });
     }
   }, [sanitizeTtsConfig, setTtsConfig]);
 

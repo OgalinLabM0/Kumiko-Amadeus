@@ -39,8 +39,8 @@ const MIN_ESTIMATED_HEIGHT = 84;
 const MAX_ESTIMATED_HEIGHT = 460;
 
 // Invalidate the cached flag used by the hot paths so the next
-// `msgListIsMobile()` call re-reads `isMobilePwa()`. Invoked from the
-// `kumiko:runtime-changed` listener.
+// `msgListIsMobile()` call re-reads `isMobileLikeRuntime()`. Invoked from
+// the `kumiko:runtime-changed` listener.
 const invalidateMsgListIsMobileCache = () => {
   _msgListIsMobile = null;
 };

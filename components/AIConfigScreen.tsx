@@ -7,48 +7,26 @@ import { ThemedSelect, type ThemedSelectItem } from './common/ThemedSelect';
 import { getCurrentAIConfig, validateAIConnection, validateModels, validateSearchCapability } from '../services/geminiService';
 import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel, getDefaultEndpoint } from '../services/appConfig';
 import { setAIConfig } from '../services/llmCore';
-import { isMobilePwa } from '../services/environment';
-import { httpInvoke } from '../services/httpApi';
+import { isCapacitorNative } from '../services/environment';
+// F2B.3: dropped `isMobilePwa` + `httpApi` imports. PWA used to forward
+// validate-connection / validate-models / validate-search through the PC
+// so the phone never held the API key. Capacitor APK is fully standalone:
+// it talks to the LLM provider directly (CapacitorHttp bypasses CORS).
+import { CloudEmbeddingForm } from './settings/CloudEmbeddingForm';
 
-// Phase 6 Part B: mobile PWAs never talk to the LLM provider directly.
-// Every validate* call proxies through the PC so API keys + provider
-// choices stay on the desktop, and the save/launch path routes through
-// `ai-config:update-from-mobile` so the PC's localStorage remains the
-// single source of truth. Failures fall back to showing an error status
-// in the existing status line; we never silently persist mobile-only
-// drift — the phone always gets whatever the PC currently thinks is
-// the config on the next `ai-config:changed` broadcast.
+// F2B.3: simplified — both Electron desktop and Capacitor APK call the
+// validators in-process. The PWA `ai-config:validate-*-from-mobile`
+// proxy channels are gone with the rest of the bridge.
 async function validateConnectionUnified(cfg: AIConfig): Promise<boolean> {
-    if (!isMobilePwa()) return validateAIConnection(cfg);
-    try {
-        return await httpInvoke<boolean>('ai-config:validate-from-mobile', cfg);
-    } catch (e) {
-        console.warn('[AIConfig] mobile validate-connection failed:', e);
-        return false;
-    }
+    return validateAIConnection(cfg);
 }
 
 async function validateModelsUnified(cfg: AIConfig): Promise<{ main: boolean; summary: boolean; vision: boolean }> {
-    if (!isMobilePwa()) return validateModels(cfg);
-    try {
-        return await httpInvoke<{ main: boolean; summary: boolean; vision: boolean }>(
-            'ai-config:validate-models-from-mobile', cfg,
-        );
-    } catch (e) {
-        console.warn('[AIConfig] mobile validate-models failed:', e);
-        return { main: false, summary: false, vision: false };
-    }
+    return validateModels(cfg);
 }
 
 async function validateSearchUnified(cfg: AIConfig): Promise<{ success: boolean; message?: string }> {
-    if (!isMobilePwa()) return validateSearchCapability(cfg);
-    try {
-        return await httpInvoke<{ success: boolean; message?: string }>(
-            'ai-config:validate-search-from-mobile', cfg,
-        );
-    } catch (e) {
-        return { success: false, message: (e as Error).message };
-    }
+    return validateSearchCapability(cfg);
 }
 
 async function persistAIConfig(cfg: AIConfig): Promise<{ ok: boolean; error?: string }> {
@@ -238,6 +216,11 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
   const [isSecurityOpen, setIsSecurityOpen] = useState(true);
   const [isAllocationOpen, setIsAllocationOpen] = useState(false);
   const [isVisionOpen, setIsVisionOpen] = useState(false);
+  // F2A.3d: cloud embedding section, mobile-only and default-open so
+  // first-launch users on Android see the RAG dependency knob without
+  // hunting for it. The Vision Helper above stays default-collapsed
+  // because it's optional; embedding is required for any RAG to work.
+  const [isEmbeddingOpen, setIsEmbeddingOpen] = useState(true);
 
   const providerSelectOptions = useMemo<ThemedSelectItem[]>(
     () => [
@@ -601,6 +584,34 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                 </div>
                 </Collapse>
             </div>
+
+            {/* F2A.3d: Cloud Embedding (Android Capacitor only, default
+                open). Mounted between Vision Helper and the Save/Launch
+                row so the first-launch wizard surfaces the RAG dependency
+                without forcing a trip to Settings later. The CloudEmbeddingForm
+                component itself manages its own state via cloudEmbeddingService
+                events (writes are persisted to localStorage on every keystroke). */}
+            {isCapacitorNative() && (
+              <div className="space-y-[clamp(6px,1vw,10px)]">
+                <SectionHeader
+                  label={language === 'zh' ? '云端 Embedding (Android RAG)' : 'Cloud Embedding (Android RAG)'}
+                  icon={Brain}
+                  isOpen={isEmbeddingOpen}
+                  onToggle={() => setIsEmbeddingOpen(!isEmbeddingOpen)}
+                />
+                <Collapse isOpen={isEmbeddingOpen} duration={180}>
+                  <div className="cfg-glass rounded-xl p-[clamp(14px,2vw,22px)]">
+                    <CloudEmbeddingForm
+                      language={language}
+                      isDarkMode={isDarkMode}
+                      inputClass={inputCls}
+                      fieldLabelClass={`block ka-label ${text70} mb-[clamp(4px,0.6vw,6px)]`}
+                      helperClass={`ka-copy-sm ${text55}`}
+                    />
+                  </div>
+                </Collapse>
+              </div>
+            )}
 
             {/* Status + buttons (no longer a fixed bottom bar; flows with the centered column to mirror IntroScreen / AuthScreen) */}
             <div className="space-y-[clamp(6px,1vw,10px)]">
