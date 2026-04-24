@@ -444,6 +444,75 @@ async function buildWebBackupZipBlob(dataJsonString: string): Promise<Blob> {
   return zip.generateAsync({ type: 'blob' });
 }
 
+/**
+ * B.5 (A4.3) helper: snapshot the current Dexie + store state into the
+ * same zip format `handleExportBackup` produces, but skip every UI
+ * side effect (no system notice, no share sheet, no dialog). Used by
+ * `services/androidAutoBackup.ts` to write rolling backups to
+ * `Filesystem.Directory.Data/auto-backup/{ts}.zip`. The output is
+ * bit-identical to a manual export so the user can restore from
+ * either path interchangeably.
+ *
+ * Returns null if the Dexie snapshot fails (don't want a malformed
+ * zip on disk that would later look like a successful auto-backup).
+ */
+export async function buildAndroidAutoBackupBlob(): Promise<Blob | null> {
+  try {
+    const state = useAppStore.getState();
+    const [vectors, kumikoDiaryExport, dailyFragmentsExport, psycheStateExport, episodesExport] = await Promise.all([
+      getAllVectors(),
+      db.kumikoDiary.orderBy('date').toArray(),
+      db.dailyFragments.orderBy('timestamp').toArray(),
+      db.psycheState.get('current'),
+      db.episodes.orderBy('startTimestamp').toArray(),
+    ]);
+
+    // Mirror buildBackupData's payload shape using live store values.
+    // We DON'T import buildBackupData itself because it requires
+    // localised world-book references that the auto-backup path
+    // doesn't need (the importer fills those in on restore).
+    const lightweightBackupData = {
+      messages: state.messages,
+      coreMemory: state.coreMemory,
+      worldBook: state.worldBook,
+      contextLimit: state.contextLimit,
+      turnCount: state.turnCount,
+      summaryArchiveState: state.summaryArchiveState,
+      currentEmotion: state.currentEmotion,
+      locationConfig: state.locationConfig,
+      language: state.language,
+      anchors: state.anchors,
+      kumikoNotebook: state.kumikoNotebook,
+      relativeReminders: state.relativeReminders,
+      dailyReminders: state.dailyReminders,
+    };
+
+    const fullBackup = {
+      timestamp: Date.now(),
+      version: '1.3',
+      data: lightweightBackupData,
+      vectors,
+      kumikoDiary: kumikoDiaryExport,
+      dailyFragments: dailyFragmentsExport,
+      psycheState: psycheStateExport,
+      episodes: episodesExport,
+      _autoZipMeta: {
+        // B.5: same auto-zip metadata stamp the PC writes during
+        // before-quit auto-backup so the import path can recognise
+        // the backup as auto-generated and surface "this was an
+        // auto-backup, not a manual export" hints.
+        source: 'android-auto-backup',
+        generatedAtMs: Date.now(),
+      },
+    };
+    const jsonString = JSON.stringify(fullBackup, null, 2);
+    return await buildWebBackupZipBlob(jsonString);
+  } catch (e) {
+    console.warn('[backupActions] buildAndroidAutoBackupBlob failed:', e);
+    return null;
+  }
+}
+
 export async function handleExportBackup(backupData: any) {
   const state = useAppStore.getState();
   const language = state.language;

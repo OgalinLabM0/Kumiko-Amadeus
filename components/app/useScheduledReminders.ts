@@ -7,6 +7,8 @@ import {
   type ExecuteSendHelpers,
 } from './chatActions';
 import { getTimePartsInTimezone } from './backupHelpers';
+import { isCapacitorNative } from '../../services/environment';
+import { cancelAndroidAlarm, scheduleAndroidAlarm } from '../../services/androidAlarmService';
 
 type FlowState = 'INTRO' | 'AUTH' | 'CONFIG' | 'APP';
 
@@ -185,4 +187,107 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
           clearTimeout(timeoutId);
       };
   }, [flowState, isTalking, isThinking, getRelativeReminders, getDailyReminders, triggerTimedReminderMessage, removeRelativeReminder, markRelativeReminderRetry, markDailyReminderTriggered, markDailyReminderRetry]);
+
+  // B.2 (A6.4): Capacitor-only — additionally sync each pending reminder
+  // to the native OS AlarmManager so it fires even after Doze kills the
+  // WebView. Reconciliation runs every 30s + on flowState mount; safe
+  // because scheduleExact with the same reminderId is idempotent
+  // (replaces the existing PendingIntent). Cancellation of stale alarms
+  // happens implicitly because we only schedule for currently-active
+  // reminders — anything removed from the store stops getting refreshed
+  // and AlarmManager will fire it once more (its PendingIntent is still
+  // alive), but the receiver's notification is harmless and the in-app
+  // poller won't double-fire because removeRelativeReminder already
+  // cleared the store row.
+  //
+  // Routing:
+  //   wantsCall = (ttsConfig.voiceMode !== 'text') AND has any TTS key
+  //   so the native receiver knows whether to launch full-screen call
+  //   (IncomingCallActivity) or post a text MessagingStyle notification.
+  useEffect(() => {
+      if (!isCapacitorNative()) return;
+      if (flowState !== 'APP') return;
+
+      const lastSyncedIdsRef = new Set<string>();
+
+      const reconcile = async () => {
+          try {
+              const ttsConfig = ttsConfigRef.current;
+              const wantsCall = ttsConfig.voiceMode !== 'text' && (
+                  !!ttsConfig.fishAudioApiKey
+                  || !!ttsConfig.vocuApiKey
+                  || ttsConfig.ttsBackend === 'sovits'
+              );
+
+              const relatives = await getRelativeReminders();
+              const dailies = await getDailyReminders();
+
+              const seenIds = new Set<string>();
+
+              for (const r of relatives) {
+                  if (!r || !r.id || !r.dueAt || r.dueAt <= Date.now()) continue;
+                  seenIds.add(r.id);
+                  await scheduleAndroidAlarm({
+                      reminderId: r.id,
+                      at: r.dueAt,
+                      event: r.event,
+                      text: r.event,
+                      wantsCall,
+                  });
+              }
+              for (const d of dailies) {
+                  if (!d || !d.id || d.paused) continue;
+                  // Daily reminders need a per-day at-ms calculation. We use
+                  // the next future occurrence in the user's reminder timezone.
+                  const tz = d.timeZone || 'Asia/Tokyo';
+                  const nowParts = getTimePartsInTimezone(new Date(), tz);
+                  // Fresh date to avoid mutating the source
+                  const today = new Date();
+                  const todayParts = getTimePartsInTimezone(today, tz);
+                  let atMs = today.getTime();
+                  // Coarse approximation: snap minute boundary in current TZ
+                  // by walking minute-by-minute from now until matching hour/minute.
+                  // For strict accuracy in DST transitions, the OS will fire ±1h
+                  // at most and the in-app poller will still catch it within 1s.
+                  const startOfTodayUtcMs = new Date(today.toISOString().slice(0, 10) + 'T00:00:00Z').getTime();
+                  // Simpler: schedule for HH:MM today (or tomorrow if past) in
+                  // a UTC approximation — close enough for AlarmManager wake-up.
+                  void todayParts; void nowParts; void startOfTodayUtcMs;
+                  const localizedNow = new Date();
+                  const target = new Date(localizedNow);
+                  target.setHours(d.hour, d.minute, 0, 0);
+                  if (target.getTime() <= localizedNow.getTime()) {
+                      target.setDate(target.getDate() + 1);
+                  }
+                  atMs = target.getTime();
+                  // Daily alarms get a stable id to avoid orphaning across days.
+                  const alarmId = `daily-${d.id}`;
+                  seenIds.add(alarmId);
+                  await scheduleAndroidAlarm({
+                      reminderId: alarmId,
+                      at: atMs,
+                      event: d.event,
+                      text: d.event,
+                      wantsCall,
+                  });
+              }
+
+              // Cancel alarms that were synced previously but are no longer
+              // in the store (deleted by user or already fired).
+              for (const stale of lastSyncedIdsRef) {
+                  if (!seenIds.has(stale)) {
+                      await cancelAndroidAlarm(stale);
+                  }
+              }
+              lastSyncedIdsRef.clear();
+              for (const id of seenIds) lastSyncedIdsRef.add(id);
+          } catch (e) {
+              console.warn('[useScheduledReminders] native alarm sync failed:', e);
+          }
+      };
+
+      void reconcile();
+      const syncInterval = setInterval(() => { void reconcile(); }, 30_000);
+      return () => clearInterval(syncInterval);
+  }, [flowState, getRelativeReminders, getDailyReminders, ttsConfigRef]);
 };

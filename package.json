@@ -39,6 +39,7 @@
     "@capacitor/local-notifications": "^7.0.6",
     "@capacitor/share": "^7.0.4",
     "@capacitor/status-bar": "^7.0.6",
+    "@capawesome-team/capacitor-android-foreground-service": "^7.0.1",
     "@fastify/cookie": "^11.0.2",
     "@fastify/rate-limit": "^10.3.0",
     "@fastify/static": "^9.1.1",

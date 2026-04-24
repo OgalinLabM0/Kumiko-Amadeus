@@ -147,6 +147,10 @@ import { useAppPreferencesSync } from './app/useAppPreferencesSync';
 import { useScheduledReminders } from './app/useScheduledReminders';
 import { useMessageHistoryOperations } from './app/useMessageHistoryOperations';
 import { installGlobalAudioUnlock } from '../utils/audioUnlock';
+import { startForegroundServiceIfNeeded } from '../services/foregroundServiceController';
+import { startAndroidAutoBackup } from '../services/androidAutoBackup';
+import { isCapacitorNative } from '../services/environment';
+import { useAndroidPendingActionsDrainer } from '../hooks/useAndroidPendingActionsDrainer';
 
 
 export const App = () => {
@@ -168,6 +172,32 @@ export const App = () => {
     const cleanup = installGlobalAudioUnlock();
     return () => cleanup();
   }, []);
+
+  // B.1 (A6.1): Android foreground service. On Capacitor we kick off
+  // the persistent "Kumiko·Amadeus 运行中" status notification so the
+  // process survives Doze and the proactive features (RNG / sleep / busy
+  // / timed reminders / auto-backup) keep firing while the app is
+  // backgrounded or the phone is locked. PWA / Electron skip this branch.
+  // The controller is internally idempotent + checks isCapacitorNative()
+  // and the user's explicit "disable FG service" toggle, so a no-op on
+  // the wrong platforms / when disabled.
+  useEffect(() => {
+    if (!isCapacitorNative()) return;
+    void startForegroundServiceIfNeeded({ language: useAppStore.getState().language });
+    // B.5 (A4.3): start the 4h rolling auto-backup loop. Idempotent;
+    // also fires once on cold start if last run > 4h ago. Listens to
+    // App.appStateChange:background to flush a snapshot the moment the
+    // user backgrounds the app (the "before-quit" equivalent on
+    // Android). All gated behind isCapacitorNative() inside the
+    // controller — PC / PWA see no behavior change.
+    void startAndroidAutoBackup();
+  }, []);
+
+  // B.2 + B.3 + B.4 drainer: drain native-side action queue (call
+  // accept/reject from IncomingCallActivity, Direct Reply text from
+  // RemoteReplyReceiver) on app boot + on App.appResume. Hook
+  // internally short-circuits on non-Capacitor platforms.
+  useAndroidPendingActionsDrainer();
   const { devLogs, setDevLogs } = useDevLogs();
   const isBulkRestoreInProgressRef = useRef(false);
   const rawHistorySyncedIdsRef = useRef<Set<string>>(new Set());

@@ -26,6 +26,47 @@
 
         </activity>
 
+        <!-- B.3: 全屏来电 Activity。仅由 KumikoAlarmReceiver（B.2）在「定时提醒到点 + app 后台」时启动，
+             用 setShowWhenLocked / setTurnScreenOn / setFullScreenIntent 在锁屏点亮屏幕弹全屏来电，
+             跟 LINE / 微信视频通话同款。接听后 broadcast 回 WebView 触发 setVoiceCallOverlayData
+             接听路径，挂断 broadcast reject。`showOnLockScreen + turnScreenOn` 走 manifest 而不是
+             代码是 Android 8.1+ 推荐姿势（旧 API 已 deprecated）。 -->
+        <activity
+            android:name=".calls.IncomingCallActivity"
+            android:exported="false"
+            android:showOnLockScreen="true"
+            android:turnScreenOn="true"
+            android:launchMode="singleInstance"
+            android:excludeFromRecents="true"
+            android:theme="@style/AppTheme.NoActionBarLaunch" />
+
+        <!-- B.2: 闹钟接收器，由 AlarmManager.setExactAndAllowWhileIdle 在用户「定时提醒」到点时
+             触发。Receiver 内部决定走文字消息（普通 LocalNotification + WebView 唤醒）还是全屏来电
+             （IncomingCallActivity）。exported=false 因为只接收 PendingIntent 自发的 alarm，不公开。 -->
+        <receiver
+            android:name=".alarms.KumikoAlarmReceiver"
+            android:exported="false" />
+
+        <!-- B.4: Direct Reply 接收器，处理通知 RemoteInput 锁屏直回。Android 7+ RemoteInput 走
+             这条路：用户在通知栏输入文字 → broadcast 到这里 → 注入到 store messages 队列 →
+             WebView 端 useMobileMessageSync 同款回放路径。exported=true 因为 NotificationManager
+             从 system 进程发 PendingIntent 进来。 -->
+        <receiver
+            android:name=".replies.RemoteReplyReceiver"
+            android:exported="true" />
+
+        <!-- B.1: @capawesome-team/capacitor-android-foreground-service 的 manifest 块。
+             Service 用于 host 一个常驻通知让进程不被 Android 后台杀掉，
+             这样 useProactiveLifeCycle 的 RNG 主动消息 / 睡眠协议 / Busy 跟进 /
+             B.5 自动备份 4h 定时器在锁屏 / app 关闭后还能跑。
+             foregroundServiceType="dataSync" 因为我们的工作是「同步 / 处理本地数据 + 偶发推送」，
+             这是 Android 14+ 上数据类后台任务的官方分类。 -->
+        <receiver android:name="io.capawesome.capacitorjs.plugins.foregroundservice.NotificationActionBroadcastReceiver" />
+        <service
+            android:name="io.capawesome.capacitorjs.plugins.foregroundservice.AndroidForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -37,8 +78,6 @@
         </provider>
     </application>
 
-    <!-- Permissions（A1 基础集，A6 Foreground Service 上来时再加 FOREGROUND_SERVICE / POST_NOTIFICATIONS / SCHEDULE_EXACT_ALARM / USE_FULL_SCREEN_INTENT） -->
-
     <!-- 网络（拉云端 LLM / TTS / 历史天气 / RAG embedding API） -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -46,6 +85,34 @@
     <!-- 触觉反馈：Haptics 插件 + LINE/微信式短脉冲 / 来电长震动模式 -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- WAKE_LOCK：语音播放 / 通话期间防止 CPU 休眠（与 useAppViewport 里的 wakeLock 同源） -->
+    <!-- WAKE_LOCK：语音播放 / 通话期间防止 CPU 休眠（与 useAppViewport 里的 wakeLock 同源；
+         Foreground Service 也需要它在 Doze 模式下完成短暂的 CPU 工作，AlarmReceiver 在被
+         alarm 唤醒后用 PowerManager.WakeLock 短锁住 CPU 直到我们调度完通知 / 拉起来电界面）。 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- B.1 Foreground Service（A6.1）。Android 14 起需要声明 type；我们用 dataSync 因为
+         主要工作是 4h 自动备份 + 主动消息检测（不是 mediaPlayback / location / 等专项类）。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- B.2 通知（Android 13 起 POST_NOTIFICATIONS 是运行时权限，
+         系统会弹一次授权弹窗。capacitor-local-notifications + capacitor-android-foreground-service
+         都依赖这个。Android 12 及以下自动授予。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- B.2 AlarmManager 精确闹钟（Android 12+）。SCHEDULE_EXACT_ALARM 是用户可在系统设置里
+         撤销的特殊权限；USE_EXACT_ALARM 不可撤销但只允许「日历 / 闹钟类」app 使用。
+         我们两个都申报：Android 13+ Play Store 风险评估上 USE_EXACT_ALARM 必须有合理用途
+         （定时提醒 = 用户主动设置的提醒，符合定义）；SCHEDULE_EXACT_ALARM 作为 fallback。 -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+
+    <!-- B.3 全屏来电。Android 14+ 必须申报（且只在 system call 类 app 上系统才允许全屏弹起；
+         普通 app 第一次会弹一个授权请求把通知降级为 heads-up）。我们的「定时提醒到点拉起的
+         AI 来电」是合理使用场景之一。 -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+
+    <!-- B.1 启动屏幕开机自启动（仅在用户开了"开机自启"开关时生效）。FG service 用它在重启后
+         自动恢复，否则用户重启手机后 4h 自动备份循环就断了。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 </manifest>
