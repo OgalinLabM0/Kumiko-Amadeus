@@ -20,7 +20,7 @@ import {
 import { Collapse } from '../Collapse';
 import { openExternalUrl } from '../../utils/openExternal';
 import { primeAudioForUserGesture } from '../../utils/audioUnlock';
-import { isMobilePwa } from '../../services/environment';
+import { isCapacitorNative, isMobilePwa } from '../../services/environment';
 import { httpInvoke, subscribeEvents } from '../../services/httpApi';
 
 interface TtsTestErrorInfo {
@@ -875,10 +875,19 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
           <div>
             <div className={fieldLabelClass}>{language === 'zh' ? 'TTS 引擎' : 'TTS Engine'}</div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+            <div className={`grid grid-cols-1 ${isCapacitorNative() ? 'sm:grid-cols-2' : 'sm:grid-cols-3'} gap-2 mt-2`}>
+              {/*
+                A3: GPT-SoVITS is a PC-only feature (PyTorch + CUDA + Python
+                runtime + ~5 GB models live on PC's localhost). On Android
+                Capacitor we hide the radio entirely; sanitizeTtsConfig clamps
+                a migrated `ttsBackend: 'sovits'` to 'fish' so the picker
+                doesn't render with the wrong selection.
+              */}
               {([
                 { value: 'fish' as TtsBackend, label: 'Fish Audio', desc: language === 'zh' ? '云端 · 需 API Key' : 'Cloud · API Key required', icon: Cloud },
-                { value: 'sovits' as TtsBackend, label: 'GPT-SoVITS', desc: language === 'zh' ? '本地推理' : 'Local inference', icon: Cpu },
+                ...(isCapacitorNative() ? [] : [
+                  { value: 'sovits' as TtsBackend, label: 'GPT-SoVITS', desc: language === 'zh' ? '本地推理' : 'Local inference', icon: Cpu },
+                ]),
                 { value: 'vocu' as TtsBackend, label: 'Vocu AI', desc: language === 'zh' ? '云端 · 需 API Key' : 'Cloud · API Key required', icon: Sparkles },
               ]).map(opt => (
                 <button key={opt.value}

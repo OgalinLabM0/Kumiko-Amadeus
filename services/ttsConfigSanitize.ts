@@ -16,6 +16,7 @@
 
 import { DEFAULT_TTS_CONFIG } from '../constants';
 import type { TtsConfig } from '../types';
+import { isCapacitorNative } from './environment';
 import { isBuiltInRingtoneId, isCustomRingtoneId } from './voiceFileService';
 
 export function sanitizeTtsConfig(value: unknown): TtsConfig {
@@ -33,6 +34,16 @@ export function sanitizeTtsConfig(value: unknown): TtsConfig {
   // the default so the UI never renders an empty-state radio group.
   if (merged.ttsBackend !== 'fish' && merged.ttsBackend !== 'sovits' && merged.ttsBackend !== 'vocu') {
     merged.ttsBackend = DEFAULT_TTS_CONFIG.ttsBackend;
+  }
+
+  // A3: GPT-SoVITS is PC-only by physical constraint (PyTorch + CUDA +
+  // Python runtime, ~5 GB models, runs an HTTP server on PC localhost).
+  // On Android Capacitor the backend is unreachable from the WebView, so
+  // we silently fall back to Fish Audio if a phone migrates from a paired
+  // setup with sovits selected. PWA / Electron pass through unchanged
+  // (PWA proxies SoVITS through PC's loopback the same way Fish/Vocu used to).
+  if (isCapacitorNative() && merged.ttsBackend === 'sovits') {
+    merged.ttsBackend = 'fish';
   }
 
   // Vocu field clamping: enforce types so UI inputs / API calls never see

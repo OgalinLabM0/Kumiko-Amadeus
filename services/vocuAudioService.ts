@@ -1,6 +1,6 @@
 import type { EmotionType, TtsConfig } from '../types';
 import { TtsError, type TtsSynthesisResult } from './fishAudioService';
-import { isMobilePwa } from './environment';
+import { isCapacitorNative, isMobilePwa } from './environment';
 import { base64ToArrayBuffer, httpInvoke } from './httpApi';
 
 interface VocuProxyResult {
@@ -39,14 +39,13 @@ export async function synthesizeWithVocu(
   config: TtsConfig,
   emotion: EmotionType = 'neutral',
 ): Promise<TtsSynthesisResult> {
-  // Mobile WebView origin is `capacitor://localhost`; Vocu's CORS preflight
-  // rejects it, so a direct fetch surfaces as "Load failed" on the phone.
-  // Route through the PC renderer (no CORS), which then runs the same
-  // `synthesizeWithVocu` against Vocu's API and ships the MP3 bytes back
-  // as base64 over the IPC bridge. Emotion-boost / vivid preset gating
-  // stays consistent because the PC handler reads the same `config` +
-  // `emotion` arguments.
-  if (isMobilePwa()) {
+  // Routing matrix mirrors fishAudioService.synthesizeSpeech (A3):
+  //   - Desktop / Capacitor Android → direct fetch (CapacitorHttp on
+  //     Android bypasses CORS so capacitor://localhost can hit Vocu's
+  //     CDN without preflight rejection).
+  //   - Mobile PWA only (NOT Capacitor) → proxy through PC renderer.
+  //   See fishAudioService.synthesizeSpeech for the full rationale.
+  if (isMobilePwa() && !isCapacitorNative()) {
     const reply = await httpInvoke<VocuProxyResult>('tts:vocu-synth', { text, config, emotion });
     if (!reply || reply.ok === false || !reply.audioB64) {
       throw new TtsError('unknown', reply?.error || 'Mobile Vocu TTS proxy failed');

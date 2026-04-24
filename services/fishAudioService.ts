@@ -1,5 +1,5 @@
 import type { TtsConfig } from '../types';
-import { isMobilePwa } from './environment';
+import { isCapacitorNative, isMobilePwa } from './environment';
 import { base64ToArrayBuffer, httpInvoke } from './httpApi';
 
 export interface TtsSynthesisResult {
@@ -131,13 +131,21 @@ export async function synthesizeSpeech(
     text: string,
     config: TtsConfig,
 ): Promise<TtsSynthesisResult> {
-    // Mobile WebView origin is `capacitor://localhost`, which Fish Audio's
-    // CORS preflight refuses → direct fetch surfaces as "Load failed". Route
-    // the call to the PC renderer via the HTTP IPC bridge: PC node-grade
-    // fetch has no CORS, returns the audio as base64, we decode + return
-    // an ArrayBuffer indistinguishable from the desktop path. PC renderer
-    // path (below) is unchanged.
-    if (isMobilePwa()) {
+    // Routing matrix:
+    //   - Desktop Electron / Capacitor Android → fall through to direct
+    //     fetch below. On Capacitor the global CapacitorHttp plugin
+    //     (capacitor.config.ts) re-routes the WebView's fetch through
+    //     native OkHttp, so Fish Audio's CORS preflight against
+    //     capacitor://localhost is bypassed entirely. A3 cuts the PC
+    //     dependency for Fish here so the APK keeps working after A7.
+    //   - Mobile PWA only (NOT Capacitor) → still proxies through the
+    //     PC renderer because the PWA WebView origin (PC's IP / Tailnet
+    //     hostname) IS in CORS rejection territory the same way, and
+    //     the PWA's whole design is "PC handles the heavy lifting".
+    //     `!isCapacitorNative()` guards against the Capacitor case where
+    //     isMobilePwa() returns true (Capacitor uses the HTTP bridge
+    //     model when PC is configured) but we still want direct fetch.
+    if (isMobilePwa() && !isCapacitorNative()) {
         const reply = await httpInvoke<TtsProxyResult>('tts:fish-synth', { text, config });
         if (!reply || reply.ok === false || !reply.audioB64) {
             throw new TtsError('unknown', reply?.error || 'Mobile Fish TTS proxy failed');
