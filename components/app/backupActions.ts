@@ -55,8 +55,9 @@ import {
   writeDesktopBackupFile,
   buildDesktopBackupZip,
 } from '../../services/desktopBackupService';
-import { isMobilePwa } from '../../services/environment';
+import { isCapacitorNative, isMobilePwa } from '../../services/environment';
 import { httpBackupExport, httpBackupImport } from '../../services/httpApi';
+import { exportBackupZipNative } from '../../services/capacitorBackupNative';
 import { dialogService } from '../../services/dialogService';
 import { syncTemporalEpisodes } from '../../services/temporalEpisodeService';
 import { imageService } from '../../services/imageService';
@@ -500,13 +501,47 @@ export async function handleExportBackup(backupData: any) {
       return;
     }
 
+    // Capacitor native (Android APK / iOS .ipa): build the zip locally
+    // (same buildWebBackupZipBlob helper the dev-server fallback uses —
+    // images come from Dexie, voice/ringtone from Dexie via voiceFileService),
+    // then write to Capacitor `Directory.Cache` and pop the OS share sheet
+    // so the user picks the destination (Files app / Drive / email / etc).
+    // No PC dependency — A4 cuts the third bridge to PC. PWA path below
+    // is bit-identical to before because PWAs are still PC-companion.
+    if (isCapacitorNative()) {
+      const blob = await buildWebBackupZipBlob(jsonString);
+      const result = await exportBackupZipNative(blob, defaultFileName);
+      if (!result.ok) {
+        const detail = result.error ? ` (${result.error})` : '';
+        console.error('[EXPORT] Capacitor native backup export failed:', result);
+        void dialogService.alert({
+          message: (language === 'zh' ? '备份导出失败。' : 'Failed to export backup.') + detail,
+          icon: 'error',
+        });
+        return;
+      }
+      // Cancel from the share sheet still leaves the file in cache → treat
+      // as success silently. A normal "shared to <X>" outcome surfaces a
+      // toast so the user knows it landed.
+      if (result.canceled) {
+        state.setSystemNotice(language === 'zh' ? '备份已就绪，可在「文件」中找到。' : 'Backup ready in Files app.');
+      } else {
+        state.setSystemNotice(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
+      }
+      return;
+    }
+
     // Mobile PWA: POST the serialized JSON to the desktop's
     // /api/backup/export route and stream the zip blob back. The PC
     // reads userData/images|voice|ringtone directly — same code path as
     // desktop manual export — so the phone doesn't have to re-upload
     // any media. We trigger a browser download by synthesizing an <a>
     // click; the object URL is revoked right after to free memory.
-    if (isMobilePwa()) {
+    // `!isCapacitorNative()` guard: isMobilePwa() returns true for both
+    // PWA and Capacitor, but Capacitor went through the native branch
+    // above. This protects against the future case where the Capacitor
+    // path errors and we accidentally fall through into PC HTTP.
+    if (isMobilePwa() && !isCapacitorNative()) {
       const result = await httpBackupExport(jsonString, defaultFileName);
       if (!result.ok || !result.blob) {
         const detail = result.error ? ` (${result.error})` : '';
@@ -522,8 +557,8 @@ export async function handleExportBackup(backupData: any) {
       return;
     }
 
-    // Web fallback (no electron, no PWA): renderer-side JSZip + file-
-    // saver download. Rare — just dev-server previews.
+    // Web fallback (no electron, no PWA, no Capacitor): renderer-side JSZip
+    // + file-saver download. Rare — just dev-server previews.
     const content = await buildWebBackupZipBlob(jsonString);
     saveAs(content, defaultFileName);
     state.setSystemNotice(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
@@ -564,13 +599,15 @@ export async function handleImportBackup(
       }
       parsedJson = parsedResult.json;
       importedImages = parsedResult.images || [];
-    } else if (isMobilePwa()) {
-      // Mobile PWA: upload the raw file bytes to the desktop's
-      // /api/backup/import route. The server writes them to userData/
-      // mobile-imports/, runs the same `parseBackupImportFile` the
-      // desktop uses (voice/ringtone land in userData server-side), and
-      // returns the parsed data.json + image dataUrls the renderer
+    } else if (isMobilePwa() && !isCapacitorNative()) {
+      // Mobile PWA only (NOT Capacitor): upload the raw file bytes to
+      // the desktop's /api/backup/import route. The server writes them
+      // to userData/mobile-imports/, runs the same `parseBackupImportFile`
+      // the desktop uses (voice/ringtone land in userData server-side),
+      // and returns the parsed data.json + image dataUrls the renderer
       // still needs to write into Dexie through imageService.
+      // Capacitor falls through to the web-fallback ZIP parse path below
+      // (JSZip + voiceFileService) so it has zero PC dependency for import.
       const uploadResult = await httpBackupImport(file, file.name || 'backup.zip');
       if (!uploadResult.ok || !uploadResult.result || !uploadResult.result.success) {
         throw new Error(uploadResult.error || 'Failed to parse mobile backup upload.');
