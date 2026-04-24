@@ -559,7 +559,7 @@ Phase 6 把手机端的功能补齐到和桌面 1:1，Phase 7 负责的是所有
   和 `icon-192/512 + apple-touch-icon-180` 一起保证"配对页图标 =
   手机主屏图标 = PC 软件图标"。
 - brand-fix：配对页所有面向用户的文案统一为"中文主体 + 英文小字副标题"
-  双语风格：`移动端伴侣 · Mobile Companion`、`正在连接桌面端 /
+  双语风格：`移动端 · Mobile Terminal`、`正在连接桌面端 /
   Connecting with your desktop`、4 条 hydration 步骤、PairingView 整段
   说明 / 按钮 / 错误 / hint。desktop IntroScreen 的双语基调延续到
   phone onboarding，配对页不再像是脱轨的英文 demo。

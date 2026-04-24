@@ -78,7 +78,18 @@ export const AppMainView: React.FC<AppMainViewProps> = ({
       <ImageViewer {...imageViewerProps} />
       <AppAvatarPanel {...avatarPanelProps} />
 
-      <div className={`relative z-20 h-full w-full md:w-1/2 lg:w-2/5 flex flex-col border-l transition-colors duration-200 md:duration-500 overflow-hidden min-h-0 ${sidebarBg} ${chatContainerShadow}`} style={{contain:'layout style'}}>
+      <div
+        className={`relative z-20 h-full w-full md:w-1/2 lg:w-2/5 flex flex-col border-l transition-colors duration-200 md:duration-500 overflow-hidden min-h-0 ${sidebarBg} ${chatContainerShadow}`}
+        style={{
+          contain: 'layout style',
+          // --kb-inset：手机端键盘遮挡高度（来自 useViewportSync）。
+          // 在聊天列做 padding-bottom 而不是去动 body / html，可以让
+          // AppChatFooter 自然被推到键盘上沿、AppMessageList（flex-1）
+          // 自动挤短，同时 AppChatHeader / AppAvatarPanel 完全不动。
+          // 桌面 / 安卓 / 不支持 visualViewport 的环境 --kb-inset 永远是 0。
+          paddingBottom: 'var(--kb-inset, 0px)',
+        }}
+      >
         <AppChatHeader {...chatHeaderProps} />
         <DisconnectedBanner
           isVisible={isDisconnected}

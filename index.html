@@ -3,7 +3,16 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <!--
+      `interactive-widget=resizes-content`（iOS 16.4+ / Chrome 108+）：
+      告诉浏览器「软键盘弹起时请缩 layout viewport」，而不是默认的
+      「滑 visual viewport」。这样 100vh / window.innerHeight 会自动收
+      缩到键盘上方，#ka-app-root 跟着缩，AppChatHeader 留在顶端、
+      AppMessageList（flex-1）自动挤短、AppChatFooter 自然贴键盘上沿；
+      老浏览器忽略未知 token，行为同现状（由 useAppViewport 里的
+      focusin 估算 + visualViewport 兜底）。
+    -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
     <!--
       Phase 5 Part C: match the manifest's `theme_color` so Android's
       status bar blends into the chat gradient instead of flashing the
@@ -64,6 +73,13 @@
         --sar: env(safe-area-inset-right);
         --sab: env(safe-area-inset-bottom);
         --sal: env(safe-area-inset-left);
+        /* --kb-inset: iOS / Android 软键盘遮挡的高度（px）。
+           运行时由 hooks/useAppViewport.ts 的 useViewportSync 监听
+           visualViewport.resize/scroll 写入；只被 AppMainView 的聊天列
+           当作 padding-bottom 消费，让消息列表被键盘动态挤短而头部 /
+           立绘背景不动。默认 0px，桌面 / 不支持 visualViewport 的环境
+           永远是 0。 */
+        --kb-inset: 0px;
         --font-ui: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Plus Jakarta Sans', sans-serif;
         --font-reading: 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Plus Jakarta Sans', sans-serif;
         --font-display: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'STSong', 'Cormorant Garamond', serif;
@@ -783,7 +799,7 @@
         Pre-React inline splash. **Mobile-PWA / browser only** — the
         inline IIFE below checks navigator.userAgent for "Electron"
         and immediately removes this subtree on desktop so the
-        "移动端伴侣 · MOBILE COMPANION" copy never flashes on a
+        "移动端 · MOBILE TERMINAL" copy never flashes on a
         Windows/macOS/Linux window. Desktop doesn't need the splash
         anyway: BrowserWindow paints backgroundColor '#f9f7f2' (same
         cream as the splash) and the local file:// bundle loads in
@@ -805,7 +821,7 @@
         <img src="/favicon-KA.png" width="88" height="88" alt="Kumiko·Amadeus" style="width:88px; height:88px; object-fit:contain; margin-bottom:18px;" />
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
           <span style="display:inline-block; width:2.5rem; height:1px; background-color:#785A42; opacity:0.4;"></span>
-          <span style="font-family: 'IBM Plex Mono', monospace; font-size:10px; font-weight:600; color:rgba(120,90,66,0.55); letter-spacing:0.14em; text-transform:uppercase;">移动端伴侣 · Mobile Companion</span>
+          <span style="font-family: 'IBM Plex Mono', monospace; font-size:10px; font-weight:600; color:rgba(120,90,66,0.55); letter-spacing:0.14em; text-transform:uppercase;">移动端 · Mobile Terminal</span>
           <span style="display:inline-block; width:2.5rem; height:1px; background-color:#785A42; opacity:0.4;"></span>
         </div>
         <div style="font-size:28px; color:#785A42; font-weight:bold; letter-spacing:0.1em; line-height:1;">AMADEUS</div>
@@ -820,7 +836,7 @@
         try {
           // Electron desktop has no bundle-load window (file:// reads
           // finish in ms and BrowserWindow.backgroundColor already
-          // paints the cream base), so the "MOBILE COMPANION"-subtitled
+          // paints the cream base), so the "MOBILE TERMINAL"-subtitled
           // splash would only flash awkwardly. Detect Electron via UA
           // — it always contains "Electron/<ver>" regardless of
           // contextIsolation or whether preload has exposed anything.

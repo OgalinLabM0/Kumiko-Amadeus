@@ -34,7 +34,9 @@ import {
   httpStatus,
 } from '../services/httpApi';
 import { db, type DailyFragmentEntity, type KeyValEntity, type KumikoDiaryEntity, type MessageEntity, type PsycheStateEntity } from '../services/db';
+import { applyPreferencesPatch, type PreferencesBootstrapPayload } from '../services/preferencesSync';
 import { ensurePushSubscription } from '../services/pushSubscriptionService';
+import { useViewportSync } from '../hooks/useAppViewport';
 import {
   MobilePairingChrome,
   MobilePairingHydrating,
@@ -64,9 +66,9 @@ interface BootstrapSnapshotResponse {
   error?: string;
 }
 
-interface BootstrapAiConfigResponse {
+interface BootstrapPreferencesResponse {
   ok: boolean;
-  config?: string | null;
+  payload?: PreferencesBootstrapPayload;
   error?: string;
 }
 
@@ -77,15 +79,14 @@ async function hydrateFromPcSnapshot(
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   try {
     onStep('config');
-    const aiConfigRes = await httpInvoke<BootstrapAiConfigResponse>('bootstrap:ai-config');
-    if (aiConfigRes?.ok && typeof aiConfigRes.config === 'string' && aiConfigRes.config.length > 0) {
-      try {
-        localStorage.setItem('kumiko_ai_config', aiConfigRes.config);
-      } catch {
-        // Quota errors would block the whole boot; swallow and let the
-        // settings UI reconfigure manually if needed.
-      }
+    const prefsRes = await httpInvoke<BootstrapPreferencesResponse>('preferences:bootstrap');
+    if (!prefsRes?.ok || !prefsRes.payload) {
+      return { ok: false, error: prefsRes?.error || 'Empty preferences payload from PC.' };
     }
+    await applyPreferencesPatch(prefsRes.payload, {
+      replaceKeyval: true,
+      revision: prefsRes.payload.revision,
+    });
 
     onStep('snapshot');
     const snapRes = await httpInvoke<BootstrapSnapshotResponse>('bootstrap:snapshot');
@@ -277,6 +278,14 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
   const [loadingElapsedMs, setLoadingElapsedMs] = useState(0);
   const loadingStartedAtRef = useRef<number>(Date.now());
 
+  // 在配对阶段（loading / pairing / hydrating）App 还没挂载，
+  // useAppViewport 不会跑 → 键盘弹起会露 iOS 灰背景。
+  // 由本 gate 顶部接管同一份 viewport sync，bg 用 IntroScreen / splash
+  // 同款米色 #f9f7f2，与 MobilePairingChrome 背景对齐。
+  // `enabled = state.kind !== 'paired'`：配对完成后让 children → App →
+  // useAppViewport 接管，避免两个 hook 同时写 :root / body / #root 互相覆盖。
+  useViewportSync({ bg: '#f9f7f2', enabled: state.kind !== 'paired' });
+
   const refresh = useCallback(async () => {
     loadingStartedAtRef.current = Date.now();
     setLoadingElapsedMs(0);
@@ -297,6 +306,17 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
     const alreadyHydrated = typeof sessionStorage !== 'undefined'
       && sessionStorage.getItem(HYDRATION_FLAG_KEY) === '1';
     if (alreadyHydrated) {
+      try {
+        const prefsRes = await httpInvoke<BootstrapPreferencesResponse>('preferences:bootstrap');
+        if (prefsRes?.ok && prefsRes.payload) {
+          await applyPreferencesPatch(prefsRes.payload, {
+            replaceKeyval: true,
+            revision: prefsRes.payload.revision,
+          });
+        }
+      } catch (e) {
+        console.warn('[MobilePairingGate] lightweight preferences refresh failed (non-fatal):', e);
+      }
       setState({ kind: 'paired', hostname: status.hostname });
       return;
     }

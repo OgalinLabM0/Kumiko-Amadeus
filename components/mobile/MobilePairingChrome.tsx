@@ -161,7 +161,10 @@ export function MobilePairingChrome({ children }: MobilePairingChromeProps) {
     <div
       className="ka-pair-bg fixed inset-0 z-[100] flex flex-col items-stretch overflow-y-auto"
       style={{
-        minHeight: '100dvh',
+        // 跟随 useViewportSync 写到 :root 的 --app-vh 自动收缩；键盘弹起时
+        // 立刻和真实可视区域对齐，不再被 100dvh 顶在全屏导致底部露 iOS 灰背景。
+        // var() fallback 100dvh 兜底浏览器 PWA / 老 iOS 没有 --app-vh 的场景。
+        height: 'var(--app-vh, 100dvh)',
         paddingTop: 'max(40px, var(--sat))',
         paddingBottom: 'max(24px, var(--sab))',
         paddingLeft: 'max(24px, var(--sal))',
@@ -182,7 +185,7 @@ export function MobilePairingChrome({ children }: MobilePairingChromeProps) {
           <div className="flex items-center gap-2">
             <div className="ka-pair-divider" />
             <span className="ka-pair-micro text-[10px] font-semibold uppercase">
-              移动端伴侣 · Mobile Companion
+              移动端 · Mobile Terminal
             </span>
             <div className="ka-pair-divider" />
           </div>
