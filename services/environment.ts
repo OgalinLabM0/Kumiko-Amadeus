@@ -273,6 +273,25 @@ export function setCapacitorStandalone(): void {
   }
 }
 
+/**
+ * A.3 helper: returns true for ANY mobile-like runtime — PWA paired
+ * with PC OR Capacitor native APK (paired or standalone). Use this
+ * when the decision is "should we apply mobile-screen UX tweaks?"
+ * (audio autoplay unlock, viewport sizing caches, OS badge, mobile
+ * action sheet styles, etc.) — anywhere the runtime is "phone /
+ * tablet WebView" regardless of whether a PC is upstream.
+ *
+ * DON'T use this for "should we route through PC's HTTP bridge?" —
+ * those checks must stay on plain `isMobilePwa()`, which already
+ * returns false in Capacitor standalone mode (see comment there).
+ */
+export function isMobileLikeRuntime(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (isElectron()) return false;
+  if (isCapacitorNative()) return true;
+  return isMobilePwa();
+}
+
 // The base URL for HTTP proxy calls. In PWA mode this is always the
 // current origin (PC's Fastify); in Capacitor mode it's the user-configured
 // PC URL (empty until the gate's `configure-pc-url` view collects it,

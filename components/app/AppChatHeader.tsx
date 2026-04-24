@@ -2,16 +2,19 @@ import React from 'react';
 import { BellRing, BrainCircuit, CheckSquare, Clock3, Maximize, Minimize, Moon, Settings, Sun, Trash2, User, BookOpen } from 'lucide-react';
 import { ExtendedSyncStatus, RagStatusIndicator, SyncStatusIndicator } from '../SyncStatus';
 import { useAppStore } from '../../store';
-import { isMobilePwa } from '../../services/environment';
+import { isMobileLikeRuntime } from '../../services/environment';
 
 // Mobile perf: cache the mobile-runtime flag at module load so hot paths
 // (ResizeObserver callbacks, per-frame rAF loops) don't re-probe the
 // runtime on every invocation. Desktop Electron and web fallback both
 // resolve to `false` here, so their behaviour is unchanged.
+// A.3: cache resolves to true for any mobile-like runtime (PWA +
+// Capacitor APK), so Capacitor users see the same touch-friendly
+// header tweaks as PWA users regardless of pairing state.
 let _chatHeaderIsMobile: boolean | null = null;
 const chatHeaderIsMobile = (): boolean => {
   if (_chatHeaderIsMobile === null) {
-    try { _chatHeaderIsMobile = isMobilePwa(); } catch { _chatHeaderIsMobile = false; }
+    try { _chatHeaderIsMobile = isMobileLikeRuntime(); } catch { _chatHeaderIsMobile = false; }
   }
   return _chatHeaderIsMobile;
 };

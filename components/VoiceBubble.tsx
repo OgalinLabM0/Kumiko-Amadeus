@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, AlertTriangle, RefreshCw } from 'lucide-react';
 import { loadVoiceFile } from '../services/voiceFileService';
-import { isMobilePwa } from '../services/environment';
+import { isCapacitorNative, isMobilePwa } from '../services/environment';
 import { getHttpVoiceUrl } from '../services/httpApi';
 import type { Language } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
@@ -110,12 +110,16 @@ export const VoiceBubble: React.FC<VoiceBubbleProps> = ({
     try {
       if (!audioRef.current) {
         let audio: HTMLAudioElement;
-        if (isMobilePwa()) {
-          // Mobile PWA: stream directly from the desktop HTTP server; the
-          // browser handles progressive download + playback without loading
-          // the entire buffer into memory. Since the PWA and the media
-          // endpoint share the same origin, the session cookie is sent
-          // automatically; no `crossOrigin` opt-in is needed.
+        if (isMobilePwa() && !isCapacitorNative()) {
+          // PWA only (NOT Capacitor): stream directly from the desktop
+          // HTTP server; the browser handles progressive download +
+          // playback without loading the entire buffer into memory.
+          // Same-origin cookie auth, no crossOrigin opt-in.
+          // A.3: Capacitor — paired or standalone — falls through to
+          // loadVoiceFile because saveVoiceFile's Capacitor branch
+          // writes to Directory.Data/voices/{id}.mp3 locally; PC
+          // /media/voices/{id} wouldn't have the file (TTS was generated
+          // direct on phone in A3).
           const streamUrl = getHttpVoiceUrl(voiceFileId);
           audio = new Audio(streamUrl);
         } else {

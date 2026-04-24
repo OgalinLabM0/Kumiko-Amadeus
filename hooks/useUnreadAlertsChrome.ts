@@ -1,7 +1,7 @@
 import { useCallback, useEffect } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { isDesktopElectron } from '../services/desktopBackupService';
-import { isMobilePwa } from '../services/environment';
+import { isMobileLikeRuntime } from '../services/environment';
 import { showBackgroundNotification } from '../components/app/chatActions';
 import type { MessageAlertKind, MissedMessageAlert } from '../types';
 
@@ -105,15 +105,17 @@ export function useUnreadAlertsChrome(
       }
     }
 
-    // Phase 5 Part B: native app-badge for mobile PWAs. Android Chrome
-    // ≥ 81, iOS 16.4+ installed-to-home-screen, desktop Edge/Chrome all
-    // honor setAppBadge when the PWA is in the foreground. The service
-    // worker also writes the badge on push arrival (sw.ts) — this
-    // effect covers the in-session case where messages come in while
-    // the PWA is the foreground app (push is suppressed then).
-    // Permission failures + unsupported browsers are silently ignored
-    // so desktop web fallbacks don't flood the console.
-    if (isMobilePwa()) {
+    // Phase 5 Part B + A.3: native app-badge for any mobile-like
+    // runtime (PWA + Capacitor APK). Android Chrome ≥ 81, iOS 16.4+
+    // installed-to-home-screen, desktop Edge/Chrome all honor
+    // setAppBadge when the PWA is in the foreground. Capacitor's
+    // Android WebView also exposes the API on Chromium 81+ so the
+    // launcher icon badge updates without us going through Capacitor's
+    // separate Badge plugin. The service worker writes the badge on
+    // push arrival (sw.ts, PWA only) — this effect covers the
+    // in-session case where messages come in while the app is in the
+    // foreground.
+    if (isMobileLikeRuntime()) {
       const nav = navigator as Navigator & {
         setAppBadge?: (count?: number) => Promise<void>;
         clearAppBadge?: () => Promise<void>;

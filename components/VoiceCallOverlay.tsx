@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Phone, PhoneOff, Loader2, X } from 'lucide-react';
-import { resolveRingtoneAudioSource } from '../services/voiceFileService';
-import { isMobilePwa } from '../services/environment';
+import { loadVoiceFile, resolveRingtoneAudioSource } from '../services/voiceFileService';
+import { isCapacitorNative, isMobileLikeRuntime } from '../services/environment';
 import { getHttpVoiceUrl } from '../services/httpApi';
 import {
   getSharedUnlockedAudio,
@@ -85,7 +85,12 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
         if (cancelled) return;
         if (source) {
           ringtoneCleanupRef.current = source.cleanup || null;
-          const audio = isMobilePwa() ? getSharedUnlockedAudio() : new Audio(source.src);
+          // A.3: shared unlocked Audio is needed on ANY mobile-like
+          // runtime (PWA + Capacitor) to bypass the iOS Safari /
+          // Capacitor WebView autoplay policy. Desktop / Electron
+          // (`isMobileLikeRuntime() === false`) creates a fresh element
+          // because autoplay is unrestricted there.
+          const audio = isMobileLikeRuntime() ? getSharedUnlockedAudio() : new Audio(source.src);
           try {
             audio.pause();
             audio.currentTime = 0;
@@ -117,18 +122,20 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
     };
   }, [phase, ringtoneFileId]);
 
-  // Phase 5 Part D: mobile-side voice playback. When the PC tells the
-  // phone the call transitioned to `isPlayingVoice=true` and which
-  // voiceFileId to stream, we open an <audio> against /media/voices/:id
-  // so Kumiko's voice plays on the phone instead of (or alongside)
-  // the PC speaker. Desktop path is unchanged — chatActions.ts owns
-  // the Blob URL playback there and we never enter this block because
-  // isMobilePwa() is false.
+  // Phase 5 Part D + A.3: mobile-side voice playback. When the call
+  // transitions to `isPlayingVoice=true` and we know the voiceFileId,
+  // resolve a playable URL:
+  //   - Mobile PWA: GET /media/voices/:id from PC's Fastify
+  //   - Capacitor (paired or standalone): loadVoiceFile() reads the
+  //     local Filesystem copy saved by services/voiceFileService.ts'
+  //     Capacitor branch and creates a blob: URL
+  //   - Desktop / Electron: never enters here — chatActions owns the
+  //     local ArrayBuffer playback there.
   useEffect(() => {
-    if (!isMobilePwa()) return;
+    if (!isMobileLikeRuntime()) return;
     if (phase !== 'active' || !voiceFileId) return;
     let cancelled = false;
-    const src = getHttpVoiceUrl(voiceFileId);
+    let blobUrl: string | null = null;
     const audio = getSharedUnlockedAudio();
     try {
       audio.pause();
@@ -136,27 +143,54 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
     } catch {
       // ignore stale state from the ringing phase
     }
-    audio.src = src;
-    audio.preload = 'auto';
-    audio.volume = 1.0;
-    voiceAudioRef.current = audio;
-    audio.addEventListener('ended', () => {
-      if (!cancelled) {
-        // Parent controls the ended flag via PC-side state. We can't
-        // set it locally (would desync from desktop's timer), so we
-        // just let the PC's `isEnded` broadcast drive the transition.
-        try { audio.src = ''; } catch { /* ignore */ }
+
+    const setupAndPlay = async () => {
+      let src: string;
+      if (isCapacitorNative()) {
+        // Standalone or paired Capacitor: voice clip lives in
+        // Directory.Data/voices/{id}.mp3 (see voiceFileService A.3 branch).
+        const buf = await loadVoiceFile(voiceFileId);
+        if (!buf || cancelled) return;
+        const blob = new Blob([buf], { type: 'audio/mpeg' });
+        blobUrl = URL.createObjectURL(blob);
+        src = blobUrl;
+      } else {
+        // PWA: stream from PC HTTP. Same behaviour as before A.3.
+        src = getHttpVoiceUrl(voiceFileId);
       }
-    });
-    audio.play().catch((e) => {
-      console.warn('[CALL-OVERLAY] mobile voice playback failed:', e);
-    });
+      if (cancelled) {
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
+        return;
+      }
+      audio.src = src;
+      audio.preload = 'auto';
+      audio.volume = 1.0;
+      voiceAudioRef.current = audio;
+      audio.addEventListener('ended', () => {
+        if (!cancelled) {
+          // Parent controls the ended flag via PC-side state on PWA;
+          // standalone Capacitor relies on the same external state
+          // shape for symmetry. Either way we don't mutate it here.
+          try { audio.src = ''; } catch { /* ignore */ }
+        }
+      });
+      try {
+        await audio.play();
+      } catch (e) {
+        console.warn('[CALL-OVERLAY] mobile voice playback failed:', e);
+      }
+    };
+    void setupAndPlay();
+
     return () => {
       cancelled = true;
       try {
         audio.pause();
         audio.src = '';
       } catch { /* ignore */ }
+      if (blobUrl) {
+        try { URL.revokeObjectURL(blobUrl); } catch { /* ignore */ }
+      }
       voiceAudioRef.current = null;
     };
   }, [phase, voiceFileId]);
@@ -165,7 +199,7 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
     if (acceptedRef.current) return;
     acceptedRef.current = true;
     if (ringtoneRef.current) { ringtoneRef.current.pause(); }
-    if (isMobilePwa()) {
+    if (isMobileLikeRuntime()) {
       void primeSharedAudioForGesture().catch(() => {
         // ignore: the accept gesture still improves later autoplay odds
       });

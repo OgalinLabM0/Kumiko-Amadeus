@@ -2,14 +2,18 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { Loader2 } from 'lucide-react';
 import { ChatBubble } from '../ChatBubble';
 import { Language, Message } from '../../types';
-import { isMobilePwa } from '../../services/environment';
+import { isMobileLikeRuntime } from '../../services/environment';
 
 // Mobile perf: cache the mobile-runtime flag once at module load. Keeps
-// `isMobilePwa()` out of the per-frame scroll + resize hot paths.
+// the runtime check out of the per-frame scroll + resize hot paths.
+// A.3: gates on `isMobileLikeRuntime()` (PWA + Capacitor) instead of
+// PWA-only — Capacitor APK uses the same touch-screen UX optimisations
+// (smaller cards, momentum scrolling tweaks) regardless of whether
+// it's paired with a PC.
 let _msgListIsMobile: boolean | null = null;
 const msgListIsMobile = (): boolean => {
   if (_msgListIsMobile === null) {
-    try { _msgListIsMobile = isMobilePwa(); } catch { _msgListIsMobile = false; }
+    try { _msgListIsMobile = isMobileLikeRuntime(); } catch { _msgListIsMobile = false; }
   }
   return _msgListIsMobile;
 };

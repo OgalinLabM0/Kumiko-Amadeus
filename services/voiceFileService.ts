@@ -37,8 +37,97 @@ const getIpc = () => {
 // desktop's HTTP IPC bridge. The voice / ringtone channels are already
 // whitelisted in Phase 3 Part B (images:save, voice:save, ringtone:save
 // decode base64 in useMobileApiProxy and forward to the real handlers),
-// so the mobile path is functionally identical to desktop.
-const hasBackend = (): boolean => !!getIpc() || isMobilePwa();
+// so the mobile path is functionally identical to desktop. On Capacitor
+// (A.3) we have a third backend: native @capacitor/filesystem under
+// Directory.Data/voices/{id}.mp3, sandboxed to the app and persistent
+// across launches.
+const hasBackend = (): boolean => !!getIpc() || isMobilePwa() || isCapacitorNative();
+
+// A.3: voice file storage on Capacitor native (Android APK / iOS .ipa).
+// Uses Capacitor Filesystem (NOT Dexie) because voice clips can total
+// 100s of MB after a year of conversation; Dexie's 5-50 MB IndexedDB
+// quota would evict them silently. Directory.Data is the right pick:
+//   - Sandboxed to the app (`/data/data/com.kumiko.amadeus.app/files/...`)
+//   - Persistent across launches (unlike Cache)
+//   - Not visible to other apps via SAF (we're not handing out shares)
+//   - Backup-safe: included in Android Auto Backup unless we mark
+//     android:allowBackup="false" (we don't, so cloud restore retains
+//     voice history alongside Dexie)
+//
+// Failures (out-of-space, sandbox revoked, etc.) bubble up as `false`
+// from the wrappers so the caller's existing
+// `if (!success) addMessageToStore(text)` text-only fallback fires.
+const VOICE_DIR = 'voices';
+
+async function capacitorVoiceWrite(messageId: string, buffer: ArrayBuffer): Promise<boolean> {
+    try {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        await Filesystem.writeFile({
+            path: `${VOICE_DIR}/${messageId}.mp3`,
+            data: arrayBufferToBase64(buffer),
+            directory: Directory.Data,
+            recursive: true,
+        });
+        return true;
+    } catch (e) {
+        console.warn('[voiceFileService] Capacitor voice write failed:', e);
+        return false;
+    }
+}
+
+async function capacitorVoiceRead(messageId: string): Promise<ArrayBuffer | null> {
+    try {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        const result = await Filesystem.readFile({
+            path: `${VOICE_DIR}/${messageId}.mp3`,
+            directory: Directory.Data,
+        });
+        const data = (result as { data?: unknown }).data;
+        if (typeof data === 'string') {
+            const binary = atob(data.replace(/-/g, '+').replace(/_/g, '/'));
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+            return bytes.buffer;
+        }
+        // Web Filesystem returns Blob; coerce to ArrayBuffer.
+        if (data instanceof Blob) return await data.arrayBuffer();
+        return null;
+    } catch {
+        // Filesystem.readFile throws on missing path — voice file simply
+        // hasn't been generated yet (or was deleted), no warn needed.
+        return null;
+    }
+}
+
+async function capacitorVoiceDelete(messageId: string): Promise<boolean> {
+    try {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        await Filesystem.deleteFile({
+            path: `${VOICE_DIR}/${messageId}.mp3`,
+            directory: Directory.Data,
+        });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function capacitorVoiceList(): Promise<VoiceFileInfo[]> {
+    try {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        const result = await Filesystem.readdir({ path: VOICE_DIR, directory: Directory.Data });
+        const files = (result as { files?: Array<{ name: string; size?: number; mtime?: number }> }).files || [];
+        return files
+            .filter((f) => /\.mp3$/i.test(f.name))
+            .map((f) => ({
+                id: f.name.replace(/\.mp3$/i, ''),
+                size: f.size || 0,
+                mtime: f.mtime || 0,
+            }));
+    } catch {
+        return [];
+    }
+}
 
 export const isVoiceServiceAvailable = () => hasBackend();
 
@@ -99,6 +188,13 @@ export async function saveVoiceFile(messageId: string, buffer: ArrayBuffer): Pro
         const result = await ipc.invoke('voice:save', { messageId, buffer: new Uint8Array(buffer) });
         return result?.success === true;
     }
+    // A.3: Capacitor first — branch checked before isMobilePwa() because
+    // isMobilePwa() returns true for Capacitor non-standalone too. We
+    // want voice files local on Capacitor regardless of pairing state
+    // (PC's HTTP path would shrug if standalone has no PC URL).
+    if (isCapacitorNative()) {
+        return capacitorVoiceWrite(messageId, buffer);
+    }
     if (isMobilePwa()) {
         const result = await httpInvoke<{ success?: boolean }>('voice:save', {
             messageId,
@@ -119,6 +215,9 @@ export async function loadVoiceFile(messageId: string): Promise<ArrayBuffer | nu
         if (buf?.buffer instanceof ArrayBuffer) return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
         return null;
     }
+    if (isCapacitorNative()) {
+        return capacitorVoiceRead(messageId);
+    }
     if (isMobilePwa()) {
         try {
             const response = await fetch(getHttpVoiceUrl(messageId), { credentials: 'include' });
@@ -135,6 +234,9 @@ export async function deleteVoiceFile(messageId: string): Promise<boolean> {
         const result = await ipc.invoke('voice:delete', { messageId });
         return result?.success === true;
     }
+    if (isCapacitorNative()) {
+        return capacitorVoiceDelete(messageId);
+    }
     if (isMobilePwa()) {
         const result = await httpInvoke<{ success?: boolean }>('voice:delete', { messageId });
         return result?.success === true;
@@ -147,6 +249,9 @@ export async function listVoiceFiles(): Promise<VoiceFileInfo[]> {
     if (ipc) {
         const result = await ipc.invoke('voice:list');
         return result?.files ?? [];
+    }
+    if (isCapacitorNative()) {
+        return capacitorVoiceList();
     }
     if (isMobilePwa()) {
         const result = await httpInvoke<{ files?: VoiceFileInfo[] }>('voice:list', {});
@@ -166,6 +271,11 @@ export async function getVoiceStorageInfo(): Promise<VoiceStorageInfo> {
     if (ipc) {
         const result = await ipc.invoke('voice:get-storage-info');
         return { count: result?.count ?? 0, totalBytes: result?.totalBytes ?? 0 };
+    }
+    if (isCapacitorNative()) {
+        const files = await capacitorVoiceList();
+        const totalBytes = files.reduce((sum, f) => sum + f.size, 0);
+        return { count: files.length, totalBytes };
     }
     if (isMobilePwa()) {
         const result = await httpInvoke<VoiceStorageInfo>('voice:get-storage-info', {});
