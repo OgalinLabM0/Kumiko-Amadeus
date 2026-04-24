@@ -22,6 +22,15 @@ export default defineConfig(({ mode }) => {
       define: {
         __APP_VERSION__: JSON.stringify(pkg.version || '0.0.0'),
       },
+      // v2.14.2 J.2: hnswlib-wasm ships an Emscripten module (hnswlib.mjs)
+      // with an embedded base64 wasm payload. We exclude it from Vite's
+      // dep-optimizer so the worker / dynamic import path stays intact, and
+      // teach Rollup to treat *.wasm as an asset for any future plain-wasm
+      // imports.
+      optimizeDeps: {
+        exclude: ['hnswlib-wasm'],
+      },
+      assetsInclude: ['**/*.wasm'],
       server: {
         port: 3000,
         host: '0.0.0.0',
@@ -78,6 +87,10 @@ export default defineConfig(({ mode }) => {
 
               if (n.includes('@xenova/transformers') || n.includes('onnxruntime-web')) {
                 return 'rag-vendor';
+              }
+
+              if (n.includes('hnswlib-wasm')) {
+                return 'hnsw-vendor';
               }
 
               if (n.includes('jszip') || n.includes('file-saver') || n.includes('browser-image-compression')) {

@@ -615,10 +615,81 @@ export const subscribeLocalRagRebuild = (
     };
   }
 
-  // F2B.3: PWA WS + HTTP poll fallback removed. Capacitor's
-  // androidRagService runs the rebuild fully in-process (no background
-  // job, no IPC) so its caller resolves synchronously and doesn't need
-  // an event stream. Web preview / no IPC: noop unsubscribe.
+  // v2.14.2 J.5: Capacitor (Android) has no IPC event stream; the in-process
+  // rebuild loop in androidRagService writes a snapshot we poll every
+  // ~300 ms. Translate consecutive snapshots into the same started /
+  // progress / done / error event sequence the IPC branch emits, so
+  // upstream consumers (handleRebuildRag in summaryActions) don't need to
+  // know which platform they're on.
+  if (isCapacitorNative()) {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let lastProcessed = -1;
+    let lastStage: string | null = null;
+    let started = false;
+
+    const pollOnce = async () => {
+      if (cancelled) return;
+      try {
+        const result = await invokeAndroidRag<{
+          success: boolean;
+          running: boolean;
+          snapshot: any;
+        }>('rag:rebuild:status');
+
+        const snapshot = normalizeLocalRagRebuildSnapshot(result?.snapshot || {});
+        const running = !!result?.running;
+        const finished = !!result?.snapshot?.finished;
+        const error: string | null = result?.snapshot?.error ?? null;
+
+        if (!started && (running || snapshot.processed !== null || snapshot.stage)) {
+          listener({ type: 'started', ...snapshot });
+          started = true;
+          lastProcessed = snapshot.processed ?? -1;
+          lastStage = snapshot.stage as string | null;
+        } else if (
+          started
+          && (snapshot.processed !== lastProcessed || (snapshot.stage as string | null) !== lastStage)
+        ) {
+          listener({ type: 'progress', ...snapshot });
+          lastProcessed = snapshot.processed ?? -1;
+          lastStage = snapshot.stage as string | null;
+        }
+
+        if (!running && finished) {
+          if (error) {
+            listener({ type: 'error', ...snapshot, error });
+          } else {
+            listener({
+              type: 'done',
+              ...snapshot,
+              appliedCount: snapshot.storedCount,
+            });
+          }
+          cancelled = true;
+          return;
+        }
+      } catch (e) {
+        console.warn('[LOCAL RAG] Capacitor rebuild poll failed:', e);
+      }
+
+      if (!cancelled) {
+        timer = setTimeout(pollOnce, 300);
+      }
+    };
+
+    timer = setTimeout(pollOnce, 100);
+
+    return () => {
+      cancelled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+  }
+
+  // F2B.3: PWA WS + HTTP poll fallback removed. Web preview / no IPC: noop.
   return () => {};
 };
 

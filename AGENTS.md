@@ -165,14 +165,27 @@ that promotes a draft release to GA across both desktop channels.
 
 ## Known gaps
 
-- **Windows dual-arch target side effect (FIXED in v2.14.0 / F2B.5)**:
-  `package.json#build.nsis.artifactName` is now
-  `Kumiko-Amadeus-Setup-${arch}-${version}.exe` plus
-  `differentialPackage: false`. The combined ~1.6 GB
-  `Kumiko-Amadeus-Setup.exe` and `.blockmap` siblings are no longer
-  emitted. The arm64 channel file may still need synthesis via
-  `scripts/generate-latest-yml.cjs` if electron-builder skips it on
-  the matrix arm64 leg — see release cookbook Step 5.
+- **Windows dual-arch installer collision (FIXED in v2.14.0 / F2B.5)**:
+  `package.json#build.nsis.artifactName` is
+  `Kumiko-Amadeus-Setup-${arch}-${version}.exe`. Without the explicit
+  `${arch}` token both legs of the matrix wrote to the same filename
+  and the second upload overwrote the first as a ~1.6 GB universal
+  installer. As a defence-in-depth, [windows-release.yml](.github/workflows/windows-release.yml)
+  Step C.1 also deletes any `Kumiko-Amadeus-Setup-${PACKAGE_VERSION}.exe`
+  GitHub release asset that lacks an `-x64-` / `-arm64-` arch suffix.
+- **Windows / Linux differential update blockmaps (RE-ENABLED in v2.14.2 / K.1)**:
+  `package.json#build.nsis.differentialPackage` was disabled in v2.14.0
+  while we were tracking down the dual-arch bug above and never turned
+  back on. With the artifactName fix in place, blockmap generation is
+  safe again, so v2.14.2 sets `differentialPackage: true` and lets
+  electron-builder emit the matching `.blockmap` siblings (Windows NSIS
+  + Linux AppImage). The blockmap siblings are NOT the same thing as
+  the universal installer — the C.1 cleanup grep is anchored on the
+  exact `Kumiko-Amadeus-Setup-${PACKAGE_VERSION}.exe` literal so it
+  will not delete `*.blockmap` files. The arm64 channel file may still
+  need synthesis via `scripts/generate-latest-yml.cjs` if
+  electron-builder skips it on the matrix arm64 leg — see release
+  cookbook Step 5.
 - **macOS desktop**: no channel. Not planned until someone volunteers
   a signed-notarised build pipeline on `macos-latest`.
 - **iOS App Store release**: out of scope. The iOS workflow only

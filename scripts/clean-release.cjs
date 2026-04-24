@@ -9,16 +9,17 @@ const mode = process.argv[2] || 'postbuild';
 // (x64 + arm64) NSIS output, Linux AppImage output, plus electron-updater
 // channel files and the auxiliary asset bundle. See package.json build.win /
 // build.linux targets and scripts/generate-latest-yml.cjs for the other ends
-// of this contract. Linux builds produce AppImage files but no blockmaps.
+// of this contract.
 //
 // F2B.5: NSIS artifactName became `Kumiko-Amadeus-Setup-${arch}-${version}.exe`
 // (e.g. `Kumiko-Amadeus-Setup-x64-2.14.0.exe`). The exact version isn't known
 // here, so we keep entries via prefix/suffix patterns instead of literal sets.
-// `differentialPackage: false` removes the `.blockmap` siblings, but if any
-// older builds left them around we keep them too so a re-run is idempotent.
+//
+// K.1 (v2.14.2): `differentialPackage: true` is back, so electron-builder
+// emits matching `.blockmap` siblings for both the NSIS installers and the
+// AppImage targets. We keep all of them so electron-updater clients can
+// download incremental diffs instead of full ~750 MB installers.
 const keepPostbuildLiteral = new Set([
-  'Kumiko-Amadeus-x86_64.AppImage',
-  'Kumiko-Amadeus-arm64.AppImage',
   'latest.yml',
   'latest-arm64.yml',
   'latest-linux.yml',
@@ -26,17 +27,27 @@ const keepPostbuildLiteral = new Set([
   'kumiko-assets.zip',
 ]);
 
-// F2B.5: keep any per-arch versioned NSIS installer + its (legacy) blockmap.
+// F2B.5 + K.1: keep any per-arch versioned NSIS installer and its blockmap.
 // Matches:
-//   Kumiko-Amadeus-Setup-x64-2.14.0.exe          ← new
-//   Kumiko-Amadeus-Setup-arm64-2.14.0.exe        ← new
-//   Kumiko-Amadeus-Setup-x64.exe                 ← legacy fallback (pre-F2B.5)
-//   Kumiko-Amadeus-Setup-arm64.exe               ← legacy fallback (pre-F2B.5)
-// Plus their `.exe.blockmap` siblings (only if differentialPackage somehow
-// re-enables itself).
+//   Kumiko-Amadeus-Setup-x64-2.14.2.exe
+//   Kumiko-Amadeus-Setup-arm64-2.14.2.exe
+//   Kumiko-Amadeus-Setup-x64-2.14.2.exe.blockmap
+//   Kumiko-Amadeus-Setup-arm64-2.14.2.exe.blockmap
+//   Kumiko-Amadeus-Setup-x64.exe / -arm64.exe (legacy fallback, pre-F2B.5)
+const NSIS_KEEP_RE = /^Kumiko-Amadeus-Setup-(x64|arm64)(-[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.\-+]*)?)?\.exe(?:\.blockmap)?$/i;
+
+// K.1: AppImages and their blockmap siblings.
+//   Kumiko-Amadeus-x86_64.AppImage
+//   Kumiko-Amadeus-arm64.AppImage
+//   Kumiko-Amadeus-x86_64.AppImage.blockmap
+//   Kumiko-Amadeus-arm64.AppImage.blockmap
+const APPIMAGE_KEEP_RE = /^Kumiko-Amadeus-(x86_64|arm64)\.AppImage(?:\.blockmap)?$/i;
+
 function isKeepablePostbuildEntry(name) {
   if (keepPostbuildLiteral.has(name)) return true;
-  return /^Kumiko-Amadeus-Setup-(x64|arm64)(-[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.\-+]*)?)?\.exe(?:\.blockmap)?$/i.test(name);
+  if (NSIS_KEEP_RE.test(name)) return true;
+  if (APPIMAGE_KEEP_RE.test(name)) return true;
+  return false;
 }
 
 function removeEntry(targetPath) {

@@ -1,56 +1,54 @@
 // services/androidRagService.ts
 //
-// A5.1 lite: pure-JS brute-force RAG service for the Android Capacitor APK.
+// v2.14.2 (J.4/J.5/J.6) — RAG service for the Android Capacitor APK.
 // Implements the same `rag:*` channel surface that PC's electron-rag.cjs
 // exposes (so localRagService's invoker abstraction can swap PC ↔ phone
-// without touching the consumer-facing API), but uses:
+// without touching the consumer-facing API). Backed by:
 //   - Cloud embeddings via cloudEmbeddingService (5 providers).
-//   - Brute-force cosine similarity over Dexie's existing `vectors` table
-//     (same schema PC writes to during backup restore — see VectorEntity).
+//   - **Primary search path**: HNSW WASM index in androidRagHnswIndex
+//     (hnswlib-wasm — same upstream nmslib/hnswlib as PC's hnswlib-node).
+//   - **Fallback path**: brute-force cosine over Dexie's existing
+//     `vectors` table. Used when HNSW init / load / search fails, when
+//     the embedding dim drifts (provider switch), or when the corpus
+//     exceeds HNSW_MAX_ELEMENTS (50 000). The fallback used to be the
+//     primary path through v2.14.1 — keeping it as the safety net costs
+//     nothing and guarantees Android RAG never goes dark.
 //
-// Why brute force instead of sqlite-vec right now?
+// Capacity & latency budget:
 //   - Typical Kumiko users have 4 000-12 000 vectors after a year of use.
-//     At 768 dimensions that's ~7 M multiplications per query, ~50-100 ms
-//     on modern phones (Snapdragon 8 Gen 1 / A15+). Imperceptible compared
-//     to the 200-800 ms cloud embedding round-trip the search already pays.
-//   - A5.1.2 (sqlite-vec NDK cross-compile + jniLibs.so) is a separate
-//     research-heavy item. The plan explicitly says brute-force is the
-//     documented fallback — we ship the fallback first so Android RAG
-//     works end-to-end, then swap in sqlite-vec when the .so build lands.
+//     With HNSW that's a sub-10 ms query on modern phones; brute force
+//     at the same scale is ~50-100 ms. Either way well below the
+//     200-800 ms cloud embedding round-trip the search already pays.
+//   - At 50 000 vectors HNSW is still snappy (~15-30 ms) but RAM grows
+//     to ~170 MB on the WASM heap; we hard-cap there and fall back to
+//     brute force on Dexie streaming for users above that threshold.
 //
-// Channels implemented (everything else returns a graceful degraded result
-// and a console.warn for visibility):
+// Channels implemented:
 //   - rag:embed              → cloudEmbedding round-trip
-//   - rag:save               → upsert into db.vectors
-//   - rag:search             → cosine similarity over db.vectors, returns
-//                              top-K with the same `results: [{ id, text,
-//                              score, ... }]` shape PC returns.
+//   - rag:save               → upsert into db.vectors AND HNSW (best-effort)
+//   - rag:search             → HNSW first, fall back to brute force; same
+//                              `results: [{ id, text, score, ... }]` shape
+//                              PC returns.
 //   - rag:get-all            → dump db.vectors (used by export)
-//   - rag:clear-all          → wipe db.vectors
-//   - rag:clear-message-vectors / rag:delete (by id)
+//   - rag:clear-all          → wipe db.vectors AND drop HNSW index file
+//   - rag:clear-message-vectors → bulk delete + HNSW markDelete batch
 //   - rag:stats              → count + total vector bytes
-//   - rag:status             → always { enabled: true } on Android
-//   - rag:expand-context     → simple ±N message lookup from db.messages
-//                              by timestamp (no SQLite quote-context needed)
-//   - rag:get-messages       → degraded {success:true, messages: []} since
-//                              the message store IS Dexie on phone
-//   - rag:sync-messages      → no-op success (Dexie is the source of truth)
-//
-// Channels NOT implemented (return degraded but non-throwing payloads so
-// the UI doesn't crash; see comments below):
-//   - rag:restore            → would re-embed every chunk, expensive cloud
-//                              spend; deferred until rebuild UX is wired
-//   - rag:rebuild:start /:status → same reason; UI shows "rebuild
-//                              unavailable on this device" via the WS
-//                              fallback in localRagService.
+//   - rag:status             → backend reflects current HNSW mode
+//   - rag:expand-context     → ±5 min message lookup from db.messages
+//   - rag:get-messages       → return full Dexie messages corpus
+//   - rag:sync-messages      → no-op success (Dexie IS source of truth)
+//   - rag:rebuild:start      → drop HNSW + stream Dexie back into a fresh
+//                              index in 200-row batches; progress queryable
+//   - rag:rebuild:status     → snapshot of the current rebuild loop state
 //
 // PC behavior: this module is NEVER imported on Electron. The Capacitor
 // branch in localRagService.getRagInvoker() short-circuits to here only
-// when isCapacitorNative() is true. PC and PWA continue to dispatch
-// through Electron IPC / Fastify HTTP exactly as before.
+// when isCapacitorNative() is true. PC continues to dispatch through
+// Electron IPC exactly as before.
 
 import { db, type VectorEntity } from './db';
 import { generateCloudEmbedding } from './cloudEmbeddingService';
+import * as hnsw from './androidRagHnswIndex';
 
 interface RagSearchPayload {
   query: string;
@@ -172,34 +170,39 @@ async function handleSave(payload: any): Promise<{ success: boolean; id?: string
 
   try {
     await db.vectors.put(entity);
-    return { success: true, id };
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : 'Dexie put failed' };
   }
+  try {
+    await hnsw.add(id, vectorBuf);
+  } catch (e) {
+    console.warn(`[androidRag] HNSW add(${id}) raised; brute force will catch this row:`, e);
+  }
+  return { success: true, id };
 }
 
-async function handleSearch(payload: RagSearchPayload): Promise<RagSearchResponse> {
-  const { query, topK = 15, beforeTimestamp, afterTimestamp } = payload || ({} as RagSearchPayload);
-  if (!query || typeof query !== 'string') {
-    return { success: true, results: [] };
-  }
+function shapeRow(row: VectorEntity, score: number): RagSearchResultRow {
+  return {
+    id: row.id,
+    messageId: row.messageId,
+    text: row.text,
+    score,
+    timestamp: row.timestamp,
+    tier: row.tier,
+    source: row.source,
+    canonicalKey: row.canonicalKey,
+    tags: row.tags,
+  };
+}
 
-  // 1) Embed the query via cloud.
-  let queryVec: Float32Array;
-  try {
-    const result = await generateCloudEmbedding(query);
-    queryVec = result.vector;
-  } catch (e) {
-    console.warn('[androidRag] embedding query failed, returning empty results:', e);
-    return { success: true, results: [] };
-  }
-
-  // 2) Pull candidate vectors from Dexie.
-  // Cap at 50 000 rows so the in-memory work stays bounded; users with more
-  // than that have bigger problems than search latency anyway.
+async function bruteForceSearch(
+  queryVec: Float32Array,
+  topK: number,
+  beforeTimestamp: number | undefined,
+  afterTimestamp: number | undefined,
+): Promise<RagSearchResultRow[]> {
   const all = await db.vectors.limit(50_000).toArray();
 
-  // 3) Apply temporal filters first (cheap), then score.
   const candidates = all.filter((row) => {
     if (typeof beforeTimestamp === 'number' && row.timestamp >= beforeTimestamp) return false;
     if (typeof afterTimestamp === 'number' && row.timestamp <= afterTimestamp) return false;
@@ -216,22 +219,60 @@ async function handleSearch(payload: RagSearchPayload): Promise<RagSearchRespons
     .filter((x): x is { row: VectorEntity; score: number } => !!x);
 
   scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, Math.max(1, topK)).map(({ row, score }) => shapeRow(row, score));
+}
 
-  const top = scored.slice(0, Math.max(1, topK));
-  return {
-    success: true,
-    results: top.map(({ row, score }) => ({
-      id: row.id,
-      messageId: row.messageId,
-      text: row.text,
-      score,
-      timestamp: row.timestamp,
-      tier: row.tier,
-      source: row.source,
-      canonicalKey: row.canonicalKey,
-      tags: row.tags,
-    })),
-  };
+async function hnswSearch(
+  queryVec: Float32Array,
+  topK: number,
+  beforeTimestamp: number | undefined,
+  afterTimestamp: number | undefined,
+): Promise<RagSearchResultRow[] | null> {
+  const hits = await hnsw.search(queryVec, Math.max(topK * 2, topK));
+  if (!hits || hits.length === 0) return hits ? [] : null;
+
+  const ids = hits.map((h) => h.vectorId);
+  const rows = await db.vectors.bulkGet(ids);
+  const out: RagSearchResultRow[] = [];
+  for (let i = 0; i < hits.length && out.length < topK; i += 1) {
+    const row = rows[i];
+    if (!row) continue;
+    if (typeof beforeTimestamp === 'number' && row.timestamp >= beforeTimestamp) continue;
+    if (typeof afterTimestamp === 'number' && row.timestamp <= afterTimestamp) continue;
+    out.push(shapeRow(row, hits[i].score));
+  }
+  return out;
+}
+
+async function handleSearch(payload: RagSearchPayload): Promise<RagSearchResponse> {
+  const { query, topK = 15, beforeTimestamp, afterTimestamp } = payload || ({} as RagSearchPayload);
+  if (!query || typeof query !== 'string') {
+    return { success: true, results: [] };
+  }
+
+  let queryVec: Float32Array;
+  try {
+    const result = await generateCloudEmbedding(query);
+    queryVec = result.vector;
+  } catch (e) {
+    console.warn('[androidRag] embedding query failed, returning empty results:', e);
+    return { success: true, results: [] };
+  }
+
+  // Try HNSW first; on null (mode≠hnsw, dim drift, throw) fall through to
+  // brute force so the user always gets results even if the WASM index is
+  // unavailable.
+  try {
+    const hnswResults = await hnswSearch(queryVec, topK, beforeTimestamp, afterTimestamp);
+    if (hnswResults) {
+      return { success: true, results: hnswResults };
+    }
+  } catch (e) {
+    console.warn('[androidRag] HNSW search threw, falling back to brute force:', e);
+  }
+
+  const bruteResults = await bruteForceSearch(queryVec, topK, beforeTimestamp, afterTimestamp);
+  return { success: true, results: bruteResults };
 }
 
 async function handleGetAll(): Promise<{ success: boolean; vectors: any[] }> {
@@ -246,6 +287,11 @@ async function handleGetAll(): Promise<{ success: boolean; vectors: any[] }> {
 
 async function handleClearAll(): Promise<{ success: boolean }> {
   await db.vectors.clear();
+  try {
+    await hnsw.clearAll();
+  } catch (e) {
+    console.warn('[androidRag] hnsw.clearAll threw:', e);
+  }
   return { success: true };
 }
 
@@ -255,7 +301,13 @@ async function handleClearMessageVectors(payload: any): Promise<{ success: boole
   // Dexie compound `where` — `messageId` is not indexed but the table is
   // small enough for a full scan to be fine on phones.
   const matching = await db.vectors.filter((v) => !!v.messageId && ids.includes(v.messageId)).toArray();
-  await db.vectors.bulkDelete(matching.map((v) => v.id));
+  const vectorIds = matching.map((v) => v.id);
+  await db.vectors.bulkDelete(vectorIds);
+  try {
+    await hnsw.markDeletedBatch(vectorIds);
+  } catch (e) {
+    console.warn('[androidRag] hnsw.markDeletedBatch threw:', e);
+  }
   return { success: true, deleted: matching.length };
 }
 
@@ -267,8 +319,20 @@ async function handleStats(): Promise<{ success: boolean; count: number; totalBy
   return { success: true, count, totalBytes };
 }
 
-async function handleStatus(): Promise<{ enabled: boolean; ready: boolean; backend: string }> {
-  return { enabled: true, ready: true, backend: 'android-bruteforce' };
+async function handleStatus(): Promise<{
+  enabled: boolean;
+  ready: boolean;
+  backend: string;
+  hnsw?: ReturnType<typeof hnsw.getStatus>;
+}> {
+  const status = hnsw.getStatus();
+  const backend =
+    status.mode === 'hnsw'
+      ? 'android-hnsw-wasm'
+      : status.mode === 'bruteforce'
+        ? 'android-bruteforce'
+        : 'android-uninitialized';
+  return { enabled: true, ready: true, backend, hnsw: status };
 }
 
 async function handleExpandContext(payload: any): Promise<{ success: boolean; messages: any[] }> {
@@ -300,6 +364,201 @@ async function handleSyncMessages(): Promise<{ success: boolean }> {
   return { success: true };
 }
 
+// =====================================================================
+// J.5 — RAG rebuild flow (Android)
+//
+// PC's electron-rag.cjs runs rebuild as a long-lived background job that
+// emits IPC events. Android/Capacitor has no IPC event channel, so this
+// runs the rebuild in-process and exposes a poll-able snapshot via
+// rag:rebuild:status. The localRagService subscribe wrapper polls every
+// ~300 ms on Capacitor to translate snapshots into LocalRagRebuildEvent
+// transitions (started / progress / done / error).
+//
+// The rebuild is intentionally minimal compared to PC's pipeline:
+//   1. Drop the in-memory + IDBFS HNSW index.
+//   2. Re-init empty at capacity = max(10k, vector count + headroom).
+//   3. Stream Dexie rows in batches of 200, insert into HNSW.
+//   4. flush() to IDBFS.
+//
+// Steps PC's rebuild does that we DON'T do on Android:
+//   - re-embed messages: cloud spend would be punitive; Dexie already
+//     has the raw vectors so we reuse them as-is.
+//   - rebuild episodes/fragments: those flow through their own pipelines
+//     that already write into Dexie + the HNSW save path.
+//   - rebuild SQLite: no SQLite on Android.
+// =====================================================================
+
+interface RebuildSnapshot {
+  jobId: string;
+  stage:
+    | 'loading_source_history'
+    | 'grouping_fragments'
+    | 'generating_embeddings'
+    | 'writing_sqlite_rows'
+    | 'building_indexes'
+    | 'finalizing_statistics';
+  processed: number;
+  total: number;
+  startedAt: number;
+  elapsedMs: number;
+  storedCount: number;
+  candidateCount: number;
+  filteredCount: number;
+  duplicateCount: number;
+  groupedCount: number;
+  mergedCount: number;
+  skippedExistingCount: number;
+  clearedCount: number;
+  extra: string | null;
+  finished: boolean;
+  error: string | null;
+}
+
+const REBUILD_BATCH_SIZE = 200;
+
+let rebuildSnapshot: RebuildSnapshot = makeIdleSnapshot();
+let rebuildPromise: Promise<void> | null = null;
+
+function makeIdleSnapshot(): RebuildSnapshot {
+  return {
+    jobId: '',
+    stage: 'finalizing_statistics',
+    processed: 0,
+    total: 0,
+    startedAt: 0,
+    elapsedMs: 0,
+    storedCount: 0,
+    candidateCount: 0,
+    filteredCount: 0,
+    duplicateCount: 0,
+    groupedCount: 0,
+    mergedCount: 0,
+    skippedExistingCount: 0,
+    clearedCount: 0,
+    extra: null,
+    finished: true,
+    error: null,
+  };
+}
+
+async function runRebuild(): Promise<void> {
+  try {
+    rebuildSnapshot.stage = 'building_indexes';
+    rebuildSnapshot.extra = 'Resetting HNSW index';
+
+    const initOk = await hnsw.reinitEmpty(Math.max(rebuildSnapshot.total + 1024, 10_000));
+    if (!initOk) {
+      // 50k cap or WASM load failure — surface a clear error and let the
+      // brute-force path keep serving searches.
+      rebuildSnapshot.error =
+        hnsw.getStatus().lastError || 'HNSW unavailable — brute force fallback in use';
+      rebuildSnapshot.stage = 'finalizing_statistics';
+      rebuildSnapshot.finished = true;
+      return;
+    }
+
+    rebuildSnapshot.stage = 'building_indexes';
+    rebuildSnapshot.extra = `Rebuilding HNSW (${rebuildSnapshot.total} vectors)`;
+
+    let cursor = 0;
+    while (true) {
+      const rows = await db.vectors.offset(cursor).limit(REBUILD_BATCH_SIZE).toArray();
+      if (rows.length === 0) break;
+
+      const cleaned: Array<{ id: string; vector: Float32Array }> = [];
+      for (const row of rows) {
+        const vec = ensureFloat32(row.vector);
+        if (vec) cleaned.push({ id: row.id, vector: vec });
+      }
+      const { added, skipped } = hnsw.addBatchFresh(cleaned);
+      rebuildSnapshot.storedCount += added;
+      rebuildSnapshot.skippedExistingCount += skipped;
+
+      cursor += rows.length;
+      rebuildSnapshot.processed = cursor;
+      rebuildSnapshot.elapsedMs = Date.now() - rebuildSnapshot.startedAt;
+
+      // Yield so the UI can render progress and any pending tasks (e.g.
+      // user typing) get a turn. setTimeout(0) is a real macrotask on
+      // Capacitor's WebView so this also lets IndexedDB queues drain.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+
+    rebuildSnapshot.stage = 'finalizing_statistics';
+    rebuildSnapshot.extra = 'Persisting HNSW index to IDBFS';
+    await hnsw.flush();
+    rebuildSnapshot.finished = true;
+    rebuildSnapshot.elapsedMs = Date.now() - rebuildSnapshot.startedAt;
+    rebuildSnapshot.extra = null;
+  } catch (e) {
+    rebuildSnapshot.error = e instanceof Error ? e.message : String(e);
+    rebuildSnapshot.finished = true;
+    rebuildSnapshot.elapsedMs = Date.now() - rebuildSnapshot.startedAt;
+    console.error('[androidRag] rebuild loop threw:', e);
+  }
+}
+
+async function handleRebuildStart(): Promise<{
+  success: boolean;
+  started: boolean;
+  alreadyRunning: boolean;
+  snapshot: RebuildSnapshot;
+  error?: string;
+}> {
+  if (rebuildPromise) {
+    return {
+      success: true,
+      started: false,
+      alreadyRunning: true,
+      snapshot: { ...rebuildSnapshot },
+    };
+  }
+
+  const total = await db.vectors.count();
+  rebuildSnapshot = {
+    jobId: `android_rebuild_${Date.now()}`,
+    stage: 'loading_source_history',
+    processed: 0,
+    total,
+    startedAt: Date.now(),
+    elapsedMs: 0,
+    storedCount: 0,
+    candidateCount: total,
+    filteredCount: 0,
+    duplicateCount: 0,
+    groupedCount: 0,
+    mergedCount: 0,
+    skippedExistingCount: 0,
+    clearedCount: 0,
+    extra: 'Reading vectors from Dexie',
+    finished: false,
+    error: null,
+  };
+
+  rebuildPromise = runRebuild().finally(() => {
+    rebuildPromise = null;
+  });
+
+  return {
+    success: true,
+    started: true,
+    alreadyRunning: false,
+    snapshot: { ...rebuildSnapshot },
+  };
+}
+
+async function handleRebuildStatus(): Promise<{
+  success: boolean;
+  running: boolean;
+  snapshot: RebuildSnapshot;
+}> {
+  return {
+    success: true,
+    running: !!rebuildPromise,
+    snapshot: { ...rebuildSnapshot },
+  };
+}
+
 interface RagDispatchTable {
   [channel: string]: (payload?: any) => Promise<any>;
 }
@@ -316,6 +575,8 @@ const dispatch: RagDispatchTable = {
   'rag:expand-context': handleExpandContext,
   'rag:get-messages': handleGetMessages,
   'rag:sync-messages': handleSyncMessages,
+  'rag:rebuild:start': handleRebuildStart,
+  'rag:rebuild:status': handleRebuildStatus,
 };
 
 /**

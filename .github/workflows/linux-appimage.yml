@@ -142,6 +142,7 @@ jobs:
           name: kumiko-amadeus-linux-${{ matrix.arch }}
           path: |
             release/Kumiko-Amadeus-${{ matrix.appimage_arch }}.AppImage
+            release/Kumiko-Amadeus-${{ matrix.appimage_arch }}.AppImage.blockmap
             release/latest-linux*.yml
           if-no-files-found: error
           retention-days: 14

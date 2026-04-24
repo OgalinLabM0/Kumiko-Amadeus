@@ -1,7 +1,7 @@
 {
   "name": "kumiko-ai-amadeus",
   "private": true,
-  "version": "2.14.1",
+  "version": "2.14.2",
   "description": "Kumiko Amadeus desktop companion focused on long-term memory and natural character interaction.",
   "author": "Kitauji Fan Project",
   "type": "module",
@@ -51,6 +51,7 @@
     "file-saver": "^2.0.5",
     "framer-motion": "^11.0.0",
     "hnswlib-node": "^3.0.0",
+    "hnswlib-wasm": "^0.8.2",
     "jszip": "^3.10.1",
     "lucide-react": "^0.555.0",
     "onnxruntime-node": "^1.24.3",
@@ -95,7 +96,7 @@
     ],
     "nsis": {
       "artifactName": "Kumiko-Amadeus-Setup-${arch}-${version}.exe",
-      "differentialPackage": false,
+      "differentialPackage": true,
       "uninstallDisplayName": "Kumiko·Amadeus",
       "oneClick": false,
       "allowElevation": true,
@@ -123,7 +124,8 @@
       "electron/**/*",
       "services/ragRebuildCore.js",
       "public/**/*",
-      "!public/sovits-ref/**"
+      "!public/sovits-ref/**",
+      "!node_modules/hnswlib-wasm/**"
     ],
     "asarUnpack": [
       "node_modules/better-sqlite3/**",

@@ -173,11 +173,19 @@ vX.Y.Z
                                                                       at build time
 ```
 
-F2B.5 (v2.14.0): NSIS `artifactName` now embeds `${arch}-${version}` and
-`differentialPackage: false` is set, so the Windows side no longer ships
-`.blockmap` siblings and never produces a third "merged" `Kumiko-Amadeus-Setup.exe`
-that contains both architectures. Each per-arch installer is fully
-self-contained and the user picks one based on `PROCESSOR_ARCHITECTURE`.
+F2B.5 (v2.14.0): NSIS `artifactName` embeds `${arch}-${version}` so each
+per-arch installer is fully self-contained and never produces a third
+"merged" `Kumiko-Amadeus-Setup.exe` that contains both architectures.
+The user picks one based on `PROCESSOR_ARCHITECTURE`.
+
+K.1 (v2.14.2): `differentialPackage: true` is back, so each per-arch
+installer also ships a sibling `*.blockmap` (Windows NSIS + Linux
+AppImage). `electron-updater` uses these to download a partial diff
+between two adjacent versions instead of re-downloading the full
+~750 MB installer on every patch update. `windows-release.yml` Step
+C.1 cleanup is anchored on the exact `Kumiko-Amadeus-Setup-${PACKAGE_VERSION}.exe`
+literal, so it scrubs the universal installer collision but leaves the
+arch-suffixed `*.blockmap` files alone.
 
 | Missing asset | Blast radius |
 | --- | --- |
@@ -272,13 +280,17 @@ gh release view vX.Y.Z --repo OgalinLabM0/Kumiko-Amadeus \
   --json assets --jq '.assets[].name'
 ```
 
-Expected minimum (10 required files; order varies; substitute the actual version for `X.Y.Z`):
+Expected minimum (10 required files + 2-4 blockmap siblings since v2.14.2; order varies; substitute the actual version for `X.Y.Z`):
 
 ```
 Kumiko-Amadeus-Setup-x64-X.Y.Z.exe
+Kumiko-Amadeus-Setup-x64-X.Y.Z.exe.blockmap            (v2.14.2+; differential update)
 Kumiko-Amadeus-Setup-arm64-X.Y.Z.exe
+Kumiko-Amadeus-Setup-arm64-X.Y.Z.exe.blockmap          (v2.14.2+; differential update)
 Kumiko-Amadeus-x86_64.AppImage
+Kumiko-Amadeus-x86_64.AppImage.blockmap                (v2.14.2+; emitted when electron-builder picks it up)
 Kumiko-Amadeus-arm64.AppImage
+Kumiko-Amadeus-arm64.AppImage.blockmap                 (v2.14.2+; emitted when electron-builder picks it up)
 Kumiko-Amadeus.apk
 latest.yml
 latest-arm64.yml
@@ -289,11 +301,18 @@ kumiko-assets.zip
 
 F2B.5: `Kumiko-Amadeus-Setup.exe` (the legacy ~1.6 GB merged installer
 that historically appeared alongside the per-arch ones) is **no longer
-produced**. `package.json#build.nsis.artifactName` now hard-codes
+produced**. `package.json#build.nsis.artifactName` hard-codes
 `${arch}-${version}`, so electron-builder cannot fall back to an
-unsuffixed combined output. `.blockmap` siblings are also gone because
-`differentialPackage: false`. If a future build still emits either,
+unsuffixed combined output, and `windows-release.yml` Step C.1 also
+deletes any unsuffixed `Setup-${PACKAGE_VERSION}.exe` asset as a
+defence-in-depth. If a future build still emits the universal version,
 treat it as a configuration regression and revert before publishing.
+
+K.1 (v2.14.2): `differentialPackage: true` is back. The matching
+`*.blockmap` files are SUPPOSED to be present and are not the same
+thing as the universal installer — do NOT scrub them with the C.1
+cleanup. Old electron-updater clients ignore blockmaps they don't know
+about, so they're forwards-compatible.
 
 #### Patch: `latest-arm64.yml` missing after Windows publish
 
@@ -398,11 +417,16 @@ the normal cookbook to move users forward.
   the "Patch: `latest-arm64.yml` missing" sub-step in Step 5 to
   synthesise it locally from the released `Setup-arm64-<version>.exe`.
 - **Combined `Kumiko-Amadeus-Setup.exe` (~1.6 GB) appears on a release**
-  → should not happen since F2B.5 (`artifactName` = `Setup-${arch}-${version}.exe`,
-  `differentialPackage: false`). If you do see one, treat it as a
-  configuration regression: revert any recent change to
-  `package.json#build.nsis` and re-run the windows workflow before
-  publishing.
+  → should not happen since F2B.5 (`artifactName` =
+  `Setup-${arch}-${version}.exe`). `windows-release.yml` Step C.1
+  cleanup is also belt-and-braces: it deletes any unsuffixed
+  `Setup-${PACKAGE_VERSION}.exe` asset before promoting the draft. If
+  one slips through, treat it as a configuration regression: revert
+  any recent change to `package.json#build.nsis.artifactName` and
+  re-run the windows workflow before publishing. Note: this is
+  unrelated to `differentialPackage` — that is back to `true` since
+  v2.14.2 (K.1) so blockmap siblings are intentional and must be
+  preserved.
 - **Concurrent `publish=true` on both workflows racing over zip**
   → cannot happen by design: only Linux x64 matrix job uploads the zip.
   Windows and Linux arm64 skip that step entirely.

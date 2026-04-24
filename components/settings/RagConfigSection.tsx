@@ -31,24 +31,23 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
   onRequestRebuildRag
 }) => {
   const isRebuilding = ragStatus === 'RECALLING' || ragStatus === 'INDEXING';
-  // v2.14.1 G.3: split the RAG description by platform.
+  // v2.14.2 J.6: split the RAG description by platform.
   // - PC: ONNX bge-m3 + sqlite-vec, fully local, no network needed for embeddings.
-  // - Android: cloud embeddings (OpenAI/Gemini/Zhipu/Tongyi/Custom) feed into a
-  //   Dexie-backed vector store with brute-force cosine retrieval (USearch HNSW
-  //   queued for v2.14.2). The previous unified copy claimed local ONNX, which
-  //   was a lie on Android — the WebView has no ONNX runtime.
+  // - Android: cloud embeddings + Dexie persistence + hnswlib-wasm HNSW index;
+  //   above 50 000 vectors we auto-fall-back to brute-force cosine over Dexie.
+  //   The previous unified copy claimed local ONNX, which was a lie on Android.
   const isCapacitor = isCapacitorNative();
   const ragDescription = isCapacitor
     ? (language === 'zh'
-        ? '使用云端 Embedding（OpenAI / Gemini / 智谱 / 通义 / 自定义）+ Dexie 向量持久化，完全在 app 内运行，无需 PC。'
-        : 'Uses cloud embeddings (OpenAI / Gemini / Zhipu / Tongyi / Custom) with Dexie-backed vector persistence — runs entirely on-device, no PC required.')
+        ? '云端 Embedding（OpenAI / Gemini / 智谱 / 通义 / 自定义）+ Dexie 持久化 + hnswlib-wasm HNSW 索引（>5 万向量自动降级为暴力余弦检索），完全在 app 内运行。'
+        : 'Cloud embeddings (OpenAI / Gemini / Zhipu / Tongyi / Custom) + Dexie persistence + hnswlib-wasm HNSW index (auto-fallback to brute-force cosine above 50 000 vectors). Runs entirely on-device.')
     : (language === 'zh'
         ? '使用本地 ONNX + SQLite 向量检索，不再依赖外部 Embedding API'
         : 'Use local ONNX + SQLite vector retrieval without external embedding APIs');
   const ragLockedHint = isCapacitor
     ? (language === 'zh'
-        ? 'Android 通过云端 Embedding 模型生成向量，需先在「云端 Embedding」面板里配置好 API。'
-        : 'Android generates vectors through a cloud embedding model — set up the provider in the "Cloud Embedding" panel first.')
+        ? 'Android 通过云端 Embedding 模型生成向量，需先在「云端 Embedding」面板里配置好 API。索引文件持久化在 IndexedDB（IDBFS）里，切换 Embedding 维度后请手动重建。'
+        : 'Android generates vectors through a cloud embedding model — set up the provider in the "Cloud Embedding" panel first. The HNSW index is persisted in IndexedDB (IDBFS); rebuild manually after switching embedding dimensions.')
     : (language === 'zh'
         ? 'RAG 向量模型与接口配置已移除，当前固定使用内置本地模型。'
         : 'RAG model and endpoint inputs have been removed. The built-in local model is now fixed.');

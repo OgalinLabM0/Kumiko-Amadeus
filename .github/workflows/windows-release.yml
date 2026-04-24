@@ -169,6 +169,7 @@ jobs:
           name: kumiko-amadeus-windows-${{ matrix.arch }}
           path: |
             release/Kumiko-Amadeus-Setup-${{ matrix.arch }}-${{ env.PACKAGE_VERSION }}.exe
+            release/Kumiko-Amadeus-Setup-${{ matrix.arch }}-${{ env.PACKAGE_VERSION }}.exe.blockmap
             release/latest*.yml
           if-no-files-found: error
           retention-days: 14

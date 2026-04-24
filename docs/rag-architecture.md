@@ -154,3 +154,108 @@ Partial failures during rebuild (a single row fails to embed, for example)
 do not abort the job; they accumulate in the `filteredCount` /
 `duplicateCount` counters and surface in the final status payload. The
 job ID is random per start so overlapping rebuild requests are detectable.
+
+## Android (Capacitor) RAG path
+
+The Android APK ships without a Node main process and without `hnswlib-node`
+/ `better-sqlite3`. The renderer-side code path is the same `localRagService`
+invoker, but the platform branch routes to
+[`services/androidRagService.ts`] instead of Electron IPC.
+
+```mermaid
+flowchart LR
+    UI["RAG UI / chat"]
+    LRS["localRagService"]
+    INV{"Platform"}
+    IPC["ipc.invoke rag:*"]
+    ERAG["electron-rag.cjs (hnswlib-node + bge-m3)"]
+    ARS["androidRagService.ts"]
+    HNSW["androidRagHnswIndex (hnswlib-wasm)"]
+    BF["brute-force cosine fallback"]
+    DEX["Dexie 'vectors' table"]
+    IDBFS[("IndexedDB IDBFS")]
+
+    UI --> LRS
+    LRS --> INV
+    INV -->|"Electron"| IPC
+    IPC --> ERAG
+    INV -->|"Capacitor"| ARS
+    ARS --> HNSW
+    HNSW -->|"OK"| LRS
+    HNSW -->|"throw / dim drift / >50k"| BF
+    BF --> LRS
+    HNSW <--> IDBFS
+    ARS <-->|"raw vectors"| DEX
+```
+
+### Storage
+
+| Layer | Library | Persisted in | Holds |
+| --- | --- | --- | --- |
+| Raw vectors | Dexie (IndexedDB) | App-private IDB | `VectorEntity` rows: `{ id, text, vector: Float32Array, timestamp, tier?, source?, canonicalKey?, tags? }` |
+| HNSW index | `hnswlib-wasm` | Emscripten IDBFS file `kumiko-rag.hnsw` | Approximate-NN graph, label↔vector map sidecar |
+| HNSW metadata | Dexie `keyval` | App-private IDB | `rag.hnsw.dim`, `rag.hnsw.idMap`, `rag.hnsw.savedAt` |
+
+The Dexie `vectors` table is always authoritative — the HNSW index is a
+search accelerator that we can drop and rebuild from Dexie at any time.
+
+### Embedding model
+
+Cloud-only: [`services/cloudEmbeddingService.ts`] dispatches to OpenAI,
+Gemini, Zhipu GLM, Tongyi Qianwen, or BGE-Cloud per the user's
+`EmbeddingProviderConfig`. Default is Gemini text-embedding-004 (768d).
+There is no on-device ONNX runtime on Android; the bge-m3 path that
+Electron uses is not packaged into the APK.
+
+### HNSW index parameters
+
+- Space: `cosine` (matches the brute-force fallback's similarity metric).
+- M = 32, `efConstruction` = 200, `efSearch` = 64.
+- Initial capacity = `max(10 000, vectorCount × 2)`; we `resizeIndex` on
+  the fly (doubling) up to `HNSW_MAX_ELEMENTS` = 50 000.
+
+### Failure modes & graceful degradation
+
+Every entry point in [`services/androidRagHnswIndex.ts`] is wrapped in a
+try/catch that flips a module-level `mode` flag from `'hnsw'` to
+`'bruteforce'`. The brute-force path in [`services/androidRagService.ts`]
+(`bruteForceSearch`) is always available because it reads directly from
+Dexie. Triggering conditions:
+
+| Trigger | Detection | Recovery |
+| --- | --- | --- |
+| `hnswlib-wasm` module load fails | Dynamic import throws | Fall back permanently for this session; brute force serves searches |
+| Vector count > 50 000 at init | `db.vectors.count()` check | Skip HNSW load, brute force |
+| Embedding dim drift (provider switch) | Compare `keyval.rag.hnsw.dim` vs current `getEmbeddingConfig().dimensions` | Mark needsRebuild, fall back this session, prompt user via "Rebuild RAG memory" button |
+| `readIndex` throws (corrupt IDBFS file) | Try/catch around `readIndex` | Drop in-memory index, mark needsRebuild, brute force |
+| `searchKnn` throws | Try/catch around `hnsw.search` | Per-query fall back to brute force, do not poison module |
+| Deleted ratio > 30 % | `markDelete` counter | Mark needsRebuild; user can trigger rebuild from settings |
+
+### Rebuild flow on Android
+
+Triggered the same way as on Electron (the "重建 RAG 记忆库" button in
+`RagConfigSection`). The handler short-circuits in
+[`services/androidRagService.ts`]:
+
+1. Drop the HNSW index + IDBFS file.
+2. Re-init empty at `max(10 000, vectorCount + 1024)` capacity.
+3. Stream Dexie rows in 200-row batches via `db.vectors.offset(c).limit(200)`,
+   inserting each batch with `hnsw.addBatchFresh`. After each batch we
+   `await new Promise(setTimeout(0))` so the UI stays responsive.
+4. `flush()` writes the index back to IDBFS and persists the label map.
+
+Capacitor has no IPC event channel, so progress is queryable via the
+`rag:rebuild:status` channel. The renderer's `subscribeLocalRagRebuild`
+polls every 300 ms on Capacitor and synthesises the same
+`started → progress → done | error` event sequence the Electron IPC
+branch emits, so the upstream UI (memory panel rebuild progress) is
+platform-agnostic.
+
+### What we DO NOT rebuild on Android
+
+- We never re-embed text. The cloud embedding round-trip would be
+  punitive (5 providers × thousands of rows × ~500 ms each). Dexie
+  already has the raw vectors so we reuse them as-is.
+- We do not rebuild episodes / fragments / lore. Those flow through
+  their own pipelines that already write into Dexie + `rag:save`.
+- We do not rebuild a SQLite mirror — there isn't one.
