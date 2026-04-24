@@ -591,8 +591,17 @@ async function handlePreferencesSetFromMobile(args: unknown): Promise<{ ok: bool
   const localStoragePayload = argsAsObject(payload.localStorage);
   const localStoragePatch: Partial<Record<SyncedLocalStorageKey, string | null>> = {};
   for (const [rawKey, rawValue] of Object.entries(localStoragePayload)) {
-    localStoragePatch[rawKey as SyncedLocalStorageKey] =
-      typeof rawValue === 'string' || rawValue === null ? rawValue : String(rawValue);
+    // TS can't narrow `unknown` across `||` of two different type guards
+    // (typeof string + === null), so split the branches explicitly.
+    let normalized: string | null;
+    if (typeof rawValue === 'string') {
+      normalized = rawValue;
+    } else if (rawValue === null) {
+      normalized = null;
+    } else {
+      normalized = String(rawValue);
+    }
+    localStoragePatch[rawKey as SyncedLocalStorageKey] = normalized;
   }
 
   const keyvalPatch = Array.isArray(payload.keyval)
