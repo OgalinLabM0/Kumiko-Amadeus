@@ -66,14 +66,18 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      - name: Setup JDK 17 (Eclipse Temurin)
-        # AGP 8 + Gradle 8 require JDK 17. Temurin is the conventional
-        # choice for CI; setup-java auto-exports JAVA_HOME and adds
-        # bin/ to PATH so the gradle wrapper picks it up.
+      - name: Setup JDK 21 (Eclipse Temurin)
+        # Capacitor 7 ships its `capacitor-android` library compiled with
+        # `sourceCompatibility = VERSION_21` (visible in android/app/capacitor.build.gradle),
+        # which means consumers need JDK 21 to call `compileDebugJavaWithJavac`
+        # against it. Without this we get
+        #   `:capacitor-android:compileDebugJavaWithJavac FAILED — error: invalid source release: 21`
+        # Temurin is the conventional choice for CI; setup-java auto-exports
+        # JAVA_HOME and adds bin/ to PATH so the gradle wrapper picks it up.
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '21'
 
       - name: Setup Android SDK
         # ubuntu-latest already ships with the Android SDK + cmdline-tools
