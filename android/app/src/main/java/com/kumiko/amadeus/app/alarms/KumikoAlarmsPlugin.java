@@ -94,7 +94,11 @@ public class KumikoAlarmsPlugin extends Plugin {
             Log.w(TAG, "SecurityException scheduling exact alarm; falling back to inexact", se);
             am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, atMs, pi);
         } catch (Throwable t) {
-            call.reject("Schedule failed: " + t.getMessage(), t);
+            // Capacitor 7's PluginCall.reject signature is (message, code?,
+            // exception?) where exception must be Exception, not Throwable.
+            // Stringify and log separately to keep the JS side message clean.
+            Log.e(TAG, "Schedule failed", t);
+            call.reject("Schedule failed: " + t.getMessage());
             return;
         }
 
