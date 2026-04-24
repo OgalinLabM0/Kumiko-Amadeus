@@ -137,8 +137,16 @@ type BroadcastPayload =
   // (when a phone saves a config) and by `useMobileBroadcaster` (when the
   // desktop renderer mutates kumiko_ai_config). `backup:desktop-path-changed`
   // is fired when the desktop AuthScreen/SettingsPanel connects, creates or
-  // disconnects a backup file.
+  // disconnects a backup file. `tts-config:changed` is emitted by
+  // `useMobileApiProxy.handleTtsConfigUpdate` (phone-initiated save) and by
+  // `handleTtsConfigChange` in `useAppPreferencesSync` (desktop-initiated
+  // save) so all paired phones re-pull `bootstrap:tts-config`.
+  // `preferences:changed` is the generic "localStorage / keyval / auto-zip
+  // state changed" event; the phone re-pulls `preferences:bootstrap` and
+  // applies the returned revisioned snapshot.
   | { type: 'ai-config:changed' }
+  | { type: 'tts-config:changed' }
+  | { type: 'preferences:changed'; keys: string[]; revision: number }
   | { type: 'backup:desktop-path-changed'; filePath: string | null; fileName: string | null }
   // Busy regulator state. The phone renders the TaskPanel "pending
   // auto-reply" card from these; it never triggers the actual AI

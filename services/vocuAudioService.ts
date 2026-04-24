@@ -1,5 +1,16 @@
 import type { EmotionType, TtsConfig } from '../types';
 import { TtsError, type TtsSynthesisResult } from './fishAudioService';
+import { isMobilePwa } from './environment';
+import { base64ToArrayBuffer, httpInvoke } from './httpApi';
+
+interface VocuProxyResult {
+  ok: boolean;
+  audioB64?: string;
+  mime?: string;
+  durationEstimate?: number;
+  error?: string;
+  code?: string;
+}
 
 // Plan C: strong-emotion set. When `vocuEmotionBoost` is enabled and the current
 // emotion belongs to this set, preset is overridden to 'vivid' (only works on
@@ -28,6 +39,24 @@ export async function synthesizeWithVocu(
   config: TtsConfig,
   emotion: EmotionType = 'neutral',
 ): Promise<TtsSynthesisResult> {
+  // Mobile WebView origin is `capacitor://localhost`; Vocu's CORS preflight
+  // rejects it, so a direct fetch surfaces as "Load failed" on the phone.
+  // Route through the PC renderer (no CORS), which then runs the same
+  // `synthesizeWithVocu` against Vocu's API and ships the MP3 bytes back
+  // as base64 over the IPC bridge. Emotion-boost / vivid preset gating
+  // stays consistent because the PC handler reads the same `config` +
+  // `emotion` arguments.
+  if (isMobilePwa()) {
+    const reply = await httpInvoke<VocuProxyResult>('tts:vocu-synth', { text, config, emotion });
+    if (!reply || reply.ok === false || !reply.audioB64) {
+      throw new TtsError('unknown', reply?.error || 'Mobile Vocu TTS proxy failed');
+    }
+    return {
+      audio: base64ToArrayBuffer(reply.audioB64),
+      durationEstimate: reply.durationEstimate ?? 1,
+    };
+  }
+
   if (!config.vocuApiKey) {
     throw new TtsError('auth', 'Vocu AI API key is not configured');
   }

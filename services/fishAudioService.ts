@@ -1,8 +1,19 @@
 import type { TtsConfig } from '../types';
+import { isMobilePwa } from './environment';
+import { base64ToArrayBuffer, httpInvoke } from './httpApi';
 
 export interface TtsSynthesisResult {
     audio: ArrayBuffer;
     durationEstimate: number;
+}
+
+interface TtsProxyResult {
+    ok: boolean;
+    audioB64?: string;
+    mime?: string;
+    durationEstimate?: number;
+    error?: string;
+    code?: string;
 }
 
 export type TtsErrorKind = 'auth' | 'payment' | 'validation' | 'network' | 'unknown';
@@ -120,6 +131,23 @@ export async function synthesizeSpeech(
     text: string,
     config: TtsConfig,
 ): Promise<TtsSynthesisResult> {
+    // Mobile WebView origin is `capacitor://localhost`, which Fish Audio's
+    // CORS preflight refuses → direct fetch surfaces as "Load failed". Route
+    // the call to the PC renderer via the HTTP IPC bridge: PC node-grade
+    // fetch has no CORS, returns the audio as base64, we decode + return
+    // an ArrayBuffer indistinguishable from the desktop path. PC renderer
+    // path (below) is unchanged.
+    if (isMobilePwa()) {
+        const reply = await httpInvoke<TtsProxyResult>('tts:fish-synth', { text, config });
+        if (!reply || reply.ok === false || !reply.audioB64) {
+            throw new TtsError('unknown', reply?.error || 'Mobile Fish TTS proxy failed');
+        }
+        return {
+            audio: base64ToArrayBuffer(reply.audioB64),
+            durationEstimate: reply.durationEstimate ?? 1,
+        };
+    }
+
     const maxRetries = 1;
     let lastError: unknown;
 

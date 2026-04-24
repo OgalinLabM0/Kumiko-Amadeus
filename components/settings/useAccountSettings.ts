@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import { Language } from '../../types';
 import { UI_TRANSLATIONS } from '../../constants';
 import { SettingsDialogConfig } from './useSettingsDialog';
+import {
+  PREFERENCES_UPDATED_EVENT,
+  queueLocalStoragePreferenceSync,
+} from '../../services/preferencesSync';
 
 type ShowDialog = (config: Omit<SettingsDialogConfig, 'isOpen'>) => void;
 
@@ -18,20 +22,38 @@ export const useAccountSettings = (
   const [authPassword, setAuthPassword] = useState('');
   const [isEditingAccount, setIsEditingAccount] = useState(false);
 
-  // Preload rework: read the credentials on mount (and again when the
-  // panel toggles open) so the Account section never renders with blank
-  // fields during the first paint.
-  useEffect(() => {
+  const syncFromStorage = () => {
     const storedUser = localStorage.getItem('kumiko_auth_username') || DEFAULT_USERNAME;
     const storedPass = localStorage.getItem('kumiko_auth_password') || DEFAULT_PASSWORD;
     setAuthUsername(storedUser);
     setAuthPassword(storedPass);
+  };
+
+  // Preload rework: read the credentials on mount (and again when the
+  // panel toggles open) so the Account section never renders with blank
+  // fields during the first paint.
+  useEffect(() => {
+    syncFromStorage();
   }, [isOpen]);
+
+  useEffect(() => {
+    const handlePreferencesUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ keys?: string[] }>).detail;
+      if (!Array.isArray(detail?.keys)) return;
+      if (detail.keys.includes('kumiko_auth_username') || detail.keys.includes('kumiko_auth_password')) {
+        syncFromStorage();
+      }
+    };
+    window.addEventListener(PREFERENCES_UPDATED_EVENT, handlePreferencesUpdated as EventListener);
+    return () => {
+      window.removeEventListener(PREFERENCES_UPDATED_EVENT, handlePreferencesUpdated as EventListener);
+    };
+  }, []);
 
   const handleSaveAccount = () => {
     if (authUsername.trim() && authPassword.trim()) {
-      localStorage.setItem('kumiko_auth_username', authUsername);
-      localStorage.setItem('kumiko_auth_password', authPassword);
+      queueLocalStoragePreferenceSync('kumiko_auth_username', authUsername);
+      queueLocalStoragePreferenceSync('kumiko_auth_password', authPassword);
       setIsEditingAccount(false);
       return;
     }
@@ -53,8 +75,8 @@ export const useAccountSettings = (
       type: 'confirm',
       confirmText: t.accountResetButton,
       onConfirm: () => {
-        localStorage.setItem('kumiko_auth_username', DEFAULT_USERNAME);
-        localStorage.setItem('kumiko_auth_password', DEFAULT_PASSWORD);
+        queueLocalStoragePreferenceSync('kumiko_auth_username', DEFAULT_USERNAME);
+        queueLocalStoragePreferenceSync('kumiko_auth_password', DEFAULT_PASSWORD);
         setAuthUsername(DEFAULT_USERNAME);
         setAuthPassword(DEFAULT_PASSWORD);
         setIsEditingAccount(false);

@@ -45,6 +45,11 @@ import { useAppStore } from '../../store';
 import { subscribeEvents, httpInvoke, type MobileEvent } from '../../services/httpApi';
 import { isMobilePwa } from '../../services/environment';
 import { db } from '../../services/db';
+import {
+  applyPreferencesPatch,
+  readPreferencesRevision,
+  type PreferencesBootstrapPayload,
+} from '../../services/preferencesSync';
 import type { Message, EmotionType } from '../../types';
 
 interface SlimMessageQuote {
@@ -210,10 +215,14 @@ function postCallAction(action: 'accept' | 'reject' | 'close') {
 
 function applyCallState(wire: WireCallState) {
   const store = useAppStore.getState();
-  // Merge ringtoneFileId back into ttsConfig on mobile so the overlay
-  // can resolve the correct ringtone. The phone's ttsConfig is already
-  // hydrated by bootstrap:ai-config, but the PC might have changed
-  // ringtone in between and we want the overlay to match.
+  // Last-resort ringtone reconciliation. The primary sync path is now
+  // `tts-config:changed` (see the WS handler in useMobileMessageSync) +
+  // `bootstrap:tts-config` on pairing — those keep the phone's full
+  // TtsConfig in step with PC at all times. We still patch ringtoneFileId
+  // here so a call that arrives BEFORE the bootstrap round-trip settles
+  // (very early-boot races, or a phone that just (re)connected over a
+  // flaky link and hasn't replayed bootstrap yet) still rings with the
+  // right tone instead of falling back to the bundled default.
   if (wire.ringtoneFileId && store.ttsConfig && store.ttsConfig.ringtoneFileId !== wire.ringtoneFileId) {
     store.setTtsConfig((prev) => ({ ...prev, ringtoneFileId: wire.ringtoneFileId as string }));
   }
@@ -229,6 +238,35 @@ function applyCallState(wire: WireCallState) {
     onReject: () => postCallAction('reject'),
     onClose: () => postCallAction('close'),
   });
+}
+
+async function refreshPreferencesFromPc(hintedRevision?: number): Promise<void> {
+  const localRevision = readPreferencesRevision();
+  if (
+    typeof hintedRevision === 'number'
+    && hintedRevision > 0
+    && localRevision > 0
+    && hintedRevision <= localRevision
+  ) {
+    return;
+  }
+  try {
+    const res = await httpInvoke<{ ok?: boolean; payload?: PreferencesBootstrapPayload; error?: string }>('preferences:bootstrap');
+    if (!res?.ok || !res.payload) return;
+    const remoteRevision =
+      typeof res.payload.revision === 'number' && Number.isFinite(res.payload.revision)
+        ? res.payload.revision
+        : 0;
+    if (remoteRevision > 0 && localRevision > 0 && remoteRevision <= localRevision) {
+      return;
+    }
+    await applyPreferencesPatch(res.payload, {
+      replaceKeyval: true,
+      revision: remoteRevision,
+    });
+  } catch (err) {
+    console.warn('[MOBILE-SYNC] preferences bootstrap refresh failed:', err);
+  }
 }
 
 export function useMobileMessageSync() {
@@ -285,19 +323,28 @@ export function useMobileMessageSync() {
         // runs on its previous local copy, and the next restart / manual
         // reconnect will reconcile.
         if (event.type === 'ai-config:changed') {
-          void httpInvoke<{ ok?: boolean; config?: string | null }>('bootstrap:ai-config')
-            .then((res) => {
-              if (res && res.ok && typeof res.config === 'string') {
-                try {
-                  localStorage.setItem('kumiko_ai_config', res.config);
-                } catch (err) {
-                  console.warn('[MOBILE-SYNC] failed to persist ai-config:', err);
-                }
-              }
-            })
-            .catch((err) => {
-              console.warn('[MOBILE-SYNC] bootstrap:ai-config refresh failed:', err);
-            });
+          void refreshPreferencesFromPc();
+          return;
+        }
+        // PC-authoritative ttsConfig changed (Fish/Vocu key, ringtone,
+        // SoVITS variant, speed/latency, …). Re-pull the full blob from
+        // PC, persist to phone localStorage, and push the parsed value
+        // into zustand so every TTS-aware component (ringtone preview,
+        // voice messages, call overlay) re-renders on the new selection.
+        //
+        // We sanitise via the shared helper before setTtsConfig so a
+        // garbled localStorage on PC (legacy ringtone id, missing Vocu
+        // fields) doesn't blow up the phone's UI — same code path the
+        // store hydration normally uses, just on a fresh blob.
+        if (event.type === 'tts-config:changed') {
+          void refreshPreferencesFromPc();
+          return;
+        }
+        if (event.type === 'preferences:changed') {
+          const revision = (event as unknown as { revision?: unknown }).revision;
+          void refreshPreferencesFromPc(
+            typeof revision === 'number' && Number.isFinite(revision) ? revision : undefined,
+          );
           return;
         }
         // Phase 6 Part C: PC connected / created / disconnected a local
@@ -388,7 +435,11 @@ export function useMobileMessageSync() {
       }
     };
 
-    const unsubscribe = subscribeEvents(handle);
+    const unsubscribe = subscribeEvents(handle, {
+      onOpen: () => {
+        void refreshPreferencesFromPc();
+      },
+    });
     return () => {
       try { unsubscribe(); } catch { /* ignore */ }
     };

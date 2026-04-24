@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Language } from '../../types';
 import { SettingsDialogConfig } from './useSettingsDialog';
+import {
+  PREFERENCES_UPDATED_EVENT,
+  queueLocalStoragePreferenceSync,
+} from '../../services/preferencesSync';
 
 interface SearchTranslations {
   searchStatusTesting: string;
@@ -23,12 +27,30 @@ export const useTavilySearchSettings = (
   const [searchStatus, setSearchStatus] = useState<string>('');
   const [searchStatusType, setSearchStatusType] = useState<'neutral' | 'success' | 'error'>('neutral');
 
-  useEffect(() => {
+  const syncFromStorage = () => {
     const storedTavilyKey = localStorage.getItem('tavily_api_key') || '';
     const storedEnableSearch = localStorage.getItem('enable_internet_search') === 'true';
     setTavilyApiKey(storedTavilyKey);
     setEnableInternetSearch(storedEnableSearch);
+  };
+
+  useEffect(() => {
+    syncFromStorage();
   }, [isSettingsOpen]);
+
+  useEffect(() => {
+    const handlePreferencesUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ keys?: string[] }>).detail;
+      if (!Array.isArray(detail?.keys)) return;
+      if (detail.keys.includes('tavily_api_key') || detail.keys.includes('enable_internet_search')) {
+        syncFromStorage();
+      }
+    };
+    window.addEventListener(PREFERENCES_UPDATED_EVENT, handlePreferencesUpdated as EventListener);
+    return () => {
+      window.removeEventListener(PREFERENCES_UPDATED_EVENT, handlePreferencesUpdated as EventListener);
+    };
+  }, []);
 
   const refreshUsage = async (key = tavilyApiKey) => {
     if (!key) {
@@ -73,8 +95,8 @@ export const useTavilySearchSettings = (
   const saveConfig = (key: string, enabled: boolean) => {
     setTavilyApiKey(key);
     setEnableInternetSearch(enabled);
-    localStorage.setItem('tavily_api_key', key);
-    localStorage.setItem('enable_internet_search', String(enabled));
+    queueLocalStoragePreferenceSync('tavily_api_key', key);
+    queueLocalStoragePreferenceSync('enable_internet_search', String(enabled));
   };
 
   const testSearch = async () => {

@@ -5,6 +5,10 @@ import { Fingerprint, Lock, ChevronRight, HardDrive, Download, RefreshCw, Check,
 import { Language, BackupConfig } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
 import { isMobilePwa } from '../services/environment';
+import {
+  PREFERENCES_UPDATED_EVENT,
+  queueLocalStoragePreferenceSync,
+} from '../services/preferencesSync';
 
 // Cloud sync removed from the product — any references to CLOUD_SYNC_AVAILABLE have been
 // deleted along with the CLOUD tab. If the feature returns, reintroduce the constant
@@ -322,6 +326,20 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   }, []);
 
   useEffect(() => {
+    const handlePreferencesUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ keys?: string[] }>).detail;
+      if (!Array.isArray(detail?.keys)) return;
+      if (detail.keys.includes('kumiko_auth_username')) {
+        setUsername(localStorage.getItem('kumiko_auth_username') || DEFAULT_USER);
+      }
+    };
+    window.addEventListener(PREFERENCES_UPDATED_EVENT, handlePreferencesUpdated as EventListener);
+    return () => {
+      window.removeEventListener(PREFERENCES_UPDATED_EVENT, handlePreferencesUpdated as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
     if (step !== 'SETUP') return;
 
     const localReady = setupTab === 'LOCAL' && !!connectedFileName;
@@ -354,8 +372,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   };
 
   const confirmReset = () => {
-    localStorage.setItem('kumiko_auth_username', DEFAULT_USER);
-    localStorage.setItem('kumiko_auth_password', DEFAULT_PASS);
+    queueLocalStoragePreferenceSync('kumiko_auth_username', DEFAULT_USER);
+    queueLocalStoragePreferenceSync('kumiko_auth_password', DEFAULT_PASS);
     setUsername(DEFAULT_USER);
     setPassword(DEFAULT_PASS);
     setLoginError(false);

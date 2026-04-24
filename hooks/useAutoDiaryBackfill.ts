@@ -1,4 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
+import {
+  PREFERENCES_UPDATED_EVENT,
+  queueLocalStoragePreferenceSync,
+} from '../services/preferencesSync';
 
 // Shared persistent toggle for "automatically fill missing diary entries in the
 // background". Used to live inline inside DiaryPanel; now that the setting has
@@ -17,7 +21,7 @@ const readPersisted = (): boolean => {
 
 const writePersisted = (value: boolean) => {
   try {
-    window.localStorage.setItem(AUTO_DIARY_BACKFILL_STORAGE_KEY, value ? 'true' : 'false');
+    queueLocalStoragePreferenceSync(AUTO_DIARY_BACKFILL_STORAGE_KEY, value ? 'true' : 'false');
     // Broadcast intra-tab change so the DiaryPanel instance that didn't initiate
     // the write still observes it (storage events only fire cross-tab).
     window.dispatchEvent(new CustomEvent(STORAGE_EVENT_FLAG, { detail: value }));
@@ -39,11 +43,19 @@ export const useAutoDiaryBackfill = (): [boolean, (next: boolean | ((prev: boole
         setValue(e.newValue === 'true');
       }
     };
+    const onPreferencesUpdated = (e: Event) => {
+      const detail = (e as CustomEvent<{ keys?: string[] }>).detail;
+      if (Array.isArray(detail?.keys) && detail.keys.includes(AUTO_DIARY_BACKFILL_STORAGE_KEY)) {
+        setValue(readPersisted());
+      }
+    };
     window.addEventListener(STORAGE_EVENT_FLAG, onCustom);
     window.addEventListener('storage', onStorage);
+    window.addEventListener(PREFERENCES_UPDATED_EVENT, onPreferencesUpdated as EventListener);
     return () => {
       window.removeEventListener(STORAGE_EVENT_FLAG, onCustom);
       window.removeEventListener('storage', onStorage);
+      window.removeEventListener(PREFERENCES_UPDATED_EVENT, onPreferencesUpdated as EventListener);
     };
   }, []);
 

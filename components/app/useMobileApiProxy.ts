@@ -35,7 +35,17 @@ import {
   validateModels,
   validateSearchCapability,
 } from '../../services/aiValidation';
-import type { AIConfig } from '../../types';
+import { synthesizeSpeech } from '../../services/fishAudioService';
+import { synthesizeWithVocu } from '../../services/vocuAudioService';
+import { genieTtsWithEmotion } from '../../services/genieAudioService';
+import {
+  applyPreferencesPatch,
+  buildPreferencesBootstrapPayload,
+  emitPreferencesChanged,
+  type PreferencesPatch,
+  type SyncedLocalStorageKey,
+} from '../../services/preferencesSync';
+import type { AIConfig, EmotionType, TtsConfig } from '../../types';
 
 interface ProxyRequest {
   requestId: string;
@@ -85,6 +95,35 @@ function base64ToBytes(input: string): Uint8Array {
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
   return out;
+}
+
+// Inverse of base64ToBytes: encode a binary buffer to standard base64
+// (NOT URL-safe; the phone-side decoder normalises both alphabets so we
+// always emit the canonical `+` / `/` form). Chunked through
+// String.fromCharCode to dodge the `RangeError: Maximum call stack size
+// exceeded` that shows up around 100k args on V8 — TTS audio commonly
+// runs 30-300KB and a long-form passage can hit ~1MB+.
+function bytesToBase64(input: Uint8Array | ArrayBuffer): string {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
+  const CHUNK_SIZE = 0x8000; // 32k bytes per chunk, safely below V8 limit
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const slice = bytes.subarray(i, Math.min(i + CHUNK_SIZE, bytes.length));
+    binary += String.fromCharCode.apply(null, slice as unknown as number[]);
+  }
+  return btoa(binary);
+}
+
+// Map TTS audio format strings to MIME types so the phone can pick the
+// right MediaSource codec / `<audio src=data:...>` mime when decoding.
+function ttsFormatToMime(format: string | undefined, fallback: string): string {
+  switch ((format || '').toLowerCase()) {
+    case 'mp3': return 'audio/mpeg';
+    case 'wav': return 'audio/wav';
+    case 'opus': return 'audio/opus';
+    case 'pcm': return 'audio/pcm';
+    default: return fallback;
+  }
 }
 
 function argsAsObject(args: unknown): Record<string, unknown> {
@@ -328,6 +367,39 @@ async function handleBootstrapAiConfig() {
   }
 }
 
+// Phone fetches the PC's `kumiko_tts_config` (Fish/Vocu API keys, ringtone
+// selection, speed, latency, voice mode, etc.) so its zustand `ttsConfig`
+// slice mirrors PC values from boot. Symmetrical to `handleBootstrapAiConfig`
+// — without this, the phone's localStorage is empty on first paint and the
+// store falls back to DEFAULT_TTS_CONFIG, which shows up in the UI as
+// "ringtone 01 on PC, 08 on phone" when the user changes either side.
+async function handleBootstrapTtsConfig() {
+  try {
+    const raw = localStorage.getItem('kumiko_tts_config');
+    return { ok: true, config: raw };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+async function handleBootstrapPreferences() {
+  try {
+    let autoZipEnabled = false;
+    try {
+      const autoZip = await invokeElectron('app:get-auto-zip-backup', {});
+      autoZipEnabled = (autoZip as { enabled?: boolean } | null)?.enabled === true;
+    } catch (e) {
+      console.warn('[MOBILE-PROXY] app:get-auto-zip-backup in bootstrap:preferences failed:', e);
+    }
+    return {
+      ok: true,
+      payload: await buildPreferencesBootstrapPayload(autoZipEnabled),
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
 async function handleBootstrapSnapshot() {
   try {
     const [messages, kumikoDiary, dailyFragments, psycheStateRows, keyvalRows] = await Promise.all([
@@ -465,7 +537,12 @@ async function handleAIConfigUpdate(args: unknown): Promise<{ ok: boolean; error
     return { ok: false, error: 'invalid_config' };
   }
   try {
-    localStorage.setItem('kumiko_ai_config', JSON.stringify(args));
+    await applyPreferencesPatch({
+      localStorage: {
+        kumiko_ai_config: JSON.stringify(args),
+      },
+    });
+    emitPreferencesChanged(['kumiko_ai_config']);
     // Fan-out to every connected phone so they re-hydrate their
     // localStorage from bootstrap:ai-config. useMobileMessageSync listens
     // for the resulting `ai-config:changed` WS event.
@@ -477,6 +554,171 @@ async function handleAIConfigUpdate(args: unknown): Promise<{ ok: boolean; error
     return { ok: true };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
+  }
+}
+
+// Symmetrical to handleAIConfigUpdate: phone-initiated tts config save.
+// PC becomes the new source of truth, then a `tts-config:changed`
+// broadcast tells every other connected phone (and the desktop's own
+// renderer if it has the matching listener) to re-pull via
+// `bootstrap:tts-config`. The initiator phone updated itself
+// synchronously in `handleTtsConfigChange` before this round-trip, so
+// the broadcast it receives back is a harmless re-hydration.
+async function handleTtsConfigUpdate(args: unknown): Promise<{ ok: boolean; error?: string }> {
+  if (!args || typeof args !== 'object') {
+    return { ok: false, error: 'invalid_config' };
+  }
+  try {
+    await applyPreferencesPatch({
+      localStorage: {
+        kumiko_tts_config: JSON.stringify(args),
+      },
+    });
+    emitPreferencesChanged(['kumiko_tts_config']);
+    try {
+      window.electronAPI?.send?.('mobile-event-broadcast', { type: 'tts-config:changed' });
+    } catch (e) {
+      console.warn('[MOBILE-PROXY] tts-config:changed broadcast failed:', e);
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+async function handlePreferencesSetFromMobile(args: unknown): Promise<{ ok: boolean; revision?: number; error?: string }> {
+  const payload = argsAsObject(args);
+  const localStoragePayload = argsAsObject(payload.localStorage);
+  const localStoragePatch: Partial<Record<SyncedLocalStorageKey, string | null>> = {};
+  for (const [rawKey, rawValue] of Object.entries(localStoragePayload)) {
+    localStoragePatch[rawKey as SyncedLocalStorageKey] =
+      typeof rawValue === 'string' || rawValue === null ? rawValue : String(rawValue);
+  }
+
+  const keyvalPatch = Array.isArray(payload.keyval)
+    ? (payload.keyval as Array<{ key?: unknown; value?: unknown }>)
+        .filter((row) => typeof row?.key === 'string' && row.key.length > 0)
+        .map((row) => ({ key: row.key as string, value: row.value }))
+    : [];
+
+  const patch: PreferencesPatch = {
+    localStorage: Object.keys(localStoragePatch).length > 0 ? localStoragePatch : undefined,
+    keyval: keyvalPatch.length > 0 ? keyvalPatch : undefined,
+  };
+
+  const changedKeys = [
+    ...Object.keys(localStoragePatch),
+    ...keyvalPatch.map((row) => row.key),
+  ];
+  const autoZipEnabled =
+    typeof payload.autoZipEnabled === 'boolean'
+      ? payload.autoZipEnabled
+      : undefined;
+
+  try {
+    if (patch.localStorage || patch.keyval) {
+      await applyPreferencesPatch(patch);
+    }
+    if (typeof autoZipEnabled === 'boolean') {
+      try {
+        await invokeElectron('app:set-auto-zip-backup', { enabled: autoZipEnabled });
+        useAppStore.getState().setAutoZipEnabled(autoZipEnabled);
+        changedKeys.push('app:auto-zip-backup');
+      } catch (e) {
+        return { ok: false, error: (e as Error).message || 'auto_zip_write_failed' };
+      }
+    }
+    if (changedKeys.length > 0) {
+      emitPreferencesChanged(changedKeys);
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+// Phase 8: TTS proxy handlers. The phone WebView's origin
+// (`capacitor://localhost`) hits CORS rejection from Fish Audio / Vocu
+// CDN, and SoVITS lives at PC-localhost (unreachable from the WiFi
+// network). All three failure modes have the same fix: run the synth
+// fetch in the PC renderer (no CORS, 127.0.0.1 means PC), pull the
+// audio bytes back through the bridge as base64, decode + play in the
+// WebView. Each handler uses the existing high-level synth function so
+// emotion → ref-audio gating, Vocu vivid preset, and SoVITS v3v4
+// prompt-text rules all stay consistent with desktop behavior.
+async function handleTtsFishSynth(args: unknown): Promise<
+  { ok: false; error: string; code?: string }
+  | { ok: true; audioB64: string; mime: string; durationEstimate: number }
+> {
+  const payload = argsAsObject(args);
+  const text = typeof payload.text === 'string' ? payload.text : '';
+  const config = payload.config as TtsConfig | undefined;
+  if (!text || !config) {
+    return { ok: false, error: 'Missing text or config', code: 'E_INVALID_ARGS' };
+  }
+  try {
+    const result = await synthesizeSpeech(text, config);
+    return {
+      ok: true,
+      audioB64: bytesToBase64(result.audio),
+      mime: ttsFormatToMime(config.format, 'audio/mpeg'),
+      durationEstimate: result.durationEstimate,
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message || 'Fish synth failed' };
+  }
+}
+
+async function handleTtsVocuSynth(args: unknown): Promise<
+  { ok: false; error: string; code?: string }
+  | { ok: true; audioB64: string; mime: string; durationEstimate: number }
+> {
+  const payload = argsAsObject(args);
+  const text = typeof payload.text === 'string' ? payload.text : '';
+  const config = payload.config as TtsConfig | undefined;
+  const emotion = (typeof payload.emotion === 'string' ? payload.emotion : 'neutral') as EmotionType;
+  if (!text || !config) {
+    return { ok: false, error: 'Missing text or config', code: 'E_INVALID_ARGS' };
+  }
+  try {
+    const result = await synthesizeWithVocu(text, config, emotion);
+    return {
+      ok: true,
+      audioB64: bytesToBase64(result.audio),
+      // Vocu always returns MP3.
+      mime: 'audio/mpeg',
+      durationEstimate: result.durationEstimate,
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message || 'Vocu synth failed' };
+  }
+}
+
+async function handleTtsSovitsSynth(args: unknown): Promise<
+  { ok: false; error: string; code?: string }
+  | { ok: true; audioB64: string; mime: string; durationEstimate: number }
+> {
+  const payload = argsAsObject(args);
+  const text = typeof payload.text === 'string' ? payload.text : '';
+  const ttsConfig = payload.ttsConfig as TtsConfig | undefined;
+  const emotion = (typeof payload.emotion === 'string' ? payload.emotion : 'neutral') as EmotionType;
+  const voiceVariant = typeof payload.voiceVariant === 'string' ? payload.voiceVariant : undefined;
+  if (!text || !ttsConfig) {
+    return { ok: false, error: 'Missing text or ttsConfig', code: 'E_INVALID_ARGS' };
+  }
+  try {
+    const result = await genieTtsWithEmotion(text, emotion, ttsConfig, voiceVariant);
+    return {
+      ok: true,
+      audioB64: bytesToBase64(result.audio),
+      // synthesizeWithSovits requests media_type:'wav', so the bytes are
+      // a WAV container — phone-side `new Audio('data:audio/wav;base64,…')`
+      // plays it natively without MediaSource decoding.
+      mime: 'audio/wav',
+      durationEstimate: result.durationEstimate,
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message || 'SoVITS synth failed' };
   }
 }
 
@@ -517,13 +759,20 @@ async function dispatch(channel: string, args: unknown) {
     case 'images:save': return handleImagesSave(args);
     case 'voice:save': return handleVoiceSave(args);
     case 'ringtone:save': return handleRingtoneSave(args);
+    case 'preferences:bootstrap': return handleBootstrapPreferences();
     case 'bootstrap:ai-config': return handleBootstrapAiConfig();
+    case 'bootstrap:tts-config': return handleBootstrapTtsConfig();
     case 'bootstrap:snapshot': return handleBootstrapSnapshot();
     case 'call:action': return handleCallAction(args);
+    case 'preferences:set-from-mobile': return handlePreferencesSetFromMobile(args);
     case 'ai-config:validate-from-mobile': return handleAIConfigValidate(args);
     case 'ai-config:validate-models-from-mobile': return handleAIConfigValidateModels(args);
     case 'ai-config:validate-search-from-mobile': return handleAIConfigValidateSearch(args);
     case 'ai-config:update-from-mobile': return handleAIConfigUpdate(args);
+    case 'tts-config:update-from-mobile': return handleTtsConfigUpdate(args);
+    case 'tts:fish-synth': return handleTtsFishSynth(args);
+    case 'tts:vocu-synth': return handleTtsVocuSynth(args);
+    case 'tts:sovits-synth': return handleTtsSovitsSynth(args);
     default: {
       if (PASSTHROUGH_CHANNELS.has(channel)) {
         return invokeElectron(channel, args);

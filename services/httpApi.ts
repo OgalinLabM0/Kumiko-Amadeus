@@ -38,12 +38,18 @@ export const PWA_ALLOWED_CHANNELS: ReadonlySet<string> = new Set([
   // Phase 4 Part E hydration channels. Phones fetch these once on boot
   // so `<App />` sees PC data / PC API keys rather than empty local state.
   'bootstrap:snapshot',
+  'preferences:bootstrap',
   'bootstrap:ai-config',
+  // Mobile pulls PC's `kumiko_tts_config` so ringtone selection / Fish &
+  // Vocu API keys / speed / latency mirror the desktop. Re-pulled on
+  // every `tts-config:changed` WebSocket event.
+  'bootstrap:tts-config',
   // Phase 5 Part D: mobile taps on the call overlay buttons route
   // through this synthetic channel. The renderer looks up the active
   // voiceCallOverlayData and invokes the matching closure; the phone
   // just relays the user intent and trusts PC-side state.
   'call:action',
+  'preferences:set-from-mobile',
   // Phase 6 Part B: AIConfigScreen on mobile proxies validate + save
   // through the PC renderer so API keys + provider choices remain
   // authoritative on the desktop side. The phone's localStorage is
@@ -53,6 +59,9 @@ export const PWA_ALLOWED_CHANNELS: ReadonlySet<string> = new Set([
   'ai-config:validate-from-mobile',
   'ai-config:validate-search-from-mobile',
   'ai-config:validate-models-from-mobile',
+  // Phone-initiated tts config save. PC writes its localStorage + emits
+  // tts-config:changed so every other phone re-hydrates.
+  'tts-config:update-from-mobile',
   // Phase 6 Part C: mobile remote file browser for the AuthScreen LOCAL
   // tab. `fs:*` traverse the PC filesystem inside `mobileBrowseRoot`;
   // `backup:*-desktop-file` read / write / register the backup source.
@@ -112,6 +121,15 @@ export const PWA_ALLOWED_CHANNELS: ReadonlySet<string> = new Set([
   'rag:clear-all',
   'rag:clear-message-vectors',
   'rag:rebuild:start',
+  // Phase 8: TTS via PC renderer proxy (CORS / 127.0.0.1 reachability
+  // workaround — see ipc-bridge.cjs ALLOWED_CHANNELS for the full
+  // rationale). Args / return shape:
+  //   `tts:fish-synth`   args { text, config }                     → { audioB64, mime, durationEstimate }
+  //   `tts:vocu-synth`   args { text, config, emotion? }           → { audioB64, mime, durationEstimate }
+  //   `tts:sovits-synth` args { text, emotion, ttsConfig, voiceVariant? } → { audioB64, mime, durationEstimate }
+  'tts:fish-synth',
+  'tts:vocu-synth',
+  'tts:sovits-synth',
 ]);
 
 const DEFAULT_FETCH_TIMEOUT_MS = 60_000;
@@ -290,6 +308,23 @@ export async function httpCheckSession(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+// Decode a base64 string (standard or URL-safe) into an ArrayBuffer.
+// The PC renderer's mobile-api-proxy returns binary payloads (TTS audio
+// frames, future voice / image bytes) as base64 strings to keep the
+// JSON IPC contract clean; the phone calls this on the way out so the
+// rest of the codebase still sees `ArrayBuffer` like in the desktop path.
+// Normalises URL-safe alphabet + missing padding before `atob` so any
+// future server that emits base64url (Fastify's default for some
+// codecs) is also accepted without an extra wrapper.
+export function base64ToArrayBuffer(input: string): ArrayBuffer {
+  const normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+  const padding = normalized.length % 4 === 0 ? '' : '='.repeat(4 - (normalized.length % 4));
+  const binary = atob(normalized + padding);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
+  return out.buffer;
 }
 
 // Resolve a phone-visible URL for a userData image id. Desktop code uses

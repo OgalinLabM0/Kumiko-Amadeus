@@ -227,6 +227,13 @@ export class AppDatabase extends Dexie {
 
   async setVal(key: string, value: any): Promise<void> {
     await this.keyval.put({ key, value });
+    void import('./preferencesSync')
+      .then(({ noteKeyvalPreferenceWrite }) => {
+        noteKeyvalPreferenceWrite(key, value);
+      })
+      .catch(() => {
+        // preferencesSync is optional at runtime for tests / early boot
+      });
   }
 }
 

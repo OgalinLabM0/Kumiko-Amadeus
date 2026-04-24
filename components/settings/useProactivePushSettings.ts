@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Language } from '../../types';
 import { SettingsDialogConfig } from './useSettingsDialog';
+import {
+  PREFERENCES_UPDATED_EVENT,
+  queueLocalStoragePreferenceSync,
+} from '../../services/preferencesSync';
 
 type ShowDialog = (config: Omit<SettingsDialogConfig, 'isOpen'>) => void;
 
@@ -19,8 +23,9 @@ export const useProactivePushSettings = (
   language: Language,
   showDialog: ShowDialog
 ) => {
+  const readEnabled = () => localStorage.getItem('enable_proactive_messaging') !== 'false';
   const [enableProactive, setEnableProactive] = useState(
-    () => localStorage.getItem('enable_proactive_messaging') !== 'false'
+    () => readEnabled()
   );
   const [isPushSupported, setIsPushSupported] = useState(false);
   const [pushSubscription, setPushSubscription] = useState<PushSubscription | null>(null);
@@ -29,7 +34,7 @@ export const useProactivePushSettings = (
   const handleToggleProactive = () => {
     const newVal = !enableProactive;
     setEnableProactive(newVal);
-    localStorage.setItem('enable_proactive_messaging', String(newVal));
+    queueLocalStoragePreferenceSync('enable_proactive_messaging', String(newVal));
 
     const actualValue = localStorage.getItem('enable_proactive_messaging');
     const verified = actualValue === String(newVal);
@@ -54,6 +59,19 @@ export const useProactivePushSettings = (
         });
       });
     }
+  }, []);
+
+  useEffect(() => {
+    const handlePreferencesUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ keys?: string[] }>).detail;
+      if (Array.isArray(detail?.keys) && detail.keys.includes('enable_proactive_messaging')) {
+        setEnableProactive(readEnabled());
+      }
+    };
+    window.addEventListener(PREFERENCES_UPDATED_EVENT, handlePreferencesUpdated as EventListener);
+    return () => {
+      window.removeEventListener(PREFERENCES_UPDATED_EVENT, handlePreferencesUpdated as EventListener);
+    };
   }, []);
 
   const handleSubscribePush = async () => {

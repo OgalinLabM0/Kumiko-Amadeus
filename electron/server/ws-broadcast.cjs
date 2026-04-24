@@ -52,6 +52,14 @@
 //   { type: 'update:state', state }
 //   { type: 'genie:state', state }
 //
+// Phase 6 (desktop-authoritative config sync). Payload-less notifies;
+// the phone re-pulls the canonical blob via the bootstrap channels:
+//   { type: 'ai-config:changed' }       → phone re-pulls bootstrap:ai-config
+//   { type: 'tts-config:changed' }      → phone re-pulls bootstrap:tts-config
+//   { type: 'preferences:changed', keys, revision }
+//                                      → phone re-pulls preferences:bootstrap
+//   { type: 'backup:desktop-path-changed', filePath, fileName }
+//
 // Handshake / keepalive (server-originated):
 //   { type: 'hello', ts, clients }
 //   { type: 'ping', ts: number }           // optional keepalive

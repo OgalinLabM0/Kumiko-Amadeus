@@ -3,6 +3,7 @@ import { GoogleGenAI } from "@google/genai";
 import { AIConfig } from "../types";
 import { callOpenAI, callAnthropic } from "./llmProviderService";
 import { DEFAULT_AI_CONFIG, normalizeAIConfig, resolveTransportProvider } from "./appConfig";
+import { queueLocalStoragePreferenceSync } from './preferencesSync';
 
 // Helper: Get Current AI Config from LocalStorage or Defaults
 export const getCurrentAIConfig = (): AIConfig => {
@@ -37,7 +38,18 @@ export const setAIConfig = async (
     cfg: AIConfig,
 ): Promise<{ ok: boolean; error?: string }> => {
     try {
-        localStorage.setItem('kumiko_ai_config', JSON.stringify(cfg));
+        // `applyToStore: false` — kumiko_ai_config is consumed via direct
+        // localStorage reads (`getCurrentAIConfig()`), not a Zustand slice,
+        // so the prefs runtime apply has nothing useful to do here.
+        // `broadcast: false` — the dedicated `ai-config:changed` IPC below
+        // already drives mobile rehydration; queueing a generic
+        // `preferences:changed` on top of it would have every paired phone
+        // run `refreshPreferencesFromPc()` twice for one click.
+        queueLocalStoragePreferenceSync('kumiko_ai_config', JSON.stringify(cfg), {
+            propagateToDesktop: false,
+            applyToStore: false,
+            broadcast: false,
+        });
     } catch (e) {
         return { ok: false, error: (e as Error).message };
     }

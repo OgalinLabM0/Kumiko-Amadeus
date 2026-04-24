@@ -94,13 +94,23 @@ const ALLOWED_CHANNELS = new Set([
   // finds real data instead of the phone's empty local IndexedDB and
   // missing localStorage.
   'bootstrap:snapshot',
+  'preferences:bootstrap',
   'bootstrap:ai-config',
+  // Mobile-side TTS config hydration. Symmetric to bootstrap:ai-config.
+  // Phone calls this on pairing + every `tts-config:changed` WS event so
+  // its zustand `ttsConfig` slice (Fish/Vocu API keys, ringtone selection,
+  // speed/latency, voice mode) mirrors the PC's localStorage.
+  // kumiko_tts_config. Without this the phone's ringtone defaults to 01.mp3
+  // independently of whatever the PC user has chosen, which is exactly the
+  // "PC=01 / phone=08" desync the user reported.
+  'bootstrap:tts-config',
   // Phase 5 Part D: mobile's only way to invoke the PC-side
   // VoiceCallOverlay closures (accept/reject/close). Forwarded to the
   // renderer's useMobileApiProxy handleCallAction, which reads the live
   // Zustand state so a late-arriving action for an already-closed call
   // is a harmless no-op.
   'call:action',
+  'preferences:set-from-mobile',
   // Phase 6 Part B: mobile's AIConfigScreen routes validate + save through
   // these so the PC renderer remains the sole localStorage.kumiko_ai_config
   // owner. `validate-*-from-mobile` run against PC-resident network access
@@ -111,6 +121,11 @@ const ALLOWED_CHANNELS = new Set([
   'ai-config:validate-from-mobile',
   'ai-config:validate-search-from-mobile',
   'ai-config:validate-models-from-mobile',
+  // Phone-initiated tts config save. Same pattern as
+  // ai-config:update-from-mobile: PC renderer commits localStorage and
+  // fans out a tts-config:changed event so every other connected phone
+  // re-hydrates via bootstrap:tts-config.
+  'tts-config:update-from-mobile',
   // Phase 6 Part C: mobile remote file browser + desktop file I/O for the
   // AuthScreen LOCAL tab. All `fs:*` + `backup:*-desktop-file` handlers
   // resolve paths against `mobileBrowseRoot` and reject anything outside
@@ -172,6 +187,24 @@ const ALLOWED_CHANNELS = new Set([
   'rag:clear-all',
   'rag:clear-message-vectors',
   'rag:rebuild:start',
+  // --- Phase 8: TTS proxy ---------------------------------------------
+  // Phone WebView origin is `capacitor://localhost`; Fish Audio / Vocu
+  // CORS preflight rejects that scheme outright → fetch throws
+  // NetworkError, surfaced to the user as "load failed". SoVITS lives at
+  // PC-localhost `http://127.0.0.1:9880`, unreachable from the phone's
+  // WiFi network. Same fix for all three: route the synthesis call to the
+  // PC renderer (where Node-grade fetch has no CORS, and 127.0.0.1 is the
+  // local machine), pull the audio bytes back through the bridge encoded
+  // as base64, decode + play in the WebView.
+  //
+  // Renderer dispatch (components/app/useMobileApiProxy.ts) calls the
+  // existing high-level synth functions (`synthesizeSpeech` /
+  // `synthesizeWithVocu` / `genieTtsWithEmotion`), so emotion-based ref
+  // selection / Vocu vivid preset / SoVITS v3v4 prompt-text gating all
+  // run on PC and stay consistent with desktop behavior.
+  'tts:fish-synth',
+  'tts:vocu-synth',
+  'tts:sovits-synth',
 ]);
 
 const DEFAULT_TIMEOUT_MS = 60000; // chat responses can stream for a while
