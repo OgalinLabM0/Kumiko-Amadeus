@@ -338,9 +338,9 @@ chmod +x Kumiko-Amadeus-x86_64.AppImage
 
 2. **安装依赖 / Install**
 
-   ```bash
-   npm install
-   ```
+```bash
+npm install
+```
 
 3. **拉取角色资源包 / Fetch character assets**
 
@@ -377,17 +377,17 @@ chmod +x Kumiko-Amadeus-x86_64.AppImage
 
 6. **开发模式 / Dev mode**
 
-   ```bash
-   npm run desktop:dev
-   ```
+```bash
+npm run desktop:dev
+```
 
    同时启动 Vite 开发服务器 + Electron 窗口，带热重载。
 
 7. **构建安装包 / Build installer**
 
-   ```bash
-   npm run desktop:build
-   ```
+```bash
+npm run desktop:build
+```
 
    构建产物在 `release/` 下，Windows 主机产出两个 `Setup-<arch>.exe`，Linux 主机产出两个 `.AppImage`。**Linux AppImage 必须在 Linux 主机（或 WSL2 / CI）上构建**，`hnswlib-node` 无 Linux 预编译、必须本地 `node-gyp` 重编译，Windows 工具链不能跨编译到 Linux。
 
