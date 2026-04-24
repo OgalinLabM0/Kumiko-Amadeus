@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>Kumiko·Amadeus 安装包 UI 预览</title>
+<style>
+  :root {
+    --scale: 1;
+    --gold: #6B7C93;
+    --gold-soft: #8EA0B8;
+    --text-dark: #1F2937;
+    --text-muted: #667085;
+    --line: #D8DEE8;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+    background: #eef2f7;
+    color: #1f2937;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    background: rgba(248, 250, 252, 0.94);
+    backdrop-filter: blur(12px);
+    padding: 12px 24px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+    border-bottom: 1px solid rgba(152, 162, 179, 0.24);
+  }
+
+  .topbar h1 {
+    font-size: 14px;
+    font-weight: 500;
+    color: #475467;
+    margin-right: 16px;
+  }
+
+  .topbar .spacer { flex: 1; }
+
+  .nav-btn, .dpi-btn {
+    background: transparent;
+    border: 1px solid rgba(152, 162, 179, 0.45);
+    color: #475467;
+    padding: 6px 14px;
+    border-radius: 4px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+  }
+  .nav-btn:hover, .dpi-btn:hover {
+    background: rgba(107, 124, 147, 0.08);
+  }
+  .nav-btn.active, .dpi-btn.active {
+    background: var(--gold);
+    color: white;
+    border-color: var(--gold);
+  }
+
+  .topbar .sep {
+    color: #98a2b3;
+    margin: 0 4px;
+  }
+
+  .stage {
+    padding: 40px 20px;
+    min-height: calc(100vh - 60px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* ── Installer window ─────────────────────────────────────────── */
+  .win {
+    width: calc(600px * var(--scale));
+    height: calc(420px * var(--scale));
+    border-radius: calc(8px * var(--scale));
+    overflow: hidden;
+    box-shadow:
+      0 calc(20px * var(--scale)) calc(60px * var(--scale)) rgba(0, 0, 0, 0.55),
+      0 calc(6px * var(--scale)) calc(16px * var(--scale)) rgba(0, 0, 0, 0.4);
+    position: relative;
+    transition: height 0.3s ease;
+    image-rendering: crisp-edges;
+  }
+  .win.expanded { height: calc(500px * var(--scale)); }
+
+  .win .bg {
+    position: absolute;
+    inset: 0;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+
+  /* ── Title bar ────────────────────────────────────────────────── */
+  .titlebar {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: calc(36px * var(--scale));
+    display: flex;
+    align-items: center;
+    padding-left: calc(16px * var(--scale));
+    z-index: 10;
+    color: var(--text-dark);
+    font-size: calc(13px * var(--scale));
+    -webkit-app-region: drag;
+    user-select: none;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.88) 0%, rgba(255,255,255,0) 100%);
+  }
+  .titlebar .title-icon {
+    width: calc(18px * var(--scale));
+    height: calc(18px * var(--scale));
+    margin-right: calc(8px * var(--scale));
+    background: url(skin/images/icon_app.png) center/contain no-repeat;
+  }
+  .titlebar .title-text {
+    font-weight: 500;
+    letter-spacing: 0.3px;
+  }
+  .titlebar .controls {
+    position: absolute;
+    top: 0;
+    right: 0;
+    display: flex;
+  }
+  .titlebar .tb-btn {
+    width: calc(32px * var(--scale));
+    height: calc(32px * var(--scale));
+    border: none;
+    cursor: pointer;
+    background-repeat: no-repeat;
+    background-size: calc(32px * var(--scale)) calc(96px * var(--scale));
+    background-position: 0 0;
+  }
+  .titlebar .tb-btn.min { background-image: url(skin/images/btn_min.png); }
+  .titlebar .tb-btn.close { background-image: url(skin/images/btn_close.png); }
+  .titlebar .tb-btn:hover { background-position: 0 calc(-32px * var(--scale)); }
+  .titlebar .tb-btn:active { background-position: 0 calc(-64px * var(--scale)); }
+
+  /* ── Bottom action bar (shared) ───────────────────────────────── */
+  .actionbar {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: calc(60px * var(--scale));
+    display: flex;
+    align-items: center;
+    padding: 0 calc(24px * var(--scale));
+    gap: calc(12px * var(--scale));
+    z-index: 10;
+    background: linear-gradient(to top, rgba(248, 250, 252, 0.92) 0%, rgba(248, 250, 252, 0) 100%);
+  }
+  .actionbar .version {
+    font-size: calc(11px * var(--scale));
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+  }
+  .actionbar .spacer { flex: 1; }
+
+  /* ── Buttons ─────────────────────────────────────────────────── */
+  .btn {
+    border: none;
+    cursor: pointer;
+    background-repeat: no-repeat;
+    background-position: 0 0;
+    transition: background-position 0.1s;
+    padding: 0;
+  }
+  .btn:hover { background-position: 0 calc(var(--single-h) * -1 * var(--scale)); }
+  .btn:active { background-position: 0 calc(var(--single-h) * -2 * var(--scale)); }
+
+  .btn-install {
+    --single-h: 36;
+    width: calc(120px * var(--scale));
+    height: calc(36px * var(--scale));
+    background-image: url(skin/images/btn_install.png);
+    background-size: calc(120px * var(--scale)) calc(108px * var(--scale));
+  }
+  .btn-custom {
+    --single-h: 24;
+    width: calc(80px * var(--scale));
+    height: calc(24px * var(--scale));
+    background-image: url(skin/images/btn_custom.png);
+    background-size: calc(80px * var(--scale)) calc(72px * var(--scale));
+  }
+  .btn-browse {
+    --single-h: 28;
+    width: calc(64px * var(--scale));
+    height: calc(28px * var(--scale));
+    background-image: url(skin/images/btn_browse.png);
+    background-size: calc(64px * var(--scale)) calc(84px * var(--scale));
+  }
+  .btn-ok {
+    --single-h: 28;
+    width: calc(80px * var(--scale));
+    height: calc(28px * var(--scale));
+    background-image: url(skin/images/btn_ok.png);
+    background-size: calc(80px * var(--scale)) calc(84px * var(--scale));
+  }
+  .btn-cancel {
+    --single-h: 28;
+    width: calc(80px * var(--scale));
+    height: calc(28px * var(--scale));
+    background-image: url(skin/images/btn_cancel.png);
+    background-size: calc(80px * var(--scale)) calc(84px * var(--scale));
+  }
+
+  /* ── Content blocks (per page) ───────────────────────────────── */
+  .win .center-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dark);
+    text-align: center;
+    gap: calc(8px * var(--scale));
+    z-index: 5;
+    pointer-events: none;
+  }
+  .win .caption {
+    font-size: calc(26px * var(--scale));
+    font-weight: 300;
+    letter-spacing: calc(2px * var(--scale));
+    color: var(--gold);
+    text-shadow: 0 calc(1px * var(--scale)) calc(2px * var(--scale)) rgba(255,255,255,0.8);
+  }
+  .win .subtitle {
+    font-size: calc(12px * var(--scale));
+    color: var(--text-muted);
+    letter-spacing: calc(1px * var(--scale));
+  }
+
+  .expand-panel {
+    position: absolute;
+    left: 0; right: 0;
+    bottom: calc(60px * var(--scale));
+    height: calc(80px * var(--scale));
+    padding: calc(16px * var(--scale)) calc(24px * var(--scale));
+    display: flex;
+    align-items: center;
+    gap: calc(10px * var(--scale));
+    background: rgba(255, 253, 247, 0.85);
+    border-top: 1px solid rgba(212, 185, 136, 0.3);
+    z-index: 8;
+  }
+  .expand-panel label {
+    font-size: calc(12px * var(--scale));
+    color: var(--text-dark);
+    white-space: nowrap;
+  }
+  .expand-panel input[type="text"] {
+    flex: 1;
+    height: calc(28px * var(--scale));
+    padding: 0 calc(10px * var(--scale));
+    border: 1px solid var(--line);
+    border-radius: calc(4px * var(--scale));
+    background: white;
+    font-family: inherit;
+    font-size: calc(12px * var(--scale));
+    color: var(--text-dark);
+  }
+  .expand-panel input[type="text"]:focus {
+    outline: none;
+    border-color: var(--gold);
+    box-shadow: 0 0 0 calc(2px * var(--scale)) rgba(176, 137, 64, 0.15);
+  }
+
+  /* ── Progress bar ────────────────────────────────────────────── */
+  .progress-wrap {
+    position: absolute;
+    left: 50%;
+    top: 58%;
+    transform: translateX(-50%);
+    width: calc(400px * var(--scale));
+    z-index: 5;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: calc(10px * var(--scale));
+  }
+  .progress {
+    position: relative;
+    width: calc(400px * var(--scale));
+    height: calc(8px * var(--scale));
+    background: url(skin/images/progress_bg.png) no-repeat;
+    background-size: contain;
+    border-radius: calc(4px * var(--scale));
+    overflow: visible;
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: url(skin/images/progress_fg.png) no-repeat;
+    background-size: calc(400px * var(--scale)) calc(8px * var(--scale));
+    border-radius: calc(4px * var(--scale));
+    transition: width 3s linear;
+  }
+  .progress-ring {
+    position: absolute;
+    top: 50%;
+    width: calc(16px * var(--scale));
+    height: calc(16px * var(--scale));
+    transform: translate(-50%, -50%);
+    background: url(skin/images/progress_ring.png) no-repeat;
+    background-size: contain;
+    left: 0;
+    transition: left 3s linear;
+  }
+  .progress-label {
+    font-size: calc(11px * var(--scale));
+    color: var(--text-muted);
+    letter-spacing: 0.5px;
+  }
+
+  .checkbox {
+    position: absolute;
+    left: calc(24px * var(--scale));
+    bottom: calc(70px * var(--scale));
+    display: flex;
+    align-items: center;
+    gap: calc(8px * var(--scale));
+    font-size: calc(13px * var(--scale));
+    color: var(--text-dark);
+    z-index: 6;
+    cursor: pointer;
+    user-select: none;
+  }
+  .checkbox input { margin: 0; accent-color: var(--gold); }
+
+  /* ── Window close warning / tooltip ──────────────────────────── */
+  .hint {
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: calc(70px * var(--scale));
+    font-size: calc(11px * var(--scale));
+    color: var(--text-muted);
+    text-align: center;
+    z-index: 5;
+  }
+
+  /* ── Reveal animation for each page switch ───────────────────── */
+  .win { animation: fadeIn 0.3s ease; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  .note {
+    position: fixed;
+    right: 24px;
+    bottom: 24px;
+    max-width: 320px;
+    padding: 12px 16px;
+    background: rgba(212, 185, 136, 0.12);
+    border: 1px solid rgba(212, 185, 136, 0.3);
+    border-radius: 6px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #667085;
+  }
+  .note strong { color: #475467; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>Kumiko·Amadeus · 安装包 UI 预览</h1>
+  <button class="nav-btn active" data-page="main">1. 安装主页</button>
+  <button class="nav-btn" data-page="config">2. 自定义路径</button>
+  <button class="nav-btn" data-page="installing">3. 正在安装</button>
+  <button class="nav-btn" data-page="finish">4. 安装完成</button>
+  <button class="nav-btn" data-page="uninstall">5. 卸载确认</button>
+  <span class="sep">|</span>
+  <span style="font-size:12px;color:#888;">DPI</span>
+  <button class="dpi-btn active" data-scale="1">100%</button>
+  <button class="dpi-btn" data-scale="1.5">150%</button>
+  <button class="dpi-btn" data-scale="2">200%</button>
+</div>
+
+<div class="stage" id="stage">
+
+  <!-- 1. Main install page -->
+  <div class="win" id="page-main">
+    <div class="bg" style="background-image: url(skin/images/bg_main.png);"></div>
+    <div class="titlebar">
+      <div class="title-icon"></div>
+      <div class="title-text">Kumiko·Amadeus 安装向导</div>
+      <div class="controls">
+        <button class="tb-btn min" title="最小化"></button>
+        <button class="tb-btn close" title="关闭"></button>
+      </div>
+    </div>
+    <div class="center-label" style="top: 58%;">
+      <div class="subtitle">欢迎安装</div>
+    </div>
+    <div class="actionbar">
+      <span class="version">v2.11.2</span>
+      <span class="spacer"></span>
+      <button class="btn btn-custom" onclick="switchPage('config')"></button>
+      <button class="btn btn-install" onclick="switchPage('installing')"></button>
+    </div>
+  </div>
+
+</div>
+
+<div class="note">
+  <strong>操作提示</strong><br>
+  顶栏切换 5 个安装器页面；DPI 切换会按真实比例放大整个窗口（包含切图重新渲染）。所有按钮都支持 hover/pressed 三态。
+</div>
+
+<script>
+  // ── Page definitions ────────────────────────────────────────────
+  const pages = {
+    main: () => `
+      <div class="bg" style="background-image: url(skin/images/bg_main.png);"></div>
+      <div class="titlebar">
+        <div class="title-icon"></div>
+        <div class="title-text">Kumiko·Amadeus 安装向导</div>
+        <div class="controls">
+          <button class="tb-btn min"></button>
+          <button class="tb-btn close"></button>
+        </div>
+      </div>
+      <div class="actionbar">
+        <span class="version">v2.11.2</span>
+        <span class="spacer"></span>
+        <button class="btn btn-custom" onclick="switchPage('config')"></button>
+        <button class="btn btn-install" onclick="switchPage('installing')"></button>
+      </div>
+    `,
+    config: () => `
+      <div class="bg" style="background-image: url(skin/images/bg_config_expanded.png);"></div>
+      <div class="titlebar">
+        <div class="title-icon"></div>
+        <div class="title-text">Kumiko·Amadeus 安装向导 — 自定义安装</div>
+        <div class="controls">
+          <button class="tb-btn min"></button>
+          <button class="tb-btn close"></button>
+        </div>
+      </div>
+      <div class="expand-panel">
+        <label>安装位置:</label>
+        <input type="text" value="D:\\Program Files\\Kumiko-Amadeus" />
+        <button class="btn btn-browse"></button>
+      </div>
+      <div class="actionbar">
+        <span class="version">v2.11.2</span>
+        <span class="spacer"></span>
+        <button class="btn btn-install" onclick="switchPage('installing')"></button>
+      </div>
+    `,
+    installing: () => `
+      <div class="bg" style="background-image: url(skin/images/bg_installing.png);"></div>
+      <div class="titlebar">
+        <div class="title-icon"></div>
+        <div class="title-text">Kumiko·Amadeus 正在安装…</div>
+      </div>
+      <div class="progress-wrap">
+        <div class="progress">
+          <div class="progress-fill" id="pfill"></div>
+          <div class="progress-ring" id="pring"></div>
+        </div>
+        <div class="progress-label" id="plabel">正在初始化...</div>
+      </div>
+      <div class="actionbar">
+        <span class="version">v2.11.2</span>
+        <span class="spacer"></span>
+      </div>
+    `,
+    finish: () => `
+      <div class="bg" style="background-image: url(skin/images/bg_finish.png);"></div>
+      <div class="titlebar">
+        <div class="title-icon"></div>
+        <div class="title-text">Kumiko·Amadeus 安装向导</div>
+        <div class="controls">
+          <button class="tb-btn close"></button>
+        </div>
+      </div>
+      <div class="center-label" style="top: 60%;">
+        <div class="caption">安装成功</div>
+        <div class="subtitle">感谢使用 Kumiko·Amadeus</div>
+      </div>
+      <label class="checkbox"><input type="checkbox" checked /> 立即运行 Kumiko·Amadeus</label>
+      <div class="actionbar">
+        <span class="version">v2.11.2</span>
+        <span class="spacer"></span>
+        <button class="btn btn-ok" onclick="switchPage('main')" title="完成"></button>
+      </div>
+    `,
+    uninstall: () => `
+      <div class="bg" style="background-image: url(skin/images/bg_uninstall.png);"></div>
+      <div class="titlebar">
+        <div class="title-icon"></div>
+        <div class="title-text">卸载 Kumiko·Amadeus</div>
+        <div class="controls">
+          <button class="tb-btn close"></button>
+        </div>
+      </div>
+      <div class="center-label" style="top: 54%;">
+        <div class="caption" style="font-size: calc(22px * var(--scale));">确认卸载</div>
+        <div class="subtitle">再会。愿你的记忆温柔存档。</div>
+      </div>
+      <label class="checkbox"><input type="checkbox" checked /> 保留我的聊天记录与设置</label>
+      <div class="actionbar">
+        <span class="version">v2.11.2</span>
+        <span class="spacer"></span>
+        <button class="btn btn-cancel" onclick="switchPage('main')"></button>
+        <button class="btn btn-ok" onclick="switchPage('installing')"></button>
+      </div>
+    `,
+  };
+
+  // ── Page switcher ──────────────────────────────────────────────
+  const stage = document.getElementById('stage');
+  const navBtns = document.querySelectorAll('.nav-btn');
+
+  function switchPage(pageName) {
+    const win = document.createElement('div');
+    win.className = 'win' + (pageName === 'config' ? ' expanded' : '');
+    win.id = 'page-' + pageName;
+    win.innerHTML = pages[pageName]();
+    stage.innerHTML = '';
+    stage.appendChild(win);
+
+    navBtns.forEach(b => b.classList.toggle('active', b.dataset.page === pageName));
+
+    if (pageName === 'installing') {
+      animateProgress();
+    }
+  }
+
+  function animateProgress() {
+    const fill = document.getElementById('pfill');
+    const ring = document.getElementById('pring');
+    const label = document.getElementById('plabel');
+    if (!fill) return;
+    requestAnimationFrame(() => {
+      fill.style.width = '100%';
+      ring.style.left = '100%';
+    });
+    const steps = [
+      '正在复制 electron-main.cjs...',
+      '注册 KumikoAIAmadeus 文件关联...',
+      '部署 RAG 索引模型 (bge-m3-onnx)...',
+      '创建桌面快捷方式...',
+      '完成',
+    ];
+    let i = 0;
+    label.textContent = steps[0];
+    const timer = setInterval(() => {
+      i++;
+      if (i >= steps.length) {
+        clearInterval(timer);
+        setTimeout(() => switchPage('finish'), 400);
+        return;
+      }
+      label.textContent = steps[i];
+    }, 600);
+  }
+
+  navBtns.forEach(b => b.addEventListener('click', () => switchPage(b.dataset.page)));
+
+  // ── DPI scale switcher ──────────────────────────────────────────
+  document.querySelectorAll('.dpi-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      document.querySelectorAll('.dpi-btn').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      document.documentElement.style.setProperty('--scale', b.dataset.scale);
+    });
+  });
+
+  // Kick off with main page
+  switchPage('main');
+</script>
+
+</body>
+</html>

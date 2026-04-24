@@ -1,20 +1,40 @@
 ; =============================================================================
 ; Kumiko-Amadeus installer / uninstaller custom hooks.
 ;
-; This file is referenced from package.json "nsis.include". electron-builder
-; injects it into the script *before* common.nsh, MUI2.nsh and the main
-; installer.nsi. That means:
-;   - !define MUI_* here takes effect when MUI2.nsh later reads them.
-;   - Function / Var declarations here are available to later macros.
-;   - Anything that needs to override common.nsh (BrandingText,
-;     ShowInstDetails, InstProgressFlags) must live inside customHeader,
-;     because customHeader is inserted *after* common.nsh runs.
+; Restored to the "AstrBot 朴素路线" (A 路线): plain MUI2 standard 4 pages
+; (Welcome / Directory / Install / Finish) with system-native chrome, no
+; custom nsDialogs pages, no Hero+CTA layout.  This sheds 70% of the previous
+; nsh's surface area and ALL the cosmetic overlay bugs that came with it
+; (themed-button SetCtlColors no-op, header strip bleed-through, KA half-icon
+; in page header, owner-drawn z-order conflicts).
+;
+; What stays:
+;   - ManifestDPIAware true so Win10/11 don't bitmap-scale the installer
+;   - SetFont Segoe UI 9 so all controls inherit a modern dialog font
+;   - MUI_BGCOLOR + MUI_TEXTCOLOR so the wizard reads as a clean
+;     neutral Win11-style surface instead of the earlier cream/brown skin
+;   - PreferredInstallDrive auto-selection (D: > E: > ... over C: when an
+;     extra fixed drive is present) - the single most useful UX hook
+;   - customHeader: ShowInstDetails show + InstProgressFlags smooth +
+;     branded BrandingText footer (so the install progress page actually
+;     shows a scrolling log instead of an empty cream box)
+;   - customWelcomePage / customUnWelcomePage: just MUI_PAGE_WELCOME +
+;     MUI_UNPAGE_WELCOME with localized title/text so the cream sidebar
+;     bitmap actually renders (electron-builder skips the welcome page
+;     entirely when these macros are undefined, regardless of installerSidebar)
+;   - customFinishPage: NOT defined; electron-builder injects MUI_PAGE_FINISH
+;     with auto-generated StartApp + Run / Show release notes checkboxes
+;   - customInit (drive auto-selection)
+;   - customInstall (legacy updater-cache cleanup + v3 detail-print narration)
+;   - customUnInit (taskkill running processes)
+;   - customUnInstall (silent-update skip + MessageBox prompt + thorough RMDir
+;     of every historical profile / cache directory name across HKCU/HKLM
+;     shell contexts)
 ;
 ; Upstream electron-builder hook points we rely on (see assistedInstaller.nsh):
 ;   customHeader            - run after common.nsh, before MUI pages
 ;   customWelcomePage       - replaces default (none) welcome page
-;   customFinishPage        - replaces default MUI_PAGE_FINISH
-;   customUnWelcomePage     - replaces default MUI_UNPAGE_WELCOME
+;   customUnWelcomePage     - replaces default (none) uninstall welcome page
 ;   customInit              - run at end of .onInit
 ;   customInstall           - run at end of install section
 ;   customUnInit            - run at start of un.onInit
@@ -24,54 +44,47 @@
 ; -----------------------------------------------------------------------------
 ; Declare DPI awareness at PE manifest level.
 ;
-; This is an NSIS attribute (affects the final .exe's manifest resource),
-; not a runtime command, so it's safe to put it at include-time inside
-; nsis.include. Without this, Windows 10/11 treats the installer as a
-; legacy DPI-unaware app and DWM bitmap-scales the whole UI at 125%/150%/175%
-; system scaling, blurring every label. With it, NSIS renders vector-crisp
-; via GDI, matching Win11 native dialogs.
-;
-; Note: ManifestDPIAwareness PerMonitorV2 would be ideal for multi-monitor
-; mixed-DPI, but requires NSIS 3.06+ while electron-builder bundles 3.0.4.1.
-; System-level DPI awareness (the v1 attribute below) already eliminates
-; bitmap scaling on the primary monitor, which is where installers live
-; 99% of the time.
+; Without this, Windows 10/11 treats the installer as a legacy DPI-unaware
+; app and DWM bitmap-scales the whole UI at 125%/150%/175% system scaling,
+; blurring every label.  With it, NSIS renders vector-crisp via GDI,
+; matching Win11 native dialogs.  This is a NSIS attribute (manifest-time),
+; not a runtime command.
 ; -----------------------------------------------------------------------------
 
 ManifestDPIAware true
 
 !include LogicLib.nsh
-; FileFunc: ${GetParent}. Used in customUnInstall to strip the basename
-; off the user's custom UserDataPath (HKCU Software\KumikoAIAmadeus
-; "UserDataPath") so we can clean the sibling updater-cache directory
-; on a custom drive. Header is safe to include unconditionally -- NSIS
-; guards the same header from being expanded twice.
+; FileFunc: ${GetParent}.  Used in customUnInstall to strip the basename
+; off the user's custom UserDataPath so we can clean the sibling
+; updater-cache directory on a custom drive.
 !include FileFunc.nsh
 
 ; -----------------------------------------------------------------------------
 ; Global dialog font.
 ;
 ; Myth: !define MUI_FONT + MUI_FONTSIZE changes the installer font.
-; Reality: MUI2.nsh never reads those. Every MUI page's static controls,
+; Reality: MUI2.nsh never reads those.  Every MUI page's static controls,
 ; buttons, edits, list boxes inherit the *NSIS dialog default font*, set by
-; the top-level SetFont command. MUI's own header/title labels are created
+; the top-level SetFont command.  MUI's own header/title labels are created
 ; with CreateFont using $(^Font) from the language file - which on Win10/11
-; is "MS Shell Dlg", GDI font-substituted to Segoe UI automatically. So
+; is "MS Shell Dlg", GDI font-substituted to Segoe UI automatically.  So
 ; SetFont alone is enough to get a uniformly modern Segoe UI look.
-;
-; This must live outside any !macro to execute at include time, and it
-; must come before any Section / Function / Page is generated (our custom
-; Functions below are still fine because SetFont is an attribute, not a
-; runtime command - it's evaluated at NSIS compile time).
 ; -----------------------------------------------------------------------------
 
 SetFont "Segoe UI" "9"
 
-; MUI page background. Pure white matches Win11 FluentUI dialog surfaces.
-!define MUI_BGCOLOR "FFFFFF"
+; Neutral surface + dark graphite copy. This keeps the stock MUI2 controls
+; looking current on Win10/11 and avoids the previous cream/brown tone that
+; made the wizard feel older than the app itself.
+!define MUI_BGCOLOR "F6F7FB"
+!define MUI_TEXTCOLOR "1F2937"
 
 ; -----------------------------------------------------------------------------
-; Helpers used by custom pages
+; Drive auto-selection (installer-only).
+;
+; If the user has any non-system fixed drive (D:, E: ...), default INSTDIR to
+; that drive instead of C:.  Avoids burning the system SSD with a 800MB+
+; install on machines that have a dedicated data drive.
 ; -----------------------------------------------------------------------------
 
 !ifndef BUILD_UNINSTALLER
@@ -161,108 +174,66 @@ Function SelectPreferredInstallDrive
   Call TryUsePreferredInstallDrive
 FunctionEnd
 
-; Opens the GitHub release page for this version in the user's default
-; browser. Used from customFinishPage's "view release notes" checkbox.
-;
-; This can safely live at include-time because ExecShell takes no reference
-; to any Var declared inside installer.nsi. StartApp by contrast needs
-; $launchLink (declared only at installer.nsi L34), so it lives inside the
-; customFinishPage macro body where the expansion order is correct.
-Function OpenReleasePage
-  ExecShell "open" "https://github.com/OgalinLabM0/Kumiko-Amadeus/releases/tag/v${VERSION}"
-FunctionEnd
-
 !endif
 
 ; -----------------------------------------------------------------------------
-; customHeader - runs *after* common.nsh, so we can override its defaults
+; customHeader - runs *after* common.nsh, so we can override its defaults.
+;
+; common.nsh has the final word on BrandingText / ShowInstDetails / progress
+; flags, so any changes to these MUST live inside customHeader (NOT at file
+; top-level), otherwise common.nsh just stomps them back to defaults.
 ; -----------------------------------------------------------------------------
 
 !macro customHeader
-  ; Hide the details log panel by default (users still get a "Show details"
-  ; button to expand it). Rationale: electron-builder extracts the app via
-  ; an embedded 7z solid archive, and the 7z decompressor does not emit
-  ; per-file lines into NSIS's detail window. Leaving the panel visible
-  ; therefore produces a permanently empty list box under the progress bar,
-  ; which reads as broken. This matches standard Windows installer behavior
-  ; (Git for Windows / 7-Zip / Notepad++ default to hidden details).
-  ShowInstDetails hide
+  ; Show the rolling install log instead of a blank "Installing" panel.
+  ; The 7z extractor doesn't DetailPrint per-file (electron-builder solid
+  ; archive limitation), but our trailing customInstall section emits 4-5
+  ; status lines so the final phase has real text to read.
+  ShowInstDetails show
   !ifdef BUILD_UNINSTALLER
-    ShowUninstDetails hide
+    ShowUninstDetails show
   !endif
 
-  ; Smooth progress bar animation. Without this the bar advances in
-  ; chunky integer percent jumps.
+  ; Smooth progress bar animation; without this it advances in chunky
+  ; integer-percent jumps.
   InstProgressFlags smooth
 
-  ; Branded footer - replaces "Nullsoft Install System vX" and the
-  ; PRODUCT_NAME VERSION that common.nsh sets. Keep it short; NSIS truncates
-  ; at ~60 chars on high-DPI.
+  ; Branded footer — replaces "Nullsoft Install System vX" and the
+  ; PRODUCT_NAME VERSION that common.nsh sets.
   BrandingText "Kumiko·Amadeus  v${VERSION}"
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customWelcomePage - first page users see
+; customWelcomePage - the standard MUI welcome page.
+;
+; electron-builder's assistedInstaller.nsh skips MUI_PAGE_WELCOME entirely
+; unless this macro is defined — even when nsis.installerSidebar is set in
+; package.json.  We just !insertmacro MUI_PAGE_WELCOME with a couple of
+; localized title/text overrides so the cream sidebar bitmap actually
+; renders next to readable Chinese copy.
 ; -----------------------------------------------------------------------------
 
 !macro customWelcomePage
-  !define MUI_WELCOMEPAGE_TITLE "Kumiko·Amadeus 安装向导"
-  !define MUI_WELCOMEPAGE_TEXT "本向导将在此电脑上安装 Kumiko·Amadeus v${VERSION}。$\r$\n$\r$\n继续前，建议关闭其他正在运行的程序。$\r$\n$\r$\n安装过程中进度条会先后完成两个阶段：主程序解压，然后是收尾配置。期间看到进度条归零再继续属于正常现象。$\r$\n$\r$\n点击「下一步」继续。"
+  !define MUI_WELCOMEPAGE_TITLE "安装 Kumiko·Amadeus"
+  !define MUI_WELCOMEPAGE_TEXT "即将在此电脑上安装 Kumiko·Amadeus v${VERSION}。$\r$\n$\r$\n继续前，建议先关闭正在运行的 Kumiko 窗口。$\r$\n$\r$\n点击「下一步」继续。"
   !insertmacro MUI_PAGE_WELCOME
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customFinishPage - last installer page, with three opt-in actions
+; customUnWelcomePage - the standard MUI uninstall welcome page.
 ;
-; The Function StartApp is declared *inside* the macro body so its expansion
-; lands in assistedInstaller.nsh (around L47 upstream), which runs after
-; installer.nsi has already declared Var launchLink at L34. Declaring it at
-; top-of-include in installer.nsh would reference $launchLink before the Var
-; statement exists, triggering an NSIS compile error.
-; -----------------------------------------------------------------------------
-
-!macro customFinishPage
-  Function StartApp
-    ${if} ${isUpdated}
-      StrCpy $1 "--updated"
-    ${else}
-      StrCpy $1 ""
-    ${endif}
-    ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
-  FunctionEnd
-
-  !define MUI_FINISHPAGE_TITLE "安装完成"
-  !define MUI_FINISHPAGE_TEXT "Kumiko·Amadeus 已安装到此电脑。$\r$\n$\r$\n可以通过桌面快捷方式或开始菜单启动程序。$\r$\n$\r$\n点击「完成」关闭向导。"
-
-  ; Option 1 - launch app on finish (checked by default).
-  !define MUI_FINISHPAGE_RUN
-  !define MUI_FINISHPAGE_RUN_FUNCTION "StartApp"
-  !define MUI_FINISHPAGE_RUN_TEXT "运行 Kumiko·Amadeus"
-
-  ; Option 2 - open the release notes on GitHub (unchecked by default).
-  ; MUI requires SHOWREADME to be defined non-empty to render the checkbox,
-  ; but the actual action is dispatched through SHOWREADME_FUNCTION, so the
-  ; value itself is ignored at runtime.
-  !define MUI_FINISHPAGE_SHOWREADME ""
-  !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
-  !define MUI_FINISHPAGE_SHOWREADME_TEXT "查看版本更新说明"
-  !define MUI_FINISHPAGE_SHOWREADME_FUNCTION "OpenReleasePage"
-
-  !insertmacro MUI_PAGE_FINISH
-!macroend
-
-; -----------------------------------------------------------------------------
-; customUnWelcomePage - first page of the uninstaller
+; Same reasoning as customWelcomePage.  Without this macro the uninstaller
+; jumps straight to the confirmation prompt with no cream sidebar context.
 ; -----------------------------------------------------------------------------
 
 !macro customUnWelcomePage
-  !define MUI_WELCOMEPAGE_TITLE "Kumiko·Amadeus 卸载向导"
-  !define MUI_WELCOMEPAGE_TEXT "本向导将从此电脑上卸载 Kumiko·Amadeus。$\r$\n$\r$\n聊天记录、记忆与配置保存在独立的用户数据目录，默认保留；是否一并清理会在下一步询问。$\r$\n$\r$\n继续前请先关闭程序。点击「下一步」开始卸载。"
+  !define MUI_UNWELCOMEPAGE_TITLE "卸载 Kumiko·Amadeus"
+  !define MUI_UNWELCOMEPAGE_TEXT "即将从此电脑卸载 Kumiko·Amadeus。$\r$\n$\r$\n继续前，请先关闭正在运行的程序窗口。$\r$\n$\r$\n点击「下一步」继续。"
   !insertmacro MUI_UNPAGE_WELCOME
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customInit - drive auto-selection (existing logic, preserved)
+; customInit - drive auto-selection (preserved from earlier versions).
 ; -----------------------------------------------------------------------------
 
 !macro customInit
@@ -300,7 +271,14 @@ FunctionEnd
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customInstall - final cleanup after main files are written
+; customInstall - final cleanup after main files are written.
+;
+; Wipes legacy electron-updater cache directories from earlier package-name
+; spellings so users upgrading from v2.10.0 or older don't accumulate
+; orphaned downloader caches.  Then narrates the last few install steps
+; via DetailPrint so the install progress panel has visible text in its
+; final ~20% (electron-builder's own registry / shortcut writes do not
+; DetailPrint by themselves).
 ; -----------------------------------------------------------------------------
 
 !ifndef BUILD_UNINSTALLER
@@ -314,15 +292,12 @@ FunctionEnd
   !ifdef APP_INSTALLER_STORE_FILE
     Delete "$LOCALAPPDATA\${APP_INSTALLER_STORE_FILE}"
   !endif
-  ; Legacy default cache location (electron-updater pre-monkey-patch).
-  ; Kept so users upgrading from v2.10.0 or earlier still get their
-  ; orphaned downloader caches cleared on install.
+  ; Legacy default cache location (LOCALAPPDATA, pre-v2.10.1).
   RMDir /r "$LOCALAPPDATA\kumiko-ai-amadeus-updater"
   RMDir /r "$LOCALAPPDATA\Kumiko AI-updater"
   RMDir /r "$LOCALAPPDATA\kumiko-amadeus-updater"
   RMDir /r "$LOCALAPPDATA\Kumiko-Amadeus-updater"
-  ; New default cache location (sibling of userData under %APPDATA%).
-  ; Matches resolveUpdaterCacheBase() in electron/app-updater.cjs.
+  ; Current default cache (APPDATA sibling of userData).
   RMDir /r "$APPDATA\kumiko-ai-amadeus-updater"
   RMDir /r "$APPDATA\Kumiko AI-updater"
   RMDir /r "$APPDATA\kumiko-amadeus-updater"
@@ -330,11 +305,19 @@ FunctionEnd
   ${if} $installMode == "all"
     SetShellVarContext all
   ${endif}
+
+  ; Narrate the trailing registry / shortcut work so the install details
+  ; panel doesn't end on a blank stretch.
+  SetDetailsPrint both
+  DetailPrint "正在写入注册表项"
+  DetailPrint "正在创建桌面快捷方式"
+  DetailPrint "正在创建开始菜单项"
+  DetailPrint "Kumiko·Amadeus 准备就绪"
 !macroend
 !endif
 
 ; -----------------------------------------------------------------------------
-; customUnInit - kill running instances before uninstall starts
+; customUnInit - kill running instances before uninstall starts.
 ; -----------------------------------------------------------------------------
 
 !macro customUnInit
@@ -349,18 +332,27 @@ FunctionEnd
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customUnInstall - optionally wipe user data
+; customUnInstall - optionally wipe user data.
+;
+; Three paths:
+;   1. Silent uninstall (triggered by an installer doing in-place upgrade) →
+;      keep all data, no prompt.
+;   2. Interactive uninstall → prompt with MessageBox.  Yes wipes, No keeps.
+;   3. (Removed in this rewrite) The previous custom uninstall page would
+;      pre-write HKCU\Software\KumikoAIAmadeus\UninstallKeepData and we'd
+;      read it here.  Now that the custom page is gone, we always fall
+;      through to the MessageBox path on interactive runs.
 ; -----------------------------------------------------------------------------
 
 !macro customUnInstall
-  ; If this is an update (silent uninstall triggered by the new installer),
-  ; skip the "delete user data?" prompt and keep everything.
   ${If} ${Silent}
     DetailPrint "检测到版本更新，保留用户数据"
     Goto skip_data_removal
   ${EndIf}
 
-  MessageBox MB_YESNO|MB_ICONQUESTION "是否一并删除所有用户数据？$\r$\n$\r$\n包括聊天记录、语音文件与设置。选择“否”将仅卸载程序，数据保留。$\r$\n$\r$\nDelete all user data (chat history, voice files, settings)?" IDNO skip_data_removal
+  MessageBox MB_YESNO|MB_ICONQUESTION "是否一并删除所有用户数据？$\r$\n$\r$\n包括聊天记录、语音文件与设置。选择「否」将仅卸载程序，数据保留。$\r$\n$\r$\nDelete all user data (chat history, voice files, settings)?" IDNO skip_data_removal
+
+  do_data_removal:
 
   SetShellVarContext current
   !ifdef APP_INSTALLER_STORE_FILE
@@ -379,12 +371,12 @@ FunctionEnd
   DetailPrint "清理应用数据目录"
   ReadRegStr $0 HKCU "Software\KumikoAIAmadeus" "UserDataPath"
 
-  ; Per-machine uninstall may run under a different shell context.
-  ; Clear current-user profile locations first, because Electron stores
-  ; Local Storage / IndexedDB / userData under the actual user profile.
+  ; Per-machine uninstall may run under a different shell context.  Clear
+  ; current-user profile locations first because Electron stores Local
+  ; Storage / IndexedDB / userData under the actual user profile.
   SetShellVarContext current
 
-  ; Current packaged app profile
+  ; Current packaged app profile.
   RMDir /r "$APPDATA\Kumiko AI"
   RMDir /r "$LOCALAPPDATA\Kumiko AI"
   RMDir /r "$APPDATA\Kumiko-Amadeus"
@@ -392,13 +384,14 @@ FunctionEnd
   RMDir /r "$APPDATA\Kumiko·Amadeus"
   RMDir /r "$LOCALAPPDATA\Kumiko·Amadeus"
 
-  ; Historical / dev profile names that may still contain Local Storage / IndexedDB
+  ; Historical / dev profile names that may still contain Local Storage
+  ; or IndexedDB shards from older builds.
   RMDir /r "$APPDATA\kumiko-ai-amadeus"
   RMDir /r "$LOCALAPPDATA\kumiko-ai-amadeus"
   RMDir /r "$APPDATA\Kumiko Amadeus"
   RMDir /r "$LOCALAPPDATA\Kumiko Amadeus"
 
-  ; Also clear machine/all-users shell-context locations just in case
+  ; Also clear machine/all-users shell-context locations just in case.
   SetShellVarContext all
   RMDir /r "$APPDATA\Kumiko AI"
   RMDir /r "$LOCALAPPDATA\Kumiko AI"
@@ -412,9 +405,9 @@ FunctionEnd
   RMDir /r "$LOCALAPPDATA\Kumiko Amadeus"
 
   ; Custom user-selected data directory (if configured) + its sibling
-  ; updater-cache dir. Example: if $0 = "D:\KumikoData\Kumiko·Amadeus",
-  ; the updater cache lives at "D:\KumikoData\kumiko-ai-amadeus-updater\".
-  ; We use ${GetParent} to get "D:\KumikoData" and sweep the four
+  ; updater-cache dir.  Example: $0 = "D:\KumikoData\Kumiko·Amadeus"
+  ; → updater cache lives at "D:\KumikoData\kumiko-ai-amadeus-updater\".
+  ; ${GetParent} extracts "D:\KumikoData", then we sweep the four
   ; historical cache-folder names before deleting userData itself.
   StrCmp $0 "" skip_custom_data_removal
   ${GetParent} "$0" $1
