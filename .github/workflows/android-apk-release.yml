@@ -1,0 +1,212 @@
+# Build the universal Android APK for Kumiko-Amadeus on a GitHub-hosted
+# ubuntu-latest runner. Mirrors the shape of windows-release.yml /
+# linux-appimage.yml (workflow_dispatch only, optional publish input,
+# zero Secrets required).
+#
+# - publish=false (default): produces a debug-signed universal APK as a
+#                            workflow artifact only. Use for smoke tests
+#                            after every push.
+# - publish=true           : additionally attaches the APK to the GitHub
+#                            Release matching package.json `version`
+#                            using gh CLI + the built-in GITHUB_TOKEN.
+#                            That release must already exist (the Windows
+#                            workflow normally creates it via
+#                            electron-builder --publish always).
+#
+# Signing strategy (A1 → A8 transition):
+# - A1: AGP-generated `~/.android/debug.keystore` signs the APK. Each
+#   CI run generates a *different* keystore, which means a user who
+#   installed APK build N can NOT in-place upgrade to build N+1 (Android
+#   requires identical signing certs across versions of the same package
+#   id). For A1.8 verification this is fine — the user just uninstalls /
+#   reinstalls between builds.
+# - A8 (in-app updater milestone): we replace the per-run debug keystore
+#   with a stable upload keystore stored as a base64-encoded GitHub
+#   Secret + decoded into the runner before assembleRelease. At that
+#   point we switch the gradle task from assembleDebug to assembleRelease
+#   (the release variant uses minify + proguard + a real signing config).
+#   Keeping the workflow shape identical here means A8 only edits the
+#   "Build APK" step.
+#
+# Universal APK (single APK with every ABI's native libs) is the default
+# AGP behavior since we do NOT set `android.splits.abi.enable true`.
+# When A5 adds the sqlite-vec ABI-specific .so files under
+# `android/app/src/main/jniLibs/{armeabi-v7a,arm64-v8a,x86,x86_64}/`,
+# AGP will bundle all four flavors into the same APK so any device can
+# install the same artifact.
+name: Android APK Release build
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Attach the APK to the GitHub Release that matches package.json version"
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  # Needed when publish=true uploads the APK to a Release via gh CLI.
+  # Harmless when publish=false.
+  contents: write
+
+jobs:
+  build:
+    name: Build universal APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup JDK 17 (Eclipse Temurin)
+        # AGP 8 + Gradle 8 require JDK 17. Temurin is the conventional
+        # choice for CI; setup-java auto-exports JAVA_HOME and adds
+        # bin/ to PATH so the gradle wrapper picks it up.
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        # ubuntu-latest already ships with the Android SDK + cmdline-tools
+        # but versions can drift between runner images. setup-android pins
+        # to a known good cmdline-tools build, accepts SDK licenses, and
+        # caches the SDK between runs so cold-start is ~30s instead of ~2min.
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
+
+      - name: Cache Gradle caches
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.android/build-cache
+          key: gradle-android-${{ hashFiles('android/**/*.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-android-
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Fetch shared assets
+        # Character-specific copyrighted assets (emotion sprites, ringtones,
+        # favicon, KA logo, encrypted lore) live outside the tracked tree
+        # and must be unpacked from kumiko-assets.zip before Vite (and the
+        # Android launcher icon generator) can pick them up.
+        run: npm run fetch-assets
+
+      - name: Build web bundle + sync Capacitor Android
+        # `npm run verify:android` runs vite build + build-android-icons +
+        # cap copy android + cap update android in one shot, exactly the
+        # same chain a developer would run locally before opening Android
+        # Studio. Validates that the web payload is Android-compatible
+        # before we hand it to gradle.
+        run: npm run verify:android
+
+      - name: Read app version from package.json
+        # Pull the canonical version string out of package.json so we can
+        # (a) overwrite versionName / versionCode in app/build.gradle to
+        # match the desktop release without hand-bumping in two places,
+        # and (b) reference the same v${VERSION} tag when uploading to
+        # the Release in the publish step.
+        id: appver
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          # versionCode = MAJOR*10000 + MINOR*100 + PATCH so 2.12.0 → 21200,
+          # mirrors the value committed in app/build.gradle defaultConfig.
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH=$(echo $VERSION | cut -d. -f3)
+          VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "Resolved versionName=$VERSION versionCode=$VERSION_CODE"
+
+      - name: Pin versionName / versionCode from package.json
+        # Overwrite the two values in app/build.gradle so a forgotten
+        # local bump can't ship an APK that disagrees with the desktop
+        # release tag. Idempotent sed (matches the literal lines we
+        # commit; falls through silently if someone already changed them).
+        run: |
+          sed -i "s/versionCode .*/versionCode ${{ steps.appver.outputs.version_code }}/" android/app/build.gradle
+          sed -i 's/versionName ".*"/versionName "${{ steps.appver.outputs.version }}"/' android/app/build.gradle
+          grep -E "versionCode|versionName" android/app/build.gradle
+
+      - name: Make gradlew executable
+        # The android/gradlew script is committed with executable bit
+        # in the linux/macOS sense, but git on Windows can drop the bit
+        # depending on core.fileMode settings. Force-set it before invoke.
+        run: chmod +x android/gradlew
+
+      - name: Build universal debug APK
+        # assembleDebug uses the AGP-generated `~/.android/debug.keystore`
+        # so the APK installs without `adb install -r`. Output path:
+        # android/app/build/outputs/apk/debug/app-debug.apk
+        # When A8 introduces a stable signing key, switch to assembleRelease.
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon --warning-mode=summary
+
+      - name: Verify APK exists + show size
+        # Sanity gate: if assembleDebug succeeded but the APK is missing
+        # for whatever reason (custom output dir, AGP version skew), fail
+        # loudly here instead of producing an empty Release asset upload.
+        run: |
+          APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$APK_PATH" ]; then
+            echo "::error::Expected APK not found at $APK_PATH"
+            ls -la android/app/build/outputs/apk/ || true
+            exit 1
+          fi
+          SIZE=$(du -h "$APK_PATH" | cut -f1)
+          echo "Built $APK_PATH ($SIZE)"
+
+      - name: Rename APK to release-friendly filename
+        # Same naming pattern as windows-release.yml's
+        # `Kumiko-Amadeus-Setup-${arch}.exe`: stable, version-suffixed,
+        # easy to spot on a Release page next to the Windows installers.
+        id: rename
+        run: |
+          OUT="release/Kumiko-Amadeus-${{ steps.appver.outputs.version }}-universal-debug.apk"
+          mkdir -p release
+          cp android/app/build/outputs/apk/debug/app-debug.apk "$OUT"
+          echo "apk_path=$OUT" >> $GITHUB_OUTPUT
+          ls -la release/
+
+      - name: Upload APK as workflow artifact
+        # publish=false stops here. publish=true continues to attach the
+        # same APK to the Release; uploading the artifact regardless gives
+        # us a 14-day post-mortem download even when the publish path
+        # later fails (Release tag missing, network blip, etc).
+        uses: actions/upload-artifact@v6
+        with:
+          name: kumiko-amadeus-android-universal
+          path: ${{ steps.rename.outputs.apk_path }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach APK to GitHub Release (publish=true only)
+        if: inputs.publish == true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Use gh CLI (preinstalled on ubuntu-latest) to upload the APK
+        # to the existing v${VERSION} release. --clobber overwrites any
+        # previous upload of the same filename so a re-run replaces
+        # the asset instead of failing on duplicate.
+        run: |
+          TAG="v${{ steps.appver.outputs.version }}"
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::Release $TAG does not exist yet. Run windows-release.yml with publish=true first to create the release."
+            exit 1
+          fi
+          gh release upload "$TAG" "${{ steps.rename.outputs.apk_path }}" --repo "$GITHUB_REPOSITORY" --clobber
+          echo "Attached ${{ steps.rename.outputs.apk_path }} to release $TAG"

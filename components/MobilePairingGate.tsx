@@ -35,6 +35,11 @@ import {
 } from '../services/httpApi';
 import { db, type DailyFragmentEntity, type KeyValEntity, type KumikoDiaryEntity, type MessageEntity, type PsycheStateEntity } from '../services/db';
 import { applyPreferencesPatch, type PreferencesBootstrapPayload } from '../services/preferencesSync';
+import {
+  getCapacitorPcBaseUrl,
+  isCapacitorNative,
+  setCapacitorPcBaseUrl,
+} from '../services/environment';
 import { ensurePushSubscription } from '../services/pushSubscriptionService';
 import { useViewportSync } from '../hooks/useAppViewport';
 import {
@@ -45,6 +50,10 @@ import {
 } from './mobile/MobilePairingChrome';
 
 type GateState =
+  // Capacitor native (Android APK / iOS .ipa) only: the WebView origin is
+  // capacitor://localhost so we have to ask the user for PC's reachable
+  // URL once. PWA path skips this state entirely (origin == PC).
+  | { kind: 'configure-pc-url'; hint?: string }
   | { kind: 'loading' }
   | { kind: 'pairing'; hint?: string }
   | { kind: 'hydrating'; hostname: string | null; step: HydrationStep }
@@ -141,9 +150,11 @@ function hydrationSteps(current: HydrationStep): MobilePairingStep[] {
 
 function PairingView({
   onPaired,
+  onEditPcUrl,
   hint,
 }: {
   onPaired: () => void;
+  onEditPcUrl?: () => void;
   hint?: string;
 }) {
   const [token, setToken] = useState('');
@@ -253,6 +264,164 @@ function PairingView({
         口令仅在桌面端显示一次。一旦服务器下发会话 cookie，配对即完成，下次
         访问不需要再填。
       </div>
+
+      {onEditPcUrl && (
+        <button
+          type="button"
+          onClick={onEditPcUrl}
+          className="ka-pair-body text-[11.5px] leading-relaxed underline opacity-70 hover:opacity-100 px-1 self-start"
+          style={{ color: '#785A42', background: 'transparent', border: 'none' }}
+        >
+          换一个 PC 地址 · Use a different PC URL
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Capacitor-only: ask the user for PC's reachable URL on first launch.
+// PWA never sees this view because `getApiBaseUrl()` already resolves to
+// the page origin (which is PC for the PWA case). The form validates the
+// URL by hitting `${url}/api/status`; a 200 + JSON response means the PC
+// process + Fastify mobile-access bridge are both live and reachable.
+function PcUrlConfigureView({
+  onSaved,
+  initialUrl,
+  hint,
+}: {
+  onSaved: () => void;
+  initialUrl: string;
+  hint?: string;
+}) {
+  const [url, setUrl] = useState(initialUrl);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = useCallback(async () => {
+    const trimmed = url.trim().replace(/\/+$/, '');
+    if (!trimmed) {
+      setError('请填写桌面端的 URL，例如 http://192.168.1.50:3000 或 http://100.64.x.x:3000。');
+      return;
+    }
+    if (!/^https?:\/\//i.test(trimmed)) {
+      setError('URL 必须以 http:// 或 https:// 开头。');
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      // Probe the URL directly (NOT via httpStatus, which reads the same
+      // localStorage key we're about to write — chicken-and-egg). 8s timeout
+      // is generous enough for sleepy LAN routers / first-Tailscale-handshake
+      // delays, while still bailing fast enough to keep the user from
+      // staring at a frozen button.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const res = await fetch(`${trimmed}/api/status`, {
+        method: 'GET',
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (!res.ok) {
+        setError(`PC 地址有响应但状态码异常 (${res.status})。请确认 PC 软件已开启「设置 → 手机访问」。`);
+        return;
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        setError('该 URL 没有返回我们认识的 PC 服务（不是 JSON）。请确认你输入的是 Kumiko·Amadeus PC 软件的地址。');
+        return;
+      }
+      setCapacitorPcBaseUrl(trimmed);
+      onSaved();
+    } catch (e) {
+      const msg = (e as Error).name === 'AbortError'
+        ? '连接超时（8 秒）。请确认手机和 PC 在同一网段（或 Tailscale 互通），且 PC 端 IP / 端口正确。'
+        : ((e as Error).message || '连接失败。');
+      setError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [url, onSaved]);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="ka-pair-card px-5 py-5">
+        <div className="ka-pair-micro text-[10px] font-semibold uppercase mb-1">
+          第〇步 · 找到桌面端
+        </div>
+        <div className="ka-pair-micro text-[10px] opacity-70 mb-2">
+          Step 0 · Reach your desktop
+        </div>
+        <p className="ka-pair-body text-[13px] leading-relaxed">
+          这是 Android 原生 App，不是浏览器 PWA，所以需要先告诉它你 PC 软件的地址。
+          打开桌面端 <strong>设置 → 手机访问</strong>，会显示「http://xxx.xxx.xxx.xxx:3000」一行，
+          原样填到下方。
+        </p>
+        <p className="ka-pair-micro text-[10.5px] leading-relaxed opacity-60 mt-2">
+          Native Android app: enter the LAN / Tailscale URL shown in your
+          desktop client's <strong>Settings → Mobile Access</strong>.
+        </p>
+      </div>
+
+      {hint && (
+        <div
+          className="ka-pair-card px-4 py-3 text-[12px] leading-relaxed"
+          style={{
+            background: 'rgba(197, 160, 89, 0.12)',
+            borderColor: 'rgba(197, 160, 89, 0.4)',
+            color: '#785A42',
+          }}
+        >
+          {hint}
+        </div>
+      )}
+
+      <div className="flex flex-col gap-2">
+        <label className="ka-pair-micro text-[10px] font-semibold uppercase px-1">
+          桌面端 URL · Desktop URL
+        </label>
+        <input
+          type="url"
+          inputMode="url"
+          className="ka-pair-input"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          placeholder="http://192.168.1.50:3000"
+          autoComplete="off"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+        />
+      </div>
+
+      {error && (
+        <div
+          className="ka-pair-card px-4 py-3 text-[12px] leading-relaxed"
+          style={{
+            background: 'rgba(180, 60, 60, 0.08)',
+            borderColor: 'rgba(180, 60, 60, 0.32)',
+            color: '#7f2a2a',
+          }}
+        >
+          {error}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={submit}
+        disabled={submitting}
+        className="ka-pair-btn"
+      >
+        <span className="relative z-10">
+          {submitting ? '检查中…' : '保存并连接 · Save & Connect'}
+        </span>
+      </button>
+
+      <div className="ka-pair-body text-[11.5px] leading-relaxed opacity-70 px-1">
+        URL 保存在本机；之后每次启动直接连。可以在「配对页 → 换一个 PC 地址」里改回来。
+      </div>
     </div>
   );
 }
@@ -289,12 +458,27 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
   const refresh = useCallback(async () => {
     loadingStartedAtRef.current = Date.now();
     setLoadingElapsedMs(0);
+    // Capacitor native: short-circuit straight to the PC-URL configurator
+    // when no URL has been pinned yet. Without this gate, httpStatus()
+    // would call `${''}/api/status` → `/api/status` → 404 against the
+    // capacitor://localhost asset bundle, which the PWA codepath would
+    // misread as "PC unreachable" and dump the user into an empty
+    // pairing form they can't fix.
+    if (isCapacitorNative() && !getCapacitorPcBaseUrl()) {
+      setState({ kind: 'configure-pc-url' });
+      return;
+    }
     const status = await httpStatus();
     if (!status) {
-      setState({
-        kind: 'pairing',
-        hint: '无法连接桌面端。请确认桌面端 App 已启动，且两台设备在同一 Tailscale 账户下。',
-      });
+      setState(isCapacitorNative()
+        ? {
+            kind: 'configure-pc-url',
+            hint: '无法连接所配置的桌面端 URL。请确认 PC 软件已启动，「设置 → 手机访问」处于启用状态，且 IP / 端口正确。',
+          }
+        : {
+            kind: 'pairing',
+            hint: '无法连接桌面端。请确认桌面端 App 已启动，且两台设备在同一 Tailscale 账户下。',
+          });
       return;
     }
     const sessionOk = await httpCheckSession();
@@ -364,15 +548,24 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
   // view with a diagnostic hint so the user can at least re-paste a
   // fresh token. The auto-retry effect below then silently re-probes
   // every 10s; the user does not have to reload.
+  //
+  // On Capacitor we instead bounce back to the URL-config view so the
+  // user can fix a wrong IP / port — re-typing a pairing token won't
+  // help if the underlying URL is unreachable.
   useEffect(() => {
     if (state.kind !== 'loading' && state.kind !== 'hydrating') {
       return;
     }
     const timer = setTimeout(() => {
-      setState({
-        kind: 'pairing',
-        hint: '长时间未能连接桌面端。请确认 PC 端软件已打开，且"设置 → 手机访问"处于启用状态。稍后会自动重试。',
-      });
+      setState(isCapacitorNative()
+        ? {
+            kind: 'configure-pc-url',
+            hint: '长时间未能连接桌面端。如果换了网络（家 → 公司 / 4G / Tailscale），请在下方更新 PC 地址。',
+          }
+        : {
+            kind: 'pairing',
+            hint: '长时间未能连接桌面端。请确认 PC 端软件已打开，且"设置 → 手机访问"处于启用状态。稍后会自动重试。',
+          });
     }, LOADING_WATCHDOG_MS);
     return () => clearTimeout(timer);
   }, [state.kind]);
@@ -405,10 +598,32 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
       </MobilePairingChrome>
     );
   }
-  if (state.kind === 'pairing') {
+  if (state.kind === 'configure-pc-url') {
     return (
       <MobilePairingChrome>
-        <PairingView onPaired={refresh} hint={state.hint} />
+        <PcUrlConfigureView
+          initialUrl={getCapacitorPcBaseUrl()}
+          hint={state.hint}
+          onSaved={() => {
+            // After save, drop straight back into the loading branch and
+            // let the existing refresh chain do its thing (probe status →
+            // pairing or hydrating → paired).
+            setState({ kind: 'loading' });
+            void refresh();
+          }}
+        />
+      </MobilePairingChrome>
+    );
+  }
+  if (state.kind === 'pairing') {
+    // Show the "change PC URL" link only on Capacitor — PWA's URL is the
+    // page origin and can't be re-edited from inside the app.
+    const onEditPcUrl = isCapacitorNative()
+      ? () => setState({ kind: 'configure-pc-url' })
+      : undefined;
+    return (
+      <MobilePairingChrome>
+        <PairingView onPaired={refresh} onEditPcUrl={onEditPcUrl} hint={state.hint} />
       </MobilePairingChrome>
     );
   }

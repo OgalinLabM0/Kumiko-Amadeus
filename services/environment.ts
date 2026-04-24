@@ -75,6 +75,14 @@ function syncFallbackIsMobilePwa(): boolean {
 async function probeMobilePwa(): Promise<RuntimeKind> {
   if (typeof window === 'undefined') return 'webFallback';
   if (isElectron()) return 'electron';
+  // Capacitor native (iOS / Android wrapper APK) is always treated as
+  // mobilePwa — it uses the same HTTP bridge as the PWA, the only
+  // difference is `getApiBaseUrl()` resolves to a user-configured PC
+  // URL kept in localStorage instead of `window.location.origin`. We
+  // do NOT probe `/api/status` here because the WebView origin is
+  // `capacitor://localhost`, where the path 404s and the probe would
+  // misclassify the runtime as `webFallback`.
+  if (isCapacitorNative()) return 'mobilePwa';
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 3000);
@@ -149,11 +157,83 @@ export function waitForRuntimeDetection(): Promise<RuntimeKind> {
   return Promise.resolve(syncFallbackIsMobilePwa() ? 'mobilePwa' : 'webFallback');
 }
 
+// ── Capacitor native (iOS / Android APK) detection + PC URL storage ──
+//
+// PWA path: the page is served by PC's Fastify, so `window.location.origin`
+//   already points at the PC and `getApiBaseUrl()` works without config.
+// Capacitor path: the WebView origin is `capacitor://localhost`, which
+//   is the APK's own asset bundle. To talk to PC we need the user's PC
+//   address (LAN `http://192.168.x.x:3000`, Tailscale `http://100.64.x.x:3000`,
+//   or `https://<host>.<tailnet>.ts.net` once the cert ships). MobilePairingGate
+//   collects this once on first launch via the `configure-pc-url` view and
+//   pins it to localStorage.
+
+const CAPACITOR_PC_BASE_URL_KEY = 'kumiko_capacitor_pc_url';
+
+interface CapacitorGlobal {
+  isNativePlatform?: () => boolean;
+  getPlatform?: () => string;
+}
+
+function readCapacitorGlobal(): CapacitorGlobal | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return (window as unknown as { Capacitor?: CapacitorGlobal }).Capacitor;
+}
+
+export function isCapacitorNative(): boolean {
+  const cap = readCapacitorGlobal();
+  if (!cap) return false;
+  if (typeof cap.isNativePlatform === 'function') return cap.isNativePlatform();
+  if (typeof cap.getPlatform === 'function') return cap.getPlatform() !== 'web';
+  return false;
+}
+
+export type CapacitorPlatform = 'ios' | 'android' | 'web' | 'unknown';
+
+export function getCapacitorPlatform(): CapacitorPlatform {
+  const cap = readCapacitorGlobal();
+  if (!cap || typeof cap.getPlatform !== 'function') return 'unknown';
+  const p = cap.getPlatform();
+  if (p === 'ios' || p === 'android' || p === 'web') return p;
+  return 'unknown';
+}
+
+export function getCapacitorPcBaseUrl(): string {
+  if (typeof window === 'undefined') return '';
+  if (!isCapacitorNative()) return '';
+  try {
+    const raw = window.localStorage.getItem(CAPACITOR_PC_BASE_URL_KEY);
+    return typeof raw === 'string' ? raw.trim().replace(/\/+$/, '') : '';
+  } catch {
+    return '';
+  }
+}
+
+export function setCapacitorPcBaseUrl(url: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!url) {
+      window.localStorage.removeItem(CAPACITOR_PC_BASE_URL_KEY);
+      return;
+    }
+    const cleaned = url.trim().replace(/\/+$/, '');
+    window.localStorage.setItem(CAPACITOR_PC_BASE_URL_KEY, cleaned);
+  } catch {
+    // localStorage may be unavailable in some webviews; the next launch
+    // will simply re-prompt for the URL, which is the same behavior as
+    // a first install.
+  }
+}
+
 // The base URL for HTTP proxy calls. In PWA mode this is always the
-// current origin; in Electron / web fallback mode it's unused but kept
-// stable so callers don't have to branch.
+// current origin (PC's Fastify); in Capacitor mode it's the user-configured
+// PC URL (empty until the gate's `configure-pc-url` view collects it,
+// in which case all httpInvoke / httpStatus calls fail fast — that
+// failure is what tells the gate to render the URL input view).
+// Electron / web fallback callers never hit this branch.
 export function getApiBaseUrl(): string {
   if (typeof window === 'undefined') return '';
+  if (isCapacitorNative()) return getCapacitorPcBaseUrl();
   return window.location?.origin || '';
 }
 
