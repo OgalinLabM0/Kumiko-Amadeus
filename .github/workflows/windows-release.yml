@@ -131,34 +131,55 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --${{ matrix.cli_arch }} --publish always
 
-      # v2.14.1 C.1: electron-builder always emits a `Kumiko-Amadeus-Setup-<version>.exe`
-      # universal installer alongside the per-arch installers when more than one arch is
-      # listed in build.win.target.arch (x64 + arm64 in package.json). That universal
-      # exe weighs ~1.5 GB (every arch's app.asar + every native module concatenated),
-      # which exploded v2.14.0's release page and confused users into downloading the
-      # heaviest possible installer for no extra capability. We don't ship it — every
-      # supported architecture has its own per-arch Setup-<arch>-<version>.exe — so
-      # explicitly delete the universal asset right after publish.
+      # v2.14.1 C.1 / v2.14.2 K.1: electron-builder always emits a
+      # `Kumiko-Amadeus-Setup-<version>.exe` universal installer alongside the per-arch
+      # installers when more than one arch is listed in build.win.target.arch
+      # (x64 + arm64 in package.json). That universal exe weighs ~1.5 GB (every arch's
+      # app.asar + every native module concatenated), which exploded v2.14.0's release
+      # page and confused users into downloading the heaviest possible installer for no
+      # extra capability. With v2.14.2 K.1 re-enabling differentialPackage, electron-
+      # builder additionally emits a matching `<version>.exe.blockmap` for the
+      # universal exe — useless once the exe itself is gone, so we delete both. We
+      # don't ship the universal installer — every supported architecture has its own
+      # per-arch Setup-<arch>-<version>.exe + matching blockmap.
       #
       # Race-safe: both arches will attempt the delete (electron-builder uploaded the
       # same universal asset twice in the v2.14.0 race), `gh release delete-asset`
       # exits 0 if the asset is already gone, and the `|| true` keeps the workflow
       # green if neither matrix job ever attaches it (e.g. dry runs after we eventually
       # collapse to a single arch).
-      - name: Delete universal NSIS installer from release
+      - name: Delete universal NSIS installer + blockmap from release
         if: inputs.publish == true
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           gh release delete-asset "v${PACKAGE_VERSION}" "Kumiko-Amadeus-Setup-${PACKAGE_VERSION}.exe" --yes 2>/dev/null || true
+          gh release delete-asset "v${PACKAGE_VERSION}" "Kumiko-Amadeus-Setup-${PACKAGE_VERSION}.exe.blockmap" --yes 2>/dev/null || true
 
-      - name: Generate latest*.yml (no-publish mode only)
-        if: inputs.publish != true
-        # When publish=true electron-builder already writes and uploads these
-        # channel files; running our local generator would duplicate the effort
-        # and overwrite any sha512 electron-builder chose.
+      # v2.14.2 K.3: electron-builder publishes a single multi-arch `latest.yml` that
+      # references all three exes it built (x64, arm64, universal) and overwrites any
+      # earlier matrix arch's channel file in a race. That breaks the per-arch update
+      # channel: arm64 users get pointed at the x64 exe (or the now-deleted universal
+      # one) depending on which matrix job won the race. Each matrix arch always re-
+      # generates its OWN channel file from its OWN release/ contents (which only
+      # holds Setup-<arch>-<version>.exe locally). x64 writes latest.yml, arm64 writes
+      # latest-arm64.yml — disjoint filenames, no race. The next step uploads the
+      # clean per-arch file with --clobber to overwrite electron-builder's mess.
+      - name: Generate latest*.yml from local per-arch installer
         run: node scripts/generate-latest-yml.cjs
+
+      - name: Upload per-arch channel file to release (publish=true only)
+        if: inputs.publish == true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        # Each matrix arch uploads exactly one channel file (latest.yml for x64,
+        # latest-arm64.yml for arm64) so the two matrix jobs never write to the same
+        # asset name. --clobber overwrites the electron-builder-written file from the
+        # publish step above.
+        run: |
+          gh release upload "v${PACKAGE_VERSION}" release/latest*.yml --clobber
 
       - name: Clean release directory (postbuild)
         run: node scripts/clean-release.cjs postbuild

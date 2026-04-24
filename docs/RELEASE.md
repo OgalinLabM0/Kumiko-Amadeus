@@ -45,9 +45,11 @@ release cut through this playbook.
 ## When to cut a release
 
 Not every merge to `main` becomes a release. A full cookbook run costs
-~45 minutes of CI time plus the Step 5 manual cleanup (stray combined
-installer, `latest-arm64.yml` synthesis), so the current policy — in
-effect since v2.9.5 — is:
+~45 minutes of CI time plus a short Step 5 sanity check (asset count +
+spot-check the channel files). Since v2.14.2 the previously manual
+fixups — stray combined installer + matching universal blockmap, and
+the per-arch Windows channel file regeneration — both run inside
+`windows-release.yml` itself. Policy, in effect since v2.9.5, is:
 
 - **Code changes without a new installer** (refactors, doc fixes,
   follow-ups that do not need to ship to end users immediately) →
@@ -314,12 +316,28 @@ thing as the universal installer — do NOT scrub them with the C.1
 cleanup. Old electron-updater clients ignore blockmaps they don't know
 about, so they're forwards-compatible.
 
+K.3 (v2.14.2): the C.1 cleanup step in `windows-release.yml` was
+extended to also delete the universal `Setup-<version>.exe.blockmap`
+sibling that electron-builder emits for the now-deleted universal
+installer. Without it the release page shows a dangling blockmap with
+no exe to diff against. Same `gh release delete-asset … || true` race
+semantics as the universal exe deletion: idempotent, safe to retry,
+green even on dry runs that never produced the asset.
+
 #### Patch: `latest-arm64.yml` missing after Windows publish
 
-electron-builder in this dual-arch configuration also sometimes only
-emits one Windows channel file (`latest.yml`) and skips
-`latest-arm64.yml`. If Step 5 shows the arm64 yml missing, patch it by
-hand without re-running the 15-minute arm64 build:
+> Since v2.14.2 (K.3) `windows-release.yml` always re-generates
+> `latest.yml` (x64 matrix) and `latest-arm64.yml` (arm64 matrix) from
+> each runner's local `release/` contents and uploads with `--clobber`
+> after the electron-builder publish step. The fallback below remains
+> documented for legacy releases (≤ v2.14.1) and as a recovery path if
+> a future runner regression resurfaces the bug.
+
+electron-builder in this dual-arch configuration historically emitted
+only one Windows channel file (`latest.yml`) and skipped
+`latest-arm64.yml` (or wrote a multi-arch latest.yml referencing the
+universal exe). If Step 5 shows the arm64 yml missing on a v2.14.1-era
+release, patch it by hand without re-running the 15-minute arm64 build:
 
 ```bash
 mkdir -p release
@@ -412,10 +430,19 @@ the normal cookbook to move users forward.
   Linux x64 upload to finish, or `gh run rerun <windows-run-id>
   --failed` once you confirm `gh release view vX.Y.Z --json assets`
   shows `kumiko-assets.zip`.
-- **After Windows publish: `latest-arm64.yml` missing** → known
-  electron-builder edge case with the dual-arch target config. Follow
-  the "Patch: `latest-arm64.yml` missing" sub-step in Step 5 to
-  synthesise it locally from the released `Setup-arm64-<version>.exe`.
+- **After Windows publish: `latest-arm64.yml` missing** → fixed by
+  v2.14.2 K.3: `windows-release.yml` now regenerates both Windows
+  channel files locally per matrix arch and uploads with `--clobber`,
+  so the arm64 channel file is always present. If it ever resurfaces
+  (runner image regression, electron-builder upgrade), follow the
+  "Patch: `latest-arm64.yml` missing" sub-step in Step 5 to synthesise
+  it locally from the released `Setup-arm64-<version>.exe`.
+- **After Windows publish: stray `Setup-<version>.exe.blockmap`
+  (universal blockmap) appears** → fixed by v2.14.2 K.3 cleanup step
+  (`Delete universal NSIS installer + blockmap from release`). For
+  legacy v2.14.0 / v2.14.1-style releases that already shipped, run
+  `gh release delete-asset vX.Y.Z Kumiko-Amadeus-Setup-X.Y.Z.exe.blockmap --yes`
+  by hand.
 - **Combined `Kumiko-Amadeus-Setup.exe` (~1.6 GB) appears on a release**
   → should not happen since F2B.5 (`artifactName` =
   `Setup-${arch}-${version}.exe`). `windows-release.yml` Step C.1
