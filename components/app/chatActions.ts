@@ -340,6 +340,33 @@ export function showBackgroundNotification(
   try {
     if (window.electronAPI) {
       window.electronAPI.send('app:send-notification', { title, body: trimmedBody });
+    } else if (typeof (window as any).Capacitor?.isNativePlatform === 'function' && (window as any).Capacitor.isNativePlatform()) {
+      // A6.2: Capacitor Android — route through the native local-notifications
+      // channel + haptics. Lazy-import the wrapper so PC / PWA pay zero
+      // bundle cost. The wrapper itself short-circuits if isCapacitorNative()
+      // is false (defensive double-check), so a misdetection here can't
+      // dispatch into a no-op plugin shim.
+      void import('../../services/capacitorNotifications')
+        .then(({ postKumikoNotification, vibrateForKind }) => {
+          void postKumikoNotification({
+            title,
+            body: trimmedBody,
+            // Map the existing MessageAlertKind ('reply' | 'reminder' |
+            // 'proactive') onto the notification module's enum. Reminder
+            // text notifications STILL use the 'kumiko_messages' channel
+            // here — the FullScreenIntent / 'incoming-call' channel is
+            // ONLY entered from triggerTimedReminderMessage's overlay
+            // path (plan A6 routing: calls only from reminder-triggered
+            // VoiceCallOverlay). This text path is what fires when the
+            // reminder has no voice or app is in foreground.
+            kind: kind === 'reminder' ? 'reminder' : (kind === 'proactive' ? 'proactive' : 'reply'),
+            messageId,
+          });
+          void vibrateForKind(kind === 'reminder' ? 'reminder' : (kind === 'proactive' ? 'proactive' : 'reply'));
+        })
+        .catch((err) => {
+          console.warn('[notif] Capacitor notification dispatch failed:', err);
+        });
     } else {
       const notif = new Notification(title, {
         body: trimmedBody,
