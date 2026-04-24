@@ -136,6 +136,13 @@ if (typeof window !== 'undefined') {
 export function isMobilePwa(): boolean {
   if (typeof window === 'undefined') return false;
   if (isElectron()) return false;
+  // A.2: Capacitor standalone — user explicitly chose "no PC, run
+  // independently" from the pairing gate. Treat as NOT mobilePwa so
+  // every legacy PC-bridge dispatch (TTS proxy / preferences sync /
+  // backup HTTP / RAG IPC / etc.) short-circuits to the Capacitor-local
+  // branches we already shipped in A2-A5. This is the runtime that
+  // unblocks "Android = independent client" semantically.
+  if (isCapacitorStandalone()) return false;
   if (cachedRuntime !== null) return cachedRuntime === 'mobilePwa';
   // Async probe hasn't resolved yet — fall back to the HTTPS heuristic.
   // Caller will be re-rendered once the probe dispatches
@@ -170,6 +177,13 @@ export function waitForRuntimeDetection(): Promise<RuntimeKind> {
 
 const CAPACITOR_PC_BASE_URL_KEY = 'kumiko_capacitor_pc_url';
 
+// A.2 standalone sentinel: written into CAPACITOR_PC_BASE_URL_KEY when
+// the user opts into "no PC, run independently" from the pairing gate.
+// Any non-URL string here means standalone. We pick a deliberately
+// invalid URL prefix so a stray future call to fetch() against this
+// value can't accidentally hit a real host.
+const CAPACITOR_STANDALONE_SENTINEL = '__standalone__';
+
 interface CapacitorGlobal {
   isNativePlatform?: () => boolean;
   getPlatform?: () => string;
@@ -203,7 +217,13 @@ export function getCapacitorPcBaseUrl(): string {
   if (!isCapacitorNative()) return '';
   try {
     const raw = window.localStorage.getItem(CAPACITOR_PC_BASE_URL_KEY);
-    return typeof raw === 'string' ? raw.trim().replace(/\/+$/, '') : '';
+    if (typeof raw !== 'string') return '';
+    const trimmed = raw.trim();
+    // Standalone sentinel masquerades as "no URL" for callers that just
+    // want to know "do we have a real PC URL to hit?". Use isCapacitorStandalone()
+    // to disambiguate "user picked standalone" vs "first launch, never set".
+    if (trimmed === CAPACITOR_STANDALONE_SENTINEL) return '';
+    return trimmed.replace(/\/+$/, '');
   } catch {
     return '';
   }
@@ -222,6 +242,34 @@ export function setCapacitorPcBaseUrl(url: string | null): void {
     // localStorage may be unavailable in some webviews; the next launch
     // will simply re-prompt for the URL, which is the same behavior as
     // a first install.
+  }
+}
+
+/**
+ * A.2: user picked "skip, run standalone" from the pairing gate.
+ * Returns true ONLY on Capacitor AND when the standalone sentinel has
+ * been pinned. Used by isMobilePwa() to short-circuit the HTTP-bridge
+ * runtime kind into a no-PC mode, which in turn cuts every PC-proxy
+ * dispatch (TTS, RAG, weather, backup) over to the local Capacitor
+ * branch we already shipped in A2-A5.
+ */
+export function isCapacitorStandalone(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (!isCapacitorNative()) return false;
+  try {
+    const raw = window.localStorage.getItem(CAPACITOR_PC_BASE_URL_KEY);
+    return typeof raw === 'string' && raw.trim() === CAPACITOR_STANDALONE_SENTINEL;
+  } catch {
+    return false;
+  }
+}
+
+export function setCapacitorStandalone(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(CAPACITOR_PC_BASE_URL_KEY, CAPACITOR_STANDALONE_SENTINEL);
+  } catch {
+    // ignore
   }
 }
 

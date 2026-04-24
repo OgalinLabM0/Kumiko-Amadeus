@@ -38,7 +38,9 @@ import { applyPreferencesPatch, type PreferencesBootstrapPayload } from '../serv
 import {
   getCapacitorPcBaseUrl,
   isCapacitorNative,
+  isCapacitorStandalone,
   setCapacitorPcBaseUrl,
+  setCapacitorStandalone,
 } from '../services/environment';
 import { ensurePushSubscription } from '../services/pushSubscriptionService';
 import { useViewportSync } from '../hooks/useAppViewport';
@@ -284,12 +286,20 @@ function PairingView({
 // the page origin (which is PC for the PWA case). The form validates the
 // URL by hitting `${url}/api/status`; a 200 + JSON response means the PC
 // process + Fastify mobile-access bridge are both live and reachable.
+//
+// `onStandalone`: A.2 escape hatch for users who don't want to / can't
+// connect to a PC. Sets the standalone sentinel in localStorage so
+// isCapacitorStandalone() flips on, which in turn makes isMobilePwa()
+// return false — the entire PC-bridge code path goes silent and every
+// service falls back to its A2-A5 Capacitor-local implementation.
 function PcUrlConfigureView({
   onSaved,
+  onStandalone,
   initialUrl,
   hint,
 }: {
   onSaved: () => void;
+  onStandalone: () => void;
   initialUrl: string;
   hint?: string;
 }) {
@@ -422,6 +432,36 @@ function PcUrlConfigureView({
       <div className="ka-pair-body text-[11.5px] leading-relaxed opacity-70 px-1">
         URL 保存在本机；之后每次启动直接连。可以在「配对页 → 换一个 PC 地址」里改回来。
       </div>
+
+      {/* A.2 standalone path: skip the PC handshake entirely. The
+          Android app already has direct cloud paths for LLM / TTS /
+          Tavily / weather / RAG (A2-A5), and A4.4-5 keep ringtones /
+          images self-contained in Dexie, so a no-PC user can run the
+          full app without ever pairing. */}
+      <div
+        className="ka-pair-card px-4 py-3 mt-1 text-[12px] leading-relaxed"
+        style={{
+          background: 'rgba(120, 90, 66, 0.08)',
+          borderColor: 'rgba(120, 90, 66, 0.25)',
+          color: '#5b4732',
+        }}
+      >
+        <div className="ka-pair-micro text-[10px] font-semibold uppercase mb-1">
+          没有 PC？ · No desktop?
+        </div>
+        <p className="text-[11.5px] leading-relaxed mb-2">
+          Android 端可以完全独立运行——LLM、TTS、联网搜索、RAG、天气、备份都直接在手机上跑。
+          数据保存在本地 IndexedDB；设置里需要自己填 LLM / Embedding 的 API Key。
+        </p>
+        <button
+          type="button"
+          onClick={onStandalone}
+          className="ka-pair-body text-[12px] leading-relaxed underline font-semibold"
+          style={{ color: '#785A42', background: 'transparent', border: 'none', padding: 0 }}
+        >
+          跳过，独立运行 · Skip, run standalone →
+        </button>
+      </div>
     </div>
   );
 }
@@ -458,6 +498,14 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
   const refresh = useCallback(async () => {
     loadingStartedAtRef.current = Date.now();
     setLoadingElapsedMs(0);
+    // A.2 standalone: user opted into "no PC". Skip every PC probe and
+    // hand off directly to <App />. isMobilePwa() returns false in this
+    // state (see services/environment.ts), so the rest of the app
+    // automatically uses the Capacitor-local A2-A5 dispatch.
+    if (isCapacitorStandalone()) {
+      setState({ kind: 'paired', hostname: null });
+      return;
+    }
     // Capacitor native: short-circuit straight to the PC-URL configurator
     // when no URL has been pinned yet. Without this gate, httpStatus()
     // would call `${''}/api/status` → `/api/status` → 404 against the
@@ -608,6 +656,14 @@ export const MobilePairingGate: React.FC<{ children: React.ReactNode }> = ({ chi
             // After save, drop straight back into the loading branch and
             // let the existing refresh chain do its thing (probe status →
             // pairing or hydrating → paired).
+            setState({ kind: 'loading' });
+            void refresh();
+          }}
+          onStandalone={() => {
+            // A.2: user picked "no PC". Pin the standalone sentinel
+            // and re-run refresh() — refresh()'s standalone branch will
+            // skip every PC probe and hand off to <App /> directly.
+            setCapacitorStandalone();
             setState({ kind: 'loading' });
             void refresh();
           }}
