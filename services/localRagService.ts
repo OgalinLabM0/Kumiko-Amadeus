@@ -1,7 +1,8 @@
 import { db } from './db';
 import { Message } from '../types';
-import { isMobilePwa } from './environment';
+import { isCapacitorNative, isMobilePwa } from './environment';
 import { httpInvoke, subscribeEvents } from './httpApi';
+import { invokeAndroidRag } from './androidRagService';
 
 // --- Electron IPC Bridge ---
 // In Electron, embedding generation and vector search run in the main process (bge-m3 ONNX + SQLite).
@@ -28,7 +29,7 @@ const getIpcRenderer = () => {
 // `searchLocalRagMemoryDetailed` etc. call was reading the empty
 // IndexedDB and returning zero hits.
 type RagInvoker = {
-  kind: 'electron' | 'http';
+  kind: 'electron' | 'http' | 'android-native';
   invoke: <T = any>(channel: string, payload?: any) => Promise<T>;
 };
 
@@ -38,6 +39,21 @@ const getRagInvoker = (): RagInvoker | null => {
     return {
       kind: 'electron',
       invoke: <T = any>(channel: string, payload?: any) => ipc.invoke(channel, payload) as Promise<T>,
+    };
+  }
+  // Capacitor native (A5.1.3): brute-force JS RAG over Dexie + cloud
+  // embedding. The dispatch table covers the essential rag:* channels
+  // (embed / save / search / get-all / clear / stats / status /
+  // expand-context / get-messages). Channels we haven't ported degrade
+  // to `{success:false}` instead of throwing, which is what the existing
+  // PC-failure fallbacks (`if (!result?.success) return [];`) already
+  // expect. Ordering matters: this is checked BEFORE isMobilePwa() because
+  // isMobilePwa() returns true on Capacitor too (so PWA's HTTP bridge
+  // path would otherwise win and try to reach a PC that may not exist).
+  if (isCapacitorNative()) {
+    return {
+      kind: 'android-native',
+      invoke: <T = any>(channel: string, payload?: any) => invokeAndroidRag<T>(channel, payload),
     };
   }
   if (isMobilePwa()) {

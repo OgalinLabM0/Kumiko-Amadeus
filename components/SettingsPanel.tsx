@@ -25,6 +25,7 @@ import { FullGuideModal } from './settings/FullGuideModal';
 import { GeneralSection } from './settings/GeneralSection';
 import { GuideSection } from './settings/GuideSection';
 import { InternetSearchSection } from './settings/InternetSearchSection';
+import { EmbeddingConfigSection } from './settings/EmbeddingConfigSection';
 import { LogViewerSection } from './settings/LogViewerSection';
 import { LocationSection } from './settings/LocationSection';
 import { COUNTRIES, LOCAL_CONFIG_TRANSLATIONS, TIMEZONES } from './settings/settingsConfig';
@@ -154,6 +155,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [isVisionOpen, setIsVisionOpen] = useState(false);
   const [isRagOpen, setIsRagOpen] = useState(false);
   const [isInternetSearchOpen, setIsInternetSearchOpen] = useState(true);
+  // A5.0: Cloud embedding config (Capacitor Android only). Section
+  // hides itself on Electron / PWA via internal isCapacitorNative()
+  // gate, so this state is harmless on non-mobile platforms.
+  const [isEmbeddingOpen, setIsEmbeddingOpen] = useState(true);
   const [isTtsOpen, setIsTtsOpen] = useState(true);
   const [isDataManagementOpen, setIsDataManagementOpen] = useState(true);
   const [isMobileAccessOpen, setIsMobileAccessOpen] = useState(false);
@@ -1323,6 +1328,24 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           onRefreshUsage={fetchTavilyUsage}
           onTestSearch={handleTestTavilySearch}
         />
+        {/* A5.0: Cloud Embedding (Android Capacitor only). Section
+            renders null on Electron / PWA where PC's local bge-m3 is
+            still authoritative. Hugged to the search section so it stays
+            close to the other "external API key" knobs without forcing a
+            new top-level navigation entry. */}
+        <div className="mt-2">
+          <EmbeddingConfigSection
+            isOpen={isEmbeddingOpen}
+            onToggle={() => setIsEmbeddingOpen((v) => !v)}
+            isDarkMode={isDarkMode}
+            language={language}
+            sectionBorder={sectionBorder}
+            innerCardClass={innerCardClass}
+            inputClass={inputClass}
+            fieldLabelClass={`${isDarkMode ? 'text-gray-400' : 'text-gray-700'} ka-label`}
+            helperClass={`${isDarkMode ? 'text-gray-500' : 'text-gray-500'} ka-micro`}
+          />
+        </div>
       </div>
       )}
 
