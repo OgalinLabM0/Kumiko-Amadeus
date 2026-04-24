@@ -32,7 +32,8 @@ import {
   Signal
 } from 'lucide-react';
 import { Language } from '../../types';
-import { SOFTWARE_GUIDE_SECTIONS } from '../../constants';
+import { getSoftwareGuideSections } from '../../constants/guideData';
+import { isCapacitorNative } from '../../services/environment';
 import { useModalKeyboard } from '../../hooks/useModalKeyboard';
 import { useModalPortal } from '../../hooks/useModalPortal';
 
@@ -161,7 +162,12 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
     });
   };
 
-  const sections = SOFTWARE_GUIDE_SECTIONS[language];
+  // v2.14.1 H.6: split the guide chapters by platform. Android renders
+  // the new "Android 原生 app" chapter in place of the legacy
+  // "MOBILE PWA" pairing dossier; PC keeps the original chapter list
+  // unchanged. The id stays 'mobile' on both branches so any existing
+  // deep links / activeGuideSection state continues to resolve.
+  const sections = getSoftwareGuideSections(language, isCapacitorNative() ? 'mobile' : 'desktop');
   const activeData = sections.find((section) => section.id === activeGuideSection) || sections[0];
   const activeIndex = sections.findIndex((section) => section.id === activeData.id);
   const ActiveIcon = activeData.icon;
@@ -403,6 +409,18 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                 ref={articleScrollRef}
                 data-resize-heavy
                 className="flex-1 overflow-y-auto p-3 sm:p-4 md:p-6 lg:p-8 scrollbar-thin"
+                style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + var(--kb-inset, 0px) + 1rem)' }}
+                onFocusCapture={(e) => {
+                  const target = e.target as HTMLElement | null;
+                  if (!target) return;
+                  const tag = target.tagName;
+                  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+                    requestAnimationFrame(() => {
+                      try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+                      catch { /* old WebView without smooth-scroll, ignore */ }
+                    });
+                  }
+                }}
               >
                 <div className={`mx-auto max-w-4xl rounded-[1.15rem] border overflow-hidden ${panelClass}`}>
                   <div className={`px-5 py-3 border-b flex items-center justify-between gap-3 ${isDarkMode ? 'border-[#806033]/25 bg-[#1e1c1a]' : 'border-[#eadfce] bg-[#faf5ee]'}`}>

@@ -5,14 +5,19 @@
 // Called from:
 //
 //   - useAppPreferencesSync.handleTtsConfigChange (desktop-initiated save)
-//   - useMobileMessageSync (`tts-config:changed` → re-pull from PC, sanitise
-//     before pushing into the zustand `ttsConfig` slice)
-//   - any future call site that round-trips TtsConfig through localStorage,
-//     IPC, or the WebSocket bridge
+//   - any future call site that round-trips TtsConfig through localStorage
+//     or IPC
 //
 // Keeping this pure (no React deps) lets it run in non-component contexts
-// like the WS event handler in useMobileMessageSync without dragging the
-// full hook tree along.
+// without dragging the full hook tree along.
+//
+// v2.14.1 H.5: previous comment header still referenced
+// useMobileMessageSync + the `tts-config:changed` WebSocket frame, both
+// of which were deleted in F2B alongside the rest of the PC↔mobile
+// pairing infrastructure. Capacitor (Android) now sanitises locally and
+// goes straight to Fish Audio (the SoVITS branch below already
+// down-converts because there's no PC-loopback reachable from the
+// WebView).
 
 import { DEFAULT_TTS_CONFIG } from '../constants';
 import type { TtsConfig } from '../types';
@@ -36,12 +41,13 @@ export function sanitizeTtsConfig(value: unknown): TtsConfig {
     merged.ttsBackend = DEFAULT_TTS_CONFIG.ttsBackend;
   }
 
-  // A3: GPT-SoVITS is PC-only by physical constraint (PyTorch + CUDA +
-  // Python runtime, ~5 GB models, runs an HTTP server on PC localhost).
-  // On Android Capacitor the backend is unreachable from the WebView, so
-  // we silently fall back to Fish Audio if a phone migrates from a paired
-  // setup with sovits selected. PWA / Electron pass through unchanged
-  // (PWA proxies SoVITS through PC's loopback the same way Fish/Vocu used to).
+  // A3 / v2.14.1 H.5: GPT-SoVITS is PC-only by physical constraint (PyTorch
+  // + CUDA + Python runtime, ~5 GB models, runs an HTTP server on PC
+  // localhost). On Android Capacitor the backend is unreachable from the
+  // WebView and there's no longer a PC bridge to proxy through (F2B
+  // dropped the PWA loopback path), so we silently fall back to Fish
+  // Audio if a phone is migrated from a desktop setup with sovits
+  // selected. Electron passes through unchanged.
   if (isCapacitorNative() && merged.ttsBackend === 'sovits') {
     merged.ttsBackend = 'fish';
   }

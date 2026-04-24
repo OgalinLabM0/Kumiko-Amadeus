@@ -1361,28 +1361,57 @@ export interface EmbedDiaryResult {
 // in fact Dexie had the full entry but the SQLite vector store did not. Over time
 // that silent skew made "did Kumiko remember X?" queries miss real diaries. Return
 // an explicit Result so callers can count failures and surface them to the user.
+//
+// v2.14.1 F.1 (CRITICAL): the previous `if (!window.electronAPI) return skipped`
+// guard was correct in the PWA-bridge era (PWA proxied rag:save back to PC),
+// but after F2B.3 stripped the bridge, Capacitor (Android APK) has no
+// electronAPI and there is no PC to proxy through — every diary on
+// Android was silently dropped from the RAG index, then queried diary
+// memory queries returned empty. We now route Android through the
+// in-process androidRagService invoker which uses the same Dexie + cloud
+// embedding stack the rest of Android RAG already runs on.
 export const embedDiaryToRAG = async (diary: KumikoDiaryEntity): Promise<EmbedDiaryResult> => {
   try {
-    if (!window.electronAPI) {
-      return { ok: false, reason: 'skipped' };
-    }
     const textToEmbed = `[久美子的日记 - ${diary.date}]\n${diary.content}`;
-    const result = await window.electronAPI.invoke('rag:save', {
+    const payload = {
       id: `diary-${diary.id}`,
       text: textToEmbed,
       timestamp: diary.timestamp,
-      tier: 'core',
-      source: 'diary',
+      tier: 'core' as const,
+      source: 'diary' as const,
       canonicalKey: `diary:${diary.date}`,
-      role: 'system',
-    });
-    if (!result?.success) {
-      const message = result?.error || 'Failed to save diary into local RAG';
-      console.error('[LifeStream] Failed to embed diary to RAG:', message);
-      return { ok: false, reason: 'failed', error: message };
+      role: 'system' as const,
+    };
+
+    if (window.electronAPI) {
+      const result = await window.electronAPI.invoke('rag:save', payload);
+      if (!result?.success) {
+        const message = result?.error || 'Failed to save diary into local RAG';
+        console.error('[LifeStream] Failed to embed diary to RAG (electron):', message);
+        return { ok: false, reason: 'failed', error: message };
+      }
+      console.log(`[LifeStream] Embedded diary ${diary.date} into RAG (electron)`);
+      return { ok: true };
     }
-    console.log(`[LifeStream] Embedded diary ${diary.date} into RAG`);
-    return { ok: true };
+
+    // v2.14.1 F.1: Capacitor (Android) — call the local invoker that
+    // backs the rest of Android RAG. Dynamic import keeps Electron
+    // bundles slim (the androidRagService pulls Dexie + ragApiService
+    // and isn't needed on PC).
+    if (isCapacitorNative()) {
+      const { invokeAndroidRag } = await import('./androidRagService');
+      const result = await invokeAndroidRag<{ success: boolean; error?: string }>('rag:save', payload);
+      if (!result?.success) {
+        const message = result?.error || 'Failed to save diary into Android RAG';
+        console.error('[LifeStream] Failed to embed diary to RAG (capacitor):', message);
+        return { ok: false, reason: 'failed', error: message };
+      }
+      console.log(`[LifeStream] Embedded diary ${diary.date} into RAG (capacitor)`);
+      return { ok: true };
+    }
+
+    // Pure web / dev preview — no RAG backend at all.
+    return { ok: false, reason: 'skipped' };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error('[LifeStream] Failed to embed diary to RAG:', e);

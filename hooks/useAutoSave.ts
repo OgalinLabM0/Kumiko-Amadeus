@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { BackupConfig } from '../types';
 import { isDesktopElectron, writeDesktopBackupFile } from '../services/desktopBackupService';
+import { isCapacitorNative } from '../services/environment';
 // F2B.3: dropped `isMobilePwa` + `httpInvoke` imports. The mobile-PWA
 // remote-file-write branch (`backup:write-desktop-file`) is gone with
 // the PC bridge; on Capacitor the LOCAL backup tab is hidden (F2A.4).
@@ -212,13 +213,30 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
   }, [data, isBlocked, triggerSave, status]);
 
   // --- WATCHDOG SYSTEM ---
+  // v2.14.1 H.2: Capacitor (Android) has no fileHandle and the backup UI
+  // hides the auto-save toggle entirely (F2A.4 — only manual ZIP export
+  // / import is exposed). `executeSave()` ends up touching nothing
+  // because `if (currentHandle)` is always false, but the watchdog used
+  // to fire `triggerSave()` every 5 s anyway, polluting LogViewer with
+  // "[AutoSave Watchdog] Force saving idle DIRTY state." every cycle.
+  // Skip starting the interval on platforms where there's no save target,
+  // so the watchdog stays inert (and silent) until/unless the user is on
+  // a platform where auto-save can actually run.
   useEffect(() => {
+      if (isCapacitorNative()) {
+          return;
+      }
       const interval = setInterval(() => {
           const now = Date.now();
           const timeSinceChange = now - lastChangeTime;
 
           // RULE 1: IDLE CLEANUP
           if (statusRef.current === 'DIRTY' && !isBlockedRef.current && timeSinceChange > 5000) {
+              // Belt-and-suspenders: if the host process happens to have
+              // dropped the file handle mid-session (e.g. user disconnected
+              // the local file from Settings), skip the trigger entirely
+              // instead of churning state.
+              if (!fileHandleRef.current) return;
               console.log("[AutoSave Watchdog] Force saving idle DIRTY state.");
               triggerSave();
           }

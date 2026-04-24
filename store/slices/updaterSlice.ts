@@ -1,10 +1,28 @@
 import type { StateCreator } from 'zustand';
 import type { AppUpdateState, UpdaterCacheInfo } from '../../types';
 import { isDesktopElectron } from '../../services/desktopBackupService';
+import { isCapacitorNative } from '../../services/environment';
+
+declare const __APP_VERSION__: string;
+
+// v2.14.1 B.4.a: Initialize currentVersion from the build-time
+// __APP_VERSION__ define injected by vite.config.ts (sourced from
+// package.json `version`). Previously hardcoded '0.0.0', which is what
+// the Android Settings page rendered before the desktop bootstrap had
+// a chance to call `app:get-version`. Capacitor never calls that IPC so
+// the field stayed '0.0.0' forever — surfaced in v2.14.0 as the user
+// complaint "应用更新页显示 v0.0.0".
+const INITIAL_VERSION: string = (() => {
+  try {
+    return typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
 
 export const DEFAULT_APP_UPDATE_STATE: AppUpdateState = {
   status: 'idle',
-  currentVersion: '0.0.0',
+  currentVersion: INITIAL_VERSION,
   availableVersion: null,
   releaseDate: null,
   progressPercent: 0,
@@ -12,6 +30,9 @@ export const DEFAULT_APP_UPDATE_STATE: AppUpdateState = {
   total: 0,
   bytesPerSecond: 0,
   error: null,
+  // On Capacitor we treat the APK as "packaged" so AppUpdateSection's
+  // packaged-only buttons enable. Desktop will overwrite this from the
+  // Electron bootstrap once `app:update:bootstrap` lands.
   isPackaged: false,
 };
 
@@ -54,6 +75,41 @@ export const createUpdaterSlice: StateCreator<UpdaterSlice, [], [], UpdaterSlice
   setShowAppUpdateModal: (v) => set({ showAppUpdateModal: v }),
 
   handleCheckForAppUpdates: async () => {
+    // v2.14.1 B.4.b: Capacitor branch — poll GitHub Releases via the
+    // existing androidUpdaterService and reflect the result in the
+    // shared appUpdateState so the AppUpdateSection UI re-renders. We
+    // can't reuse the desktop electron-updater state machine because
+    // there is no "downloading" / "downloaded" phase on Android (user
+    // sideloads the APK from a browser tab); instead we collapse the
+    // flow into 'available' / 'not-available' / 'error'.
+    if (isCapacitorNative()) {
+      get().setAppUpdateState((prev) => ({ ...prev, status: 'checking', error: null }));
+      try {
+        const { checkForAndroidUpdate } = await import('../../services/androidUpdaterService');
+        const info = await checkForAndroidUpdate(true); // force=true bypasses 7d cooldown
+        if (info?.hasUpdate && info.latestVersion) {
+          get().setAppUpdateState((prev) => ({
+            ...prev,
+            status: 'available',
+            availableVersion: info.latestVersion!,
+            error: null,
+          }));
+        } else {
+          get().setAppUpdateState((prev) => ({
+            ...prev,
+            status: 'not-available',
+            availableVersion: info?.latestVersion ?? null,
+            error: null,
+          }));
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[UPDATER] Android check failed:', error);
+        get().setAppUpdateState((prev) => ({ ...prev, status: 'error', error: message }));
+      }
+      return;
+    }
+
     if (!isDesktopElectron() || !window.electronAPI) return;
     try {
       const result = await window.electronAPI.invoke('app:update:check');
@@ -68,6 +124,31 @@ export const createUpdaterSlice: StateCreator<UpdaterSlice, [], [], UpdaterSlice
   },
 
   handleDownloadAppUpdate: async () => {
+    // v2.14.1 B.4.b: Capacitor branch — open the GitHub release page in
+    // the system browser so the user can download the APK and sideload
+    // it. We don't perform the download in-app because that would
+    // require REQUEST_INSTALL_PACKAGES + a custom Files / DownloadManager
+    // round-trip (see services/androidUpdaterService.ts for the
+    // rationale); the system browser path is one extra tap with zero
+    // new permissions.
+    if (isCapacitorNative()) {
+      try {
+        const { checkForAndroidUpdate, openAndroidUpdateUrl, markUpdatePrompted } = await import(
+          '../../services/androidUpdaterService'
+        );
+        const info = await checkForAndroidUpdate(true);
+        const targetUrl = info?.releaseUrl
+          || `https://github.com/OgalinLabM0/Kumiko-Amadeus/releases/latest`;
+        if (info?.latestVersion) markUpdatePrompted(info.latestVersion);
+        await openAndroidUpdateUrl(targetUrl);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[UPDATER] Android open-download-page failed:', error);
+        get().setAppUpdateState((prev) => ({ ...prev, status: 'error', error: message }));
+      }
+      return;
+    }
+
     if (!isDesktopElectron() || !window.electronAPI) return;
     try {
       const result = await window.electronAPI.invoke('app:update:download');

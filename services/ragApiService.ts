@@ -1,15 +1,41 @@
 
 export const urlToBase64 = async (url: string): Promise<string | null> => {
+    // v2.14.1 I.1: tightened error containment. Previously the outer
+    // try/catch swallowed the actual error message — bad URLs / CORS
+    // failures / WebView-fetch quirks ended up logged as a generic
+    // "Failed to convert URL to Base64" without the reason, making
+    // Android log triage painful. We also defensively guard the steps
+    // most likely to throw on Capacitor's WebView fetch implementation
+    // (some Android WebViews throw on `.blob()` for ICO mime types) and
+    // print the real cause without breaking the public no-throw contract.
+    if (!url || typeof url !== 'string') {
+        console.warn('[Recall] urlToBase64 received invalid url argument:', url);
+        return null;
+    }
+    let response: Response;
     try {
-        const response = await fetch(url);
-        if (!response.ok) {
-            console.warn('[Recall] urlToBase64 got non-OK status:', response.status, url);
-            return null;
-        }
-        const blob = await response.blob();
-        // P1 #16: previously this Promise had no onerror handler and no timeout, so a
-        // corrupt blob (or FileReader throwing synchronously) would leave the promise
-        // pending forever and hang whatever chat turn was awaiting it.
+        response = await fetch(url);
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('[Recall] urlToBase64 fetch threw:', msg, url);
+        return null;
+    }
+    if (!response.ok) {
+        console.warn('[Recall] urlToBase64 got non-OK status:', response.status, url);
+        return null;
+    }
+    let blob: Blob;
+    try {
+        blob = await response.blob();
+    } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('[Recall] urlToBase64 .blob() threw:', msg, url);
+        return null;
+    }
+    try {
+        // P1 #16: this Promise has an onerror handler + 15s timeout so a
+        // corrupt blob (or FileReader throwing synchronously) doesn't
+        // leave the promise pending and hang the awaiting chat turn.
         return await new Promise<string | null>((resolve) => {
             const reader = new FileReader();
             let settled = false;
@@ -37,7 +63,8 @@ export const urlToBase64 = async (url: string): Promise<string | null> => {
             }
         });
     } catch (e) {
-        console.warn("[Recall] Failed to convert URL to Base64:", url);
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn('[Recall] urlToBase64 inner reader path threw:', msg, url);
         return null;
     }
 };

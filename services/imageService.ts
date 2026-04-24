@@ -249,6 +249,51 @@ export const saveImageWithId = async (id: string, base64Data: string) => {
   });
 };
 
+// v2.14.1 E.2: bulk-clear API. On Capacitor (Android) the user has no
+// way to reach the app-private IndexedDB from the OS file manager —
+// scoped storage hides it behind the WebView sandbox. The Data
+// Management UI now exposes a "Clear N images" button that fans out to
+// this function. Returns { cleared } so the dialog can render
+// "已清除 X 张图片". On Electron we additionally invoke the existing
+// `images:clear-all` IPC if present, falling back to a list+delete loop
+// against `images:delete` so the API is consistent across platforms.
+export const clearAllImages = async (): Promise<{ success: boolean; cleared: number; error?: string }> => {
+  try {
+    const all = await db.images.toArray();
+    const cleared = all.length;
+
+    if (isDesktopElectron() && (window as any).electronAPI) {
+      // Best-effort: try a one-shot IPC (cheaper than N IPC calls), and
+      // fall through to per-id deletes if the channel doesn't exist.
+      try {
+        const result = await (window as any).electronAPI.invoke('images:clear-all');
+        if (!result?.success) {
+          for (const img of all) {
+            try { await (window as any).electronAPI.invoke('images:delete', { imageId: img.id }); }
+            catch { /* swallow individual failures, Dexie clear below is the source of truth */ }
+          }
+        }
+      } catch {
+        for (const img of all) {
+          try { await (window as any).electronAPI.invoke('images:delete', { imageId: img.id }); }
+          catch { /* swallow */ }
+        }
+      }
+    }
+
+    // Dexie clear is platform-agnostic and the canonical "no metadata
+    // left" guarantee. Capacitor (Android) reaches here with the bytes
+    // still inside base64Data and a clear() wipes them in one stroke;
+    // Electron reaches here after the IPC + per-id loop above already
+    // removed the on-disk PNG/JPG copies, so this just nukes the
+    // remaining metadata rows.
+    await db.images.clear();
+    return { success: true, cleared };
+  } catch (e) {
+    return { success: false, cleared: 0, error: String((e as any)?.message || e) };
+  }
+};
+
 export const imageService = {
   compressAndSaveImage,
   getImageBase64,
@@ -256,4 +301,5 @@ export const imageService = {
   getAllImages,
   saveImageWithId,
   getImageDisplayUrl,
+  clearAllImages,
 };

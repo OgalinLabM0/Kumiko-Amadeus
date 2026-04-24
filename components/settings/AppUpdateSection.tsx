@@ -118,10 +118,13 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
     statusText = t.updateError;
   }
 
-  // Buttons are interactive only in packaged desktop builds. Dev mode
-  // and mobile both surface them as visible-but-disabled with a tooltip
-  // so the UI shape stays predictable across runtimes.
-  const buttonsDisabledByPlatform = !isPackagedDesktop;
+  // Buttons are interactive in packaged desktop builds AND on Capacitor
+  // native (Android APK) — the latter ships its own check/open-download-
+  // page flow via androidUpdaterService. Dev desktop and pure web stay
+  // visible-but-disabled with a tooltip so the UI shape is predictable.
+  // v2.14.1 B.4.c: Android used to be in the disabled bucket, which is
+  // why the user saw greyed-out buttons + "由桌面版统一管理" copy.
+  const buttonsDisabledByPlatform = !isPackagedDesktop && platform !== 'mobile';
   const platformDisabledTitle = platform === 'mobile'
     ? t.updateMobileHint
     : platform === 'web'
@@ -135,11 +138,30 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
   //   downloading   → "取消下载" (rose, triggers cancel-confirm flow)
   //   cancelling    → "正在取消…" (rose, disabled + pulse while main acks)
   //   downloaded/installing/error → original "立即下载" but disabled
-  const isDownloadMorphedToCancel = isDownloadingLive || isCancelling;
-  const downloadDisabled = isDownloadMorphedToCancel
-    ? isCancelling
-    : (buttonsDisabledByPlatform || updateState.status !== 'available');
+  // v2.14.1 B.4.c: on Android the button is always enabled (other than
+  // a pure web/dev build) because tapping "open download page" should
+  // work whether or not we already polled GitHub — the handler does the
+  // check itself before opening the URL.
+  const isDownloadMorphedToCancel = platform !== 'mobile' && (isDownloadingLive || isCancelling);
+  const downloadDisabled = platform === 'mobile'
+    ? false
+    : isDownloadMorphedToCancel
+      ? isCancelling
+      : (buttonsDisabledByPlatform || updateState.status !== 'available');
+  // v2.14.1 B.4.c: install button is desktop-only — there is no "install
+  // from inside the app" path on Android (REQUEST_INSTALL_PACKAGES would
+  // need a new permission + Files round-trip, see androidUpdaterService).
+  // We hide rather than disable it on mobile so the section doesn't look
+  // half-broken.
   const installDisabled = buttonsDisabledByPlatform || updateState.status !== 'downloaded';
+  const hideInstallButton = platform === 'mobile';
+  // v2.14.1 B.4.c: on Android the "下载" button is repurposed to "Open
+  // download page" (system browser → GitHub release page → user taps
+  // APK → sideloads). Use the new translation key with a graceful
+  // fallback in case translations haven't rebuilt yet.
+  const downloadButtonLabel = platform === 'mobile'
+    ? (t.updateOpenDownloadPage || t.updateDownload)
+    : t.updateDownload;
 
   // Banner display: packaged desktop never shows it; mobile shows a
   // neutral cyan info pill (not the warning amber); dev desktop shows
@@ -357,22 +379,24 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
                 }`}
               >
                 <Download size={14} />
-                {t.updateDownload}
+                {downloadButtonLabel}
               </button>
             )}
-            <button
-              onClick={onInstallUpdate}
-              disabled={installDisabled}
-              title={buttonsDisabledByPlatform ? platformDisabledTitle : undefined}
-              className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
-                installDisabled
-                  ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
-                  : (isDarkMode ? 'bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200')
-              }`}
-            >
-              <CheckCircle2 size={14} />
-              {t.updateInstall}
-            </button>
+            {!hideInstallButton && (
+              <button
+                onClick={onInstallUpdate}
+                disabled={installDisabled}
+                title={buttonsDisabledByPlatform ? platformDisabledTitle : undefined}
+                className={`min-h-[2.9rem] px-3 py-2.5 rounded-xl flex items-center justify-center gap-2 text-center leading-tight ka-copy-sm font-semibold transition-colors ${
+                  installDisabled
+                    ? (isDarkMode ? 'bg-white/5 text-gray-500' : 'bg-gray-100 text-gray-400')
+                    : (isDarkMode ? 'bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/30' : 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200')
+                }`}
+              >
+                <CheckCircle2 size={14} />
+                {t.updateInstall}
+              </button>
+            )}
           </div>
 
           {isPackagedDesktop && (

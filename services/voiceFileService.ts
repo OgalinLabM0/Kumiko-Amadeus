@@ -59,14 +59,43 @@ const hasBackend = (): boolean => !!getIpc() || isCapacitorNative();
 // `if (!success) addMessageToStore(text)` text-only fallback fires.
 const VOICE_DIR = 'voices';
 
+// v2.14.1 B.1: Capacitor Filesystem.mkdir on an already-existing directory
+// throws on the JS side AND logs a native [ERROR] OS-PLUG-FILE-0010 to
+// logcat (which our LogViewer captures), even though the JS try/catch
+// swallows the throw. Calling mkdir on every single readdir / write
+// produced 100+ entries of log spam per session. Memoize the first
+// successful (or already-exists) attempt module-wide so the spam stops
+// after a single boot-time call.
+let voiceDirEnsured = false;
+async function ensureVoiceDir(
+    Filesystem: typeof import('@capacitor/filesystem').Filesystem,
+    Directory: typeof import('@capacitor/filesystem').Directory,
+): Promise<void> {
+    if (voiceDirEnsured) return;
+    try {
+        await Filesystem.mkdir({ path: VOICE_DIR, directory: Directory.Data, recursive: true });
+    } catch (e: any) {
+        // OS-PLUG-FILE-0010 ("Directory already exists"), localized variants
+        // ("Directory exists", "已存在", "存在しています"), and OS-PLUG-FILE
+        // numeric tail are all benign — the directory is there, we proceed.
+        // Anything else (sandbox revoked, OOM) we still swallow because
+        // the subsequent readdir / writeFile will surface the real error.
+        const msg = String(e?.message || e || '').toLowerCase();
+        if (!/exist|already|0010|0008/i.test(msg)) {
+            console.warn('[voiceFileService] ensureVoiceDir non-exist error:', e);
+        }
+    }
+    voiceDirEnsured = true;
+}
+
 async function capacitorVoiceWrite(messageId: string, buffer: ArrayBuffer): Promise<boolean> {
     try {
         const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        await ensureVoiceDir(Filesystem, Directory);
         await Filesystem.writeFile({
             path: `${VOICE_DIR}/${messageId}.mp3`,
             data: arrayBufferToBase64(buffer),
             directory: Directory.Data,
-            recursive: true,
         });
         return true;
     } catch (e) {
@@ -115,16 +144,10 @@ async function capacitorVoiceDelete(messageId: string): Promise<boolean> {
 async function capacitorVoiceList(): Promise<VoiceFileInfo[]> {
     try {
         const { Filesystem, Directory } = await import('@capacitor/filesystem');
-        // F2A.1: New install / never-recorded users hit Filesystem.readdir
-        // before the directory exists, which throws OS-PLUG-FILE-0008 and
-        // gets logged as native [ERROR] in logcat / our LogViewer even
-        // though the JS try/catch swallows it. mkdir({ recursive: true })
-        // is idempotent (swallow "exists" error) and prevents the spam.
-        try {
-            await Filesystem.mkdir({ path: VOICE_DIR, directory: Directory.Data, recursive: true });
-        } catch (e: any) {
-            if (e?.message && !/exist/i.test(String(e.message))) throw e;
-        }
+        // v2.14.1 B.1: replaced inline try/catch mkdir with module-level
+        // memoized ensureVoiceDir (above). Same idempotent-mkdir intent
+        // but we only spam logcat once per session at most.
+        await ensureVoiceDir(Filesystem, Directory);
         const result = await Filesystem.readdir({ path: VOICE_DIR, directory: Directory.Data });
         const files = (result as { files?: Array<{ name: string; size?: number; mtime?: number }> }).files || [];
         return files
@@ -249,6 +272,77 @@ export async function openVoiceFolder(): Promise<void> {
     const ipc = getIpc();
     if (!ipc) return; // Intentionally PC-only — a file-explorer open is meaningless on mobile.
     await ipc.invoke('voice:open-folder');
+}
+
+// v2.14.1 E.1: bulk-clear API. On Capacitor we replaced the dead "open
+// folder" button with a "Clear N MB" button (Android scoped storage
+// makes a file-manager hop a non-starter without a SAF picker UX
+// detour). PC still uses openVoiceFolder so this branch isn't exposed
+// in DataManagementSection on Electron, but we keep the IPC try/catch
+// so a future PC clear-all UI can simply call this same function.
+export async function clearAllVoices(): Promise<{ success: boolean; cleared: number; error?: string }> {
+    const ipc = getIpc();
+    if (ipc) {
+        try {
+            const result = await ipc.invoke('voice:clear-all');
+            if (result?.success) return { success: true, cleared: result.cleared ?? 0 };
+            // Older builds (pre-E.1) don't ship the IPC; fall through to
+            // the list-and-delete loop so the call still succeeds.
+            if (result?.error && !/no handler/i.test(result.error)) {
+                return { success: false, cleared: 0, error: result.error };
+            }
+        } catch (e) {
+            const msg = String((e as any)?.message || e);
+            if (!/no handler/i.test(msg)) {
+                return { success: false, cleared: 0, error: msg };
+            }
+        }
+        // Fallback: read the file list and delete each entry. Slower
+        // (one IPC roundtrip per file) but bounded by the `voice:list`
+        // count and runs entirely off the main thread on the renderer.
+        try {
+            const list = await ipc.invoke('voice:list');
+            const files: VoiceFileInfo[] = list?.files ?? [];
+            let cleared = 0;
+            for (const f of files) {
+                const r = await ipc.invoke('voice:delete', { messageId: f.id });
+                if (r?.success) cleared += 1;
+            }
+            return { success: true, cleared };
+        } catch (e) {
+            return { success: false, cleared: 0, error: String((e as any)?.message || e) };
+        }
+    }
+
+    if (isCapacitorNative()) {
+        try {
+            const { Filesystem, Directory } = await import('@capacitor/filesystem');
+            await ensureVoiceDir(Filesystem, Directory);
+            const result = await Filesystem.readdir({ path: VOICE_DIR, directory: Directory.Data });
+            const files = (result as { files?: Array<{ name: string }> }).files || [];
+            let cleared = 0;
+            for (const f of files) {
+                if (!/\.mp3$/i.test(f.name)) continue;
+                try {
+                    await Filesystem.deleteFile({
+                        path: `${VOICE_DIR}/${f.name}`,
+                        directory: Directory.Data,
+                    });
+                    cleared += 1;
+                } catch (e) {
+                    // Skip files we can't delete (e.g. another process
+                    // is writing one) but keep going so the user gets
+                    // most of the space back.
+                    console.warn('[voiceFileService] clearAllVoices: failed to delete', f.name, e);
+                }
+            }
+            return { success: true, cleared };
+        } catch (e) {
+            return { success: false, cleared: 0, error: String((e as any)?.message || e) };
+        }
+    }
+
+    return { success: false, cleared: 0, error: 'unsupported-platform' };
 }
 
 export async function getVoiceStorageInfo(): Promise<VoiceStorageInfo> {
@@ -414,4 +508,36 @@ export async function deleteRingtoneFile(): Promise<boolean> {
         }
     }
     return false;
+}
+
+// v2.14.1 E.3: high-level "clear custom ringtone" wrapper used by the
+// Data Management UI. The underlying delete is the same as
+// `deleteRingtoneFile()` but we additionally report a `hadRingtone`
+// flag so the dialog can render different copy ("没有自定义铃声可清理"
+// vs "已清理自定义铃声"). On Capacitor we also wipe both keyval keys
+// the rest of the codebase has historically used for the "uploaded
+// ringtone" so future migrations don't leak orphans.
+export async function clearRingtone(): Promise<{ success: boolean; hadRingtone: boolean; error?: string }> {
+    try {
+        // First check if there is a custom ringtone at all so the UI
+        // can give a polite "nothing to clear" message instead of
+        // pretending the click did something.
+        const had = await loadRingtoneFile().then((b) => !!b).catch(() => false);
+        const ipc = getIpc();
+        if (ipc) {
+            const result = await ipc.invoke('ringtone:delete');
+            return { success: result?.success !== false, hadRingtone: had };
+        }
+        if (isCapacitorNative()) {
+            try {
+                await db.keyval.delete(CAPACITOR_RINGTONE_KEY);
+            } catch (e) {
+                return { success: false, hadRingtone: had, error: String((e as any)?.message || e) };
+            }
+            return { success: true, hadRingtone: had };
+        }
+        return { success: false, hadRingtone: had, error: 'unsupported-platform' };
+    } catch (e) {
+        return { success: false, hadRingtone: false, error: String((e as any)?.message || e) };
+    }
 }

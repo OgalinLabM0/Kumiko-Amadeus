@@ -1,5 +1,27 @@
 import { Book, BrainCircuit, CalendarDays, Clock, Database, HardDrive, HeartPulse, Info, MessageSquare, Mic, Settings as SettingsIcon, Smartphone, User } from 'lucide-react';
 
+// v2.14.1 H.6: the "Mobile" chapter was a single PC-PWA-pairing dossier
+// for both languages, originally written when Android was a thin PWA
+// proxying every IPC back to the desktop ping-server. F2B deleted the
+// pairing infrastructure and the Android build is now a fully
+// standalone Capacitor APK with native AlarmManager / FullScreenIntent /
+// foreground-service backup paths. Loading the legacy chapter on
+// Android ended up explaining a `MobilePairingGate` and a Tailscale
+// configuration that the user can no longer see in the app, which was
+// confusing.
+//
+// Solution: keep the original chapter shape on PC (the Android section
+// there is still useful as "what your phone clients can do when paired
+// to a hypothetical future bridge"), and on Android replace it with a
+// chapter that documents the actual native features shipped in v2.14.1.
+// Routing is `getSoftwareGuideSections(language, platform)` in this
+// module; FullGuideModal calls it with `isCapacitorNative() ? 'mobile'
+// : 'desktop'`.
+//
+// PC layouts must stay byte-identical — only the Android branch swaps
+// in the new content.
+export type GuidePlatform = 'desktop' | 'mobile';
+
 export const SOFTWARE_GUIDE_SECTIONS = {
     zh: [
         {
@@ -162,3 +184,47 @@ export const SOFTWARE_GUIDE_SECTIONS = {
         }
     ]
 };
+
+// v2.14.1 H.6: Android-native replacement for the "mobile" chapter.
+// Same id ('mobile') so existing deep links (sidebar pinning, the
+// FullGuideModal `activeGuideSection` state) keep working seamlessly
+// — only the title and content body swap.
+const ANDROID_NATIVE_GUIDE_SECTION: { zh: any; en: any } = {
+    zh: {
+        id: 'mobile',
+        icon: Smartphone,
+        title: 'Android 原生 app：本地一切',
+        content: `# Android 原生 app（v2.14.0+）\n\n这一章描述当前你正在使用的版本：**Android 原生 APK**，不再是当年的"手机 PWA + PC 配对"形态。\n\n## 整体架构\n- **Capacitor 原生壳 + WebView**：所有 React/TS 代码原封不动跑在 Android WebView 里，外面套一层 Capacitor 用来访问 Android 原生 API。\n- **没有 PC 依赖**：没有 ping-server、没有 Tailscale、没有 WebSocket、没有镜像浏览。所有数据都在手机本地。\n- **AI 调用走 CapacitorHttp**：直接绕过 WebView CORS 限制访问 Gemini / OpenAI / Anthropic，不用任何代理。\n\n## 启动流程\n1. **APK 启动** → Capacitor 加载 \`assets/public/index.html\`（即 React build）。\n2. **首启检测**：localStorage 没有数据 → 走 \`IntroScreen → AuthScreen → AIConfigScreen → APP\` 主线（与 PC 完全一致）。\n3. **二次启动**：直接进入 APP，从 IndexedDB / Capacitor Filesystem 加载历史。\n\n## 数据存放在哪\n- **聊天 / 记忆 / 锚点 / 世界书 / 任务 / 日记**：IndexedDB（Dexie），位置由 Android 系统管理。\n- **语音 MP3 缓存**：Capacitor Filesystem，路径 \`/Android/data/com.kumiko.amadeus.app/files/voices/\`。\n- **图片 base64**：IndexedDB（不是文件系统）。\n- **铃声**：IndexedDB（不是文件系统）。\n- **配置（API Key 等）**：localStorage。\n\n注意：以上路径在 Android 11+ 的"我的文件"应用里看不到（Scoped Storage），只能从 app 内的"数据管理"页面用「清理」按钮删除。\n\n## 备份\n- **手动 ZIP 导出 / 导入**：设置 → 备份 & 恢复 → 导出 ZIP，文件会通过 Android Share Sheet 让你保存到 Google Drive、网盘或本地下载。导入也走 Share Sheet。\n- **没有自动备份**：v2.14.0 移除了 4 小时定时备份，因为 Capacitor WebView 后台运行限制太多。重要数据请手动备份。\n\n## 主动消息（Proactive）\n- **前台运行**：JS 端 \`useScheduledReminders\` 1 秒轮询，命中提醒时间后触发 \`triggerTimedReminderMessage\`。\n- **后台 / 锁屏**：原生 \`KumikoAlarmsPlugin\`（Java）调用 Android \`AlarmManager.setExactAndAllowWhileIdle\` 注册闹钟。到点后 \`KumikoAlarmReceiver\` 拉起：\n  - 如果是来电（启用了语音模式）：\`IncomingCallActivity\`，全屏锁屏拉起，行为与 LINE / 微信来电一致（\`showOnLockScreen + turnScreenOn + setFullScreenIntent\`）。\n  - 如果是消息：\`LocalNotifications\` 推到通知栏（\`kumiko_messages\` channel），带 MessagingStyle 文本气泡。\n- **直接回复（Direct Reply）**：通知栏可以直接回复，回复内容下次打开 app 时被 \`useAndroidPendingActionsDrainer\` 拉回会话。\n\n## RAG 记忆\n- **Embedding 模型**：使用云端 API（OpenAI / Gemini / 智谱 GLM / 通义千问 / 自定义），在「设置 → 云端 Embedding」配置。\n- **向量存储**：Dexie 本地 \`vectors\` 表，brute-force 余弦相似度（v2.14.2 计划升 USearch HNSW WASM 加速）。\n- **日记 / 摘要 / 历史消息**：自动写入 RAG。设置 → RAG → 重建索引 可以从历史完整重新生成。\n\n## 通知 channel\n- \`kumiko_messages\` IMPORTANCE_HIGH：新消息（短震动）。\n- \`kumiko_calls\` IMPORTANCE_MAX：来电（长震动 + FullScreenIntent + 铃声）。\n- \`kumiko_foreground_service\`：保留 channel，目前未启用持久前台服务。\n\n## App 更新\n- **检查更新**：设置 → 应用更新 → 检查更新。直接 hit GitHub Releases API 拉取最新 tag。\n- **下载**：检测到新版本后，「打开下载页」会跳转到系统浏览器下载新 APK。\n- **安装**：下载完成后从 Android 通知栏点击 APK 文件，由系统安装器手动安装（需要允许「未知来源」权限一次）。\n- **没有静默安装**：Android 不允许 app 自我安装新版本，必须用户手动确认。\n\n## 性能优化\n- ChatHeader ResizeObserver 加 150-300ms debounce。\n- \`@media (max-width: 768px)\` 下全局 transition 收紧到 200ms。\n- ChatBubble 在手机端不加 backdrop-blur。\n- 虚拟列表 overscan 控制在 3-5 条。\n- KeyboardResize 设为 \`None\`（避免输入时 WebView 整体被推开），改用 CSS \`var(--kb-inset)\` + \`onFocusCapture\` scrollIntoView。\n\n## 不能做什么（与 PC 区别）\n- ❌ 没有 GPT-SoVITS（PyTorch + CUDA + 5GB 模型，物理上跑不了）。Android 端语音强制走 Fish Audio。\n- ❌ 没有 Mobile Pairing / Mobile Browse Root（这些 PC 设置在 Android 上隐藏）。\n- ❌ 没有"打开文件夹"（Scoped Storage 限制），改为「清理 X 文件」按钮。\n- ❌ 没有"彻底退出"（Android 不允许 app 调 \`System.exit(0)\` 杀掉自己，由系统管理生命周期）。\n- ❌ 没有 4 小时自动备份（WebView 后台限制太多）。`
+    },
+    en: {
+        id: 'mobile',
+        icon: Smartphone,
+        title: 'Android Native App: Everything Local',
+        content: `# Android Native App (v2.14.0+)\n\nThis chapter describes the build you're currently running: **standalone Android APK**, no longer the legacy "mobile PWA + PC pairing" architecture.\n\n## Architecture\n- **Capacitor native shell + WebView**: all React/TS code runs unchanged inside Android WebView, wrapped by Capacitor for native API access.\n- **No PC dependency**: no ping-server, no Tailscale, no WebSocket, no mirror browsing. All data lives on-device.\n- **AI calls go through CapacitorHttp**: bypasses WebView CORS limits to hit Gemini / OpenAI / Anthropic directly, no proxy required.\n\n## Startup flow\n1. **APK launch** → Capacitor loads \`assets/public/index.html\` (the React build).\n2. **First launch detection**: empty localStorage → \`IntroScreen → AuthScreen → AIConfigScreen → APP\` main flow (identical to PC).\n3. **Subsequent launches**: jumps straight to APP, restoring history from IndexedDB + Capacitor Filesystem.\n\n## Where data lives\n- **Chat / memory / anchors / world book / tasks / diaries**: IndexedDB (Dexie), location managed by Android.\n- **Voice MP3 cache**: Capacitor Filesystem at \`/Android/data/com.kumiko.amadeus.app/files/voices/\`.\n- **Images (base64)**: IndexedDB (not the filesystem).\n- **Ringtone**: IndexedDB (not the filesystem).\n- **Config (API keys, etc.)**: localStorage.\n\nNote: on Android 11+ none of these paths are visible in the Files app due to Scoped Storage. Use the "Clear X files" buttons in Data Management to remove them from inside the app.\n\n## Backups\n- **Manual ZIP export / import**: Settings → Backup & Restore → Export ZIP. The file is handed to Android's Share Sheet so you can save to Google Drive, your cloud of choice, or local downloads. Import goes through the Share Sheet too.\n- **No automatic backups**: v2.14.0 removed the 4-hour periodic backup because Capacitor WebView background execution is unreliable. Back up manually for anything important.\n\n## Proactive messages\n- **Foreground**: JS-side \`useScheduledReminders\` polls every second; matching reminder time → fires \`triggerTimedReminderMessage\`.\n- **Background / locked screen**: native \`KumikoAlarmsPlugin\` (Java) registers \`AlarmManager.setExactAndAllowWhileIdle\` alarms. When fired, \`KumikoAlarmReceiver\` routes to:\n  - **Incoming call** (voice mode enabled): \`IncomingCallActivity\` full-screen lock-screen launch, identical pattern to LINE / WeChat calls (\`showOnLockScreen + turnScreenOn + setFullScreenIntent\`).\n  - **Text reminder**: \`LocalNotifications\` posts to the system tray (\`kumiko_messages\` channel) with a MessagingStyle text bubble.\n- **Direct Reply**: text replies typed from the notification shade flow back into the conversation on next app open via \`useAndroidPendingActionsDrainer\`.\n\n## RAG memory\n- **Embedding model**: cloud APIs (OpenAI / Gemini / Zhipu GLM / Tongyi Qianwen / Custom). Configure under Settings → Cloud Embedding.\n- **Vector storage**: local Dexie \`vectors\` table, brute-force cosine similarity (USearch HNSW WASM upgrade queued for v2.14.2).\n- **Diaries / summaries / history messages**: indexed automatically. Settings → RAG → Rebuild Index can regenerate the entire vector store from history.\n\n## Notification channels\n- \`kumiko_messages\` IMPORTANCE_HIGH: new message (short vibration).\n- \`kumiko_calls\` IMPORTANCE_MAX: incoming call (long vibration + FullScreenIntent + ringtone).\n- \`kumiko_foreground_service\`: reserved channel, persistent foreground service is currently inactive.\n\n## App updates\n- **Check for updates**: Settings → App Update → Check for updates. Hits the GitHub Releases API directly for the latest tag.\n- **Download**: when a new version is detected, "Open Download Page" jumps to your system browser.\n- **Install**: tap the downloaded APK from Android's notification shade; the system installer takes over (you'll need to grant "Install unknown apps" once).\n- **No silent install**: Android does not allow apps to install replacement APKs without user confirmation.\n\n## Performance tuning\n- ChatHeader ResizeObserver 150-300 ms debounce.\n- Under \`@media (max-width: 768px)\` global transition duration tightens to 200 ms.\n- ChatBubble drops backdrop-blur on phones.\n- Virtual-list overscan capped at 3-5 rows.\n- KeyboardResize is set to \`None\` (avoids the WebView jump when the IME slides in); CSS \`var(--kb-inset)\` + \`onFocusCapture\` scrollIntoView handles it instead.\n\n## What you can NOT do (vs. PC)\n- ❌ No GPT-SoVITS (PyTorch + CUDA + 5 GB model — physically can't run). Voice is forced to Fish Audio on Android.\n- ❌ No Mobile Pairing / Mobile Browse Root (those PC settings are hidden on Android).\n- ❌ No "Open folder" (blocked by Scoped Storage); replaced with "Clear X files" buttons.\n- ❌ No "Quit completely" (Android disallows \`System.exit(0)\` self-kill; the system manages app lifecycle).\n- ❌ No 4-hour auto backup (WebView background execution is too constrained).`
+    },
+};
+
+/**
+ * v2.14.1 H.6: platform-aware accessor over SOFTWARE_GUIDE_SECTIONS.
+ *
+ * - 'desktop' (PC / Electron): returns the original chapter list as-is,
+ *   including the legacy "MOBILE PWA" pairing dossier — it documents
+ *   what your phone clients could do when bridged, and PC users have
+ *   asked for that history.
+ * - 'mobile' (Capacitor / Android APK): swaps the same-id 'mobile'
+ *   chapter for ANDROID_NATIVE_GUIDE_SECTION, which describes the
+ *   actually-shipped native features (AlarmManager, IncomingCallActivity,
+ *   FullScreenIntent, cloud embedding RAG, manual ZIP backup, etc.).
+ *
+ * The id stays 'mobile' so existing deep links and the
+ * `activeGuideSection` Zustand state continue to resolve.
+ */
+export function getSoftwareGuideSections(
+    language: 'zh' | 'en',
+    platform: GuidePlatform = 'desktop',
+): typeof SOFTWARE_GUIDE_SECTIONS['zh'] {
+    const base = SOFTWARE_GUIDE_SECTIONS[language];
+    if (platform !== 'mobile') return base;
+    const replacement = ANDROID_NATIVE_GUIDE_SECTION[language];
+    return base.map((section) => (section.id === 'mobile' ? replacement : section)) as typeof SOFTWARE_GUIDE_SECTIONS['zh'];
+}

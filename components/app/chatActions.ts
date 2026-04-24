@@ -784,13 +784,37 @@ export async function triggerTimedReminderMessage(
       let voiceResultPromise = helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion);
 
       const notifBody = combinedReminderText ? combinedReminderText.slice(0, 50) : reminder.event;
+      const notifTitle = language === 'zh' ? '黄前久美子 来电...' : 'Incoming Call: Kumiko Oumae';
       if (isDesktopElectron()) {
         window.electronAPI?.send('app:send-call-notification', {
-          title: language === 'zh' ? '黄前久美子 来电...' : 'Incoming Call: Kumiko Oumae',
+          title: notifTitle,
           body: notifBody,
         });
+      } else if ((window as any).Capacitor?.isNativePlatform?.()) {
+        // v2.14.1 H.3: previously the Capacitor branch fell through to the
+        // browser `new Notification(...)` path below. That path requires
+        // `Notification.requestPermission()` + the WebView's HTML5
+        // notification service, neither of which Android Capacitor wires
+        // up consistently — the call would silently no-op when the user
+        // had switched to another app, defeating the whole "user knows
+        // Kumiko is calling" guarantee.
+        //
+        // Route through the native LocalNotifications channel
+        // (kumiko_calls, IMPORTANCE_MAX, FullScreenIntent + ringtone +
+        // long vibrate pattern) that capacitorNotifications.ts already
+        // sets up for the background AlarmManager path. End result:
+        // foreground reminder calls now surface in the system tray
+        // (and as heads-up + vibration) the same way the locked-screen
+        // KumikoAlarmReceiver path does.
+        try {
+          const { postKumikoNotification, vibrateForKind } = await import('../../services/capacitorNotifications');
+          await postKumikoNotification({ title: notifTitle, body: notifBody, kind: 'incoming-call' });
+          await vibrateForKind('incoming-call');
+        } catch (e) {
+          console.warn('[chatActions] capacitor incoming-call notification failed:', e);
+        }
       } else if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification(language === 'zh' ? '黄前久美子 来电...' : 'Incoming Call: Kumiko Oumae', {
+        new Notification(notifTitle, {
           body: notifBody,
         });
       }

@@ -719,7 +719,28 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
         </div>
 
         {/* Scrollable Content Wrapper */}
-        <div data-resize-heavy className="flex-1 overflow-y-auto w-full scrollbar-thin">
+        {/* v2.14.1 H.1: same fullbleed-modal keyboard fix that SettingsPanel
+            got in B.2. With KeyboardResize.None the WebView never resizes
+            when the IME slides in, so an INPUT/TEXTAREA at the bottom of
+            this scroll container ends up underneath the keyboard. Reserve
+            inset space via --kb-inset and scroll the focused field into
+            view on focus. */}
+        <div
+          data-resize-heavy
+          className="flex-1 overflow-y-auto w-full scrollbar-thin"
+          style={{ paddingBottom: 'var(--kb-inset, 0px)' }}
+          onFocusCapture={(e) => {
+            const target = e.target as HTMLElement | null;
+            if (!target) return;
+            const tag = target.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+              requestAnimationFrame(() => {
+                try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+                catch { /* old WebView without smooth-scroll, ignore */ }
+              });
+            }
+          }}
+        >
           <div className="p-4 flex flex-col gap-4">
             
             {/* Section 1: Core Memory */}

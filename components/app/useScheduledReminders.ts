@@ -175,16 +175,47 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
           }
       };
 
-      const intervalId = setInterval(() => {
-          void checkScheduledReminders();
-      }, 1000);
+      // v2.14.1 H.4: previously the JS poller fired every 1s
+      // unconditionally — fine when the tab is active, wasteful when
+      // the user has switched apps because the native AlarmManager
+      // path (B.2 above) already guarantees minute-accurate wake-ups
+      // even from Doze. When document.visibilityState === 'hidden'
+      // (Capacitor: app backgrounded; Electron: window minimized;
+      // Web: tab in background), drop to a 60s heartbeat. The visibility
+      // listener resets the interval so foreground responsiveness is
+      // unchanged.
+      let intervalId: ReturnType<typeof setInterval>;
+      const installInterval = () => {
+          if (intervalId) clearInterval(intervalId);
+          const period = (typeof document !== 'undefined' && document.visibilityState === 'hidden') ? 60_000 : 1000;
+          intervalId = setInterval(() => {
+              void checkScheduledReminders();
+          }, period);
+      };
+      installInterval();
+      const onVisibilityChange = () => {
+          installInterval();
+          // On foreground transition, fast-path one immediate check so
+          // a reminder that fell due while we were sleeping fires within
+          // the first frame instead of after the next 1s tick.
+          if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+              void checkScheduledReminders();
+          }
+      };
+      if (typeof document !== 'undefined') {
+          document.addEventListener('visibilitychange', onVisibilityChange);
+      }
+
       const timeoutId = setTimeout(() => {
           void checkScheduledReminders();
       }, 1500);
 
       return () => {
-          clearInterval(intervalId);
+          if (intervalId) clearInterval(intervalId);
           clearTimeout(timeoutId);
+          if (typeof document !== 'undefined') {
+              document.removeEventListener('visibilitychange', onVisibilityChange);
+          }
       };
   }, [flowState, isTalking, isThinking, getRelativeReminders, getDailyReminders, triggerTimedReminderMessage, removeRelativeReminder, markRelativeReminderRetry, markDailyReminderTriggered, markDailyReminderRetry]);
 

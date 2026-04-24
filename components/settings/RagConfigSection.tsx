@@ -3,6 +3,7 @@ import { Database, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
 import { BackupConfig, Language } from '../../types';
 import { SettingsToggle } from './SettingsToggle';
 import { Collapse } from '../Collapse';
+import { isCapacitorNative } from '../../services/environment';
 
 interface RagConfigSectionProps {
   isOpen: boolean;
@@ -30,6 +31,27 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
   onRequestRebuildRag
 }) => {
   const isRebuilding = ragStatus === 'RECALLING' || ragStatus === 'INDEXING';
+  // v2.14.1 G.3: split the RAG description by platform.
+  // - PC: ONNX bge-m3 + sqlite-vec, fully local, no network needed for embeddings.
+  // - Android: cloud embeddings (OpenAI/Gemini/Zhipu/Tongyi/Custom) feed into a
+  //   Dexie-backed vector store with brute-force cosine retrieval (USearch HNSW
+  //   queued for v2.14.2). The previous unified copy claimed local ONNX, which
+  //   was a lie on Android — the WebView has no ONNX runtime.
+  const isCapacitor = isCapacitorNative();
+  const ragDescription = isCapacitor
+    ? (language === 'zh'
+        ? '使用云端 Embedding（OpenAI / Gemini / 智谱 / 通义 / 自定义）+ Dexie 向量持久化，完全在 app 内运行，无需 PC。'
+        : 'Uses cloud embeddings (OpenAI / Gemini / Zhipu / Tongyi / Custom) with Dexie-backed vector persistence — runs entirely on-device, no PC required.')
+    : (language === 'zh'
+        ? '使用本地 ONNX + SQLite 向量检索，不再依赖外部 Embedding API'
+        : 'Use local ONNX + SQLite vector retrieval without external embedding APIs');
+  const ragLockedHint = isCapacitor
+    ? (language === 'zh'
+        ? 'Android 通过云端 Embedding 模型生成向量，需先在「云端 Embedding」面板里配置好 API。'
+        : 'Android generates vectors through a cloud embedding model — set up the provider in the "Cloud Embedding" panel first.')
+    : (language === 'zh'
+        ? 'RAG 向量模型与接口配置已移除，当前固定使用内置本地模型。'
+        : 'RAG model and endpoint inputs have been removed. The built-in local model is now fixed.');
   return (
     <div className={innerCardClass}>
       <button onClick={onToggle} className="w-full flex items-center justify-between mb-2">
@@ -60,9 +82,7 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
                 {language === 'zh' ? '启用本地长期记忆' : 'Enable local long-term memory'}
               </span>
               <span className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
-                {language === 'zh'
-                  ? '使用本地 ONNX + SQLite 向量检索，不再依赖外部 Embedding API'
-                  : 'Use local ONNX + SQLite vector retrieval without external embedding APIs'}
+                {ragDescription}
               </span>
             </div>
             <div className="flex-shrink-0 ml-3">
@@ -77,9 +97,7 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
           </div>
 
           <div className={`ka-copy-sm italic p-3 rounded-lg ${isDarkMode ? 'bg-[#211811]/60 text-[#b69f87]' : 'bg-[#f5ebd9] text-[#8f7458]'}`}>
-            {language === 'zh'
-              ? 'RAG 向量模型与接口配置已移除，当前固定使用内置本地模型。'
-              : 'RAG model and endpoint inputs have been removed. The built-in local model is now fixed.'}
+            {ragLockedHint}
           </div>
 
           {onRequestRebuildRag && (

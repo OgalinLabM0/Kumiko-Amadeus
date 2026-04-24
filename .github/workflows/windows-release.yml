@@ -131,6 +131,28 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
         run: npx electron-builder --win --${{ matrix.cli_arch }} --publish always
 
+      # v2.14.1 C.1: electron-builder always emits a `Kumiko-Amadeus-Setup-<version>.exe`
+      # universal installer alongside the per-arch installers when more than one arch is
+      # listed in build.win.target.arch (x64 + arm64 in package.json). That universal
+      # exe weighs ~1.5 GB (every arch's app.asar + every native module concatenated),
+      # which exploded v2.14.0's release page and confused users into downloading the
+      # heaviest possible installer for no extra capability. We don't ship it — every
+      # supported architecture has its own per-arch Setup-<arch>-<version>.exe — so
+      # explicitly delete the universal asset right after publish.
+      #
+      # Race-safe: both arches will attempt the delete (electron-builder uploaded the
+      # same universal asset twice in the v2.14.0 race), `gh release delete-asset`
+      # exits 0 if the asset is already gone, and the `|| true` keeps the workflow
+      # green if neither matrix job ever attaches it (e.g. dry runs after we eventually
+      # collapse to a single arch).
+      - name: Delete universal NSIS installer from release
+        if: inputs.publish == true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete-asset "v${PACKAGE_VERSION}" "Kumiko-Amadeus-Setup-${PACKAGE_VERSION}.exe" --yes 2>/dev/null || true
+
       - name: Generate latest*.yml (no-publish mode only)
         if: inputs.publish != true
         # When publish=true electron-builder already writes and uploads these

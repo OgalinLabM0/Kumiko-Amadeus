@@ -137,6 +137,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const t = UI_TRANSLATIONS[language];
   const t_local = LOCAL_CONFIG_TRANSLATIONS[language];
   const isDesktopElectron = typeof window !== 'undefined' && 'electronAPI' in window;
+  // v2.14.1 G.1 / G.2: Capacitor probe lives next to the Electron probe so
+  // every "are we on PC?" / "are we on mobile?" branch in this file gets the
+  // same answer. Plain browser PWA falls through both as `false` (used by
+  // legacy / preview / test builds).
+  const isCapacitorMobile = typeof window !== 'undefined'
+    && Boolean((window as any).Capacitor?.isNativePlatform?.());
   
   const [isGeneralOpen, setIsGeneralOpen] = useState(true);
   const [isAccountOpen, setIsAccountOpen] = useState(true);
@@ -461,9 +467,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const handleSaveApiConfig = async () => {
       const saveResult = await setAIConfig(localAiConfig);
       if (!saveResult.ok) {
+          // v2.14.1 G.1: error copy was hardcoded "保存到 PC 失败" / "Failed to
+          // save to PC" — true on Electron because setAIConfig flushes through
+          // the IPC bridge into ai-config.json on disk, but on Android (Capacitor)
+          // the same path writes to Dexie / Capacitor Filesystem and never
+          // touches a PC, so the message was a confusing lie. Split the
+          // copy three ways: desktop / mobile / web.
+          const failPrefix = language === 'zh'
+            ? (isDesktopElectron
+                ? '保存到 PC 失败：'
+                : (isCapacitorMobile ? '保存到本地失败：' : '保存失败：'))
+            : (isDesktopElectron
+                ? 'Failed to save to PC: '
+                : (isCapacitorMobile ? 'Failed to save locally: ' : 'Save failed: '));
           showDialog({
               title: language === 'zh' ? '保存失败' : 'Save Failed',
-              message: (language === 'zh' ? '保存到 PC 失败：' : 'Failed to save to PC: ') + (saveResult.error || ''),
+              message: failPrefix + (saveResult.error || ''),
               type: 'alert',
               onConfirm: () => closeDialog(),
           });
@@ -1768,7 +1787,35 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             )}
           </div>
 
-          <div ref={contentScrollRef} data-resize-heavy data-settings-content className="flex-1 overflow-y-auto touch-scroll scrollbar-thin">
+          <div
+            ref={contentScrollRef}
+            data-resize-heavy
+            data-settings-content
+            className="flex-1 overflow-y-auto touch-scroll scrollbar-thin"
+            style={{ paddingBottom: 'var(--kb-inset, 0px)' }}
+            onFocusCapture={(e) => {
+              // v2.14.1 B.2: with Capacitor's KeyboardResize.None (set in
+              // F2A.2 to stop the chat avatar from leaping when the IME
+              // appears), the WebView no longer auto-scrolls a focused
+              // input into view inside our fixed-overlay settings shell —
+              // the input vanishes under the keyboard the moment the user
+              // taps it. Combine an adaptive paddingBottom (driven by the
+              // --kb-inset CSS var that useAppViewport already maintains)
+              // with an explicit scrollIntoView on focus so the input
+              // both has somewhere to live AND ends up visible. Using
+              // requestAnimationFrame waits one frame for the keyboard's
+              // height update to land before we read the layout.
+              const target = e.target as HTMLElement | null;
+              if (!target) return;
+              const tag = target.tagName;
+              if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+                requestAnimationFrame(() => {
+                  try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+                  catch { /* old WebView without smooth-scroll, ignore */ }
+                });
+              }
+            }}
+          >
             <div className={`mx-auto w-full ${isExpandedView ? 'max-w-[54rem]' : 'max-w-[46rem]'} px-4 py-5 md:px-6 md:py-6 flex flex-col gap-4`}>
               {sectionsMarkup}
             </div>

@@ -205,7 +205,26 @@ export const SovitsRefPromptEditorModal: React.FC<SovitsRefPromptEditorModalProp
           </div>
         )}
 
-        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-6">
+        {/* v2.14.1 H.1: same fullbleed-modal keyboard fix that SettingsPanel
+            and MemoryPanel got. With KeyboardResize.None the WebView never
+            resizes when the IME slides in, so the long emotion-prompt textareas
+            below would slide under the soft keyboard. Reserve --kb-inset of
+            extra bottom padding and scroll the focused control into view. */}
+        <div
+          className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-6"
+          style={{ paddingBottom: 'calc(1rem + var(--kb-inset, 0px))' }}
+          onFocusCapture={(e) => {
+            const target = e.target as HTMLElement | null;
+            if (!target) return;
+            const tag = target.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') {
+              requestAnimationFrame(() => {
+                try { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+                catch { /* old WebView without smooth-scroll, ignore */ }
+              });
+            }
+          }}
+        >
           {GROUPED_METADATA.map(({ emotion, rows }) => (
             <div key={emotion}>
               <div className={`mb-2 flex items-center gap-2`}>
