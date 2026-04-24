@@ -37,6 +37,30 @@ ios/App/Pods
 ios/App/build
 ios/**/DerivedData
 
+# Capacitor Android（Gradle 构建产物 / 本机 SDK 路径 / IDE 文件不入仓）
+# android/ 工程本身要提交，让 GitHub Actions / 协作者无须重新跑 cap add
+android/.gradle/
+android/.kotlin/
+android/build/
+android/captures/
+android/local.properties
+android/app/build/
+android/app/release/
+android/app/debug/
+android/app/google-services.json
+android/.idea/
+android/*.iml
+android/app/*.iml
+# Capacitor 同步出来的中间产物（每次 cap sync 重新生成）
+android/app/src/main/assets/public/
+android/app/src/main/assets/capacitor.config.json
+android/app/src/main/assets/capacitor.plugins.json
+# CMake / NDK 缓存（A5 sqlite-vec 跨编时会用到）
+android/.cxx/
+android/app/.cxx/
+android/.externalNativeBuild/
+android/app/.externalNativeBuild/
+
 # Character-specific copyrighted assets (distributed separately via kumiko-assets.zip)
 # See README "Build from Source" section for instructions
 public/images/emotions/*.png

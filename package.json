@@ -13,6 +13,7 @@
     "fetch-assets": "node scripts/fetch-assets.cjs",
     "check-assets": "node scripts/check-assets-drift.cjs",
     "build:pwa-icons": "node scripts/build-pwa-icons.cjs",
+    "build:android-icons": "node scripts/build-android-icons.cjs",
     "dev": "vite",
     "prebuild": "node scripts/build-pwa-icons.cjs",
     "build": "vite build",
@@ -20,11 +21,15 @@
     "build:lore": "node scripts/build-lore.cjs",
     "release:latest-yml": "node scripts/generate-latest-yml.cjs",
     "cap:sync": "npm run build:cap && npx cap sync ios",
+    "cap:sync:android": "npm run build:cap && npm run build:android-icons && npx cap sync android",
+    "verify:android": "npm run build:cap && npm run build:android-icons && npx cap copy android && npx cap update android",
+    "verify:both": "npm run verify:android && npx cap copy ios && npx cap update ios",
     "preview": "vite preview",
     "release:clean:prebuild": "node scripts/clean-release.cjs prebuild",
     "release:clean:postbuild": "node scripts/clean-release.cjs postbuild"
   },
   "dependencies": {
+    "@capacitor/android": "^7.6.2",
     "@capacitor/core": "^7.2.0",
     "@capacitor/keyboard": "^7.0.6",
     "@fastify/cookie": "^11.0.2",
