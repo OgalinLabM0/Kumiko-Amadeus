@@ -4,6 +4,7 @@ import { AIConfig } from "../types";
 import { callOpenAI, callAnthropic } from "./llmProviderService";
 import { DEFAULT_AI_CONFIG, normalizeAIConfig, resolveTransportProvider } from "./appConfig";
 import { queueLocalStoragePreferenceSync } from './preferencesSync';
+import { isCapacitorStandalone } from './environment';
 
 // Helper: Get Current AI Config from LocalStorage or Defaults
 export const getCurrentAIConfig = (): AIConfig => {
@@ -52,6 +53,16 @@ export const setAIConfig = async (
         });
     } catch (e) {
         return { ok: false, error: (e as Error).message };
+    }
+    // F1.1 hotfix: Capacitor standalone mode has no upstream PC. The
+    // localStorage write above is the source of truth; skip every
+    // remote dispatch (Electron broadcast OR HTTP IPC). Returning ok
+    // here is what unblocks the AIConfigScreen + SettingsPanel "save"
+    // buttons on Android APK — previously those fell through to the
+    // httpInvoke branch, hit empty getApiBaseUrl() and surfaced the
+    // "保存到 PC 失败" alert dialog.
+    if (isCapacitorStandalone()) {
+        return { ok: true };
     }
     // Runtime flag set by preload.cjs / index.html fallback. Desktop
     // electron exposes `window.electronAPI.send`; mobile PWAs only

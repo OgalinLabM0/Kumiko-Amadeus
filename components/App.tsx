@@ -191,6 +191,21 @@ export const App = () => {
     // Android). All gated behind isCapacitorNative() inside the
     // controller — PC / PWA see no behavior change.
     void startAndroidAutoBackup();
+    // F1.3 hotfix: tell the @capacitor/status-bar plugin to overlay the
+    // WebView. Combined with MainActivity.setDecorFitsSystemWindows(false),
+    // this is what makes the WebView draw edge-to-edge under the status
+    // bar AND nav bar, killing the white strip at the bottom that v2.13.0
+    // reports. The dynamic import keeps PC / PWA bundles unaffected.
+    void (async () => {
+      try {
+        const { StatusBar, Style } = await import('@capacitor/status-bar');
+        await StatusBar.setOverlaysWebView({ overlay: true });
+        await StatusBar.setStyle({ style: Style.Light });
+        await StatusBar.setBackgroundColor({ color: '#00000000' });
+      } catch (e) {
+        console.warn('[App] StatusBar overlay setup failed (non-fatal):', e);
+      }
+    })();
   }, []);
 
   // B.2 + B.3 + B.4 drainer: drain native-side action queue (call
