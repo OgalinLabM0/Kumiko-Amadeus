@@ -146,6 +146,7 @@ import { useMobileRemoteFilePicker } from './app/useMobileRemoteFilePicker';
 import { useAppPreferencesSync } from './app/useAppPreferencesSync';
 import { useScheduledReminders } from './app/useScheduledReminders';
 import { useMessageHistoryOperations } from './app/useMessageHistoryOperations';
+import { installGlobalAudioUnlock } from '../utils/audioUnlock';
 
 
 export const App = () => {
@@ -163,6 +164,10 @@ export const App = () => {
   // subscribes to /ws and applies message/status events to the local
   // Zustand store so <App /> re-renders in real time.
   useMobileMessageSync();
+  useEffect(() => {
+    const cleanup = installGlobalAudioUnlock();
+    return () => cleanup();
+  }, []);
   const { devLogs, setDevLogs } = useDevLogs();
   const isBulkRestoreInProgressRef = useRef(false);
   const rawHistorySyncedIdsRef = useRef<Set<string>>(new Set());

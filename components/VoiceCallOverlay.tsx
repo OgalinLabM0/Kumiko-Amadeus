@@ -3,6 +3,10 @@ import { Phone, PhoneOff, Loader2, X } from 'lucide-react';
 import { resolveRingtoneAudioSource } from '../services/voiceFileService';
 import { isMobilePwa } from '../services/environment';
 import { getHttpVoiceUrl } from '../services/httpApi';
+import {
+  getSharedUnlockedAudio,
+  primeSharedAudioForGesture,
+} from '../utils/audioUnlock';
 import type { Language } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
 
@@ -81,11 +85,20 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
         if (cancelled) return;
         if (source) {
           ringtoneCleanupRef.current = source.cleanup || null;
-          const audio = new Audio(source.src);
+          const audio = isMobilePwa() ? getSharedUnlockedAudio() : new Audio(source.src);
+          try {
+            audio.pause();
+            audio.currentTime = 0;
+          } catch {
+            // ignore stale state from a previous playback session
+          }
+          audio.src = source.src;
           audio.loop = true;
           audio.volume = 0.6;
           ringtoneRef.current = audio;
-          await audio.play().catch(() => {});
+          await audio.play().catch((e) => {
+            console.warn('[CALL-OVERLAY] ringtone playback failed:', e);
+          });
         }
       } catch { /* no custom ringtone */ }
     })();
@@ -116,7 +129,14 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
     if (phase !== 'active' || !voiceFileId) return;
     let cancelled = false;
     const src = getHttpVoiceUrl(voiceFileId);
-    const audio = new Audio(src);
+    const audio = getSharedUnlockedAudio();
+    try {
+      audio.pause();
+      audio.currentTime = 0;
+    } catch {
+      // ignore stale state from the ringing phase
+    }
+    audio.src = src;
     audio.preload = 'auto';
     audio.volume = 1.0;
     voiceAudioRef.current = audio;
@@ -145,6 +165,11 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
     if (acceptedRef.current) return;
     acceptedRef.current = true;
     if (ringtoneRef.current) { ringtoneRef.current.pause(); }
+    if (isMobilePwa()) {
+      void primeSharedAudioForGesture().catch(() => {
+        // ignore: the accept gesture still improves later autoplay odds
+      });
+    }
     onAccept();
   }, [onAccept]);
 

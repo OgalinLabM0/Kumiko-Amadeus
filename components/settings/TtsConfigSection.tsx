@@ -19,6 +19,7 @@ import {
 } from '../../services/voiceFileService';
 import { Collapse } from '../Collapse';
 import { openExternalUrl } from '../../utils/openExternal';
+import { primeAudioForUserGesture } from '../../utils/audioUnlock';
 import { isMobilePwa } from '../../services/environment';
 import { httpInvoke, subscribeEvents } from '../../services/httpApi';
 
@@ -498,6 +499,17 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
   const handleTestSovitsVoice = useCallback(async () => {
     if (isTesting || genieStatus !== 'ready') return;
+
+    // iOS Safari (mobile PWA) autoplay policy: an `audio.play()` call after
+    // any `await` no longer counts as user-initiated and is rejected with
+    // `NotAllowedError`. We synchronously prime an Audio element with a
+    // tiny silent WAV inside this user-gesture frame, then later swap in
+    // the real TTS source. See utils/audioUnlock.ts for the full rationale.
+    stopTestVoicePlayback();
+    const audio = new Audio();
+    testAudioRef.current = audio;
+    const unlockPromise = primeAudioForUserGesture(audio);
+
     setIsTesting(true);
     setTestStatus('idle');
     setTestError(null);
@@ -517,14 +529,18 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
         textSplitMethod: ttsConfig.sovitsTextSplitMethod,
         fragmentInterval: ttsConfig.sovitsFragmentInterval,
       });
+      // Wait for the silent priming playback to settle so iOS doesn't reject
+      // the real `play()` for racing with an in-flight one.
+      await unlockPromise;
+      // The user (or another effect) may have stopped the test in between;
+      // if our element was swapped out, abort silently.
+      if (testAudioRef.current !== audio) return;
       const blob = new Blob([result.audio], { type: 'audio/wav' });
       const url = URL.createObjectURL(blob);
-      stopTestVoicePlayback();
       testAudioUrlRef.current = url;
-      const audio = new Audio(url);
-      testAudioRef.current = audio;
       audio.onended = () => { stopTestVoicePlayback(); };
       audio.onerror = () => { stopTestVoicePlayback(); setTestStatus('error'); };
+      audio.src = url;
       await audio.play();
       setTestStatus('playing');
     } catch (e: any) {
@@ -564,23 +580,36 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       setTestStatus('error');
       return;
     }
+
+    // Synchronous priming inside the user-gesture frame — see the comment
+    // in handleTestSovitsVoice for the iOS Safari autoplay rationale. The
+    // mobile PWA path goes through `synthesizeSpeech`, which awaits an HTTP
+    // round-trip via `tts:fish-synth`, so by the time we'd otherwise call
+    // `audio.play()` the gesture is gone and Safari rejects with
+    // "The request is not allowed by the user agent or the platform in
+    // the current context, possibly because the user denied permission."
+    stopTestVoicePlayback();
+    const audio = new Audio();
+    testAudioRef.current = audio;
+    const unlockPromise = primeAudioForUserGesture(audio);
+
     setIsTesting(true);
     setTestStatus('idle');
     setTestError(null);
     try {
       const testText = '全国大会を目指す日々は、決して楽な道のりではありません。しかし、仲間と共に努力する喜びが、私たちを強くしてくれました。';
       const result = await synthesizeSpeech(testText, ttsConfig);
+      await unlockPromise;
+      if (testAudioRef.current !== audio) return;
       const blob = new Blob([result.audio], { type: 'audio/mpeg' });
       const url = URL.createObjectURL(blob);
-      stopTestVoicePlayback();
       testAudioUrlRef.current = url;
-      const audio = new Audio(url);
-      testAudioRef.current = audio;
       audio.onended = () => { stopTestVoicePlayback(); };
       audio.onerror = () => {
         stopTestVoicePlayback();
         setTestStatus('error');
       };
+      audio.src = url;
       await audio.play();
       setTestStatus('playing');
     } catch (e: any) {
@@ -607,6 +636,15 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       setTestStatus('error');
       return;
     }
+
+    // Same iOS Safari autoplay priming pattern as handleTestVoice /
+    // handleTestSovitsVoice. Without this the awaited Vocu synth would
+    // throw NotAllowedError on mobile PWA when we later call play().
+    stopTestVoicePlayback();
+    const audio = new Audio();
+    testAudioRef.current = audio;
+    const unlockPromise = primeAudioForUserGesture(audio);
+
     setIsTesting(true);
     setTestStatus('idle');
     setTestError(null);
@@ -614,17 +652,17 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       const { synthesizeWithVocu } = await import('../../services/vocuAudioService');
       const testText = '全国大会を目指す日々は、決して楽な道のりではありません。しかし、仲間と共に努力する喜びが、私たちを強くしてくれました。';
       const result = await synthesizeWithVocu(testText, ttsConfig, 'neutral');
+      await unlockPromise;
+      if (testAudioRef.current !== audio) return;
       const blob = new Blob([result.audio], { type: 'audio/mpeg' });
       const url = URL.createObjectURL(blob);
-      stopTestVoicePlayback();
       testAudioUrlRef.current = url;
-      const audio = new Audio(url);
-      testAudioRef.current = audio;
       audio.onended = () => { stopTestVoicePlayback(); };
       audio.onerror = () => {
         stopTestVoicePlayback();
         setTestStatus('error');
       };
+      audio.src = url;
       await audio.play();
       setTestStatus('playing');
     } catch (e: any) {
@@ -691,14 +729,25 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       stopRingtonePlayback();
       return;
     }
+    // Synchronously prime an audio element inside this user-gesture frame so
+    // iOS Safari allows the post-await `play()`. The custom ringtone path
+    // awaits `loadRingtoneFileWithName()` (Dexie / HTTP on mobile) before
+    // play, which severs the gesture link without this priming step.
     stopRingtonePlayback();
+    const audio = new Audio();
+    ringtoneAudioRef.current = audio;
+    const unlockPromise = primeAudioForUserGesture(audio);
     const loaded = await loadRingtoneFileWithName();
-    if (!loaded) return;
+    if (!loaded) {
+      stopRingtonePlayback();
+      return;
+    }
+    await unlockPromise;
+    if (ringtoneAudioRef.current !== audio) return;
     const blob = new Blob([loaded.buffer], { type: getAudioMimeTypeForFileName(loaded.fileName) });
     const url = URL.createObjectURL(blob);
     ringtoneUrlRef.current = url;
-    const audio = new Audio(url);
-    ringtoneAudioRef.current = audio;
+    audio.src = url;
     audio.onloadedmetadata = () => {
       const duration = audio.duration || 0;
       const mins = Math.floor(duration / 60);
