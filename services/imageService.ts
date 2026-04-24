@@ -7,7 +7,7 @@ import {
 } from '../constants/imageQualityConfig';
 import { useAppStore } from '../store';
 import { isDesktopElectron } from './desktopBackupService';
-import { isMobilePwa } from './environment';
+import { isCapacitorNative, isMobilePwa } from './environment';
 import { httpInvoke, getHttpImageUrl } from './httpApi';
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -113,10 +113,13 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
   const ext = pickExtFromMime(mimeType);
 
   // Desktop + Mobile PWA both land the image on the PC's filesystem via
-  // the `images:save` IPC/HTTP bridge. Desktop uses the direct Electron
-  // IPC; mobile goes through /api/ipc/images:save which proxies the
-  // base64 through the PC renderer into userData/images/{id}.{ext}.
-  if ((isDesktopElectron() && (window as any).electronAPI) || isMobilePwa()) {
+  // the `images:save` IPC/HTTP bridge. Capacitor native (A4.5) skips this
+  // path and falls through to the Dexie base64 fallback below — phones
+  // can't reach PC's userData filesystem when there's no PC, and the
+  // existing fallback already handles base64-in-Dexie for the dev-server
+  // preview case (typical Kumiko images <200 KB so Dexie can absorb the
+  // 33% base64 overhead without RAM pressure).
+  if ((isDesktopElectron() && (window as any).electronAPI) || (isMobilePwa() && !isCapacitorNative())) {
     try {
       const dataUrl = await blobToDataUrl(processed);
       const rawBase64 = dataUrl.split(',')[1] || '';
@@ -137,7 +140,9 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
     }
   }
 
-  // Web / fallback path: keep the existing base64-in-Dexie behaviour.
+  // Web / Capacitor / fallback path: keep the existing base64-in-Dexie
+  // behaviour. Capacitor (A4.5) hits this branch directly so images are
+  // self-contained inside the APK's IndexedDB.
   const dataUrl = await blobToDataUrl(processed);
   await db.images.add({
     id: imageId,
@@ -153,6 +158,10 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
 //     and cache the file off-renderer.
 //   - Mobile PWA: GET /media/images/:id, same userData/images source
 //     of truth as desktop. The cookie-gated route handles auth.
+//   - Capacitor (A4.5): data URL from Dexie. The kumiko-image:// protocol
+//     can't be registered inside Capacitor's WebView (no Electron protocol
+//     handler). Falls through to the same Dexie path as the dev-server
+//     preview, which is already wired by the saveImage Capacitor branch.
 //   - Web fallback (dev preview): data URL from Dexie, same as before.
 export const getImageDisplayUrl = async (imageId: string): Promise<string | null> => {
   if (!imageId) return null;
@@ -160,7 +169,7 @@ export const getImageDisplayUrl = async (imageId: string): Promise<string | null
     // Cache-bust with the image id itself — file contents don't mutate in place.
     return `kumiko-image://${encodeURIComponent(imageId)}`;
   }
-  if (isMobilePwa()) {
+  if (isMobilePwa() && !isCapacitorNative()) {
     return getHttpImageUrl(imageId);
   }
   const row = await db.images.get(imageId);
@@ -184,7 +193,7 @@ export const getImageBase64 = async (imageId: string): Promise<string | undefine
       console.warn('[imageService] images:load failed, falling back to Dexie:', err);
     }
   }
-  if (isMobilePwa()) {
+  if (isMobilePwa() && !isCapacitorNative()) {
     try {
       const response = await fetch(getHttpImageUrl(imageId), { credentials: 'include' });
       if (response.ok) {
@@ -196,6 +205,9 @@ export const getImageBase64 = async (imageId: string): Promise<string | undefine
       console.warn('[imageService] /media/images fetch failed, falling back to Dexie:', err);
     }
   }
+  // Capacitor (A4.5) and dev-server fallback both reach here: the image
+  // bytes live in db.images.base64Data because the saveImage Capacitor
+  // branch wrote them there. Returns the cached data URL as-is.
   const row = await db.images.get(imageId);
   return row?.base64Data || undefined;
 };

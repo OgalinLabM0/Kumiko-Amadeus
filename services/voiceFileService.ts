@@ -1,5 +1,30 @@
-import { isMobilePwa } from './environment';
+import { isCapacitorNative, isMobilePwa } from './environment';
 import { httpInvoke, getHttpVoiceUrl, getHttpCustomRingtoneUrl } from './httpApi';
+import { db } from './db';
+
+// A4.4: Capacitor native ringtone storage. Single user-uploaded ringtone
+// fits comfortably in a Dexie keyval row (typical mp3 < 1 MB), so we
+// avoid the @capacitor/filesystem complexity of remembering an absolute
+// file path across app reinstalls. This row is also picked up by
+// preferencesSync so a re-paired phone re-hydrates from the desktop's
+// userData ringtone if the user later switches back to PWA.
+const CAPACITOR_RINGTONE_KEY = 'kumiko_capacitor_custom_ringtone';
+
+interface CapacitorRingtoneEntry {
+  base64: string;
+  ext: string;
+  originalName?: string;
+  savedAtMs: number;
+}
+
+function base64ToArrayBufferLocal(base64: string): ArrayBuffer {
+  // Local copy to avoid the dynamic import dance — voiceFileService runs
+  // very early on splash screen ringtone preview.
+  const binary = atob(base64.replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
 
 const getIpc = () => {
     try {
@@ -159,6 +184,25 @@ export async function saveRingtoneFile(buffer: ArrayBuffer, ext: string, origina
         });
         return result?.success === true;
     }
+    // Capacitor native (A4.4): persist to Dexie keyval. The TtsConfigSection
+    // ringtone preview / VoiceCallOverlay both go through resolveRingtoneAudioSource
+    // which produces a blob: URL on the Capacitor branch, so we never need
+    // to know the absolute filesystem path.
+    if (isCapacitorNative()) {
+        try {
+            const entry: CapacitorRingtoneEntry = {
+                base64: arrayBufferToBase64(buffer),
+                ext: ext.replace(/^\./, '').toLowerCase() || 'mp3',
+                originalName,
+                savedAtMs: Date.now(),
+            };
+            await db.setVal(CAPACITOR_RINGTONE_KEY, entry);
+            return true;
+        } catch (e) {
+            console.error('[voiceFileService] Capacitor ringtone save failed:', e);
+            return false;
+        }
+    }
     if (isMobilePwa()) {
         const result = await httpInvoke<{ success?: boolean }>('ringtone:save', {
             bufferB64: arrayBufferToBase64(buffer),
@@ -180,7 +224,17 @@ export async function loadRingtoneFile(): Promise<ArrayBuffer | null> {
         if (buf?.buffer instanceof ArrayBuffer) return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
         return null;
     }
-    // Mobile ringtone streaming is delivered via the /media/ringtone
+    if (isCapacitorNative()) {
+        try {
+            const entry = await db.getVal<CapacitorRingtoneEntry | null>(CAPACITOR_RINGTONE_KEY, null);
+            if (!entry || typeof entry.base64 !== 'string') return null;
+            return base64ToArrayBufferLocal(entry.base64);
+        } catch (e) {
+            console.warn('[voiceFileService] Capacitor ringtone load failed:', e);
+            return null;
+        }
+    }
+    // Mobile PWA ringtone streaming is delivered via the /media/ringtone
     // route in Phase 5 Part D. Until then a phone that needs the raw
     // buffer (e.g., to re-save during export) can simply rely on the
     // server's userData copy via the backup HTTP routes.
@@ -189,20 +243,38 @@ export async function loadRingtoneFile(): Promise<ArrayBuffer | null> {
 
 export async function loadRingtoneFileWithName(): Promise<{ buffer: ArrayBuffer; fileName: string; displayName: string } | null> {
     const ipc = getIpc();
-    if (!ipc) return null; // Same rationale as loadRingtoneFile.
-    const result = await ipc.invoke('ringtone:load');
-    if (!result?.success || !result.buffer) return null;
-    const buf = result.buffer;
-    let ab: ArrayBuffer | null = null;
-    if (buf instanceof ArrayBuffer) ab = buf;
-    else if (buf?.buffer instanceof ArrayBuffer) ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
-    if (!ab) return null;
-    const fileName = result.fileName || 'custom.mp3';
-    return {
-        buffer: ab,
-        fileName,
-        displayName: result.displayName || fileName,
-    };
+    if (ipc) {
+        const result = await ipc.invoke('ringtone:load');
+        if (!result?.success || !result.buffer) return null;
+        const buf = result.buffer;
+        let ab: ArrayBuffer | null = null;
+        if (buf instanceof ArrayBuffer) ab = buf;
+        else if (buf?.buffer instanceof ArrayBuffer) ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+        if (!ab) return null;
+        const fileName = result.fileName || 'custom.mp3';
+        return {
+            buffer: ab,
+            fileName,
+            displayName: result.displayName || fileName,
+        };
+    }
+    if (isCapacitorNative()) {
+        try {
+            const entry = await db.getVal<CapacitorRingtoneEntry | null>(CAPACITOR_RINGTONE_KEY, null);
+            if (!entry || typeof entry.base64 !== 'string') return null;
+            const ab = base64ToArrayBufferLocal(entry.base64);
+            const fileName = `custom.${entry.ext || 'mp3'}`;
+            return {
+                buffer: ab,
+                fileName,
+                displayName: entry.originalName || fileName,
+            };
+        } catch (e) {
+            console.warn('[voiceFileService] Capacitor ringtone load-with-name failed:', e);
+            return null;
+        }
+    }
+    return null;
 }
 
 export async function resolveRingtoneAudioSource(ringtoneFileId?: string | null): Promise<RingtoneAudioSource | null> {
@@ -227,7 +299,10 @@ export async function resolveRingtoneAudioSource(ringtoneFileId?: string | null)
         // shuttling its bytes through a JSON IPC bridge. This matches
         // the voice-clip and image paths (fetch the blob via HTTP,
         // let the browser cache and range-request it).
-        if (isMobilePwa()) {
+        // Capacitor branch checked separately so it falls through to the
+        // Dexie blob path below — A4.4 stores the ringtone bytes in
+        // db.keyval, no PC dependency.
+        if (isMobilePwa() && !isCapacitorNative()) {
             const fileName = ringtoneFileId;
             const src = getHttpCustomRingtoneUrl();
             return {
@@ -237,6 +312,10 @@ export async function resolveRingtoneAudioSource(ringtoneFileId?: string | null)
                 displayName: fileName,
             };
         }
+        // Electron desktop AND Capacitor native both reach this branch:
+        // loadRingtoneFileWithName() returns the bytes from electronAPI
+        // (desktop) or db.keyval (Capacitor). Either way we wrap in a
+        // blob: URL the <audio> element can stream.
         const loaded = await loadRingtoneFileWithName();
         if (!loaded) return null;
         const blob = new Blob([loaded.buffer], { type: getAudioMimeTypeForFileName(loaded.fileName) });
@@ -255,7 +334,18 @@ export async function resolveRingtoneAudioSource(ringtoneFileId?: string | null)
 
 export async function deleteRingtoneFile(): Promise<boolean> {
     const ipc = getIpc();
-    if (!ipc) return false;
-    const result = await ipc.invoke('ringtone:delete');
-    return result?.success === true;
+    if (ipc) {
+        const result = await ipc.invoke('ringtone:delete');
+        return result?.success === true;
+    }
+    if (isCapacitorNative()) {
+        try {
+            await db.keyval.delete(CAPACITOR_RINGTONE_KEY);
+            return true;
+        } catch (e) {
+            console.warn('[voiceFileService] Capacitor ringtone delete failed:', e);
+            return false;
+        }
+    }
+    return false;
 }
