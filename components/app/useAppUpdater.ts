@@ -2,9 +2,16 @@ import { useEffect, useRef } from 'react';
 import type { AppUpdateState, Language } from '../../types';
 import { UI_TRANSLATIONS } from '../../constants';
 import { isDesktopElectron } from '../../services/desktopBackupService';
-import { isMobilePwa } from '../../services/environment';
+import { isCapacitorNative, isMobilePwa } from '../../services/environment';
 import { httpInvoke, subscribeEvents } from '../../services/httpApi';
 import { DEFAULT_APP_UPDATE_STATE } from '../../store/slices/updaterSlice';
+import {
+  checkForAndroidUpdate,
+  markUpdatePrompted,
+  openAndroidUpdateUrl,
+  shouldShowUpdatePrompt,
+} from '../../services/androidUpdaterService';
+import { dialogService } from '../../services/dialogService';
 
 export interface UseAppUpdaterInput {
   appUpdateState: AppUpdateState;
@@ -60,6 +67,39 @@ export const useAppUpdater = ({
       return () => {
         cancelled = true;
         window.electronAPI?.removeListener?.('app:update-status', handleUpdateStatus);
+      };
+    }
+
+    // A8: Android Capacitor in-app updater. Replaces electron-updater
+    // (which can't run inside the WebView). Polls GitHub Releases API
+    // 30 s after mount, then once a week (services/androidUpdaterService.ts
+    // owns the cooldown). New version → bilingual dialog → tap-to-open
+    // the release page in the system browser. Per-version cooldown
+    // suppresses re-prompting the same tag within 24 h after dismissal.
+    if (isCapacitorNative()) {
+      const timer = setTimeout(async () => {
+        if (cancelled) return;
+        const info = await checkForAndroidUpdate();
+        if (cancelled || !info?.hasUpdate || !info.latestVersion) return;
+        if (!shouldShowUpdatePrompt(info.latestVersion)) return;
+        markUpdatePrompted(info.latestVersion);
+        const title = language === 'zh' ? '有新版本可用' : 'New version available';
+        const message = language === 'zh'
+          ? `当前版本 ${info.currentVersion} → 最新 ${info.latestVersion}\n\n点击「打开下载页」会跳到 GitHub Release 页面，请下载 APK 后手动安装。`
+          : `Current ${info.currentVersion} → latest ${info.latestVersion}\n\nTapping "Open download page" will jump to the GitHub Release page; download the APK and install it manually.`;
+        const ok = await dialogService.confirm({
+          title,
+          message,
+          confirmText: language === 'zh' ? '打开下载页' : 'Open download page',
+          cancelText: language === 'zh' ? '稍后再说' : 'Later',
+        }).catch(() => false);
+        if (ok && info.releaseUrl) {
+          await openAndroidUpdateUrl(info.releaseUrl);
+        }
+      }, 30_000);
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
       };
     }
 

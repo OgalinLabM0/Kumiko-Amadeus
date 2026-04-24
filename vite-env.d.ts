@@ -15,3 +15,8 @@ interface Document {
     updateCallbackDone: Promise<void>;
   };
 }
+
+// A8: vite `define` injects this constant from package.json at build
+// time. Read by services/androidUpdaterService.ts to compare against
+// the latest GitHub Release tag without an extra runtime fetch.
+declare const __APP_VERSION__: string;

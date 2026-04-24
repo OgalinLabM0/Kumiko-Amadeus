@@ -2,10 +2,21 @@ import path from 'path';
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const pkg = require('./package.json');
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
     return {
       base: './',
+      // A8: bake the package.json version into the bundle so the in-app
+      // updater (services/androidUpdaterService.ts on Android,
+      // electron/app-updater.cjs on PC) can compare locally without
+      // bundling a fetch-package-json round-trip. Stringified so Vite's
+      // define replaces every `__APP_VERSION__` literal at build time
+      // with the JSON-encoded string `"2.12.0"`.
+      define: {
+        __APP_VERSION__: JSON.stringify(pkg.version || '0.0.0'),
+      },
       server: {
         port: 3000,
         host: '0.0.0.0',
