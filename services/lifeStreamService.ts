@@ -22,7 +22,8 @@ import { callLLMRaw, getCurrentAIConfig } from './geminiService';
 import { verifyAgainstHistory, type DiaryDateMetadata } from './diaryValidatorService';
 import { getCurrentKumikoState, getSchoolTermContext, getDetailedScheduleSlot, getDayScheduleSummary, getSchoolPrepPhase } from './kumikoStateMachine';
 import { updatePsycheState } from './psycheStateService';
-import { isMobilePwa } from './environment';
+import { isCapacitorNative, isMobilePwa } from './environment';
+import { fetchHistoricalWeatherDirect } from './ambientWeatherDirect';
 import { httpInvoke } from './httpApi';
 
 type DiaryChatMessage = {
@@ -619,16 +620,24 @@ const hardWeekdayCheck = (content: string, dateStr: string): string[] => {
 };
 
 const fetchHistoricalWeather = async (dateStr: string): Promise<string | undefined> => {
+  // Three runtime targets, same data shape:
+  //   - Electron desktop: PC's main-process handler (electron/weather-calendar.cjs).
+  //   - Capacitor native (Android APK): direct Open-Meteo call via
+  //     services/ambientWeatherDirect — no PC dependency, mirrors the
+  //     A2 ambientContext path so diary backfill works after A7 cleanup.
+  //   - Mobile PWA: Fastify HTTP bridge through PC (PWA's WebView origin
+  //     is PC origin, so this is just one extra hop instead of CORS-fighting).
+  // Capacitor branch checked before isMobilePwa() because isMobilePwa()
+  // returns true for Capacitor too (both use the HTTP bridge model when PC
+  // is available); we want Capacitor to default direct.
   try {
     const api = (typeof window !== 'undefined' ? (window as any).electronAPI : null);
     let res: any = null;
     if (api && typeof api.invoke === 'function') {
       res = await api.invoke('app:get-historical-weather', dateStr);
+    } else if (isCapacitorNative()) {
+      res = await fetchHistoricalWeatherDirect(dateStr);
     } else if (isMobilePwa()) {
-      // Mobile PWA reaches `app:get-historical-weather` over the Fastify
-      // HTTP bridge (whitelisted in ipc-bridge / httpApi). Previously the
-      // function short-circuited when `window.electronAPI` was missing, so
-      // diary backfill on mobile had no historical weather at all.
       res = await httpInvoke('app:get-historical-weather', dateStr);
     }
     if (res && res.success && res.weather) {

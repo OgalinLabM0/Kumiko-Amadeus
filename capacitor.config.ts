@@ -50,6 +50,19 @@ const config: CapacitorConfig = {
       style: KeyboardStyle.Light,
       resizeOnFullScreen: true,
     },
+    // CapacitorHttp（A2）：把全局 fetch / XMLHttpRequest 重定向到原生 HTTP 层，
+    // 绕过 WebView 的 CORS 预检。capacitor://localhost 这个伪源在 Gemini /
+    // Tavily / Fish / Vocu / Open-Meteo 等 cloud API 的 CORS 白名单里都没有，
+    // 不开这个就只能全部走 PC 代理；开了之后 Android 端 LLM / 联网搜索 /
+    // 天气 / 节假日都能直连，A2 才能把这些功能从 PC 桥独立出来。
+    //
+    // 副作用：所有 fetch 都会经过 OkHttp / URLConnection 而不是 WebView。
+    // - 优点：CORS-free，不发 OPTIONS 预检，请求头完全可控
+    // - 注意：上传 multipart / 流式 SSE 时要测一下，CapacitorHttp 在某些
+    //   边角场景的语义和 fetch 略有差异（JSON / 普通 GET / POST 完全等价）
+    CapacitorHttp: {
+      enabled: true,
+    },
   },
 };
 

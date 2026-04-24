@@ -1,23 +1,46 @@
-import { isMobilePwa } from '../../services/environment';
+import { isCapacitorNative, isMobilePwa } from '../../services/environment';
 import { httpInvoke } from '../../services/httpApi';
+import {
+  fetchAmbientWeatherDirect,
+  fetchJapanHolidaysDirect,
+} from '../../services/ambientWeatherDirect';
 
 // Environment cache to avoid spamming the main process
 let cachedEnvironmentStr: string | null = null;
 let lastEnvironmentFetchTime = 0;
 
-// Unified invoker. Desktop Electron goes through `window.electronAPI.invoke`;
-// the mobile PWA goes through the Fastify `httpInvoke` for the same channel
-// names (both `app:get-weather` and `app:get-japan-holidays` are whitelisted
-// in `services/httpApi.ts` + `electron/server/ipc-bridge.cjs`). Before this
-// helper existed, the function exited early when `isDesktopElectron()` was
-// false, so the phone's prompt had no weather / holiday context even though
-// the server can answer those channels — see audit report for details.
+// Unified invoker. Three runtime targets:
+//   - Electron desktop: `window.electronAPI.invoke` → main process handlers in
+//     electron/weather-calendar.cjs.
+//   - Capacitor native (Android APK / iOS): `services/ambientWeatherDirect.ts`
+//     calls Open-Meteo / ipapi / holidays-jp directly via CapacitorHttp-rewritten
+//     fetch. NO PC dependency — this is the A2 path that lets the APK keep
+//     showing weather + holiday context even after A7 removes companion mode.
+//   - Mobile PWA (still served by PC's Fastify): Fastify `httpInvoke` for the
+//     same `app:get-weather` / `app:get-japan-holidays` channels; the channels
+//     are whitelisted in `services/httpApi.ts` + `electron/server/ipc-bridge.cjs`.
+//     PWA's WebView origin == PC origin, so going through PC saves us a second
+//     CORS-dependent direct fetch when PC is already handling the round trip.
+//
+// Capacitor branch is checked BEFORE isMobilePwa() because isMobilePwa() returns
+// true for Capacitor too (both use the HTTP bridge model when PC is present),
+// and we want Capacitor to default to direct-fetch even if a PC URL happens to
+// be configured.
 type AmbientInvoker = (channel: string, args?: unknown) => Promise<any>;
 
 const resolveAmbientInvoker = (): AmbientInvoker | null => {
   const api = (typeof window !== 'undefined' ? (window as any).electronAPI : null);
   if (api && typeof api.invoke === 'function') {
     return (channel: string, args?: unknown) => api.invoke(channel, args);
+  }
+  if (isCapacitorNative()) {
+    return (channel: string) => {
+      if (channel === 'app:get-weather') return fetchAmbientWeatherDirect();
+      if (channel === 'app:get-japan-holidays') return fetchJapanHolidaysDirect();
+      // Other ambient channels (none today) fall through to PC if configured;
+      // returning null lets the caller short-circuit gracefully.
+      return Promise.resolve(null);
+    };
   }
   if (isMobilePwa()) {
     return (channel: string, args?: unknown) => httpInvoke(channel, args);
