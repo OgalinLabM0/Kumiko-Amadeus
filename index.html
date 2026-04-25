@@ -564,6 +564,24 @@
         contain-intrinsic-size: auto 80vh !important;
       }
 
+      /* v2.14.8 V.3.C: pause every CSS animation while the document is hidden.
+         While the user is in another app (Android home/recent screen, screen off,
+         or app switched away) the OS may still tick layer-tree compositor work for
+         our continuously-spinning UI animations:
+           - KumikoAvatar's .animate-fake-live2d (infinite breathe + bob)
+           - VoiceVisualizer's .animate-spin / .animate-pulse pair (when active)
+           - any ChatBubble pulse shimmer / loading dot flow
+         With will-change: transform on these layers, the GPU compositor keeps
+         producing frames even when nothing is visible to the user, draining
+         battery and contributing to device heat. Pausing animation-play-state
+         freezes the keyframe clock and lets the compositor go idle. The flag is
+         set/cleared in hooks/useAppViewport.ts handleVisibilityChange. */
+      html[data-app-hidden] *,
+      html[data-app-hidden] *::before,
+      html[data-app-hidden] *::after {
+        animation-play-state: paused !important;
+      }
+
       /* --- View Transitions --- */
       ::view-transition-old(root),
       ::view-transition-new(root) {

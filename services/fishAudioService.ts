@@ -94,7 +94,26 @@ export async function synthesizeSpeechStreaming(
         );
     }
 
-    if (res.body) {
+    // v2.14.8 V.1: CapacitorHttp (configured in capacitor.config.ts) patches
+    // global fetch and routes requests through native OkHttp on Android.
+    // The native bridge does NOT correctly stream binary bytes back through
+    // res.body.getReader() — chunks are mangled / truncated, producing
+    // un-decodable bytes that look like valid MP3 to our blob('audio/mpeg')
+    // wrap but fail HTMLAudioElement decode with
+    // "Failed to load because no supported source was found"
+    // (MEDIA_ERR_SRC_NOT_SUPPORTED). Vocu works because it always uses
+    // arrayBuffer(). Skip the streaming branch on native; Electron real
+    // fetch is unaffected.
+    const isCapacitorNative = (() => {
+        try {
+            const cap = (globalThis as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+            return Boolean(cap?.isNativePlatform?.());
+        } catch {
+            return false;
+        }
+    })();
+
+    if (res.body && !isCapacitorNative) {
         const reader = res.body.getReader();
         const chunks: Uint8Array[] = [];
         let totalBytes = 0;

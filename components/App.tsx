@@ -459,28 +459,60 @@ export const App = () => {
     []
   );
 
+  // v2.14.8 V.2.A: Dexie's useLiveQuery refires on ANY observed-table write
+  // (e.g. any keyval set from preference persistence). Even when the row's
+  // content is unchanged, it returns a NEW object reference, which would
+  // setState → App re-render → buildAppMainViewProps rebuild → all panel
+  // props new refs → visible flash on UI clicks. Guard with JSON.stringify
+  // deep-equal so a no-op refire keeps the existing ref and skips the
+  // entire downstream re-render cascade. JSON.stringify only runs when the
+  // live query refires (event-driven, not per frame), so cost is amortized.
   useEffect(() => {
-    if (liveWorldCharacterStatus) {
-      setWorldCharacterStatus(liveWorldCharacterStatus);
-    }
+    if (!liveWorldCharacterStatus) return;
+    setWorldCharacterStatus((prev) => {
+      try {
+        if (prev && JSON.stringify(prev) === JSON.stringify(liveWorldCharacterStatus)) {
+          return prev;
+        }
+      } catch { /* fall through */ }
+      return liveWorldCharacterStatus;
+    });
   }, [liveWorldCharacterStatus]);
 
   useEffect(() => {
-    if (liveKumikoDiary) {
-      setAutoSavedKumikoDiary(liveKumikoDiary);
-    }
+    if (!liveKumikoDiary) return;
+    setAutoSavedKumikoDiary((prev) => {
+      try {
+        if (JSON.stringify(prev) === JSON.stringify(liveKumikoDiary)) {
+          return prev;
+        }
+      } catch { /* fall through */ }
+      return liveKumikoDiary;
+    });
   }, [liveKumikoDiary]);
 
   useEffect(() => {
-    if (liveDailyFragments) {
-      setAutoSavedDailyFragments(liveDailyFragments);
-    }
+    if (!liveDailyFragments) return;
+    setAutoSavedDailyFragments((prev) => {
+      try {
+        if (JSON.stringify(prev) === JSON.stringify(liveDailyFragments)) {
+          return prev;
+        }
+      } catch { /* fall through */ }
+      return liveDailyFragments;
+    });
   }, [liveDailyFragments]);
 
   useEffect(() => {
-    if (livePsycheState !== undefined) {
-      setAutoSavedPsycheState(livePsycheState);
-    }
+    if (livePsycheState === undefined) return;
+    setAutoSavedPsycheState((prev) => {
+      try {
+        if (JSON.stringify(prev) === JSON.stringify(livePsycheState)) {
+          return prev;
+        }
+      } catch { /* fall through */ }
+      return livePsycheState;
+    });
   }, [livePsycheState]);
   
   const appUpdateState = useAppStore(s => s.appUpdateState);
@@ -1117,7 +1149,30 @@ export const App = () => {
         ? 'STALE'
         : 'IDLE';
 
-  const appMainViewProps = buildAppMainViewProps({
+  // v2.14.8 V.2.B: stabilize the 3 inline alert-related lambdas via
+  // useCallback so they don't allocate new function refs every App render
+  // (which would make the useMemo on appMainViewProps below pointless).
+  const handleOpenMessageFromAlert = useCallback((messageId: string) => {
+    setIsMessageCenterOpen(false);
+    handleJumpToMessage(messageId);
+    markAllAlertsRead();
+  }, [setIsMessageCenterOpen, handleJumpToMessage, markAllAlertsRead]);
+  const handleDismissMessageAlert = useCallback((id: string) => {
+    setMessageAlerts(prev => prev.filter(alert => alert.id !== id));
+  }, [setMessageAlerts]);
+  const handleClearMessageAlerts = useCallback(() => {
+    setMessageAlerts([]);
+  }, [setMessageAlerts]);
+
+  // v2.14.8 V.2.B: memoize the giant props bag so a same-input App re-render
+  // (e.g. an unrelated store value updated then no-op'd back) doesn't churn
+  // through buildAppMainViewProps and hand fresh references to AppMainView.
+  // NOTE: AppMainView itself is not React.memo'd today, so React still
+  // reconciles the subtree on parent re-render — V.2.A is the actual flash
+  // fix; this useMemo is preventive scaffolding for future memoization and
+  // saves the per-render object-construction cost when nothing changed.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- exhaustive list is enumerated below; setters/refs/t are stable identities.
+  const appMainViewProps = useMemo(() => buildAppMainViewProps({
     isMemoryPanelOpen,
     setIsMemoryPanelOpen,
     isProfileOpen,
@@ -1165,17 +1220,9 @@ export const App = () => {
     messageAlerts,
     relativeReminders,
     dailyReminders,
-    handleOpenMessageFromAlert: (messageId: string) => {
-      setIsMessageCenterOpen(false);
-      handleJumpToMessage(messageId);
-      markAllAlertsRead();
-    },
-    handleDismissMessageAlert: (id: string) => {
-      setMessageAlerts(prev => prev.filter(alert => alert.id !== id));
-    },
-    handleClearMessageAlerts: () => {
-      setMessageAlerts([]);
-    },
+    handleOpenMessageFromAlert,
+    handleDismissMessageAlert,
+    handleClearMessageAlerts,
     handleDeleteRelativeReminder: removeRelativeReminder,
     handleDeleteDailyReminder: removeDailyReminder,
     handleToggleDailyReminderPaused: toggleDailyReminderPaused,
@@ -1266,8 +1313,25 @@ export const App = () => {
     chatContainerShadow,
     handleResendMessage,
     handleWithdrawMessage,
-    isDisconnected
-  });
+    isDisconnected,
+  }), [
+    isMemoryPanelOpen, isProfileOpen, isSettingsOpen, isMessageCenterOpen,
+    isTaskPanelOpen, isDiaryOpen, diaryRewritingDate, diaryBfProgress,
+    diaryBfComplete, diaryBfCount, coreMemory, contextLimit, messages,
+    worldBook, isDarkMode, turnCount, summaryProgressText, language,
+    anchors, kumikoNotebook, currentEmotion, unreadAlertCount, messageAlerts,
+    relativeReminders, dailyReminders, backupConfig, regeneratingVoiceIds,
+    devLogs, appUpdateState, updaterCacheInfo, showAppUpdateModal,
+    showDeleteConfirm, showClearFlow, showDoubleClearFlow, syncStatus,
+    showSyncErrorModal, syncErrorMessage, isIOS, viewingImage, isTalking,
+    statusText, avatarPanelBg, overlayClass, avatarGradient, statusTextColor,
+    isSelectionMode, displayRagStatus, headerBg, headerShadow, textColor,
+    mutedTextColor, selectedIds, highlightedMessageId, isListening,
+    isThinking, timeLeft, inputAreaBg, inputShadow, inputBoxBg, sidebarBg,
+    chatContainerShadow, isDisconnected,
+    handleOpenMessageFromAlert, handleDismissMessageAlert, handleClearMessageAlerts,
+    handleSend, handleKeyDown, toggleTheme,
+  ]);
 
   if (!isDataLoaded) {
     return <LoadingDataScreen language={language} />;

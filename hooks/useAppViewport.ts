@@ -423,6 +423,20 @@ export const useAppViewport = ({
   useViewportSync({ bg, appShellRef });
 
   useEffect(() => {
+    // v2.14.8 V.3.A: skip Screen Wake Lock entirely on Capacitor Android.
+    // Holding wakeLock('screen') is the single largest hidden battery /
+    // thermal cost on phones — it forces the display to never dim/sleep
+    // while the app is foregrounded, even when the user is just reading
+    // and not touching. Letting Android's normal screen-timeout fire
+    // (typically 30s/1m/2m per system setting) saves a huge amount of
+    // power with zero functional impact: messages / reminders / TTS /
+    // scheduled tasks all run on native side regardless of screen state.
+    // Desktop Electron keeps the lock since PCs are usually plugged in
+    // and users want the screen on while chatting.
+    if (!isDesktopElectron()) {
+      return;
+    }
+
     let wakeLock: any = null;
 
     const requestWakeLock = async () => {
@@ -454,6 +468,31 @@ export const useAppViewport = ({
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [flowState]);
+
+  // v2.14.8 V.3.C: pause every infinite CSS animation while document is
+  // hidden. Pairs with the html[data-app-hidden] *,*::before,*::after
+  // { animation-play-state: paused !important } rule in index.html.
+  // Without this, KumikoAvatar (.animate-fake-live2d) and any active
+  // VoiceVisualizer / pulse animations keep ticking the GPU compositor
+  // even when the user has switched to another app — visible as device
+  // heat and faster battery drain on Android. Cross-platform: also
+  // helps Electron in the rare case of a minimised window.
+  useEffect(() => {
+    const html = document.documentElement;
+    const sync = () => {
+      if (document.hidden) {
+        html.setAttribute('data-app-hidden', '');
+      } else {
+        html.removeAttribute('data-app-hidden');
+      }
+    };
+    sync();
+    document.addEventListener('visibilitychange', sync);
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      html.removeAttribute('data-app-hidden');
+    };
+  }, []);
 
   useEffect(() => {
     const handleFullscreenChange = () => setIsFullscreen(!!document.fullscreenElement);

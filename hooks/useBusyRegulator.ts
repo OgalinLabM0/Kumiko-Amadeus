@@ -162,11 +162,49 @@ export function useBusyRegulator(enabled: boolean): void {
       }
     };
 
+    // v2.14.8 V.3.B: gate the 1Hz poll with visibilitychange. When the
+    // app is backgrounded (Android home/recent screen, screen off, app
+    // switched away) we stop the JS interval entirely — there's no UI
+    // that needs the next tick, and slot-end / overdue-apology business
+    // logic is independently anchored on absolute timestamps + native
+    // AlarmManager (see useScheduledReminders), so backgrounded state
+    // transitions still fire correctly via the OS even while we sleep.
+    // When the app returns to foreground we run one immediate catch-up
+    // tick and resume the 1Hz interval. Cuts continuous CPU wakeups +
+    // React updates + store reads to zero while user is in another app.
+    let intervalId: number | null = null;
+
+    const start = () => {
+      if (intervalId !== null) return;
+      intervalId = window.setInterval(tick, POLL_INTERVAL_MS);
+    };
+    const stop = () => {
+      if (intervalId !== null) {
+        window.clearInterval(intervalId);
+        intervalId = null;
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        // immediate catch-up so a slot that ended while we were
+        // backgrounded gets reconciled on the very first frame back.
+        tick();
+        start();
+      }
+    };
+
     tick();
-    const id = setInterval(tick, POLL_INTERVAL_MS);
+    if (!document.hidden) {
+      start();
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
       cancelled = true;
-      clearInterval(id);
+      stop();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
     // `busyRuntime` / `busyFollowUp` dependency ensures the poller picks
     // up external state transitions (e.g. persisted rehydration on

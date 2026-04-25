@@ -12,15 +12,18 @@
  *
  *   ..\TT2.png            – portrait Kumiko illustration (sidebar source)
  *
- * Header source (v2.14.6 B): the in-repo app favicon. The user complained that
- * the v2.14.5 cropped-from-I02.png header was too generic / hard to identify
- * as KA at small size. The favicon is the single visual asset every Kumiko
- * surface (taskbar, title bar, About, store) already shares, so reusing it on
- * the installer header keeps the brand instantly recognisable. The favicon is
- * scaled DOWN to a small 40px sprite and centred on a 150x57 white canvas (so
- * the icon doesn't fill edge-to-edge — see the v2.14.6 plan note "smaller").
+ * Header source (v2.14.8 V.4): the in-repo IntroScreen K-symbol logo. The
+ * user requested switching from the favicon-KA.png monogram to the same K
+ * emblem the user sees on the app intro page, since that mark is what they
+ * mentally associate with the brand at first launch. The PNG is 2048x2048
+ * RGBA (mostly mid-grey K shape on transparent bg — IntroScreen colours it
+ * amber via CSS sepia/hue-rotate filters which can't apply to a static BMP,
+ * so the installer ships the raw uncoloured logo on white per user choice).
+ * Scaled DOWN to a 50px sprite (slightly larger than v2.14.6's 40px to make
+ * the K read clearly at installer-header size) and centred on a 150x57 white
+ * canvas so it reads as a chip / accent rather than filling the strip.
  *
- *   public/favicon-KA.png – square app icon (header source)
+ *   public/images/logo.png – K symbol from IntroScreen (header source)
  *
  * Pipeline per output:
  *   - 'cover' mode (sidebar): cover-crop & resize, alpha-flatten on cream,
@@ -58,16 +61,20 @@ const TARGETS = [
   {
     name: 'header',
     mode: 'iconCenter',
-    // v2.14.6 B: in-repo favicon (square, transparent). NSIS header BMP must
-    // be 24-bit so we composite the favicon onto a white canvas before encode.
-    source: path.join(repoRoot, 'public', 'favicon-KA.png'),
+    // v2.14.8 V.4: switched from favicon-KA.png to the IntroScreen K-symbol
+    // logo so the installer matches what the user sees at first app launch.
+    // NSIS header BMP must be 24-bit; composite the (transparent) PNG onto a
+    // white canvas before encode. The logo is 2048x2048 so resize-down is
+    // very high quality even at 50px.
+    source: path.join(repoRoot, 'public', 'images', 'logo.png'),
     out: path.join(repoRoot, 'build', 'installerHeader.bmp'),
     width: 150,
     height: 57,
-    // Favicon rendered SMALL inside the strip so it reads as a chip / accent
-    // rather than filling the whole header. 40x40 leaves ~8px vertical
-    // breathing room above and below in a 57px-tall strip.
-    iconSize: 40,
+    // Logo rendered SMALL inside the strip so it reads as a chip / accent
+    // rather than filling the whole header. 50x50 (up from 40 in v2.14.6)
+    // gives the K shape enough room to be unambiguously legible while still
+    // leaving ~3px vertical breathing room above and below in a 57px strip.
+    iconSize: 50,
     // Solid background colour the icon sits on. Pure white matches NSIS MUI2
     // default header band (#FFFFFF) so there's no visible seam.
     canvasBackground: { r: 255, g: 255, b: 255 },
