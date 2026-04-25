@@ -7,8 +7,14 @@ import {
   type ExecuteSendHelpers,
 } from './chatActions';
 import { getTimePartsInTimezone } from './backupHelpers';
-import { isCapacitorNative } from '../../services/environment';
-import { cancelAndroidAlarm, scheduleAndroidAlarm } from '../../services/androidAlarmService';
+import { getCapacitorPlatform, isCapacitorNative } from '../../services/environment';
+import {
+  EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY,
+  cancelAndroidAlarm,
+  scheduleAndroidAlarm,
+  type ScheduleAlarmResult,
+} from '../../services/androidAlarmService';
+import { useAppStore } from '../../store';
 
 type FlowState = 'INTRO' | 'AUTH' | 'CONFIG' | 'APP';
 
@@ -219,6 +225,36 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
       };
   }, [flowState, isTalking, isThinking, getRelativeReminders, getDailyReminders, triggerTimedReminderMessage, removeRelativeReminder, markRelativeReminderRetry, markDailyReminderTriggered, markDailyReminderRetry]);
 
+  // v2.14.17: one-shot toast when AlarmManager downgrades to inexact.
+  // Triggered when scheduleAndroidAlarm returns scheduled=true but exact=false
+  // (Android 13+ without SCHEDULE_EXACT_ALARM permission). Uses a localStorage
+  // flag so we toast at most once per install — re-toasting on every reconcile
+  // pass would be obnoxious. The TaskPanel banner from v2.14.13 is intentionally
+  // omitted (single-user app — toast + first-launch system prompt is enough).
+  const notifyExactAlarmFallbackOnce = useCallback((result: ScheduleAlarmResult): void => {
+    if (typeof window === 'undefined') return;
+    if (!result.scheduled || result.exact !== false) return;
+    try {
+      if (window.localStorage.getItem(EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY)) return;
+      window.localStorage.setItem(EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY, '1');
+    } catch {
+      return;
+    }
+    const message = language === 'en'
+      ? 'Reminders may fire ±15 min late — open Settings → Apps → Kumiko → Alarms & reminders to grant exact alarms.'
+      : '提醒可能会延迟±15分钟触发 — 请到 系统设置 → 应用 → Kumiko → 闹钟与提醒 中授予精准闹钟权限。';
+    try {
+      useAppStore.getState().setSystemNotice(message);
+    } catch (e) {
+      console.warn('[useScheduledReminders] setSystemNotice failed:', e);
+    }
+    try {
+      showBackgroundMessageNotification(message, 'reminder');
+    } catch (e) {
+      console.warn('[useScheduledReminders] showBackgroundMessageNotification failed:', e);
+    }
+  }, [language, showBackgroundMessageNotification]);
+
   // B.2 (A6.4): Capacitor-only — additionally sync each pending reminder
   // to the native OS AlarmManager so it fires even after Doze kills the
   // WebView. Reconciliation runs every 30s + on flowState mount; safe
@@ -237,6 +273,10 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
   //   (IncomingCallActivity) or post a text MessagingStyle notification.
   useEffect(() => {
       if (!isCapacitorNative()) return;
+      // v2.14.17: belt-and-suspenders platform check (KumikoAlarmsPlugin is
+      // Android-only; iOS Capacitor would silently no-op via getPlugin's
+      // own guard but skipping the whole reconcile loop is cleaner).
+      if (getCapacitorPlatform() !== 'android') return;
       if (flowState !== 'APP') return;
 
       const lastSyncedIdsRef = new Set<string>();
@@ -258,13 +298,14 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
               for (const r of relatives) {
                   if (!r || !r.id || !r.dueAt || r.dueAt <= Date.now()) continue;
                   seenIds.add(r.id);
-                  await scheduleAndroidAlarm({
+                  const result = await scheduleAndroidAlarm({
                       reminderId: r.id,
                       at: r.dueAt,
                       event: r.event,
                       text: r.event,
                       wantsCall,
                   });
+                  notifyExactAlarmFallbackOnce(result);
               }
               for (const d of dailies) {
                   if (!d || !d.id || d.paused) continue;
@@ -294,13 +335,14 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                   // Daily alarms get a stable id to avoid orphaning across days.
                   const alarmId = `daily-${d.id}`;
                   seenIds.add(alarmId);
-                  await scheduleAndroidAlarm({
+                  const result = await scheduleAndroidAlarm({
                       reminderId: alarmId,
                       at: atMs,
                       event: d.event,
                       text: d.event,
                       wantsCall,
                   });
+                  notifyExactAlarmFallbackOnce(result);
               }
 
               // Cancel alarms that were synced previously but are no longer
@@ -320,5 +362,5 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
       void reconcile();
       const syncInterval = setInterval(() => { void reconcile(); }, 30_000);
       return () => clearInterval(syncInterval);
-  }, [flowState, getRelativeReminders, getDailyReminders, ttsConfigRef]);
+  }, [flowState, getRelativeReminders, getDailyReminders, ttsConfigRef, notifyExactAlarmFallbackOnce]);
 };

@@ -17,6 +17,12 @@ import {
   type WorldCharacterStatusMap,
 } from '../services/db';
 import { DEFAULT_BACKUP_CONFIG, normalizeBackupConfig } from '../services/appConfig';
+import { getCapacitorPlatform } from '../services/environment';
+import {
+  EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY,
+  canScheduleExactAlarms,
+  requestExactAlarmPermission,
+} from '../services/androidAlarmService';
 import { DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK } from '../constants';
 import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, type RelativeReminder, type DailyReminder } from '../store/slices/reminderSlice';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
@@ -264,4 +270,38 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
     loadData();
   // eslint-disable-next-line react-hooks/exhaustive-deps -- preserve original deps (all setters/refs are stable; only updateMemoryQuerySession triggers re-run)
   }, [updateMemoryQuerySession]);
+
+  // v2.14.17: one-shot exact-alarm permission prompt on Capacitor Android.
+  // SCHEDULE_EXACT_ALARM is granted by default at install on Android <= 12,
+  // but on Android 13+ Google requires the app to send the user to a
+  // dedicated system settings page (per-app Alarms & Reminders). Without it,
+  // KumikoAlarmsPlugin silently downgrades to setAndAllowWhileIdle (inexact),
+  // and reminders fire ±15min late under Doze. We prompt exactly once per
+  // install — if the user dismisses it, EXACT_ALARM_PERMISSION_PROMPTED_
+  // STORAGE_KEY stays set and we never bother them again. They can grant
+  // it later in system settings; we'll see the upgrade on the next cold
+  // start automatically.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (getCapacitorPlatform() !== 'android') return;
+    let cancelled = false;
+    const promptIfNeeded = async () => {
+      try {
+        const alreadyPrompted = window.localStorage.getItem(EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY);
+        if (alreadyPrompted) return;
+        const canAlready = await canScheduleExactAlarms();
+        if (cancelled) return;
+        if (canAlready) {
+          window.localStorage.setItem(EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY, '1');
+          return;
+        }
+        window.localStorage.setItem(EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY, '1');
+        await requestExactAlarmPermission();
+      } catch (e) {
+        console.warn('[useInitialLoadBootstrap] exact-alarm prompt failed:', e);
+      }
+    };
+    void promptIfNeeded();
+    return () => { cancelled = true; };
+  }, []);
 };

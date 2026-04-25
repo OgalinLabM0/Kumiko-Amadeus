@@ -10,7 +10,17 @@
 // with isCapacitorNative() at the call site (we double-check inside
 // each function as belt-and-suspenders).
 
-import { isCapacitorNative } from './environment';
+import { getCapacitorPlatform, isCapacitorNative } from './environment';
+
+// v2.14.17: localStorage flags for the exact-alarm permission flow:
+//   - PROMPTED: set on first launch after we have asked the user once via
+//     requestExactAlarmPermission. Prevents re-prompting on every cold start
+//     after the user dismisses the system settings page.
+//   - FALLBACK_NOTICE: set on first time we observe an alarm scheduled with
+//     `exact === false` (Android downgraded to inexact). Prevents toasting
+//     the user every time a reminder gets re-scheduled inexactly.
+export const EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY = 'kumiko_exact_alarm_permission_prompted';
+export const EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY = 'kumiko_exact_alarm_fallback_notice_shown';
 
 export interface ScheduleAlarmInput {
   reminderId: string;
@@ -61,6 +71,11 @@ let cachedPlugin: KumikoAlarmsPluginShape | null = null;
 let pluginPromise: Promise<KumikoAlarmsPluginShape | null> | null = null;
 async function getPlugin(): Promise<KumikoAlarmsPluginShape | null> {
   if (!isCapacitorNative()) return null;
+  // v2.14.17: belt-and-suspenders platform check. KumikoAlarmsPlugin is an
+  // Android-only native module — registerPlugin would throw on iOS Capacitor
+  // because the iOS layer never registered it. Bail early so future iOS work
+  // doesn't crash here on first reminder schedule.
+  if (getCapacitorPlatform() !== 'android') return null;
   if (cachedPlugin) return cachedPlugin;
   if (pluginPromise) return pluginPromise;
   pluginPromise = (async () => {
