@@ -18,6 +18,7 @@ import {
   EMBEDDING_MODEL_CATALOG,
   type EmbeddingProvider,
   type EmbeddingProviderConfig,
+  getEmbeddingConfig,
   testEmbeddingConfig,
 } from '../../services/cloudEmbeddingService';
 import { useAppStore } from '../../store';
@@ -121,6 +122,14 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
 
+  // v2.14.17: trigger the cloudEmbeddingService self-heal on mount. If the
+  // Zustand store hydrated to defaults but localStorage has a meaningful
+  // config (WebView restore race), this pulls the persisted value back into
+  // the store and the form's config selector picks it up on the next render.
+  useEffect(() => {
+    getEmbeddingConfig();
+  }, []);
+
   const modelOptions = useMemo(() => EMBEDDING_MODEL_CATALOG[config.provider] || [], [config.provider]);
   const activeModelPreset = useMemo(
     () => modelOptions.find((m) => m.id === config.model) || modelOptions[0],
@@ -143,9 +152,16 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   const handleProviderChange = useCallback((provider: EmbeddingProvider) => {
     const newPresets = EMBEDDING_MODEL_CATALOG[provider] || [];
     const firstModel = newPresets[0];
+    // v2.14.17: when switching to custom, leave model empty so the user
+    // can type their own ID — previously we'd auto-fill 'custom-model' /
+    // 'text-embedding-3-small' which immediately overwrote whatever the
+    // user typed if they clicked the provider dropdown after entering an
+    // ID. Empty string is the only sentinel that doesn't conflict with a
+    // valid custom model name.
+    const nextModel = provider === 'custom' ? '' : (firstModel?.id || DEFAULT_EMBEDDING_CONFIG.model);
     update({
       provider,
-      model: firstModel?.id || DEFAULT_EMBEDDING_CONFIG.model,
+      model: nextModel,
       dimensions: firstModel?.defaultDimensions || DEFAULT_EMBEDDING_CONFIG.dimensions,
     });
   }, [update]);
@@ -208,28 +224,35 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
 
       <div>
         <label className={fieldLabelClass}>{language === 'zh' ? '模型' : 'Model'}</label>
+        {/*
+          v2.14.17: render dropdown XOR text input (was both at once for
+          custom provider, which produced two competing model fields and
+          double-write races against config.model). Custom now shows ONLY
+          the free text input; everyone else shows ONLY the dropdown.
+        */}
         <div className="mt-1">
-          <ThemedSelect
-            value={config.model}
-            onChange={handleModelChange}
-            options={modelSelectOptions}
-            isDarkMode={isDarkMode}
-            className={`${inputClass} w-full`}
-            ariaLabel={language === 'zh' ? '选择 Embedding 模型' : 'Select embedding model'}
-          />
+          {config.provider === 'custom' ? (
+            <ComposableInput
+              type="text"
+              value={config.model}
+              onChange={(e) => update({ model: e.target.value })}
+              className={`${inputClass} w-full`}
+              placeholder={language === 'zh' ? '自定义模型 ID' : 'Custom model ID'}
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
+            />
+          ) : (
+            <ThemedSelect
+              value={config.model}
+              onChange={handleModelChange}
+              options={modelSelectOptions}
+              isDarkMode={isDarkMode}
+              className={`${inputClass} w-full`}
+              ariaLabel={language === 'zh' ? '选择 Embedding 模型' : 'Select embedding model'}
+            />
+          )}
         </div>
-        {config.provider === 'custom' && (
-          <ComposableInput
-            type="text"
-            value={config.model}
-            onChange={(e) => update({ model: e.target.value })}
-            className={`${inputClass} w-full mt-2`}
-            placeholder={language === 'zh' ? '自定义模型 ID' : 'Custom model ID'}
-            autoComplete="off"
-            autoCapitalize="off"
-            spellCheck={false}
-          />
-        )}
       </div>
 
       <div>

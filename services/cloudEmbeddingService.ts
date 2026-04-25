@@ -18,29 +18,30 @@
 // PWA / Electron desktop never call into this module (they have PC's
 // bge-m3 ONNX through electron-rag.cjs / Fastify HTTP bridge), so the
 // module is mobile-Capacitor-only and PC's RAG behaviour is unchanged.
+//
+// v2.14.17 — types/constants/catalog moved to cloudEmbeddingConfig.ts (a
+// pure leaf module) so the embeddingSlice can hydrate without ever touching
+// this file. The slice → service → store cycle that v2.14.12's
+// "useAppStore inside function bodies" relied on is now removed entirely:
+// the slice imports only the leaf, and only THIS module imports useAppStore.
 
-export type EmbeddingProvider = 'openai' | 'gemini' | 'zhipu' | 'tongyi' | 'custom';
+import {
+  DEFAULT_EMBEDDING_CONFIG,
+  EMBEDDING_CONFIG_STORAGE_KEY,
+  type EmbeddingProviderConfig,
+} from './cloudEmbeddingConfig';
+import { useAppStore } from '../store';
 
-export interface EmbeddingProviderConfig {
-  provider: EmbeddingProvider;
-  apiKey: string;
-  model: string;
-  /**
-   * Custom OpenAI-compatible endpoint. Required when provider === 'custom',
-   * ignored otherwise. Trailing slashes are stripped at use time so users
-   * can paste either form without breaking the URL join.
-   */
-  customEndpoint?: string;
-  /**
-   * Target embedding dimension. The vector store is keyed on this — any
-   * change should be followed by a rebuild (the localRagService rebuild
-   * pipeline handles that). Currently only OpenAI text-embedding-3-* and
-   * Gemini gemini-embedding-001 honor a server-side `dimensions` reduction.
-   * For other providers we accept whatever the model returns and the
-   * user must keep the dimension consistent with the recorded value.
-   */
-  dimensions?: number;
-}
+export {
+  DEFAULT_EMBEDDING_CONFIG,
+  EMBEDDING_CONFIG_STORAGE_KEY,
+  EMBEDDING_MODEL_CATALOG,
+} from './cloudEmbeddingConfig';
+export type {
+  EmbeddingProvider,
+  EmbeddingProviderConfig,
+  EmbeddingModelPreset,
+} from './cloudEmbeddingConfig';
 
 export interface EmbeddingResult {
   vector: Float32Array;
@@ -48,137 +49,94 @@ export interface EmbeddingResult {
   actualDimensions: number;
 }
 
-const STORAGE_KEY = 'kumiko_embedding_config';
-export const EMBEDDING_CONFIG_STORAGE_KEY = STORAGE_KEY;
+let loggedStoreRead = false;
+let loggedLocalStorageHeal = false;
+let loggedConfigSet = false;
 
-export const DEFAULT_EMBEDDING_CONFIG: EmbeddingProviderConfig = {
-  provider: 'openai',
-  apiKey: '',
-  model: 'text-embedding-3-small',
-  dimensions: 768,
-};
-
-// Catalog of model presets per provider, surfaced by EmbeddingConfigSection.tsx
-// for the dropdown. `dimensions` here is the model's native dimension; users
-// can override via the explicit dimensions field below the model picker.
-export interface EmbeddingModelPreset {
-  id: string;
-  label: string;
-  /** Native dimension at the provider's default. */
-  defaultDimensions: number;
-  /** Whether the provider supports server-side dimension reduction. */
-  supportsDimensionReduction: boolean;
-  /** Optional caps so the UI can reject impossible values. */
-  minDimensions?: number;
-  maxDimensions?: number;
+function normalizeEmbeddingConfig(raw: Partial<EmbeddingProviderConfig>): EmbeddingProviderConfig {
+  const dimensions = typeof raw.dimensions === 'number' && Number.isFinite(raw.dimensions) && raw.dimensions > 0
+    ? Math.round(raw.dimensions)
+    : DEFAULT_EMBEDDING_CONFIG.dimensions;
+  return {
+    ...DEFAULT_EMBEDDING_CONFIG,
+    ...raw,
+    dimensions,
+  };
 }
 
-export const EMBEDDING_MODEL_CATALOG: Record<EmbeddingProvider, EmbeddingModelPreset[]> = {
-  openai: [
-    {
-      id: 'text-embedding-3-small',
-      label: 'text-embedding-3-small (1536d, reducible)',
-      defaultDimensions: 1536,
-      supportsDimensionReduction: true,
-      minDimensions: 256,
-      maxDimensions: 1536,
-    },
-    {
-      id: 'text-embedding-3-large',
-      label: 'text-embedding-3-large (3072d, reducible)',
-      defaultDimensions: 3072,
-      supportsDimensionReduction: true,
-      minDimensions: 256,
-      maxDimensions: 3072,
-    },
-    {
-      id: 'text-embedding-ada-002',
-      label: 'text-embedding-ada-002 (1536d, legacy)',
-      defaultDimensions: 1536,
-      supportsDimensionReduction: false,
-    },
-  ],
-  gemini: [
-    {
-      id: 'text-embedding-004',
-      label: 'text-embedding-004 (768d)',
-      defaultDimensions: 768,
-      supportsDimensionReduction: false,
-    },
-    {
-      id: 'gemini-embedding-001',
-      label: 'gemini-embedding-001 (768d default, up to 3072)',
-      defaultDimensions: 768,
-      supportsDimensionReduction: true,
-      minDimensions: 256,
-      maxDimensions: 3072,
-    },
-  ],
-  zhipu: [
-    {
-      id: 'embedding-3',
-      label: 'embedding-3 (2048d)',
-      defaultDimensions: 2048,
-      supportsDimensionReduction: false,
-    },
-    {
-      id: 'embedding-2',
-      label: 'embedding-2 (1024d, legacy)',
-      defaultDimensions: 1024,
-      supportsDimensionReduction: false,
-    },
-  ],
-  tongyi: [
-    {
-      id: 'text-embedding-v3',
-      label: 'text-embedding-v3 (1024d)',
-      defaultDimensions: 1024,
-      supportsDimensionReduction: false,
-    },
-    {
-      id: 'text-embedding-v4',
-      label: 'text-embedding-v4 (2048d)',
-      defaultDimensions: 2048,
-      supportsDimensionReduction: false,
-    },
-  ],
-  custom: [
-    {
-      id: 'custom-model',
-      label: '自定义模型 (Custom OpenAI-compatible)',
-      defaultDimensions: 768,
-      supportsDimensionReduction: true,
-      minDimensions: 1,
-      maxDimensions: 8192,
-    },
-  ],
-};
+function readPersistedEmbeddingConfig(): EmbeddingProviderConfig | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(EMBEDDING_CONFIG_STORAGE_KEY);
+    if (!raw) return null;
+    return normalizeEmbeddingConfig(JSON.parse(raw) as Partial<EmbeddingProviderConfig>);
+  } catch (e) {
+    console.warn('[cloudEmbeddingService] failed to read persisted embedding config:', e);
+    return null;
+  }
+}
 
-// v2.14.12 — getEmbeddingConfig / setEmbeddingConfig now route through the
-// Zustand store (`embeddingSlice`), which is the single source of truth for
-// the embedding configuration. Persistence to localStorage and any future
-// cross-tab notifications are handled by the slice's setter — the legacy
-// `kumiko:embedding-config-changed` custom event is gone, since every
-// consumer now subscribes to `useAppStore(s => s.embeddingConfig)` directly
-// and gets reactive updates without a manual event channel.
-//
-// The `useAppStore` import is intentionally a top-level ESM import even
-// though it forms a cycle with `store/index.ts` (which imports
-// embeddingSlice.ts which imports this file). The cycle is safe because
-// nothing in this module accesses `useAppStore` at module-load time — both
-// helpers below resolve the binding lazily inside their function bodies, by
-// which point the store has finished construction.
-//
-// NB: `EMBEDDING_CONFIG_STORAGE_KEY` and `DEFAULT_EMBEDDING_CONFIG` are still
-// exported above so that the slice can hydrate from localStorage on first
-// load without having to itself import this file's runtime helpers.
-import { useAppStore } from '../store';
+function isDefaultEmbeddingConfig(config: EmbeddingProviderConfig): boolean {
+  return (
+    config.provider === DEFAULT_EMBEDDING_CONFIG.provider &&
+    (config.apiKey || '') === DEFAULT_EMBEDDING_CONFIG.apiKey &&
+    config.model === DEFAULT_EMBEDDING_CONFIG.model &&
+    (config.customEndpoint || '') === (DEFAULT_EMBEDDING_CONFIG.customEndpoint || '') &&
+    (config.dimensions || 0) === (DEFAULT_EMBEDDING_CONFIG.dimensions || 0)
+  );
+}
 
+function isMeaningfulEmbeddingConfig(config: EmbeddingProviderConfig): boolean {
+  return !isDefaultEmbeddingConfig(config) || !!config.apiKey.trim();
+}
+
+function describeEmbeddingConfig(config: EmbeddingProviderConfig) {
+  return {
+    provider: config.provider,
+    model: config.model,
+    dimensions: config.dimensions,
+    hasApiKey: !!config.apiKey.trim(),
+    hasCustomEndpoint: !!config.customEndpoint?.trim(),
+  };
+}
+
+/**
+ * Returns the active embedding config. Includes a one-time self-heal:
+ * if Zustand reports a default-shaped config but localStorage has a
+ * meaningful one (likely from a WebView restore that ran before the
+ * slice's hydration completed), we push the persisted value back into
+ * the store so subscribers see the real config on the very next render.
+ */
 export function getEmbeddingConfig(): EmbeddingProviderConfig {
-  return useAppStore.getState().embeddingConfig;
+  const state = useAppStore.getState();
+  const storeConfig = state.embeddingConfig;
+  if (!loggedStoreRead) {
+    console.log('[cloudEmbeddingService] getEmbeddingConfig store snapshot:', describeEmbeddingConfig(storeConfig));
+    loggedStoreRead = true;
+  }
+
+  const persistedConfig = readPersistedEmbeddingConfig();
+  if (
+    isDefaultEmbeddingConfig(storeConfig) &&
+    persistedConfig &&
+    isMeaningfulEmbeddingConfig(persistedConfig)
+  ) {
+    if (!loggedLocalStorageHeal) {
+      console.log('[cloudEmbeddingService] recovered embedding config from localStorage:', describeEmbeddingConfig(persistedConfig));
+      loggedLocalStorageHeal = true;
+    }
+    state.setEmbeddingConfig(persistedConfig);
+    return persistedConfig;
+  }
+
+  return storeConfig;
 }
 
 export function setEmbeddingConfig(config: EmbeddingProviderConfig): void {
+  if (!loggedConfigSet) {
+    console.log('[cloudEmbeddingService] setEmbeddingConfig:', describeEmbeddingConfig(config));
+    loggedConfigSet = true;
+  }
   useAppStore.getState().setEmbeddingConfig(config);
 }
 
