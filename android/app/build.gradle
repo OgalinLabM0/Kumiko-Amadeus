@@ -13,11 +13,13 @@ android {
         // 2.14.6 → 21406，2.14.7 → 21407，2.14.8 → 21408，2.14.9 → 21409，
         // 2.14.10 → 21410，2.14.11 → 21411，2.14.12 → 21412，2.14.13 → 21413，
         // 2.14.14 → 21414，2.14.15 → 21415（v2.14.13/14 因 Android booting bug
-        // 已被本提交 git revert 回退至 v2.14.12 代码状态，仅版本号继续往前走以
-        // 满足 GitHub Release 不能复用 tag 的硬约束）。
+        // 已被 git revert 回退至 v2.14.12 代码状态，仅版本号继续往前走以满足
+        // GitHub Release 不能复用 tag 的硬约束），2.14.16 → 21416（在 v2.14.15
+        // baseline 上重做 v2.14.13/14 的 chatActions LLM scheduleTrigger
+        // fall-through 修复，单文件低风险，作为分组重做的第 1 组）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21415
-        versionName "2.14.15"
+        versionCode 21416
+        versionName "2.14.16"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
