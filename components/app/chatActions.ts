@@ -1735,6 +1735,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     }
 
     // --- REMINDERS & ANCHORS ---
+    const hasReminderIntent = /(?:提醒|叫|喊)(?:一下)?我|记得.+(?:提醒|叫|喊)|remind me|ping me|tell me|wake me up/i.test(userTextForRag);
     const parsedRelativeReminder = parseRelativeReminderRequest(userTextForRag);
     const parsedDailyReminder = parseDailyReminderRequest(userTextForRag);
     let createdReminderThisTurn = false;
@@ -1764,6 +1765,15 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     } else if (parsedRelativeReminder) {
       await s2.saveRelativeReminder(parsedRelativeReminder.event, parsedRelativeReminder.delaySeconds, userTextForRag);
       createdReminderThisTurn = true;
+    }
+
+    if (hasReminderIntent && !createdReminderThisTurn) {
+      console.warn('[REMINDER] intent detected but no reminder was created:', {
+        text: userTextForRag.slice(0, 200),
+        hasLlmScheduleTrigger: !!response.scheduleTrigger,
+        parsedDailyReminder,
+        parsedRelativeReminder,
+      });
     }
 
     if (response.anchorAction) {

@@ -1,7 +1,7 @@
 {
   "name": "kumiko-ai-amadeus",
   "private": true,
-  "version": "2.14.12",
+  "version": "2.14.13",
   "description": "Kumiko Amadeus desktop companion focused on long-term memory and natural character interaction.",
   "author": "Kitauji Fan Project",
   "type": "module",

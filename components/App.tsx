@@ -156,6 +156,7 @@ import { installGlobalAudioUnlock } from '../utils/audioUnlock';
 import { startForegroundServiceIfNeeded } from '../services/foregroundServiceController';
 import { isCapacitorNative } from '../services/environment';
 import { useAndroidPendingActionsDrainer } from '../hooks/useAndroidPendingActionsDrainer';
+import { shouldIgnoreEnterDuringImeGrace } from './common/imeGuards';
 
 
 export const App = () => {
@@ -1080,20 +1081,11 @@ export const App = () => {
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== 'Enter') return;
-    // v2.14.12 IME guard: when the user presses Enter to commit a Chinese / JP / KR
-    // IME candidate, the native Enter event reaches React with the composition
-    // already torn down on Android WebView. Without the guard handleSend would
-    // fire, setInputValue('') would clear the just-committed candidate, and the
-    // user would see "I typed 我我我, it appeared for ~1s, then vanished + an
-    // empty message got sent". Three checks because different browsers / Android
-    // WebViews surface IME-mediated keys differently:
-    //   - e.nativeEvent.isComposing   : current spec, Chromium/WebKit modern
-    //   - e.keyCode === 229           : Chromium IME placeholder keycode (very
-    //                                   common on Android WebView even when the
-    //                                   composition state is already cleared)
-    //   - e.key === 'Process'         : older Firefox/legacy spec, occasionally
-    //                                   surfaces on Android WebView fallback
-    if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+    // v2.14.13: guard active composition plus the tiny post-composition
+    // window where Android WebView can still deliver the IME commit Enter.
+    // Do not block keyCode 229 / key "Process" forever; some Chinese IMEs
+    // leave those on the real send Enter after the candidate is committed.
+    if (shouldIgnoreEnterDuringImeGrace(e)) return;
     handleSend();
   };
   const toggleTheme = (e?: React.MouseEvent) => {

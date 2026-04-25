@@ -26,20 +26,41 @@
 //   the initial hydrate.
 //
 // Module load ordering note:
-//   This slice imports `EmbeddingProviderConfig`, `DEFAULT_EMBEDDING_CONFIG`,
-//   and `EMBEDDING_CONFIG_STORAGE_KEY` from cloudEmbeddingService.ts at module
-//   load. cloudEmbeddingService.ts in turn imports `useAppStore` from the root
-//   store entry — the cycle is safe because cloudEmbeddingService only
-//   *references* useAppStore inside function bodies (resolved at call time,
-//   not at module-load time), and the slice never calls back into
-//   cloudEmbeddingService during initialisation.
+//   This slice imports config-only values from cloudEmbeddingConfig.ts, not
+//   cloudEmbeddingService.ts. The service may import the root store at runtime;
+//   the slice must remain a leaf of that graph so hydration cannot be affected
+//   by module-cycle timing.
 
 import type { StateCreator } from 'zustand';
 import {
   DEFAULT_EMBEDDING_CONFIG,
   EMBEDDING_CONFIG_STORAGE_KEY,
   type EmbeddingProviderConfig,
-} from '../../services/cloudEmbeddingService';
+} from '../../services/cloudEmbeddingConfig';
+
+let loggedHydrate = false;
+let loggedSetter = false;
+
+function normalizeEmbeddingConfig(raw: Partial<EmbeddingProviderConfig>): EmbeddingProviderConfig {
+  const dimensions = typeof raw.dimensions === 'number' && Number.isFinite(raw.dimensions) && raw.dimensions > 0
+    ? Math.round(raw.dimensions)
+    : DEFAULT_EMBEDDING_CONFIG.dimensions;
+  return {
+    ...DEFAULT_EMBEDDING_CONFIG,
+    ...raw,
+    dimensions,
+  };
+}
+
+function describeEmbeddingConfig(config: EmbeddingProviderConfig) {
+  return {
+    provider: config.provider,
+    model: config.model,
+    dimensions: config.dimensions,
+    hasApiKey: !!config.apiKey.trim(),
+    hasCustomEndpoint: !!config.customEndpoint?.trim(),
+  };
+}
 
 function readInitialEmbeddingConfig(): EmbeddingProviderConfig {
   if (typeof window === 'undefined') return DEFAULT_EMBEDDING_CONFIG;
@@ -47,7 +68,12 @@ function readInitialEmbeddingConfig(): EmbeddingProviderConfig {
     const raw = window.localStorage.getItem(EMBEDDING_CONFIG_STORAGE_KEY);
     if (!raw) return DEFAULT_EMBEDDING_CONFIG;
     const parsed = JSON.parse(raw) as Partial<EmbeddingProviderConfig>;
-    return { ...DEFAULT_EMBEDDING_CONFIG, ...parsed };
+    const normalized = normalizeEmbeddingConfig(parsed);
+    if (!loggedHydrate) {
+      console.log('[embeddingSlice] hydrated embeddingConfig from localStorage:', describeEmbeddingConfig(normalized));
+      loggedHydrate = true;
+    }
+    return normalized;
   } catch {
     return DEFAULT_EMBEDDING_CONFIG;
   }
@@ -70,6 +96,10 @@ export interface EmbeddingSlice {
 export const createEmbeddingSlice: StateCreator<EmbeddingSlice, [], [], EmbeddingSlice> = (set) => ({
   embeddingConfig: readInitialEmbeddingConfig(),
   setEmbeddingConfig: (cfg) => {
+    if (!loggedSetter) {
+      console.log('[embeddingSlice] setEmbeddingConfig:', describeEmbeddingConfig(cfg));
+      loggedSetter = true;
+    }
     set({ embeddingConfig: cfg });
     persistEmbeddingConfig(cfg);
   },

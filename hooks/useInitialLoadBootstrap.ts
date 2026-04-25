@@ -28,6 +28,12 @@ import {
   type BusyFollowUp,
   type PendingApology,
 } from '../store/slices/busySlice';
+import { getCapacitorPlatform, isCapacitorNative } from '../services/environment';
+import {
+  canScheduleExactAlarms,
+  requestExactAlarmPermission,
+  EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY,
+} from '../services/androidAlarmService';
 import type {
   Message,
   Language,
@@ -135,6 +141,24 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
     setBusyFollowUp,
     setPendingApology,
   } = params;
+
+  useEffect(() => {
+    if (!isCapacitorNative() || getCapacitorPlatform() !== 'android' || typeof window === 'undefined') return;
+
+    const maybePromptExactAlarmPermission = async () => {
+      try {
+        if (window.localStorage.getItem(EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY) === 'true') return;
+        const canScheduleExact = await canScheduleExactAlarms();
+        if (canScheduleExact) return;
+        window.localStorage.setItem(EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY, 'true');
+        await requestExactAlarmPermission();
+      } catch (e) {
+        console.warn('[useInitialLoadBootstrap] exact alarm permission prompt failed:', e);
+      }
+    };
+
+    void maybePromptExactAlarmPermission();
+  }, []);
 
   useEffect(() => {
     const loadData = async () => {

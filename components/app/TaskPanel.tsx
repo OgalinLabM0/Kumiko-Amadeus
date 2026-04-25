@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { BellOff, CalendarClock, Clock3, Hourglass, Inbox, Pause, Play, Repeat, Trash2, X } from 'lucide-react';
+import { AlertTriangle, BellOff, CalendarClock, Clock3, Hourglass, Inbox, Pause, Play, Repeat, Trash2, X } from 'lucide-react';
 import { Language } from '../../types';
 import { useAppStore } from '../../store';
+import { getCapacitorPlatform, isCapacitorNative } from '../../services/environment';
+import { canScheduleExactAlarms, requestExactAlarmPermission } from '../../services/androidAlarmService';
 
 type RelativeReminderItem = {
   id: string;
@@ -125,6 +127,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
 }) => {
   const busyFollowUp = useAppStore(s => s.busyFollowUp);
   const pendingApology = useAppStore(s => s.pendingApology);
+  const [exactAlarmAllowed, setExactAlarmAllowed] = useState<boolean | null>(null);
 
   // Polling clock so countdowns update live while the panel is open.
   // We tick every 1 s but only when `isOpen` is true so the panel
@@ -136,6 +139,17 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
     return () => clearInterval(id);
   }, [isOpen]);
 
+  useEffect(() => {
+    if (!isOpen || !isCapacitorNative() || getCapacitorPlatform() !== 'android') return;
+    let cancelled = false;
+    void canScheduleExactAlarms().then((allowed) => {
+      if (!cancelled) setExactAlarmAllowed(allowed);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen]);
+
   const busyUnreadCount = busyFollowUp?.unreadUserMessageIds.length ?? 0;
   const apologyUnreadCount = pendingApology
     ? pendingApology.sources.reduce((sum, s) => sum + s.unreadUserMessageIds.length, 0)
@@ -143,6 +157,13 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
   const apologySourceCount = pendingApology?.sources.length ?? 0;
   const totalTasks = relativeReminders.length + dailyReminders.length + (busyFollowUp ? 1 : 0) + (pendingApology ? 1 : 0);
   const nextOneTime = relativeReminders.slice().sort((a, b) => a.dueAt - b.dueAt)[0];
+  const showExactAlarmBanner = isCapacitorNative() && getCapacitorPlatform() === 'android' && exactAlarmAllowed === false && (relativeReminders.length + dailyReminders.length) > 0;
+
+  const handleGrantExactAlarm = async () => {
+    await requestExactAlarmPermission();
+    const allowed = await canScheduleExactAlarms();
+    setExactAlarmAllowed(allowed);
+  };
 
   const busyStatusLabel = (() => {
     if (!busyFollowUp) return '';
@@ -242,6 +263,31 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
       </div>
 
       <div data-resize-heavy className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-thin">
+        {showExactAlarmBanner && (
+          <div className={`rounded border p-3 ${isDarkMode ? 'bg-amber-950/45 border-amber-500/35 text-amber-100' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
+            <div className="flex items-start gap-2">
+              <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+              <div className="min-w-0 flex-1">
+                <div className="ka-setting-item-title">
+                  {language === 'zh' ? '精确提醒权限未开启' : 'Exact Alarm Permission Off'}
+                </div>
+                <p className="mt-1 ka-copy-sm opacity-80 leading-snug">
+                  {language === 'zh'
+                    ? '系统会用非精确闹钟兜底，但锁屏或省电模式下可能延后。'
+                    : 'Android will fall back to inexact alarms, which may ring late while locked or in battery saver.'}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleGrantExactAlarm}
+                  className={`mt-2 px-2.5 py-1.5 rounded ka-copy-sm font-semibold border transition-colors ${isDarkMode ? 'border-amber-400/40 bg-amber-500/15 hover:bg-amber-500/25' : 'border-amber-300 bg-white/70 hover:bg-white'}`}
+                >
+                  {language === 'zh' ? '去授权' : 'Grant Permission'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Phase 7 Part t9_task_msgcenter: the stat strip used a
             fixed `p-3` which left the English "Recurring" label
             clipped on a 360px phone. Shrink to `p-2` on narrow

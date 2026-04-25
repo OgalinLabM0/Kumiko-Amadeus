@@ -10,7 +10,10 @@
 // with isCapacitorNative() at the call site (we double-check inside
 // each function as belt-and-suspenders).
 
-import { isCapacitorNative } from './environment';
+import { getCapacitorPlatform, isCapacitorNative } from './environment';
+
+export const EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY = 'kumiko_exact_alarm_permission_prompted';
+export const EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY = 'kumiko_exact_alarm_fallback_notice_shown';
 
 export interface ScheduleAlarmInput {
   reminderId: string;
@@ -60,7 +63,7 @@ interface KumikoAlarmsPluginShape {
 let cachedPlugin: KumikoAlarmsPluginShape | null = null;
 let pluginPromise: Promise<KumikoAlarmsPluginShape | null> | null = null;
 async function getPlugin(): Promise<KumikoAlarmsPluginShape | null> {
-  if (!isCapacitorNative()) return null;
+  if (!isCapacitorNative() || getCapacitorPlatform() !== 'android') return null;
   if (cachedPlugin) return cachedPlugin;
   if (pluginPromise) return pluginPromise;
   pluginPromise = (async () => {
