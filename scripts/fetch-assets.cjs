@@ -63,6 +63,16 @@ const IDEMPOTENCY_SENTINELS = [
 const MAX_REDIRECTS = 8;
 const REQUEST_TIMEOUT_MS = 120_000;
 
+// Transient 5xx + network-error retry (v2.14.10 hotfix).
+// v2.14.9 Linux arm64 build died because GitHub releases CDN returned a
+// single 502 from /releases/download/v2.14.8/kumiko-assets.zip and the
+// script previously bubbled that straight up as a fatal exit. The retry
+// budget here is intentionally small (4 tries, ~1s/2s/4s back-off,
+// capped at ~10s total) so a genuinely broken release still fails fast,
+// but a one-off CDN hiccup no longer wastes a whole CI minute.
+const MAX_RETRIES = 4;
+const RETRY_BASE_DELAY_MS = 1_000;
+
 const USER_AGENT =
   'kumiko-amadeus-ci/1.0 (+https://github.com/OgalinLabM0/Kumiko-Amadeus)';
 
@@ -323,9 +333,53 @@ async function findPreviousReleaseZipUrl(originalUrl) {
   return null;
 }
 
+function isTransientError(err) {
+  if (!err) return false;
+  // 502/503/504 are GitHub CDN/origin transient blips. 408 and 429 are
+  // timeouts/rate-limits worth retrying. 5xx in general is server-side
+  // and almost never permanent for an existing release asset URL.
+  if (err.status === 408 || err.status === 429) return true;
+  if (typeof err.status === 'number' && err.status >= 500 && err.status < 600) return true;
+  // Network-layer errors that surface as Node `Error` without a status.
+  // Code list mirrors what `https.get` raises when the socket dies mid-stream.
+  if (err.code === 'ECONNRESET' || err.code === 'ETIMEDOUT' || err.code === 'EAI_AGAIN' ||
+      err.code === 'ECONNREFUSED' || err.code === 'ENETUNREACH' || err.code === 'EPIPE') {
+    return true;
+  }
+  // Our own timeout from `request.setTimeout` surfaces as a generic Error.
+  if (typeof err.message === 'string' && err.message.includes('Request timed out')) return true;
+  return false;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function downloadWithRetry(urlString) {
+  let lastErr;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
+    try {
+      return await download(urlString);
+    } catch (err) {
+      lastErr = err;
+      // 404 must be passed through immediately so the caller's
+      // 404-fallback path (look at previous releases) still triggers
+      // without burning the retry budget on a permanent miss.
+      if (err && err.status === 404) throw err;
+      if (!isTransientError(err)) throw err;
+      if (attempt === MAX_RETRIES - 1) break;
+      const delay = RETRY_BASE_DELAY_MS * 2 ** attempt;
+      const reason = err && err.status ? `HTTP ${err.status}` : (err && err.code) || (err && err.message) || 'unknown';
+      warn(`transient error from ${urlString} (${reason}); retry ${attempt + 1}/${MAX_RETRIES - 1} in ${delay}ms`);
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+}
+
 async function downloadWith404Fallback(primaryUrl) {
   try {
-    return await download(primaryUrl);
+    return await downloadWithRetry(primaryUrl);
   } catch (err) {
     if (err && err.status === 404) {
       if (process.env.FETCH_ASSETS_NO_FALLBACK === '1') {
@@ -347,7 +401,7 @@ async function downloadWith404Fallback(primaryUrl) {
       warn('Contents of kumiko-assets.zip rarely change across patch releases, so this is usually safe.');
       warn('If the current release intentionally ships NEW asset contents, rerun fetch-assets once Linux x64 has finished uploading the zip.');
       log(`Downloading fallback from ${fallback.url}`);
-      return await download(fallback.url);
+      return await downloadWithRetry(fallback.url);
     }
     throw err;
   }

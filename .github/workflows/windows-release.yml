@@ -37,6 +37,17 @@ jobs:
     name: Build ${{ matrix.arch }}
     strategy:
       fail-fast: false
+      # v2.14.10 hotfix: same defense-in-depth as linux-appimage.yml.
+      # Today Windows arm64 finishes well after x64 (NSIS + signing +
+      # 7-Zip are slow on the windows-11-arm partner runner) so the
+      # `electron-builder --publish always` GitHub-release POST race
+      # has not bitten Windows yet — but the matrix structure is
+      # identical to Linux's, so the moment arm64 catches up (faster
+      # runner image, parallel arch builds, etc) we'd hit the same
+      # 422 `tag_name already_exists` regression. Serializing under
+      # publish=true is cheap (we lose ~5min of wall-clock once per
+      # release) and entirely eliminates the failure mode.
+      max-parallel: ${{ inputs.publish && 1 || 2 }}
       matrix:
         include:
           # x64 builds on the standard windows-latest image. arm64 runs on the
@@ -44,6 +55,9 @@ jobs:
           # 2025-04, GA for private repos since 2026-01). Both images ship with
           # MSVC + Python + 7-Zip, which is what hnswlib-node / better-sqlite3
           # node-gyp compiles and the NSIS smoke test both need.
+          # ORDERING MATTERS WHEN max-parallel=1: x64 must be first so its
+          # electron-builder run owns the create-GitHub-Release POST; arm64
+          # then finds the existing release via GET and uploads to it.
           - arch: x64
             runner: windows-latest
             cli_arch: x64

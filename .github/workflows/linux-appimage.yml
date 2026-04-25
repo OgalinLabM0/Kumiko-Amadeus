@@ -24,12 +24,29 @@ jobs:
     name: Build ${{ matrix.arch }}
     strategy:
       fail-fast: false
+      # v2.14.10 hotfix: when publishing, force serial execution.
+      # Both x64 and arm64 jobs run `electron-builder --publish always`,
+      # which checks the GitHub Release with `GET /releases/tags/<tag>`
+      # and POST-creates it if not found. On Linux both archs finish in
+      # ~3m45s on their respective Azure runners, so the GETs race and
+      # the second arrival hits HTTP 422 `tag_name already_exists` (we
+      # lost the v2.14.10 arm64 AppImage to this exact race; v2.14.9's
+      # arm64 was lost to a separate transient 502 in fetch-assets,
+      # see scripts/fetch-assets.cjs retry path). max-parallel = 1 makes
+      # x64 (listed first below) finish publishing before arm64 starts,
+      # so arm64's electron-builder finds the existing release via GET
+      # and just uploads to it. publish=false stays parallel for fast
+      # PR feedback. Windows uses the same pattern preemptively even
+      # though x64 currently always wins by a wide margin (NSIS is slow).
+      max-parallel: ${{ inputs.publish && 1 || 2 }}
       matrix:
         include:
           # appimage_arch is how electron-builder names the AppImage file on
           # Linux (it follows `uname -m`, so x64 becomes x86_64). `arch` stays
           # in electron-builder CLI parlance (--x64 / --arm64) and is also
           # used for cache keys and artifact names that face developers.
+          # ORDERING MATTERS WHEN max-parallel=1: x64 must be first because
+          # it owns kumiko-assets.zip upload and creates the GitHub Release.
           - arch: x64
             runner: ubuntu-24.04
             appimage_arch: x86_64
