@@ -190,10 +190,15 @@ FunctionEnd
     ShowUninstDetails nevershow
   !endif
 
-  ; v2.14.6 C: route DetailPrint to BOTH the (hidden) log buffer AND the
-  ; status text strip. electron-builder defaults to listonly, which we
-  ; override globally here so all our DetailPrint calls are visible.
-  SetDetailsPrint both
+  ; v2.14.6 C (post-mortem fix from CI run 24925862265): NSIS rejects
+  ; `SetDetailsPrint` outside Section/Function ("not valid outside Section
+  ; or Function"). It is documented as an *instruction*, not an attribute,
+  ; so it cannot live in customHeader (which expands at script top level).
+  ; The companion calls inside KumikoInstFilesPre (install path),
+  ; customInstall (install recap), and customUnInit (uninstall) set the
+  ; global state to "both" the moment any of those Functions runs, which
+  ; covers every DetailPrint we actually emit. Removed the script-level
+  ; call here to unblock makensis.
 
   InstProgressFlags smooth
 
