@@ -53,6 +53,8 @@ ManifestDPIAware true
 !include FileFunc.nsh
 ; v2.14.5 E.4: nsDialogs custom uninstall data-choice page.
 !include nsDialogs.nsh
+; v2.14.5 E.4: WM_SETFONT constant for the bold pseudo-header label.
+!include WinMessages.nsh
 
 ; -----------------------------------------------------------------------------
 ; Global dialog font.
@@ -225,36 +227,45 @@ FunctionEnd
 Var /GLOBAL KumikoDataChoiceDialog
 Var /GLOBAL KumikoKeepRadio
 Var /GLOBAL KumikoWipeRadio
+Var /GLOBAL KumikoTitleFont
 
 Function un.KumikoUnDataChoiceShow
-  ; MUI_HEADER_TEXT auto-resolves to MUI_HeaderText OR un.MUI_HeaderText based
-  ; on whether MUI_PAGE_UNINSTALLER is defined at expansion time, which is
-  ; only true INSIDE MUI_UNPAGE_* blocks.  We're in a standalone un. function
-  ; (UninstPage custom), so MUI_HEADER_TEXT would emit a Call MUI_HeaderText
-  ; that doesn't link in the uninstaller.  Call un.MUI_HeaderText directly
-  ; instead — that function is auto-injected by MUI2 whenever any
-  ; MUI_UNPAGE_* macro is inserted (which customUnWelcomePage does above).
-  Push "处理用户数据"
-  Push "请选择是否清理本地的聊天记录、语音、图片与设置。"
-  Call un.MUI_HeaderText
-
+  ; NOTE: We deliberately do NOT call MUI_HEADER_TEXT / un.MUI_HeaderText
+  ; here.  MUI2 only auto-injects `Function un.MUI_HeaderText` when one of
+  ; its MUI_UNPAGE_* macros internally calls MUI_HEADER_TEXT — and
+  ; electron-builder never does that, so the symbol is undefined and any
+  ; direct Call would fail link-time with:
+  ;   "resolving uninstall function un.MUI_HeaderText in function ..."
+  ; Instead, we render an in-page "title + subtitle" label pair at the top
+  ; of the content area.  The MUI gold header strip stays empty (rare, but
+  ; not broken) and the user reads our in-content title.
   nsDialogs::Create 1018
   Pop $KumikoDataChoiceDialog
   ${If} $KumikoDataChoiceDialog == error
     Abort
   ${EndIf}
 
-  ; Description block (top of page).
-  ${NSD_CreateLabel} 0u 0u 100% 60u "Kumiko·Amadeus 在 %APPDATA%\Kumiko·Amadeus 等目录中存放：聊天记录、语音 MP3 缓存、图片、记忆向量、用户设置。$\r$\n$\r$\n— 升级到新版本时建议「保留」，新版本会自动接续上你的全部数据。$\r$\n— 只有彻底告别 Kumiko·Amadeus、且确认不再需要这些数据时，才需要选择「清理」。"
+  ; Pseudo-header: bold title (large) + subtitle (regular) inside the page
+  ; content area, mimicking the look of a MUI page header strip.
+  ${NSD_CreateLabel} 0u 0u 100% 14u "处理用户数据"
+  Pop $0
+  CreateFont $KumikoTitleFont "Segoe UI" 11 700
+  SendMessage $0 ${WM_SETFONT} $KumikoTitleFont 1
+
+  ${NSD_CreateLabel} 0u 16u 100% 12u "请选择是否清理本地的聊天记录、语音、图片与设置。"
+  Pop $0
+
+  ; Description block.
+  ${NSD_CreateLabel} 0u 36u 100% 60u "Kumiko·Amadeus 在 %APPDATA%\Kumiko·Amadeus 等目录中存放：聊天记录、语音 MP3 缓存、图片、记忆向量、用户设置。$\r$\n$\r$\n— 升级到新版本时建议「保留」，新版本会自动接续上你的全部数据。$\r$\n— 只有彻底告别 Kumiko·Amadeus、且确认不再需要这些数据时，才需要选择「清理」。"
   Pop $0
 
   ; "Keep" radio (default).
-  ${NSD_CreateRadioButton} 0u 70u 100% 12u "保留所有用户数据（推荐：升级或暂时卸载时使用）"
+  ${NSD_CreateRadioButton} 0u 102u 100% 12u "保留所有用户数据（推荐：升级或暂时卸载时使用）"
   Pop $KumikoKeepRadio
   ${NSD_SetState} $KumikoKeepRadio ${BST_CHECKED}
 
   ; "Wipe" radio.
-  ${NSD_CreateRadioButton} 0u 86u 100% 12u "清理所有用户数据（彻底卸载，无法撤销）"
+  ${NSD_CreateRadioButton} 0u 118u 100% 12u "清理所有用户数据（彻底卸载，无法撤销）"
   Pop $KumikoWipeRadio
 
   nsDialogs::Show
