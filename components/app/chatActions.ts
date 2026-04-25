@@ -1739,6 +1739,25 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     const parsedRelativeReminder = parseRelativeReminderRequest(userTextForRag);
     const parsedDailyReminder = parseDailyReminderRequest(userTextForRag);
     let createdReminderThisTurn = false;
+
+    // v2.14.14 — Two-phase reminder creation (replaces v2.14.13 nested if/else if).
+    //
+    // The old single-tier `if (response.scheduleTrigger?.event) {...} else if (parsedDailyReminder) {...} else if (parsedRelativeReminder) {...}`
+    // had a silent failure mode: when the LLM returned `scheduleTrigger: { event: "X" }`
+    // but omitted `delay_seconds` / `hour` / `minute` / `days_offset` (very common
+    // on the 2nd or 3rd turn — the model assumes the user already established the
+    // timing earlier and just acknowledges with "OK"), the outer `if` was truthy
+    // but every inner branch missed → the entire `else if` chain was skipped →
+    // no reminder created and no fall-through to local-parsed `parsedRelativeReminder`.
+    // User-visible symptom: "Kumiko 说好但任务没建" reproducibly on every reminder
+    // after the first.
+    //
+    // New flow: first try the LLM signal, then if nothing was created fall through
+    // to local regex parsing. When the LLM gave us an event string but missed the
+    // timing, we combine: LLM event text (more natural than regex extract) +
+    // local-parsed timing. Optional `days_offset` writes the schedule_events row
+    // and is allowed to fall through too — schedule_events is a calendar entry,
+    // not a reminder, and creating both for "明天提醒我..." is valid.
     if (response.scheduleTrigger?.event) {
       const { event, days_offset, delay_seconds, recurrence, hour, minute } = response.scheduleTrigger;
       if (recurrence === 'daily' && typeof hour === 'number' && typeof minute === 'number') {
@@ -1747,7 +1766,8 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       } else if (typeof delay_seconds === 'number' && delay_seconds > 0) {
         await s2.saveRelativeReminder(event, delay_seconds, userTextForRag);
         createdReminderThisTurn = true;
-      } else if (typeof days_offset === 'number') {
+      }
+      if (typeof days_offset === 'number') {
         try {
           const targetDate = new Date();
           targetDate.setDate(targetDate.getDate() + days_offset);
@@ -1759,18 +1779,26 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           console.error('[SCHEDULE] Failed to save event', schedErr);
         }
       }
-    } else if (parsedDailyReminder) {
-      await s2.saveDailyReminder(parsedDailyReminder.event, parsedDailyReminder.hour, parsedDailyReminder.minute, userTextForRag);
-      createdReminderThisTurn = true;
-    } else if (parsedRelativeReminder) {
-      await s2.saveRelativeReminder(parsedRelativeReminder.event, parsedRelativeReminder.delaySeconds, userTextForRag);
-      createdReminderThisTurn = true;
+    }
+
+    if (!createdReminderThisTurn) {
+      const llmEvent = response.scheduleTrigger?.event;
+      if (parsedRelativeReminder) {
+        const eventText = llmEvent || parsedRelativeReminder.event;
+        await s2.saveRelativeReminder(eventText, parsedRelativeReminder.delaySeconds, userTextForRag);
+        createdReminderThisTurn = true;
+      } else if (parsedDailyReminder) {
+        const eventText = llmEvent || parsedDailyReminder.event;
+        await s2.saveDailyReminder(eventText, parsedDailyReminder.hour, parsedDailyReminder.minute, userTextForRag);
+        createdReminderThisTurn = true;
+      }
     }
 
     if (hasReminderIntent && !createdReminderThisTurn) {
       console.warn('[REMINDER] intent detected but no reminder was created:', {
         text: userTextForRag.slice(0, 200),
         hasLlmScheduleTrigger: !!response.scheduleTrigger,
+        llmScheduleTriggerKeys: response.scheduleTrigger ? Object.keys(response.scheduleTrigger) : null,
         parsedDailyReminder,
         parsedRelativeReminder,
       });
