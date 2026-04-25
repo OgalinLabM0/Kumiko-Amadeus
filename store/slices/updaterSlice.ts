@@ -48,6 +48,11 @@ export const DEFAULT_APP_UPDATE_STATE: AppUpdateState = {
   // packaged-only buttons enable. Desktop will overwrite this from the
   // Electron bootstrap once `app:update:bootstrap` lands.
   isPackaged: false,
+  // v2.14.6 D.1: null = "no check yet". useAppUpdater.ts only fires the
+  // "currently up to date" SystemToast when this is exactly 'manual', so
+  // the default null value keeps both desktop AND Android cold starts
+  // silent until the user (or a startup auto-check) actually runs one.
+  triggerSource: null,
 };
 
 export interface UpdaterSlice {
@@ -96,8 +101,20 @@ export const createUpdaterSlice: StateCreator<UpdaterSlice, [], [], UpdaterSlice
     // there is no "downloading" / "downloaded" phase on Android (user
     // sideloads the APK from a browser tab); instead we collapse the
     // flow into 'available' / 'not-available' / 'error'.
+    //
+    // v2.14.6 D.1: stamp triggerSource:'manual' on every transition so the
+    // useAppUpdater hook's manual-only toast gate works on Android too.
+    // (handleCheckForAppUpdates is only called from explicit "Check for
+    // updates" button presses on this slice — there's no Capacitor startup
+    // auto-check beyond useAppUpdater's silent 30 s GitHub poll, which
+    // doesn't go through this slice at all.)
     if (isCapacitorNative()) {
-      get().setAppUpdateState((prev) => ({ ...prev, status: 'checking', error: null }));
+      get().setAppUpdateState((prev) => ({
+        ...prev,
+        status: 'checking',
+        error: null,
+        triggerSource: 'manual',
+      }));
       try {
         const { checkForAndroidUpdate } = await import('../../services/androidUpdaterService');
         const info = await checkForAndroidUpdate(true); // force=true bypasses 7d cooldown
@@ -108,6 +125,7 @@ export const createUpdaterSlice: StateCreator<UpdaterSlice, [], [], UpdaterSlice
             // Strip the leading "v" so the UI's `v{...}` prefix doesn't double up.
             availableVersion: stripLeadingV(info.latestVersion!),
             error: null,
+            triggerSource: 'manual',
           }));
         } else {
           get().setAppUpdateState((prev) => ({
@@ -115,26 +133,45 @@ export const createUpdaterSlice: StateCreator<UpdaterSlice, [], [], UpdaterSlice
             status: 'not-available',
             availableVersion: info?.latestVersion ? stripLeadingV(info.latestVersion) : null,
             error: null,
+            triggerSource: 'manual',
           }));
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         console.error('[UPDATER] Android check failed:', error);
-        get().setAppUpdateState((prev) => ({ ...prev, status: 'error', error: message }));
+        get().setAppUpdateState((prev) => ({
+          ...prev,
+          status: 'error',
+          error: message,
+          triggerSource: 'manual',
+        }));
       }
       return;
     }
 
     if (!isDesktopElectron() || !window.electronAPI) return;
     try {
-      const result = await window.electronAPI.invoke('app:update:check');
+      // v2.14.6 D.1: tell main "this is a manual check" so its
+      // emitAppUpdateState() sets triggerSource:'manual'. The startup
+      // auto-check in electron-main.cjs passes 'startup' instead.
+      const result = await window.electronAPI.invoke('app:update:check', 'manual');
       if (result?.success === false && result?.error) {
-        get().setAppUpdateState((prev) => ({ ...prev, status: 'error', error: result.error }));
+        get().setAppUpdateState((prev) => ({
+          ...prev,
+          status: 'error',
+          error: result.error,
+          triggerSource: 'manual',
+        }));
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error('[UPDATER] Failed to start update check:', error);
-      get().setAppUpdateState((prev) => ({ ...prev, status: 'error', error: message }));
+      get().setAppUpdateState((prev) => ({
+        ...prev,
+        status: 'error',
+        error: message,
+        triggerSource: 'manual',
+      }));
     }
   },
 

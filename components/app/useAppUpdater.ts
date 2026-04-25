@@ -139,17 +139,29 @@ export const useAppUpdater = ({
       setShowAppUpdateModal(true);
     }
 
-    // v2.14.3 N.3: surface a toast when a *manual* check returns
-    // "already on latest". Triggered only on the `checking → not-available`
-    // edge so the periodic background poll (which leaves the previous
-    // status as `idle` / `unsupported`) doesn't silently shower the user
-    // with toasts every time they reopen the app. Same edge guard for
-    // `error`, which previously was visible only inside the section's
-    // collapsed status string.
-    if (previousStatus === 'checking' && appUpdateState.status === 'not-available') {
+    // v2.14.3 N.3 → v2.14.6 D.1: surface a toast when a *manual* check
+    // returns "already on latest". The v2.14.3 version fired on every
+    // `checking → not-available` edge, but electron-main.cjs auto-runs
+    // checkForAppUpdates('startup') 20 s after launch, so the user saw
+    // "当前已是最新版本" pop up out of nowhere on every cold start.
+    //
+    // v2.14.6 gates the toast on `appUpdateState.triggerSource === 'manual'`
+    // (set by electron/app-updater.cjs and store/slices/updaterSlice.ts).
+    // The error edge keeps the same gate — silent failures during the
+    // startup auto-check are fine; only manual user actions surface errors.
+    const isManual = appUpdateState.triggerSource === 'manual';
+    if (
+      previousStatus === 'checking' &&
+      appUpdateState.status === 'not-available' &&
+      isManual
+    ) {
       setSystemNotice(UI_TRANSLATIONS[language].updateUpToDate);
     }
-    if (previousStatus === 'checking' && appUpdateState.status === 'error') {
+    if (
+      previousStatus === 'checking' &&
+      appUpdateState.status === 'error' &&
+      isManual
+    ) {
       const errMsg = appUpdateState.error || UI_TRANSLATIONS[language].updateError;
       setSystemNotice(errMsg);
     }
@@ -159,6 +171,7 @@ export const useAppUpdater = ({
     appUpdateState.status,
     appUpdateState.availableVersion,
     appUpdateState.error,
+    appUpdateState.triggerSource,
     language,
     setShowAppUpdateModal,
     setSystemNotice,

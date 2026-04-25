@@ -161,14 +161,39 @@ FunctionEnd
 
 ; -----------------------------------------------------------------------------
 ; customHeader - runs *after* common.nsh, so we can override its defaults.
+;
+; v2.14.6 C: hide the empty rolling-log details box during InstFiles. In
+; v2.14.5 the box was visible (`ShowInstDetails show`) and during the file
+; extraction phase it stayed completely BLANK because electron-builder's NSIS
+; template forces `SetDetailsPrint listonly` for the file extraction loop and
+; suppresses per-file output, leaving an empty multi-line area that looked
+; broken. The user reported "进度条在动，内容空白，这不行".
+;
+; v2.14.6 fix:
+;   - `ShowInstDetails nevershow` removes the empty box entirely → page
+;     becomes a clean progress bar + status text above it.
+;   - `SetDetailsPrint both` ensures every DetailPrint we emit also writes to
+;     the status text strip below the progress bar, so the user sees live
+;     "正在解压…" / "正在写入注册表…" narration during the install.
+;   - The companion `customPageAfterChangeDir` macro (below) injects a
+;     MUI_PAGE_CUSTOMFUNCTION_PRE → KumikoInstFilesPre that fires the very
+;     first "正在解压程序文件，请耐心等候..." line right BEFORE extraction
+;     begins, so the status text is never blank either.
+;   - The customInstall recap (8 lines) still fires at the end and now scrolls
+;     across the status text strip too.
 ; -----------------------------------------------------------------------------
 
 !macro customHeader
-  ; Show the rolling install log instead of a blank "Installing" panel.
-  ShowInstDetails show
+  ; v2.14.6 C: hide the empty details box; status text strip carries the load.
+  ShowInstDetails nevershow
   !ifdef BUILD_UNINSTALLER
-    ShowUninstDetails show
+    ShowUninstDetails nevershow
   !endif
+
+  ; v2.14.6 C: route DetailPrint to BOTH the (hidden) log buffer AND the
+  ; status text strip. electron-builder defaults to listonly, which we
+  ; override globally here so all our DetailPrint calls are visible.
+  SetDetailsPrint both
 
   InstProgressFlags smooth
 
@@ -176,23 +201,46 @@ FunctionEnd
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customWelcomePage - the standard MUI welcome page (v2.14.5 E.3 copy refresh).
+; customPageAfterChangeDir (v2.14.6 C) - electron-builder hook that fires
+; AFTER MUI_PAGE_DIRECTORY is inserted and BEFORE MUI_PAGE_INSTFILES is
+; inserted. By defining MUI_PAGE_CUSTOMFUNCTION_PRE here, MUI2 attaches our
+; KumikoInstFilesPre function to the next-inserted page (= InstFiles). MUI2
+; auto-undefines after the page macro consumes it, so we don't leak the
+; define to the FinishPage.
+; -----------------------------------------------------------------------------
+
+!ifndef BUILD_UNINSTALLER
+!macro customPageAfterChangeDir
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE KumikoInstFilesPre
+!macroend
+
+Function KumikoInstFilesPre
+  ; Force "both" again in case any earlier page LEAVE handler reset it.
+  SetDetailsPrint both
+  DetailPrint "正在解压程序文件，请耐心等候..."
+FunctionEnd
+!endif
+
+; -----------------------------------------------------------------------------
+; customWelcomePage - the standard MUI welcome page (v2.14.6 A copy trim).
 ;
-; v2.14.5 widens the welcome copy from a one-line "即将安装" stub into a short
-; introduction so first-time users actually understand what KA is, where its
-; data will live, and how big the install footprint is — without making them
-; hunt down a separate readme.
+; v2.14.6 strips out the v2.14.5 brand introduction + install-explanation
+; paragraph that the user found "尬" (cringey).  The welcome page now does
+; the bare minimum a Windows installer welcome page should do: state what
+; will be installed and remind the user to close running windows first.
+; Everything else (KA description, data location, footprint) was redundant
+; with the chat-bubble guide that opens on first launch.
 ; -----------------------------------------------------------------------------
 
 !macro customWelcomePage
   !define MUI_WELCOMEPAGE_TITLE "欢迎使用 Kumiko·Amadeus"
-  !define MUI_WELCOMEPAGE_TEXT "Kumiko·Amadeus 是一款桌面端 AI 陪伴程序，专注长期记忆与自然角色互动。$\r$\n$\r$\n本次将在此电脑安装 Kumiko·Amadeus v${VERSION}（约 800 MB，含本地 Embedding 模型）。安装后聊天记录、记忆向量、设置等数据保存在 %APPDATA%\Kumiko·Amadeus 目录下。$\r$\n$\r$\n继续前请关闭所有正在运行的 Kumiko·Amadeus 窗口。$\r$\n$\r$\n点击「下一步」继续。"
+  !define MUI_WELCOMEPAGE_TEXT "即将安装 Kumiko·Amadeus v${VERSION}。$\r$\n$\r$\n继续前请关闭所有正在运行的 Kumiko·Amadeus 窗口。$\r$\n$\r$\n点击「下一步」继续。"
   !insertmacro MUI_PAGE_WELCOME
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customUnWelcomePage - the standard MUI uninstall welcome page + the new
-; data-choice page (v2.14.5 E.3 copy + E.4 page).
+; customUnWelcomePage - the standard MUI uninstall welcome page + the
+; data-choice page (v2.14.6 A copy trim, v2.14.5 E.4 page kept).
 ;
 ; By inserting `UninstPage custom` AFTER MUI_UNPAGE_WELCOME inside this macro,
 ; the custom data-choice page lands BEFORE electron-builder's
@@ -202,7 +250,7 @@ FunctionEnd
 
 !macro customUnWelcomePage
   !define MUI_UNWELCOMEPAGE_TITLE "卸载 Kumiko·Amadeus"
-  !define MUI_UNWELCOMEPAGE_TEXT "即将从此电脑卸载 Kumiko·Amadeus v${VERSION}。$\r$\n$\r$\n卸载只会移除程序本身。是否一并清理聊天记录 / 语音 / 图片 / 设置等用户数据，将在下一页选择。$\r$\n$\r$\n继续前请先关闭所有正在运行的 Kumiko·Amadeus 窗口。$\r$\n$\r$\n点击「下一步」继续。"
+  !define MUI_UNWELCOMEPAGE_TEXT "即将卸载 Kumiko·Amadeus v${VERSION}。$\r$\n$\r$\n继续前请关闭所有正在运行的 Kumiko·Amadeus 窗口。$\r$\n$\r$\n点击「下一步」继续。"
   !insertmacro MUI_UNPAGE_WELCOME
 
   ; v2.14.5 E.4: dedicated data-choice page (nsDialogs RadioButton + Label).
@@ -375,9 +423,17 @@ FunctionEnd
 ; -----------------------------------------------------------------------------
 ; customUnInit - kill running instances before uninstall starts (v2.14.5 E.5
 ; narrates each kill step instead of a single opaque "结束正在运行的进程").
+;
+; v2.14.6 C: the final DetailPrint here ("正在删除程序文件...") is the LAST
+; status-text-strip update before the MUI_UNPAGE_INSTFILES page renders, so
+; with `SetDetailsPrint both` set globally in customHeader it carries over as
+; the initial status text on InstFiles — replacing the v2.14.5 blank/stale
+; display while electron-builder's file-removal loop scrolls "Removing: ..."
+; lines onto the same status strip immediately after.
 ; -----------------------------------------------------------------------------
 
 !macro customUnInit
+  SetDetailsPrint both
   DetailPrint "正在结束运行中的 Kumiko·Amadeus 进程..."
   nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM "Kumiko AI.exe" /F /T'
   Pop $0
@@ -388,6 +444,8 @@ FunctionEnd
   DetailPrint "正在等待文件句柄释放..."
   Sleep 1200
   DetailPrint "进程清理完成"
+  ; v2.14.6 C: seed the InstFiles status strip with a sensible initial line.
+  DetailPrint "正在删除程序文件，请耐心等候..."
 !macroend
 
 ; -----------------------------------------------------------------------------

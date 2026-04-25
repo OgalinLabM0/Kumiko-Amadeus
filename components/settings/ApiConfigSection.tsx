@@ -1,7 +1,7 @@
 import React from 'react';
 import { ChevronDown, ChevronUp, ShieldCheck } from 'lucide-react';
 import { AIConfig, BackupConfig, Language } from '../../types';
-import { AiValidationActions } from './AiValidationActions';
+import { AiValidationActions, type ExtraValidationResult } from './AiValidationActions';
 import { ApiSecuritySection } from './ApiSecuritySection';
 import { ModelAllocationSection } from './ModelAllocationSection';
 import { RagConfigSection } from './RagConfigSection';
@@ -30,6 +30,11 @@ interface ApiConfigSectionProps {
   ragStatus?: 'IDLE' | 'RECALLING' | 'INDEXING' | 'ERROR' | 'OFF' | 'STALE';
   ragProgressLabel?: string | null;
   modelValidationResult: ModelValidationResult;
+  // v2.14.6 H.3: minimal-set "extra" validation row state (Vision toggle,
+  // Cloud Embedding probe on Android, RAG enable + dependency).
+  // Optional so older test harnesses keep compiling — passed through to
+  // AiValidationActions.extraResult.
+  extraValidationResult?: ExtraValidationResult;
   isSecurityOpen: boolean;
   isAllocationOpen: boolean;
   isVisionOpen: boolean;
@@ -69,6 +74,7 @@ export const ApiConfigSection: React.FC<ApiConfigSectionProps> = ({
   ragStatus = 'OFF',
   ragProgressLabel = null,
   modelValidationResult,
+  extraValidationResult,
   isSecurityOpen,
   isAllocationOpen,
   isVisionOpen,
@@ -191,6 +197,7 @@ export const ApiConfigSection: React.FC<ApiConfigSectionProps> = ({
             isModelValidating={isModelValidating}
             isSearchValidating={isSearchValidating}
             modelValidationResult={modelValidationResult}
+            extraResult={extraValidationResult}
             modelMainName={localAiConfig.model_main}
             modelSummaryName={localAiConfig.model_summary}
             onSave={onSave}

@@ -244,6 +244,22 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   // New states for model validation
   const [isModelValidating, setIsModelValidating] = useState(false);
   const [modelValidationResult, setModelValidationResult] = useState<{ main: boolean | null, summary: boolean | null, vision: boolean | null }>({ main: null, summary: null, vision: null });
+  // v2.14.6 H.2: extra "minimal set" validation rows beyond API/main/summary.
+  // Vision uses modelValidationResult.vision (the existing pipeline already
+  // covers it). Cloud Embedding only matters on Capacitor — we kick a
+  // testEmbeddingConfig() in handleValidateAll. RAG just reflects the
+  // current backupConfig.ragEnabled toggle so it lights up immediately
+  // without needing an extra round-trip. The render layer in
+  // AiValidationActions then maps these flags to pass / fail / optional-empty.
+  const [extraValidationResult, setExtraValidationResult] = useState<{
+    embeddingConfigured: boolean | null;
+    embeddingTestPass: boolean | null;
+    embeddingChecking: boolean;
+  }>({
+    embeddingConfigured: null,
+    embeddingTestPass: null,
+    embeddingChecking: false,
+  });
   const {
     tavilyApiKey,
     enableInternetSearch,
@@ -434,8 +450,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       setIsValidating(true);
       setValidationStatus(t_local.validating);
       setValidationStatusType('neutral');
-      setModelValidationResult({ main: null, summary: null, vision: null }); 
-      setSearchStatus(''); 
+      setModelValidationResult({ main: null, summary: null, vision: null });
+      setSearchStatus('');
+      // v2.14.6 H.2: reset Embedding sub-state so the row visibly resets
+      // to "checking" (Android) or stays idle (PC) at the start of each
+      // Validate-All. Without this an old success/fail badge sticks
+      // around while the upstream API connection is still spinning.
+      setExtraValidationResult({
+        embeddingConfigured: null,
+        embeddingTestPass: null,
+        embeddingChecking: isCapacitorMobile,
+      });
 
       const isValid = await validateAIConnection(localAiConfig);
       
@@ -443,14 +468,54 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           setValidationStatus(t_local.error_invalid);
           setValidationStatusType('error');
           setIsValidating(false);
+          // v2.14.6 H.2: API down → can't even talk to embedding endpoint;
+          // collapse Embedding row out of "checking" so it doesn't spin
+          // forever while the user fixes the API key.
+          setExtraValidationResult(prev => ({ ...prev, embeddingChecking: false }));
           return;
       } else {
           setValidationStatus(t_local.success);
           setValidationStatusType('success');
       }
 
-      const modelResult = await handleModelValidation();
-      
+      await handleModelValidation();
+
+      // v2.14.6 H.2: Cloud Embedding probe — Capacitor Android only. PC
+      // uses local bge-m3 ONNX so there's nothing to verify here. We do
+      // a real testEmbeddingConfig (which roundtrips to the provider)
+      // rather than just checking that the key field is non-empty,
+      // because RAG silently breaks on Android the moment the key is
+      // wrong/expired even though it "looks configured". Imported
+      // lazily so the chunk doesn't load on Electron / PWA.
+      if (isCapacitorMobile) {
+          try {
+              const { getEmbeddingConfig, testEmbeddingConfig } = await import('../services/cloudEmbeddingService');
+              const embCfg = getEmbeddingConfig();
+              const configured = !!(embCfg.apiKey && embCfg.model);
+              if (!configured) {
+                  setExtraValidationResult({
+                      embeddingConfigured: false,
+                      embeddingTestPass: null,
+                      embeddingChecking: false,
+                  });
+              } else {
+                  setExtraValidationResult(prev => ({ ...prev, embeddingConfigured: true, embeddingChecking: true }));
+                  const r = await testEmbeddingConfig(embCfg);
+                  setExtraValidationResult({
+                      embeddingConfigured: true,
+                      embeddingTestPass: r.ok === true,
+                      embeddingChecking: false,
+                  });
+              }
+          } catch {
+              setExtraValidationResult({
+                  embeddingConfigured: null,
+                  embeddingTestPass: null,
+                  embeddingChecking: false,
+              });
+          }
+      }
+
       if (localAiConfig.provider === 'gemini') {
           setIsSearchValidating(true);
           setSearchStatus(t_local.validatingSearch);
@@ -1292,6 +1357,14 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           ragStatus={ragStatus}
           ragProgressLabel={ragProgressLabel}
           modelValidationResult={modelValidationResult}
+          extraValidationResult={{
+            visionEnabled: !!localAiConfig.useVisionHelper,
+            embeddingConfigured: extraValidationResult.embeddingConfigured,
+            embeddingTestPass: extraValidationResult.embeddingTestPass,
+            embeddingChecking: extraValidationResult.embeddingChecking,
+            ragEnabled: !!backupConfig.ragEnabled,
+            isCapacitorMobile,
+          }}
           isSecurityOpen={isSecurityOpen}
           isAllocationOpen={isAllocationOpen}
           isVisionOpen={isVisionOpen}
@@ -1653,7 +1726,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     tavilyUsage,
     ttsConfig,
     validationStatus,
-    validationStatusType
+    validationStatusType,
+    extraValidationResult,
+    isCapacitorMobile,
+    isAllocationOpen,
+    isVisionOpen,
+    isEmbeddingOpen,
+    isRagOpen,
   ]);
 
   return (

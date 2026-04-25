@@ -9,10 +9,10 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         // versionCode = MAJOR*10000 + MINOR*100 + PATCH，跟 package.json 同步：
         // 2.12.0 → 21200，2.12.1 → 21201，2.13.0 → 21300，2.14.0 → 21400，2.14.1 → 21401，
-        // 2.14.2 → 21402，2.14.3 → 21403，2.14.4 → 21404。
+        // 2.14.2 → 21402，2.14.3 → 21403，2.14.4 → 21404，2.14.5 → 21405。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21405
-        versionName "2.14.5"
+        versionCode 21406
+        versionName "2.14.6"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

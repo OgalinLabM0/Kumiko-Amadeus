@@ -260,6 +260,13 @@ export type AppUpdateStatus =
   | 'error'
   | 'unsupported';
 
+// v2.14.6 D.1: which side initiated the most recent update check. The
+// renderer uses this to decide whether to surface a "currently up to date"
+// SystemToast — only `'manual'` fires the toast, so the 20-second startup
+// auto-check (and any future periodic auto-check) stays silent unless it
+// actually finds a new release. `null` means "never checked" (initial state).
+export type AppUpdateTriggerSource = 'startup' | 'manual' | 'periodic' | null;
+
 export interface AppUpdateState {
   status: AppUpdateStatus;
   currentVersion: string;
@@ -271,6 +278,11 @@ export interface AppUpdateState {
   bytesPerSecond: number;
   error: string | null;
   isPackaged: boolean;
+  // v2.14.6 D.1: who fired the most recent checkForUpdates(). Set by the
+  // electron-main app-updater bridge AND by store/slices/updaterSlice for
+  // Capacitor Android. Optional for back-compat with state shapes that
+  // pre-date this field.
+  triggerSource?: AppUpdateTriggerSource;
 }
 
 // Descriptor for the electron-updater "pending/" directory surfaced in

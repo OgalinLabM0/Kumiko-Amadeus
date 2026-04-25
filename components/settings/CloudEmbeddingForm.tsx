@@ -22,6 +22,7 @@ import {
   setEmbeddingConfig,
   testEmbeddingConfig,
 } from '../../services/cloudEmbeddingService';
+import { ThemedSelect, type ThemedSelectItem } from '../common/ThemedSelect';
 
 const PROVIDER_LABELS: Record<EmbeddingProvider, { zh: string; en: string }> = {
   openai: { zh: 'OpenAI', en: 'OpenAI' },
@@ -107,26 +108,34 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
     }
   }, [config, language]);
 
+  // v2.14.6 G.2: convert the 5-button provider grid (which the user
+  // flagged as visually inconsistent with VisionHelperSection's API
+  // Provider control) into a ThemedSelect dropdown so Cloud Embedding
+  // matches the Vision / Allocation / Diary form vocabulary. Single
+  // ungrouped list — only 5 entries, grouping would be visual noise.
+  const providerOptions = useMemo<ThemedSelectItem[]>(
+    () =>
+      (Object.keys(PROVIDER_LABELS) as EmbeddingProvider[]).map((p) => ({
+        value: p,
+        label: PROVIDER_LABELS[p][language],
+      })),
+    [language],
+  );
+
   return (
     <div className="flex flex-col gap-3">
 
       <div>
         <label className={fieldLabelClass}>{language === 'zh' ? '提供商' : 'Provider'}</label>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
-          {(Object.keys(PROVIDER_LABELS) as EmbeddingProvider[]).map((p) => (
-            <button
-              type="button"
-              key={p}
-              onClick={() => handleProviderChange(p)}
-              className={`flex items-center gap-2 px-3 py-2.5 rounded-xl ka-copy-sm font-semibold transition-colors text-left ${
-                config.provider === p
-                  ? (isDarkMode ? 'bg-[#d4a852] text-[#21150a]' : 'bg-[#fff5e3] text-[#8a6122] border border-[#e0c58f]')
-                  : (isDarkMode ? 'bg-[#3e3429] text-[#d8c9b1] hover:bg-[#4a3f31]' : 'bg-white/60 text-[#5b4732] hover:bg-white/80 border border-transparent')
-              }`}
-            >
-              {PROVIDER_LABELS[p][language]}
-            </button>
-          ))}
+        <div className="mt-1">
+          <ThemedSelect
+            value={config.provider}
+            onChange={(val) => handleProviderChange(val as EmbeddingProvider)}
+            options={providerOptions}
+            isDarkMode={isDarkMode}
+            className={`${inputClass} w-full`}
+            ariaLabel={language === 'zh' ? '选择 Embedding 提供商' : 'Select embedding provider'}
+          />
         </div>
       </div>
 
@@ -204,41 +213,56 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
           onChange={(e) => update({ dimensions: parseInt(e.target.value, 10) || 0 })}
           className={`${inputClass} w-full mt-1`}
         />
-        <p className={`${helperClass} mt-1`}>
+        {/* v2.14.6 G.2: dimensions hint switched from helperClass (warm
+            ka-brown body copy) to ka-micro + neutral gray to match the
+            new "subdued helper" voice introduced in RagConfigSection
+            (Task E). Avoids competing with the amber section accent. */}
+        <p className={`ka-micro mt-1 ${isDarkMode ? 'text-gray-400/85' : 'text-gray-500/85'}`}>
           {language === 'zh'
             ? '改维度后建议在「数据管理」里重建向量库，避免与历史向量混合导致检索精度下降。'
             : 'Rebuild the vector store from "Data" after changing dimensions to avoid mixing with old vectors.'}
         </p>
       </div>
 
-      <div className="flex items-center gap-2 mt-1">
+      {/* v2.14.6 G.2: Test connection button — drop the green-on-success /
+          gold-on-idle saturated palette that clashed with the amber
+          section header. Button stays in the cream + amber-border
+          neutral state across idle / ok / error; only the inline icon
+          (CheckCircle / AlertTriangle) and the ka-micro message to its
+          right convey status. Disabled state keeps the warm ka muted
+          brown so it still reads as "waiting on input". */}
+      <div className="flex items-center gap-2 mt-1 flex-wrap">
         <button
           type="button"
           onClick={handleTest}
           disabled={testStatus === 'testing' || !config.apiKey}
           className={`px-3 py-2 rounded-lg ka-copy-sm font-semibold transition-colors flex items-center gap-1.5 ${
             testStatus === 'testing' || !config.apiKey
-              // v2.14.3 N.5: disabled tone uses warm ka muted-brown rather
-              // than neutral gray so the button reads as "waiting on you"
-              // instead of "broken / dead". Old gray-200 on cream made the
-              // whole section look monochromatic.
-              ? (isDarkMode ? 'bg-[#2c241a] text-[#7a6a52] cursor-not-allowed border border-[#3d3023]' : 'bg-[#f3eada] text-[#a0896a] cursor-not-allowed border border-[#e0d4bd]')
-              : (isDarkMode ? 'bg-[#2a3a2b] hover:bg-[#344a35] text-[#c7e6c9] border border-[#4c6a4e]' : 'bg-[#eaf5eb] hover:bg-[#d9ecda] text-[#3e6a42] border border-[#b8d4bb]')
+              ? (isDarkMode
+                  ? 'bg-[#2c241a] text-[#7a6a52] cursor-not-allowed border border-[#3d3023]'
+                  : 'bg-[#f3eada] text-[#a0896a] cursor-not-allowed border border-[#e0d4bd]')
+              : (isDarkMode
+                  ? 'bg-amber-900/20 hover:bg-amber-900/30 text-amber-300 border border-amber-500/30'
+                  : 'bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200')
           }`}
         >
           {testStatus === 'testing' && <Loader2 size={14} className="animate-spin" />}
-          {testStatus === 'ok' && <CheckCircle size={14} />}
-          {testStatus === 'error' && <AlertTriangle size={14} />}
-          {testStatus === 'idle'
-            ? (language === 'zh' ? '测试连接' : 'Test connection')
-            : testStatus === 'testing'
+          {testStatus === 'ok' && <CheckCircle size={14} className={isDarkMode ? 'text-emerald-300' : 'text-emerald-600'} />}
+          {testStatus === 'error' && <AlertTriangle size={14} className={isDarkMode ? 'text-red-300' : 'text-red-600'} />}
+          {testStatus === 'testing'
             ? (language === 'zh' ? '测试中…' : 'Testing…')
-            : testStatus === 'ok'
-            ? (language === 'zh' ? '连接成功' : 'Connected')
-            : (language === 'zh' ? '连接失败' : 'Failed')}
+            : (language === 'zh' ? '测试连接' : 'Test connection')}
         </button>
         {testMessage && (
-          <span className={`ka-micro ${testStatus === 'error' ? 'text-red-500' : 'opacity-70'}`}>
+          <span
+            className={`ka-micro ${
+              testStatus === 'error'
+                ? (isDarkMode ? 'text-red-300' : 'text-red-600')
+                : testStatus === 'ok'
+                ? (isDarkMode ? 'text-emerald-300' : 'text-emerald-700')
+                : (isDarkMode ? 'text-gray-400/85' : 'text-gray-500/85')
+            }`}
+          >
             {testMessage}
           </span>
         )}

@@ -133,47 +133,100 @@ export const EmbeddingConfigSection: React.FC<EmbeddingConfigSectionProps> = ({
   }, [prevConfigForRollback]);
 
   const headerLabel = language === 'zh' ? '云端 Embedding' : 'Cloud Embedding';
-  const headerSub =
-    language === 'zh'
-      ? 'Android RAG / 日记 / 心理状态使用'
-      : 'Used by Android RAG / diary / psyche';
 
+  // v2.14.6 G.1: status-pill copy for the collapsed header. Mirrors
+  // VisionHelperSection's pattern (启用中 / 未启用 + a sub-line). Cloud
+  // Embedding is special because there's no on/off toggle — instead we
+  // surface "已配置" (provider+model+key all present) vs "未配置".
+  const isConfigured = !!(currentConfig.apiKey && currentConfig.model);
+  const statusLabel = !isConfigured
+    ? (language === 'zh' ? '未配置' : 'NOT CONFIGURED')
+    : reembedNeeded
+      ? (language === 'zh' ? '需重嵌入' : 'REEMBED NEEDED')
+      : (language === 'zh' ? '已配置' : 'CONFIGURED');
+  const statusOk = isConfigured && !reembedNeeded;
+  const statusWarn = isConfigured && reembedNeeded;
+  // Banner accent used by the inline reembed warning inside the body —
+  // kept on amber so it visually pairs with the new amber header chip.
   const accentBg = isDarkMode ? 'bg-[#3a2c1a]' : 'bg-[#fff5e0]';
   const accentText = isDarkMode ? 'text-[#e8d4a8]' : 'text-[#8a6122]';
   const accentBorder = isDarkMode ? 'border-[#5b4732]' : 'border-[#e0c58f]';
 
   return (
-    <div className={`p-4 rounded-2xl border ${sectionBorder}`}>
+    // v2.14.6 G.1: outer shell rewritten to match VisionHelperSection /
+    // ModelAllocationSection visual language. Previously this card was a
+    // p-4 rounded-2xl border using sectionBorder + a Brain icon next to
+    // ka-h6 amber text — none of which lined up with the other AI-config
+    // sub-cards (which all use innerCardClass + a 9×9 rounded-xl gradient
+    // icon box + status pill + chevron). The user reported "你都改两次了
+    // 怎么还是这样" after v2.14.4/5 didn't fully align it; v2.14.6 finally
+    // brings the wrapper, icon box, status pill, and chevron in line.
+    //
+    // The body inside <Collapse> is now a plain wrapper <div> instead of
+    // a nested innerCardClass card — the outer shell IS the card, and a
+    // second card-in-card was the visual stutter the user complained about.
+    <div className={innerCardClass}>
       <button
         type="button"
         onClick={onToggle}
-        className="w-full flex items-center justify-between text-left"
+        className="w-full flex items-center justify-between mb-2"
       >
-        <div className="flex items-center gap-2">
-          <Brain size={16} className={`shrink-0 ${accentText}`} />
-          <div>
-            <div className={`ka-h6 ${accentText}`}>{headerLabel}</div>
-            <div
-              className={`ka-micro opacity-70 mt-0.5 ${
-                isDarkMode ? 'text-[#b9a482]' : 'text-[#7a6244]'
-              }`}
-            >
-              {headerSub}
-            </div>
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <div
+            className={`flex h-9 w-9 items-center justify-center rounded-xl border shrink-0 ${
+              isDarkMode
+                ? 'border-amber-500/20 bg-amber-900/20 text-amber-300'
+                : 'border-amber-200 bg-amber-50/90 text-amber-700'
+            }`}
+          >
+            <Brain size={16} />
+          </div>
+          <div className="flex-1 text-left min-w-0">
+            <h4 className={`ka-label font-bold ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>
+              {headerLabel}
+            </h4>
+            {!isOpen && (
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                <span
+                  className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border ${
+                    statusOk
+                      ? (isDarkMode
+                          ? 'bg-amber-900/25 border-amber-500/25 text-amber-300'
+                          : 'bg-amber-50 border-amber-200 text-amber-700')
+                      : statusWarn
+                        ? (isDarkMode
+                            ? 'bg-yellow-900/30 border-yellow-500/30 text-yellow-300'
+                            : 'bg-yellow-50 border-yellow-300 text-yellow-700')
+                        : (isDarkMode
+                            ? 'bg-[#2a1f16]/60 border-[#7a5830]/40 text-[#9a8065]'
+                            : 'bg-[#f1e8d9] border-[#d7c7b5] text-[#8a6b4e]')
+                  }`}
+                >
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      statusOk
+                        ? 'bg-amber-500'
+                        : statusWarn
+                          ? 'bg-yellow-500'
+                          : (isDarkMode ? 'bg-[#8a6b4e]' : 'bg-[#b8a38c]')
+                    }`}
+                  />
+                  <span className="ka-micro font-semibold">{statusLabel}</span>
+                </span>
+                <span className={`ka-section-desc ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
+                  {language === 'zh' ? 'Android RAG / 日记 / 心理状态用' : 'Powers Android RAG / diary / psyche'}
+                </span>
+              </div>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {reembedNeeded && (
-            <span className={`ka-micro px-2 py-0.5 rounded-full ${accentBg} ${accentText} border ${accentBorder}`}>
-              {language === 'zh' ? '需要重嵌入' : 'Reembed needed'}
-            </span>
-          )}
-          {isOpen ? <ChevronUp size={16} className={accentText} /> : <ChevronDown size={16} className={accentText} />}
-        </div>
+        {isOpen
+          ? <ChevronUp size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />
+          : <ChevronDown size={16} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
       </button>
 
-      <Collapse isOpen={isOpen}>
-        <div className={`${innerCardClass} mt-3 p-4 rounded-[1.15rem]`}>
+      <Collapse isOpen={isOpen} duration={180}>
+        <div>
           {(reembedNeeded || hasResumable) && (
             <div
               className={`mb-3 p-3 rounded-xl border flex items-start gap-3 ${accentBg} ${accentBorder} ${accentText}`}

@@ -136,6 +136,11 @@ let appUpdateState = {
   bytesPerSecond: 0,
   error: null,
   isPackaged: app.isPackaged,
+  // v2.14.6 D.1: who fired the most-recent checkForUpdates(). null = never
+  // checked yet; checkForAppUpdates(trigger) overwrites with the trigger
+  // string. The renderer keys the "currently up to date" toast off this so
+  // the 20s startup auto-check stays silent.
+  triggerSource: null,
 };
 
 // electron-main.cjs injects its BrowserWindow here once createWindow()
@@ -526,7 +531,9 @@ function emitAppUpdateState(patch = {}) {
 async function checkForAppUpdates(trigger = 'manual') {
   if (!app.isPackaged || isDev) {
     const reason = 'Automatic updates are only available in packaged desktop builds.';
-    emitAppUpdateState({ status: 'unsupported', error: reason });
+    // v2.14.6 D.1: even unsupported responses carry triggerSource so the
+    // renderer's "manual-only toast" gate has consistent context.
+    emitAppUpdateState({ status: 'unsupported', error: reason, triggerSource: trigger });
     return { success: false, error: reason };
   }
 
@@ -534,9 +541,14 @@ async function checkForAppUpdates(trigger = 'manual') {
     return { success: true, alreadyChecking: true };
   }
 
+  // v2.14.6 D.1: stamp triggerSource onto the 'checking' state so the
+  // renderer's checking → not-available edge in useAppUpdater.ts can tell
+  // whether to surface "currently up to date" SystemToast (manual only) or
+  // stay silent (startup / periodic auto-check).
   emitAppUpdateState({
     status: 'checking',
     error: null,
+    triggerSource: trigger,
   });
 
   updateCheckPromise = autoUpdater.checkForUpdates()
@@ -547,7 +559,7 @@ async function checkForAppUpdates(trigger = 'manual') {
     }))
     .catch((error) => {
       const message = stringifyUpdateError(error);
-      emitAppUpdateState({ status: 'error', error: message });
+      emitAppUpdateState({ status: 'error', error: message, triggerSource: trigger });
       return { success: false, error: message };
     })
     .finally(() => {

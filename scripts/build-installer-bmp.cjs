@@ -1,26 +1,32 @@
 /**
  * scripts/build-installer-bmp.cjs
  *
- * v2.14.5 E.1/E.2: prepare the two BMP assets that NSIS MUI2 needs for the
- * Windows installer Welcome page.
+ * v2.14.5 E.1/E.2 + v2.14.6 B: prepare the two BMP assets that NSIS MUI2
+ * needs for the Windows installer Welcome page.
  *
  *   build/installerSidebar.bmp   164 x 314, 24-bit BMP  (MUI WelcomePage sidebar)
  *   build/installerHeader.bmp    150 x  57, 24-bit BMP  (MUI HEADERIMAGE strip)
  *
- * Source artwork (commissioned, NOT AI-generated) lives one folder up so it
- * stays out of git:
+ * Sidebar source artwork (commissioned, NOT AI-generated) lives one folder up
+ * so it stays out of git:
  *
  *   ..\TT2.png            – portrait Kumiko illustration (sidebar source)
- *   ..\I02.png            – landscape KA wordmark frame (header source)
+ *
+ * Header source (v2.14.6 B): the in-repo app favicon. The user complained that
+ * the v2.14.5 cropped-from-I02.png header was too generic / hard to identify
+ * as KA at small size. The favicon is the single visual asset every Kumiko
+ * surface (taskbar, title bar, About, store) already shares, so reusing it on
+ * the installer header keeps the brand instantly recognisable. The favicon is
+ * scaled DOWN to a small 40px sprite and centred on a 150x57 white canvas (so
+ * the icon doesn't fill edge-to-edge — see the v2.14.6 plan note "smaller").
+ *
+ *   public/favicon-KA.png – square app icon (header source)
  *
  * Pipeline per output:
- *   1. Read source PNG with `sharp`.
- *   2. Crop & resize to exact target dimensions (cover crop, top-anchored for
- *      the sidebar so Kumiko's head + KA monogram stay visible).
- *   3. Flatten any alpha onto the brand cream (#f9f7f2) so we never ship a
- *      transparent BMP (NSIS would render those checker-textured).
- *   4. Pull raw RGB bytes and hand-encode a 24-bit Windows BMP
- *      (BITMAPINFOHEADER, no compression, bottom-up rows, 4-byte aligned).
+ *   - 'cover' mode (sidebar): cover-crop & resize, alpha-flatten on cream,
+ *     hand-encode 24-bit BMP.
+ *   - 'iconCenter' mode (header): resize favicon DOWN to icon size, composite
+ *     centred on a white canvas of the target size, hand-encode 24-bit BMP.
  *
  * Why hand-encode the BMP: `sharp` doesn't expose a BMP writer, and NSIS only
  * accepts 24-bit (or 8-bit palette) BMP for installer bitmaps. Writing the
@@ -32,13 +38,15 @@ const path = require('path');
 const sharp = require('sharp');
 
 const repoRoot = path.resolve(__dirname, '..');
-// Sources live OUTSIDE the repo (in the parent C-KA brand-asset folder) so we
-// never accidentally commit copyrighted source illustrations into git history.
+// Sidebar artwork lives OUTSIDE the repo (in the parent C-KA brand-asset
+// folder) so we never accidentally commit copyrighted source illustrations
+// into git history.
 const brandAssetsRoot = path.resolve(repoRoot, '..');
 
 const TARGETS = [
   {
     name: 'sidebar',
+    mode: 'cover',
     source: path.join(brandAssetsRoot, 'TT2.png'),
     out: path.join(repoRoot, 'build', 'installerSidebar.bmp'),
     width: 164,
@@ -49,14 +57,20 @@ const TARGETS = [
   },
   {
     name: 'header',
-    source: path.join(brandAssetsRoot, 'I02.png'),
+    mode: 'iconCenter',
+    // v2.14.6 B: in-repo favicon (square, transparent). NSIS header BMP must
+    // be 24-bit so we composite the favicon onto a white canvas before encode.
+    source: path.join(repoRoot, 'public', 'favicon-KA.png'),
     out: path.join(repoRoot, 'build', 'installerHeader.bmp'),
     width: 150,
     height: 57,
-    // I02 has the KA wordmark cluster in the upper-left corner. We crop that
-    // corner out by extracting the top-left chunk first, then resize.
-    extract: { left: 0, top: 0, width: 320, height: 122 },
-    gravity: 'centre',
+    // Favicon rendered SMALL inside the strip so it reads as a chip / accent
+    // rather than filling the whole header. 40x40 leaves ~8px vertical
+    // breathing room above and below in a 57px-tall strip.
+    iconSize: 40,
+    // Solid background colour the icon sits on. Pure white matches NSIS MUI2
+    // default header band (#FFFFFF) so there's no visible seam.
+    canvasBackground: { r: 255, g: 255, b: 255 },
   },
 ];
 
@@ -110,19 +124,43 @@ async function buildOne(target) {
     process.exit(1);
   }
 
-  let pipeline = sharp(target.source);
-  if (target.extract) {
-    pipeline = pipeline.extract(target.extract);
-  }
-  pipeline = pipeline
-    .resize(target.width, target.height, {
-      fit: 'cover',
-      position: target.gravity,
+  let pipeline;
+  if (target.mode === 'iconCenter') {
+    // Render the favicon DOWN to iconSize, then composite centred onto a
+    // canvasBackground-coloured rectangle of the full target size. This keeps
+    // the icon small (per v2.14.6 B "smaller") and surrounded by white.
+    const iconBuf = await sharp(target.source)
+      .resize(target.iconSize, target.iconSize, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } })
+      .png()
+      .toBuffer();
+
+    pipeline = sharp({
+      create: {
+        width: target.width,
+        height: target.height,
+        channels: 4,
+        background: { ...target.canvasBackground, alpha: 1 },
+      },
     })
-    // flatten any alpha onto brand cream so the BMP is fully opaque
-    .flatten({ background: { r: 249, g: 247, b: 242 } })
-    .removeAlpha()
-    .raw();
+      .composite([{ input: iconBuf, gravity: 'centre' }])
+      .flatten({ background: target.canvasBackground })
+      .removeAlpha()
+      .raw();
+  } else {
+    pipeline = sharp(target.source);
+    if (target.extract) {
+      pipeline = pipeline.extract(target.extract);
+    }
+    pipeline = pipeline
+      .resize(target.width, target.height, {
+        fit: 'cover',
+        position: target.gravity,
+      })
+      // flatten any alpha onto brand cream so the BMP is fully opaque
+      .flatten({ background: { r: 249, g: 247, b: 242 } })
+      .removeAlpha()
+      .raw();
+  }
 
   const { data, info } = await pipeline.toBuffer({ resolveWithObject: true });
   if (info.width !== target.width || info.height !== target.height) {

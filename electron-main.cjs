@@ -221,8 +221,12 @@ if (!singleInstanceLock) {
     return { success: true, state: getUpdateState() };
   });
 
-  ipcMain.handle('app:update:check', async () => {
-    return checkForAppUpdates('manual');
+  ipcMain.handle('app:update:check', async (_event, trigger = 'manual') => {
+    // v2.14.6 D.1: trigger ('manual' | 'startup' | 'periodic') threads
+    // through to emitAppUpdateState so the renderer's manual-only
+    // "currently up to date" toast gate works. Default 'manual' keeps
+    // the v2.14.5 behaviour intact for any caller that doesn't pass it.
+    return checkForAppUpdates(typeof trigger === 'string' ? trigger : 'manual');
   });
 
   ipcMain.handle('app:update:download', async () => {

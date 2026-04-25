@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertTriangle, Check, CheckSquare, Globe, Key, Brain, Zap, RefreshCw, Save, Loader2 } from 'lucide-react';
+import { AlertTriangle, Check, CheckSquare, Globe, Key, Brain, Zap, RefreshCw, Save, Loader2, MinusCircle, Eye, Cloud, Database } from 'lucide-react';
 import { Language } from '../../types';
 
 type StatusType = 'neutral' | 'success' | 'error';
@@ -9,6 +9,35 @@ interface ModelValidationResult {
   summary: boolean | null;
   vision: boolean | null;
 }
+
+// v2.14.6 H.1: extra row inputs surfacing optional-but-relevant config
+// state alongside the four core checks (API / main model / summary
+// model / search). Previously the user only saw 4 rows even though
+// Vision Helper, Cloud Embedding (Android), and RAG can each silently
+// break the assistant — vision returns text-only answers, embedding
+// failure means RAG never indexes, RAG-off means long-term memory is
+// muted. We now surface those three explicitly with an "optional-empty"
+// neutral state for things that are off-by-design (vision toggle off,
+// RAG toggle off) so they don't read as failures, while keeping a hard
+// fail for genuinely broken dependencies (Embedding missing on Android,
+// or RAG enabled on Android without a working Embedding test).
+export interface ExtraValidationResult {
+  visionEnabled: boolean;
+  embeddingConfigured: boolean | null;
+  embeddingTestPass: boolean | null;
+  embeddingChecking: boolean;
+  ragEnabled: boolean;
+  isCapacitorMobile: boolean;
+}
+
+const DEFAULT_EXTRA_RESULT: ExtraValidationResult = {
+  visionEnabled: false,
+  embeddingConfigured: null,
+  embeddingTestPass: null,
+  embeddingChecking: false,
+  ragEnabled: false,
+  isCapacitorMobile: false,
+};
 
 interface AiValidationActionsProps {
   isDarkMode: boolean;
@@ -24,15 +53,20 @@ interface AiValidationActionsProps {
   modelValidationResult: ModelValidationResult;
   modelMainName?: string;
   modelSummaryName?: string;
+  // v2.14.6 H.3: optional so legacy call sites (storybook, tests) keep
+  // compiling. Real settings panel now always passes this.
+  extraResult?: ExtraValidationResult;
   onSave: () => void;
   onValidateAll: () => void;
 }
+
+type CheckStatus = 'idle' | 'checking' | 'pass' | 'fail' | 'optional-empty';
 
 const CheckItem: React.FC<{
   icon: React.ReactNode;
   label: string;
   detail?: string;
-  status: 'idle' | 'checking' | 'pass' | 'fail';
+  status: CheckStatus;
   isDarkMode: boolean;
 }> = ({ icon, label, detail, status, isDarkMode }) => {
   const statusIcon = status === 'checking'
@@ -41,6 +75,8 @@ const CheckItem: React.FC<{
     ? <Check size={14} className="text-green-500 shrink-0" />
     : status === 'fail'
     ? <AlertTriangle size={14} className="text-red-500 shrink-0" />
+    : status === 'optional-empty'
+    ? <MinusCircle size={14} className={`shrink-0 ${isDarkMode ? 'text-yellow-400/85' : 'text-yellow-600/85'}`} />
     : <div className={`w-3.5 h-3.5 rounded-full border shrink-0 ${isDarkMode ? 'border-gray-600' : 'border-gray-300'}`} />;
 
   return (
@@ -49,12 +85,20 @@ const CheckItem: React.FC<{
         ? (isDarkMode ? 'bg-red-950/30' : 'bg-red-50')
         : status === 'pass'
         ? (isDarkMode ? 'bg-green-950/20' : 'bg-green-50/60')
+        : status === 'optional-empty'
+        // soft yellow wash so optional-but-empty rows read as
+        // "intentionally off / not configured" rather than "broken"
+        ? (isDarkMode ? 'bg-yellow-950/15' : 'bg-yellow-50/60')
         : ''
     }`}>
       <span className={`shrink-0 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{icon}</span>
       <span className={`flex-1 ka-copy-sm font-semibold truncate ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>{label}</span>
-      {detail && <span className={`ka-micro font-mono truncate max-w-[120px] ${
-        status === 'fail' ? 'text-red-400' : (isDarkMode ? 'text-[#b69f87]' : 'text-[#9e7c51]')
+      {detail && <span className={`ka-micro font-mono truncate max-w-[140px] ${
+        status === 'fail'
+          ? 'text-red-400'
+          : status === 'optional-empty'
+          ? (isDarkMode ? 'text-yellow-300/85' : 'text-yellow-700/85')
+          : (isDarkMode ? 'text-[#b69f87]' : 'text-[#9e7c51]')
       }`}>{detail}</span>}
       {statusIcon}
     </div>
@@ -75,34 +119,99 @@ export const AiValidationActions: React.FC<AiValidationActionsProps> = ({
   modelValidationResult,
   modelMainName,
   modelSummaryName,
+  extraResult = DEFAULT_EXTRA_RESULT,
   onSave,
   onValidateAll
 }) => {
   const hasAnyResult = validationStatus || searchStatus || modelValidationResult.main !== null || modelValidationResult.summary !== null;
 
-  const apiStatus: 'idle' | 'checking' | 'pass' | 'fail' =
+  const apiStatus: CheckStatus =
     isValidating && !validationStatus ? 'checking'
     : validationStatusType === 'success' ? 'pass'
     : validationStatusType === 'error' ? 'fail'
     : 'idle';
 
-  const mainModelStatus: 'idle' | 'checking' | 'pass' | 'fail' =
+  const mainModelStatus: CheckStatus =
     isModelValidating && modelValidationResult.main === null ? 'checking'
     : modelValidationResult.main === true ? 'pass'
     : modelValidationResult.main === false ? 'fail'
     : 'idle';
 
-  const summaryModelStatus: 'idle' | 'checking' | 'pass' | 'fail' =
+  const summaryModelStatus: CheckStatus =
     isModelValidating && modelValidationResult.summary === null ? 'checking'
     : modelValidationResult.summary === true ? 'pass'
     : modelValidationResult.summary === false ? 'fail'
     : 'idle';
 
-  const searchItemStatus: 'idle' | 'checking' | 'pass' | 'fail' =
+  const searchItemStatus: CheckStatus =
     isSearchValidating ? 'checking'
     : searchStatusType === 'success' ? 'pass'
     : searchStatusType === 'error' ? 'fail'
     : 'idle';
+
+  // v2.14.6 H.1: Vision row. Mirrors the user's plan-A "minimal set":
+  // - if Vision Helper toggle is OFF → optional-empty (yellow MinusCircle)
+  // - if Vision Helper toggle is ON → reuse modelValidationResult.vision
+  //   from the existing validateModels pipeline, so Validate-All already
+  //   covers it without an extra IPC call.
+  const visionStatus: CheckStatus = !extraResult.visionEnabled
+    ? 'optional-empty'
+    : isModelValidating && modelValidationResult.vision === null
+      ? 'checking'
+      : modelValidationResult.vision === true
+        ? 'pass'
+        : modelValidationResult.vision === false
+          ? 'fail'
+          : 'idle';
+
+  // v2.14.6 H.1: Cloud Embedding row — only relevant on Capacitor
+  // Android (PC uses local bge-m3 ONNX so embedding is implicit). On
+  // Android, an unconfigured Embedding hard-fails because RAG, diary,
+  // and psyche all silently break without it.
+  const embeddingStatus: CheckStatus = !extraResult.isCapacitorMobile
+    ? 'idle' // hidden via render guard below
+    : extraResult.embeddingChecking
+      ? 'checking'
+      : extraResult.embeddingConfigured === false
+        ? 'fail'
+        : extraResult.embeddingConfigured === true && extraResult.embeddingTestPass === false
+          ? 'fail'
+          : extraResult.embeddingConfigured === true && extraResult.embeddingTestPass === true
+            ? 'pass'
+            : extraResult.embeddingConfigured === true && extraResult.embeddingTestPass === null
+              ? 'idle' // configured but not yet tested in this Validate-All run
+              : 'idle';
+
+  // v2.14.6 H.1: RAG row. OFF → optional-empty (long-term memory is just
+  // muted, not broken). ON + Android + Embedding not green → fail
+  // (hard dependency). ON otherwise → pass.
+  const ragStatus: CheckStatus = !extraResult.ragEnabled
+    ? 'optional-empty'
+    : extraResult.isCapacitorMobile && extraResult.embeddingTestPass !== true
+      ? 'fail'
+      : 'pass';
+
+  const visionDetail = !extraResult.visionEnabled
+    ? (language === 'zh' ? '未启用' : 'OFF')
+    : undefined;
+  const embeddingDetail = embeddingStatus === 'fail' && extraResult.embeddingConfigured === false
+    ? (language === 'zh' ? '未配置' : 'NOT SET')
+    : embeddingStatus === 'fail' && extraResult.embeddingTestPass === false
+      ? (language === 'zh' ? '连接失败' : 'FAILED')
+      : embeddingStatus === 'pass'
+        ? (language === 'zh' ? '已连通' : 'OK')
+        : undefined;
+  const ragDetail = !extraResult.ragEnabled
+    ? (language === 'zh' ? '未启用' : 'OFF')
+    : ragStatus === 'fail'
+      ? (language === 'zh' ? '需要 Embedding' : 'NEEDS EMBED')
+      : undefined;
+
+  // v2.14.6 H.1: extra rows only render once the user actually clicked
+  // "Validate All" or made other progress, matching the existing
+  // hasAnyResult gate. Avoids a giant 7-row table popping up on every
+  // settings panel open before the user does anything.
+  const showExtraRows = hasAnyResult;
 
   return (
     <>
@@ -136,6 +245,33 @@ export const AiValidationActions: React.FC<AiValidationActionsProps> = ({
               status={summaryModelStatus}
               isDarkMode={isDarkMode}
             />
+            {showExtraRows && (
+              <CheckItem
+                icon={<Eye size={13} />}
+                label={language === 'zh' ? '视觉辅助' : 'Vision Helper'}
+                detail={visionDetail}
+                status={visionStatus}
+                isDarkMode={isDarkMode}
+              />
+            )}
+            {showExtraRows && extraResult.isCapacitorMobile && (
+              <CheckItem
+                icon={<Cloud size={13} />}
+                label={language === 'zh' ? '云端 Embedding' : 'Cloud Embedding'}
+                detail={embeddingDetail}
+                status={embeddingStatus}
+                isDarkMode={isDarkMode}
+              />
+            )}
+            {showExtraRows && (
+              <CheckItem
+                icon={<Database size={13} />}
+                label={language === 'zh' ? '长期记忆 (RAG)' : 'Long-term Memory (RAG)'}
+                detail={ragDetail}
+                status={ragStatus}
+                isDarkMode={isDarkMode}
+              />
+            )}
             {(searchItemStatus !== 'idle' || searchStatus) && (
               <CheckItem
                 icon={<Globe size={13} />}

@@ -1,5 +1,5 @@
-import React from 'react';
-import { Database, RefreshCw, ChevronDown, ChevronUp } from 'lucide-react';
+import React, { useState } from 'react';
+import { Database, RefreshCw, ChevronDown, ChevronUp, Info } from 'lucide-react';
 import { BackupConfig, Language } from '../../types';
 import { SettingsToggle } from './SettingsToggle';
 import { Collapse } from '../Collapse';
@@ -31,6 +31,11 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
   onRequestRebuildRag
 }) => {
   const isRebuilding = ragStatus === 'RECALLING' || ragStatus === 'INDEXING';
+  // v2.14.6 F: gate the long pipeline-explanation paragraph behind an Info
+  // toggle so the card stays visually clean. While a rebuild is running the
+  // <Collapse> below is forced open via `|| !!ragProgressLabel` regardless
+  // of this state, so the user always sees the live progress text.
+  const [showRagDetail, setShowRagDetail] = useState(false);
   // v2.14.2 J.6: split the RAG description by platform.
   // - PC: ONNX bge-m3 + sqlite-vec, fully local, no network needed for embeddings.
   // - Android: cloud embeddings + Dexie persistence + hnswlib-wasm HNSW index;
@@ -95,39 +100,82 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
             </div>
           </div>
 
-          {/* v2.14.5 C: previously this lock-hint was a gold italic banner
-              with its own background colour, which made the card feel
-              entirely unlike the other AI-config sub-cards (Cloud Embedding
-              / Vision Helper / Cortex Allocation all use plain helperClass
-              hint text). Switched to standard helper-text for visual
-              parity. */}
-          <p className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
+          {/* v2.14.5 C → v2.14.6 E: lock-hint helper text. v2.14.5 used the
+              brown helper palette which collided with the toggle's brown
+              sub-copy above; v2.14.6 drops to neutral gray + ka-micro so
+              it reads as secondary "system status" rather than primary
+              copy that competes with the toggle row.
+              The class is a className expression so we can swap the gray
+              shade per dark/light mode without re-render churn. */}
+          <p className={`ka-micro ${isDarkMode ? 'text-gray-400/85' : 'text-gray-500/85'}`}>
             {ragLockedHint}
           </p>
 
           {onRequestRebuildRag && (
             <div className="mt-3">
-              <button
-                onClick={onRequestRebuildRag}
-                disabled={isRebuilding}
-                className={`w-full py-2 px-3 rounded-lg flex items-center justify-center gap-2 ka-copy-sm font-semibold transition-colors disabled:opacity-70 disabled:cursor-not-allowed ${isDarkMode ? 'bg-purple-900/30 hover:bg-purple-900/50 text-purple-300 border border-purple-500/30' : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200'}`}
-              >
-                <RefreshCw size={13} className={isRebuilding ? 'animate-spin' : ''} /> {isRebuilding ? (language === 'zh' ? '正在重建 RAG 记忆库' : 'Rebuilding RAG Memory') : (language === 'zh' ? '重建 RAG 记忆库' : 'Rebuild RAG Memory')}
-              </button>
-              {/* v2.14.5 B: explain what this button does + when to use it
-                  + where the *other* RAG-related button lives, so users
-                  who see two "rebuild" buttons (this one + DataManagement
-                  → Embedding Vector Store → "Re-embed Vector Store") know
-                  the difference instead of randomly trying both.
-                  whitespace-pre-line keeps the \n\n paragraph break
-                  visible (ka-copy-sm uses default white-space). */}
-              <p className={`ka-copy-sm mt-2 whitespace-pre-line ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
-                {ragProgressLabel
-                  ? ragProgressLabel
-                  : language === 'zh'
-                    ? '完整流水线（PC + Android）：清空当前 turn_pair 向量 → 重扫历史消息 → 重新分组 → 重新调用 embedding → 写入向量库。耗时较长（按消息量计，几分钟到十几分钟）。\n\n如果只想用新的 embedding 设置重新生成已有向量（不重扫消息、不改变向量数量与分组），请去「数据清理 → 嵌入向量库」用「重嵌入向量库」（仅 Android）。'
-                    : 'Full pipeline (PC + Android): clears current turn_pair vectors → rescans message history → regroups → re-runs embedding → writes back. Takes a few to ~15 minutes depending on message volume.\n\nIf you just want to regenerate existing vectors with the current embedding settings (no message rescan, no count change), go to "Data Management → Embedding Vector Store → Re-embed Vector Store" (Android only).'}
-              </p>
+              {/* v2.14.6 F: button-row layout splits into [main rebuild button | ⓘ
+                  toggle button]. Previously the long pipeline-explanation paragraph
+                  always rendered below the button, which the user complained made the
+                  card feel cluttered ("大量文字加上重建按钮，你这美观吗？？").
+                  v2.14.6 collapses that paragraph behind an Info button right of the
+                  rebuild button — clicking it toggles `showRagDetail`, which gates
+                  the <Collapse> below. While a rebuild is in progress
+                  (`ragProgressLabel` is non-empty), the collapse is forced open so
+                  the user sees the live progress text without having to click ⓘ. */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={onRequestRebuildRag}
+                  disabled={isRebuilding}
+                  className={`flex-1 py-2 px-3 rounded-lg flex items-center justify-center gap-2 ka-copy-sm font-semibold transition-colors disabled:opacity-70 disabled:cursor-not-allowed ${isDarkMode ? 'bg-purple-900/30 hover:bg-purple-900/50 text-purple-300 border border-purple-500/30' : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200'}`}
+                >
+                  <RefreshCw size={13} className={isRebuilding ? 'animate-spin' : ''} /> {isRebuilding ? (language === 'zh' ? '正在重建 RAG 记忆库' : 'Rebuilding RAG Memory') : (language === 'zh' ? '重建 RAG 记忆库' : 'Rebuild RAG Memory')}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowRagDetail((v) => !v)}
+                  aria-label={language === 'zh' ? '查看重建说明' : 'Show rebuild details'}
+                  aria-expanded={showRagDetail || isRebuilding}
+                  title={language === 'zh' ? '查看重建说明' : 'Show rebuild details'}
+                  className={`shrink-0 h-9 w-9 rounded-full flex items-center justify-center border transition-colors ${
+                    (showRagDetail || isRebuilding)
+                      ? (isDarkMode
+                          ? 'bg-purple-900/40 text-purple-200 border-purple-500/40'
+                          : 'bg-purple-100 text-purple-700 border-purple-300')
+                      : (isDarkMode
+                          ? 'bg-[#2a1f16]/40 text-[#9a8065] border-[#7a5830]/30 hover:text-purple-300 hover:border-purple-500/30'
+                          : 'bg-white text-[#8a6b4e] border-[#d7c7b5] hover:text-purple-700 hover:border-purple-300')
+                  }`}
+                >
+                  <Info size={14} />
+                </button>
+              </div>
+
+              {/* v2.14.5 B → v2.14.6 E + F:
+                  - E: split the description by platform (PC has no
+                    Android-only "second rebuild button", so the
+                    cross-reference paragraph is hidden on PC); switched
+                    text style to ka-micro + neutral gray so the long
+                    paragraph reads as secondary docs, not primary copy.
+                  - F: wrap the description in a <Collapse> gated on
+                    `showRagDetail || isRebuilding`. While idle, the long
+                    explanation is hidden behind ⓘ; while a rebuild is in
+                    progress, `ragProgressLabel` displaces the static copy
+                    AND forces the panel open so the user always sees
+                    progress.
+                  whitespace-pre-line preserves the \n\n paragraph break. */}
+              <Collapse isOpen={showRagDetail || !!ragProgressLabel} duration={180}>
+                <p className={`ka-micro mt-2 whitespace-pre-line ${isDarkMode ? 'text-gray-400/85' : 'text-gray-500/85'}`}>
+                  {ragProgressLabel
+                    ? ragProgressLabel
+                    : isCapacitor
+                      ? (language === 'zh'
+                          ? '完整流水线（Android）：清空当前 turn_pair 向量 → 重扫历史消息 → 重新分组 → 调用云端 embedding → 写入 Dexie + hnswlib-wasm。耗时较长（按消息量计，几分钟到十几分钟）。\n\n如果只想用新的 embedding 设置重新生成已有向量（不重扫消息、不改变向量数量与分组），请去「数据清理 → 嵌入向量库」用「重嵌入向量库」。'
+                          : 'Full pipeline (Android): clears current turn_pair vectors → rescans message history → regroups → calls cloud embedding → writes back to Dexie + hnswlib-wasm. Takes a few to ~15 minutes depending on message volume.\n\nIf you just want to regenerate existing vectors with the current embedding settings (no message rescan, no count change), go to "Data Management → Embedding Vector Store → Re-embed Vector Store".')
+                      : (language === 'zh'
+                          ? '完整流水线（PC）：清空当前 turn_pair 向量 → 重扫历史消息 → 重新分组 → 调用本地 ONNX embedding → 写入 sqlite-vec。耗时较长（按消息量计，几分钟到十几分钟）。'
+                          : 'Full pipeline (PC): clears current turn_pair vectors → rescans message history → regroups → runs local ONNX embedding → writes back to sqlite-vec. Takes a few to ~15 minutes depending on message volume.')}
+                </p>
+              </Collapse>
             </div>
           )}
         </div>
