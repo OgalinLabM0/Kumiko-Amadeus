@@ -1078,7 +1078,24 @@ export const App = () => {
     handleSendAction(chatRefs);
   }, [inputValue, selectedImage, isThinking, isTalking, executeSend, replyingToMsg, locationConfig, language, messages, t.autoReplyText]);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => { if (e.key === 'Enter') handleSend(); };
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key !== 'Enter') return;
+    // v2.14.12 IME guard: when the user presses Enter to commit a Chinese / JP / KR
+    // IME candidate, the native Enter event reaches React with the composition
+    // already torn down on Android WebView. Without the guard handleSend would
+    // fire, setInputValue('') would clear the just-committed candidate, and the
+    // user would see "I typed 我我我, it appeared for ~1s, then vanished + an
+    // empty message got sent". Three checks because different browsers / Android
+    // WebViews surface IME-mediated keys differently:
+    //   - e.nativeEvent.isComposing   : current spec, Chromium/WebKit modern
+    //   - e.keyCode === 229           : Chromium IME placeholder keycode (very
+    //                                   common on Android WebView even when the
+    //                                   composition state is already cleared)
+    //   - e.key === 'Process'         : older Firefox/legacy spec, occasionally
+    //                                   surfaces on Android WebView fallback
+    if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+    handleSend();
+  };
   const toggleTheme = (e?: React.MouseEvent) => {
     const x = e?.clientX ?? window.innerWidth / 2;
     const y = e?.clientY ?? window.innerHeight / 2;

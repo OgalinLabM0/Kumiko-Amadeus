@@ -18,10 +18,9 @@ import {
   EMBEDDING_MODEL_CATALOG,
   type EmbeddingProvider,
   type EmbeddingProviderConfig,
-  getEmbeddingConfig,
-  setEmbeddingConfig,
   testEmbeddingConfig,
 } from '../../services/cloudEmbeddingService';
+import { useAppStore } from '../../store';
 import { ThemedSelect, type ThemedSelectItem } from '../common/ThemedSelect';
 import { ComposableInput } from '../common/ComposableInput';
 
@@ -41,6 +40,71 @@ export interface CloudEmbeddingFormProps {
   helperClass: string;
 }
 
+interface DimensionsFieldProps {
+  inputClass: string;
+  min: number;
+  max: number;
+  configDimensions?: number;
+  fallbackDimensions: number;
+  onCommit: (dims: number) => void;
+}
+
+// v2.14.12 dimensions-input subcomponent. See the inline comment at the call
+// site for why we split it out (mainly: a `dimDraft` string state local to
+// this component is the cleanest way to allow temporary empty-string display
+// without persisting 0 to the upstream config).
+const DimensionsField: React.FC<DimensionsFieldProps> = ({
+  inputClass,
+  min,
+  max,
+  configDimensions,
+  fallbackDimensions,
+  onCommit,
+}) => {
+  const [dimDraft, setDimDraft] = useState<string>(() =>
+    configDimensions ? String(configDimensions) : '',
+  );
+
+  // External config.dimensions changes (handleProviderChange picks a new
+  // preset, an event/sync from another tab, the user opens the form again
+  // after switching providers in another instance, etc.) flow back into the
+  // local draft. Skip when the values already agree to avoid clobbering an
+  // in-progress edit on a re-render.
+  useEffect(() => {
+    const incoming = configDimensions ? String(configDimensions) : '';
+    if (incoming !== dimDraft && (configDimensions ?? 0) !== parseInt(dimDraft, 10)) {
+      setDimDraft(incoming);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally re-key on configDimensions only
+  }, [configDimensions]);
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      value={dimDraft}
+      onChange={(e) => {
+        // Strip any non-digit the IME might inject (e.g. composition residue).
+        const raw = e.target.value.replace(/[^0-9]/g, '');
+        setDimDraft(raw);
+        const n = parseInt(raw, 10);
+        if (!isNaN(n) && n >= min && n <= max) {
+          onCommit(n);
+        }
+      }}
+      onBlur={() => {
+        const n = parseInt(dimDraft, 10);
+        if (!dimDraft || isNaN(n) || n < min || n > max) {
+          setDimDraft(String(fallbackDimensions));
+          onCommit(fallbackDimensions);
+        }
+      }}
+      className={`${inputClass} w-full mt-1`}
+    />
+  );
+};
+
 export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   language,
   isDarkMode,
@@ -48,15 +112,14 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   fieldLabelClass,
   helperClass,
 }) => {
-  const [config, setConfig] = useState<EmbeddingProviderConfig>(() => getEmbeddingConfig());
+  // v2.14.12: subscribe directly to the Zustand-backed embeddingConfig.
+  // Both this form (rendered inside AIConfigScreen + EmbeddingConfigSection)
+  // and any other instance share the same reactive state — no more dual
+  // useState mirrors, no more `kumiko:embedding-config-changed` event channel.
+  const config = useAppStore((s) => s.embeddingConfig);
+  const setEmbeddingConfig = useAppStore((s) => s.setEmbeddingConfig);
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
-
-  useEffect(() => {
-    const handler = () => setConfig(getEmbeddingConfig());
-    window.addEventListener('kumiko:embedding-config-changed', handler);
-    return () => window.removeEventListener('kumiko:embedding-config-changed', handler);
-  }, []);
 
   const modelOptions = useMemo(() => EMBEDDING_MODEL_CATALOG[config.provider] || [], [config.provider]);
   const activeModelPreset = useMemo(
@@ -69,14 +132,13 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   );
 
   const update = useCallback((patch: Partial<EmbeddingProviderConfig>) => {
-    setConfig((prev) => {
-      const next = { ...prev, ...patch };
-      setEmbeddingConfig(next);
-      return next;
-    });
+    // v2.14.12: side-effect-free dispatch (slice setter writes Zustand + localStorage).
+    // No more setState updater with side-effects; no more cross-form custom event.
+    const prev = useAppStore.getState().embeddingConfig;
+    setEmbeddingConfig({ ...prev, ...patch });
     setTestStatus('idle');
     setTestMessage('');
-  }, []);
+  }, [setEmbeddingConfig]);
 
   const handleProviderChange = useCallback((provider: EmbeddingProvider) => {
     const newPresets = EMBEDDING_MODEL_CATALOG[provider] || [];
@@ -211,13 +273,25 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
             </span>
           )}
         </label>
-        <input
-          type="number"
+        {/* v2.14.12 dimensions input UX:
+            - type="text" + inputMode="numeric": pops the numeric keyboard on
+              Android without inheriting <input type="number">'s spin buttons,
+              forced-min-clamp, or scroll-to-change quirks.
+            - dimDraft local string: the previous "value={config.dimensions || 0}"
+              + "parseInt(...) || 0" combo turned an empty field into a sticky
+              "0" the user had to delete before re-typing. The draft holds the
+              raw string, only valid positive integers flow through to config,
+              and onBlur restores the model preset default if the field is left
+              empty/invalid (so we never persist 0 by accident).
+            - external config.dimensions changes (e.g. handleProviderChange picks
+              a new preset) sync back into the draft via the useEffect below. */}
+        <DimensionsField
+          inputClass={inputClass}
           min={activeModelPreset?.minDimensions || 1}
           max={activeModelPreset?.maxDimensions || 8192}
-          value={config.dimensions || 0}
-          onChange={(e) => update({ dimensions: parseInt(e.target.value, 10) || 0 })}
-          className={`${inputClass} w-full mt-1`}
+          configDimensions={config.dimensions}
+          fallbackDimensions={activeModelPreset?.defaultDimensions || DEFAULT_EMBEDDING_CONFIG.dimensions || 768}
+          onCommit={(dims) => update({ dimensions: dims })}
         />
         {/* v2.14.6 G.2: dimensions hint switched from helperClass (warm
             ka-brown body copy) to ka-micro + neutral gray to match the

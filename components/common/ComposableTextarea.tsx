@@ -1,10 +1,8 @@
-// v2.14.11 — IME-safe controlled <textarea> drop-in (deeper fix for v2.14.10).
-// Same rationale as ComposableInput.tsx: React's per-commit controlled-input
-// enforcement (`node.value = props.value` even when the prop didn't change)
-// kills Chinese IME composition on Android WebView whenever an unrelated
-// parent re-render commits mid-composition. We make the textarea uncontrolled
-// at React's layer and mirror the parent's `value` prop manually in a
-// useEffect that respects isComposingRef.
+// v2.14.12 — IME-safe controlled <textarea> drop-in (third iteration).
+// See ComposableInput.tsx for the full rationale and three-layer defense
+// design. This file is the textarea-shaped twin: same useEffect [value] dep,
+// same nativeEvent.isComposing + inputType backup detection in onChange,
+// same onCompositionUpdate isComposingRef rearm.
 
 import React, { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 
@@ -23,9 +21,19 @@ function setNativeTextareaValue(el: HTMLTextAreaElement, value: string) {
   }
 }
 
+function isCompositionInputType(inputType: string | undefined): boolean {
+  if (!inputType) return false;
+  return (
+    inputType === 'insertCompositionText' ||
+    inputType === 'deleteCompositionText' ||
+    inputType === 'insertFromComposition' ||
+    inputType === 'deleteByComposition'
+  );
+}
+
 export const ComposableTextarea = forwardRef<HTMLTextAreaElement, ComposableTextareaProps>(
   function ComposableTextarea(
-    { onChange, onCompositionStart, onCompositionEnd, value, defaultValue, ...rest },
+    { onChange, onCompositionStart, onCompositionUpdate, onCompositionEnd, value, defaultValue, ...rest },
     ref,
   ) {
     const isComposingRef = useRef(false);
@@ -42,7 +50,7 @@ export const ComposableTextarea = forwardRef<HTMLTextAreaElement, ComposableText
       if (el.value !== next) {
         setNativeTextareaValue(el, next);
       }
-    });
+    }, [value]);
 
     return (
       <textarea
@@ -50,11 +58,19 @@ export const ComposableTextarea = forwardRef<HTMLTextAreaElement, ComposableText
         defaultValue={value == null ? defaultValue : String(value)}
         {...rest}
         onChange={(e) => {
-          if (!isComposingRef.current) onChange?.(e);
+          const native = e.nativeEvent as InputEvent;
+          const composingByNative = !!native.isComposing || isCompositionInputType(native.inputType);
+          if (composingByNative) isComposingRef.current = true;
+          if (isComposingRef.current) return;
+          onChange?.(e);
         }}
         onCompositionStart={(e) => {
           isComposingRef.current = true;
           onCompositionStart?.(e);
+        }}
+        onCompositionUpdate={(e) => {
+          isComposingRef.current = true;
+          onCompositionUpdate?.(e);
         }}
         onCompositionEnd={(e) => {
           isComposingRef.current = false;

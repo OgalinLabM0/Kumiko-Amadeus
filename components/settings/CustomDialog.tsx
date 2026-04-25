@@ -156,11 +156,15 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
               onChange={(e) => setInputValue(e.target.value)}
               placeholder={inputPlaceholder}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  onConfirm(inputValue);
-                  setInputValue('');
-                }
+                if (e.key !== 'Enter') return;
+                // v2.14.12: same IME guard as chat input — Android WebView users
+                // typing Chinese into a prompt dialog were getting their committed
+                // candidate eaten when the IME's Enter triggered Confirm before
+                // they could review what they typed. See components/App.tsx.
+                if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+                e.preventDefault();
+                onConfirm(inputValue);
+                setInputValue('');
               }}
               className={`mt-4 w-full p-2 rounded text-sm border outline-none focus:ring-1 ${isDarkMode ? 'bg-[#120d0a] border-[#5a4635] text-[#ead8c1] placeholder-[#8d7760] focus:ring-[#9f7449]' : 'bg-gray-50 border-gray-300 text-gray-900 placeholder-gray-400 focus:ring-[#785A42]'}`}
             />

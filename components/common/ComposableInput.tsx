@@ -1,45 +1,50 @@
-// v2.14.11 — IME-safe controlled <input> drop-in (deeper fix for v2.14.10).
+// v2.14.12 — IME-safe controlled <input> drop-in (third iteration).
 //
-// Why v2.14.10 wasn't enough:
-//   v2.14.10 wrapped <input value=... onChange=...> with a composition
-//   guard that suppressed the consumer's onChange callback while the IME
-//   was actively composing. That stopped the *parent state* from
-//   churning mid-composition, but it did NOT stop React from doing its
-//   per-commit controlled-input enforcement: every commit, React's
-//   ReactDOMInput.updateWrapper does the equivalent of
+// History recap:
+//   v2.14.10: wrapped onChange with composition guard. Insufficient because
+//             React's controlled-input enforcement still runs on every
+//             commit and overwrites the DOM mid-composition.
+//   v2.14.11: switched to defaultValue + manual sync via useEffect to bypass
+//             React's per-commit enforcement. Insufficient because (a) the
+//             useEffect had no deps so it fired on every render, including
+//             irrelevant 1s setInterval re-renders from useScheduledReminders /
+//             chatActions countdown / TaskPanel nowTick / etc; and (b) some
+//             Android IMEs (Sogou / Baidu / Google Pinyin / Gboard 9-grid /
+//             handwriting) don't fire compositionstart at all, or fire
+//             compositionend prematurely between candidates, leaving
+//             isComposingRef.current === false during what is logically still
+//             active composition. The combination meant that on a 1s tick the
+//             effect ran, isComposingRef was false, el.value="ni" (IME ghost),
+//             next="" (parent state), and we wrote DOM = "" — wiping the IME.
 //
-//     if (node.value !== String(props.value)) node.value = String(props.value);
+// What v2.14.12 does (three layers of defense, any one would help, all three
+// stack so a regression in one doesn't break the whole flow):
 //
-//   So when *any* unrelated parent re-render commits while the user is
-//   still typing pinyin (e.g. the 1-second `setTimeLeft` setInterval in
-//   chatActions.ts that runs during voice listening, the 1-second
-//   nowTick in TaskPanel, the 30-second reminder reconcile loop, the
-//   service-worker auto-update poll, etc.), React slams the DOM value
-//   back to whatever the parent's state is (usually `""`), wiping out
-//   the in-progress Chinese candidate. That's the
-//   "type for ~1 second, content disappears" symptom that survived
-//   v2.14.10.
+//   Layer 1 — useEffect [value] dep:
+//     The DOM-sync effect now ONLY runs when the parent's `value` prop
+//     actually changes. The 1s setInterval-driven re-renders (which don't
+//     change value) no longer trigger the sync path at all, eliminating the
+//     entire class of "spurious DOM write during composition" bugs regardless
+//     of whether isComposingRef is accurate.
 //
-// What this version does:
-//   We make the <input> *uncontrolled* at the React layer (defaultValue,
-//   no `value` prop is passed to the DOM element), so React's
-//   updateWrapper enforcement no longer runs at all. The parent's
-//   `value` prop is mirrored to the DOM manually inside a useEffect that
-//   short-circuits when isComposingRef is true. As soon as
-//   compositionend fires, we re-fire onChange so the parent state
-//   catches up to whatever the IME just committed; the next render then
-//   sees DOM value == prop value and the sync useEffect no-ops.
+//   Layer 2 — nativeEvent.isComposing in onChange:
+//     Some IMEs deliver input events with `inputEvent.isComposing === true`
+//     but never fire compositionstart. We check both isComposingRef AND the
+//     native event flag, and update isComposingRef defensively when the
+//     native event indicates composition. This catches IMEs that skip
+//     compositionstart entirely, plus the inputType='insertCompositionText'
+//     marker as an additional signal.
 //
-//   To keep React's internal valueTracker (the shadow value React diffs
-//   against to decide whether to fire `onChange`) in sync after a
-//   programmatic write, we go through the native HTMLInputElement
-//   prototype setter rather than `el.value = ...` — otherwise the next
-//   user keystroke after a clear-on-send wouldn't fire onChange because
-//   React would still believe the value hadn't changed.
+//   Layer 3 — onCompositionUpdate sets isComposingRef = true:
+//     For IMEs that fire compositionend prematurely between candidates and
+//     then continue with another implicit composition, compositionupdate
+//     usually still fires for the ongoing composition. Re-arming
+//     isComposingRef on every compositionupdate event covers that race.
 //
-// Usage stays drop-in: `<ComposableInput value={...} onChange={...} ... />`
-// with the same props as <input>. English / numeric / paste paths are
-// unaffected because they never fire compositionstart/end.
+// We still go through the native HTMLInputElement prototype value setter on
+// the rare DOM-write path so React's internal valueTracker stays in sync —
+// otherwise the next user keystroke after a programmatic clear-on-send
+// wouldn't fire onChange (React would think the value hadn't changed).
 
 import React, { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 
@@ -58,9 +63,21 @@ function setNativeInputValue(el: HTMLInputElement, value: string) {
   }
 }
 
+function isCompositionInputType(inputType: string | undefined): boolean {
+  if (!inputType) return false;
+  // Composition-related InputEvent types defined by the Input Events spec:
+  // https://www.w3.org/TR/input-events-2/#interface-InputEvent-Attributes
+  return (
+    inputType === 'insertCompositionText' ||
+    inputType === 'deleteCompositionText' ||
+    inputType === 'insertFromComposition' ||
+    inputType === 'deleteByComposition'
+  );
+}
+
 export const ComposableInput = forwardRef<HTMLInputElement, ComposableInputProps>(
   function ComposableInput(
-    { onChange, onCompositionStart, onCompositionEnd, value, defaultValue, ...rest },
+    { onChange, onCompositionStart, onCompositionUpdate, onCompositionEnd, value, defaultValue, ...rest },
     ref,
   ) {
     const isComposingRef = useRef(false);
@@ -77,7 +94,7 @@ export const ComposableInput = forwardRef<HTMLInputElement, ComposableInputProps
       if (el.value !== next) {
         setNativeInputValue(el, next);
       }
-    });
+    }, [value]);
 
     return (
       <input
@@ -85,11 +102,19 @@ export const ComposableInput = forwardRef<HTMLInputElement, ComposableInputProps
         defaultValue={value == null ? defaultValue : String(value)}
         {...rest}
         onChange={(e) => {
-          if (!isComposingRef.current) onChange?.(e);
+          const native = e.nativeEvent as InputEvent;
+          const composingByNative = !!native.isComposing || isCompositionInputType(native.inputType);
+          if (composingByNative) isComposingRef.current = true;
+          if (isComposingRef.current) return;
+          onChange?.(e);
         }}
         onCompositionStart={(e) => {
           isComposingRef.current = true;
           onCompositionStart?.(e);
+        }}
+        onCompositionUpdate={(e) => {
+          isComposingRef.current = true;
+          onCompositionUpdate?.(e);
         }}
         onCompositionEnd={(e) => {
           isComposingRef.current = false;

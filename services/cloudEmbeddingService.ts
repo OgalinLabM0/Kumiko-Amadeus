@@ -154,26 +154,32 @@ export const EMBEDDING_MODEL_CATALOG: Record<EmbeddingProvider, EmbeddingModelPr
   ],
 };
 
+// v2.14.12 — getEmbeddingConfig / setEmbeddingConfig now route through the
+// Zustand store (`embeddingSlice`), which is the single source of truth for
+// the embedding configuration. Persistence to localStorage and any future
+// cross-tab notifications are handled by the slice's setter — the legacy
+// `kumiko:embedding-config-changed` custom event is gone, since every
+// consumer now subscribes to `useAppStore(s => s.embeddingConfig)` directly
+// and gets reactive updates without a manual event channel.
+//
+// The `useAppStore` import is intentionally a top-level ESM import even
+// though it forms a cycle with `store/index.ts` (which imports
+// embeddingSlice.ts which imports this file). The cycle is safe because
+// nothing in this module accesses `useAppStore` at module-load time — both
+// helpers below resolve the binding lazily inside their function bodies, by
+// which point the store has finished construction.
+//
+// NB: `EMBEDDING_CONFIG_STORAGE_KEY` and `DEFAULT_EMBEDDING_CONFIG` are still
+// exported above so that the slice can hydrate from localStorage on first
+// load without having to itself import this file's runtime helpers.
+import { useAppStore } from '../store';
+
 export function getEmbeddingConfig(): EmbeddingProviderConfig {
-  if (typeof window === 'undefined') return DEFAULT_EMBEDDING_CONFIG;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return DEFAULT_EMBEDDING_CONFIG;
-    const parsed = JSON.parse(raw) as Partial<EmbeddingProviderConfig>;
-    return { ...DEFAULT_EMBEDDING_CONFIG, ...parsed };
-  } catch {
-    return DEFAULT_EMBEDDING_CONFIG;
-  }
+  return useAppStore.getState().embeddingConfig;
 }
 
 export function setEmbeddingConfig(config: EmbeddingProviderConfig): void {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-    window.dispatchEvent(new CustomEvent('kumiko:embedding-config-changed', { detail: config }));
-  } catch (e) {
-    console.warn('[cloudEmbedding] failed to persist config:', e);
-  }
+  useAppStore.getState().setEmbeddingConfig(config);
 }
 
 interface OpenAIEmbeddingResponse {

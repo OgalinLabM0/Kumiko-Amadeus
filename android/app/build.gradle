@@ -11,10 +11,10 @@ android {
         // 2.12.0 → 21200，2.12.1 → 21201，2.13.0 → 21300，2.14.0 → 21400，2.14.1 → 21401，
         // 2.14.2 → 21402，2.14.3 → 21403，2.14.4 → 21404，2.14.5 → 21405，
         // 2.14.6 → 21406，2.14.7 → 21407，2.14.8 → 21408，2.14.9 → 21409，
-        // 2.14.10 → 21410。
+        // 2.14.10 → 21410，2.14.11 → 21411。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21411
-        versionName "2.14.11"
+        versionCode 21412
+        versionName "2.14.12"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

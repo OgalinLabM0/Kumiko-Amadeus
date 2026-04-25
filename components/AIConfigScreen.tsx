@@ -14,6 +14,7 @@ import { isCapacitorNative } from '../services/environment';
 // it talks to the LLM provider directly (CapacitorHttp bypasses CORS).
 import { CloudEmbeddingForm } from './settings/CloudEmbeddingForm';
 import { ComposableInput } from './common/ComposableInput';
+import { useAppStore } from '../store';
 
 // F2B.3: simplified — both Electron desktop and Capacitor APK call the
 // validators in-process. The PWA `ai-config:validate-*-from-mobile`
@@ -361,6 +362,27 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
   `;
 
   useEffect(() => { setConfig(getCurrentAIConfig()); }, []);
+
+  // v2.14.12: when the user edits any embedding-config field inside the
+  // CloudEmbeddingForm below, the previously-displayed Validate-All result
+  // (the green check / red triangle on the Cloud Embedding SectionHeader) is
+  // by definition stale — it was computed against an older config snapshot.
+  // Reset it back to idle so the user's UI signal matches the live config.
+  // We deliberately read these fields off the Zustand slice instead of via
+  // event subscription so this effect fires regardless of which form
+  // instance (this screen's or Settings') made the edit.
+  const liveEmbeddingConfig = useAppStore((s) => s.embeddingConfig);
+  useEffect(() => {
+    setEmbeddingValidation((prev) =>
+      prev.status === 'idle' || prev.status === 'checking' ? prev : { status: 'idle' },
+    );
+  }, [
+    liveEmbeddingConfig.provider,
+    liveEmbeddingConfig.apiKey,
+    liveEmbeddingConfig.model,
+    liveEmbeddingConfig.dimensions,
+    liveEmbeddingConfig.customEndpoint,
+  ]);
 
   const handleValidateAll = async () => {
       const save = await persistAIConfig(config);

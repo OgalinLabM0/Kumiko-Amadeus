@@ -489,7 +489,16 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                           <div className="p-[clamp(6px,0.8vw,10px)] rounded-full bg-[#785A42]/8">
                             <Lock size={20} className="text-[#785A42]/50" />
                           </div>
-                          <ComposableInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} className="bg-transparent outline-none w-full ka-input-copy auth-input-text placeholder-[#785A42]/30" placeholder="••••" />
+                          <ComposableInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => {
+                            if (e.key !== 'Enter') return;
+                            // v2.14.12: align with App.tsx / CustomDialog Enter guard.
+                            // Password fields normally don't trigger IME but the
+                            // username field above shares the same form & handleLogin,
+                            // so keep the guard here for consistency in case a future
+                            // refactor wires the username Enter through this same handler.
+                            if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+                            handleLogin();
+                          }} className="bg-transparent outline-none w-full ka-input-copy auth-input-text placeholder-[#785A42]/30" placeholder="••••" />
                         </div>
                     </div>
 

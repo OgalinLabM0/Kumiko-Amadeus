@@ -20,10 +20,10 @@ import { Collapse } from '../Collapse';
 import { isCapacitorNative } from '../../services/environment';
 import { CloudEmbeddingForm } from './CloudEmbeddingForm';
 import {
-  getEmbeddingConfig,
   setEmbeddingConfig,
   type EmbeddingProviderConfig,
 } from '../../services/cloudEmbeddingService';
+import { useAppStore } from '../../store';
 import ReembedConfirmDialog from './ReembedConfirmDialog';
 
 interface EmbeddingConfigSectionProps {
@@ -55,7 +55,12 @@ export const EmbeddingConfigSection: React.FC<EmbeddingConfigSectionProps> = ({
 }) => {
   if (!isCapacitorNative()) return null;
 
-  const [currentConfig, setCurrentConfig] = useState<EmbeddingProviderConfig>(() => getEmbeddingConfig());
+  // v2.14.12: subscribe to the Zustand-backed embeddingConfig directly.
+  // Previously this section kept its own `useState` mirror that resynced via
+  // a `kumiko:embedding-config-changed` listener (and its sibling form did
+  // the same), which produced silent divergence whenever the event was
+  // missed. Single source of truth removes the whole class of bug.
+  const currentConfig = useAppStore((s) => s.embeddingConfig);
   const [lastAppliedFingerprint, setLastAppliedFingerprint] = useState<string>('');
   const [vectorCount, setVectorCount] = useState<number>(0);
   const [hasResumable, setHasResumable] = useState<boolean>(false);
@@ -84,12 +89,6 @@ export const EmbeddingConfigSection: React.FC<EmbeddingConfigSectionProps> = ({
   useEffect(() => {
     void refreshReembedInfo();
   }, [refreshReembedInfo]);
-
-  useEffect(() => {
-    const handler = () => setCurrentConfig(getEmbeddingConfig());
-    window.addEventListener('kumiko:embedding-config-changed', handler);
-    return () => window.removeEventListener('kumiko:embedding-config-changed', handler);
-  }, []);
 
   // Refresh reembed info every time the section is opened so the banner
   // reflects the freshest cursor / fingerprint state without needing a
@@ -127,8 +126,9 @@ export const EmbeddingConfigSection: React.FC<EmbeddingConfigSectionProps> = ({
 
   const handleCancelChange = useCallback(() => {
     if (prevConfigForRollback) {
+      // The Zustand setter handles both store + localStorage now, and the
+      // selector above will rerender us with the rolled-back values.
       setEmbeddingConfig(prevConfigForRollback);
-      setCurrentConfig(prevConfigForRollback);
     }
   }, [prevConfigForRollback]);
 
