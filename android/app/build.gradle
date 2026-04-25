@@ -16,10 +16,13 @@ android {
         // 已被 git revert 回退至 v2.14.12 代码状态，仅版本号继续往前走以满足
         // GitHub Release 不能复用 tag 的硬约束），2.14.16 → 21416（在 v2.14.15
         // baseline 上重做 v2.14.13/14 的 chatActions LLM scheduleTrigger
-        // fall-through 修复，单文件低风险，作为分组重做的第 1 组）。
+        // fall-through 修复，单文件低风险，作为分组重做的第 1 组），
+        // 2.14.17 → 21417（聚合 release：v2.14.13/14 剩余的 IME / Embedding /
+        // Android exact alarm 三组 + 新设计的 D 方案 LLM 兜底，按组拆 5 个独立
+        // commit 便于 booting 时 git revert 二分定位）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21416
-        versionName "2.14.16"
+        versionCode 21417
+        versionName "2.14.17"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
