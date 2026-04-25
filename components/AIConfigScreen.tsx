@@ -214,8 +214,14 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
   const [isModelValidating, setIsModelValidating] = useState(false);
   const [modelValidationResult, setModelValidationResult] = useState<{ main: boolean | null, summary: boolean | null, vision: boolean | null }>({ main: null, summary: null, vision: null });
   const [isSecurityOpen, setIsSecurityOpen] = useState(true);
-  const [isAllocationOpen, setIsAllocationOpen] = useState(false);
-  const [isVisionOpen, setIsVisionOpen] = useState(false);
+  // v2.14.3 N.2: this screen is the *initial first-launch wizard*, not the
+  // ordinary settings panel — the user has no other place to discover the
+  // model allocation and vision helper knobs before entering the app. Default
+  // both to OPEN so the wizard surfaces every required field without making
+  // the user go fishing through collapsed accordions. Settings panel still
+  // controls its own collapse state independently.
+  const [isAllocationOpen, setIsAllocationOpen] = useState(true);
+  const [isVisionOpen, setIsVisionOpen] = useState(true);
   // F2A.3d: cloud embedding section, mobile-only and default-open so
   // first-launch users on Android see the RAG dependency knob without
   // hunting for it. The Vision Helper above stays default-collapsed

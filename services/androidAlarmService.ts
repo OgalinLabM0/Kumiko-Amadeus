@@ -47,17 +47,39 @@ interface KumikoAlarmsPluginShape {
   }>;
 }
 
+// v2.14.3 N.7: caches both the resolved plugin handle and the in-flight
+// import Promise. Previously every consumer (scheduleAndroidAlarm,
+// cancelAndroidAlarm, canScheduleExactAlarms, drainPendingActions, …)
+// re-ran `registerPlugin('KumikoAlarms')` on each call. Capacitor's
+// runtime tolerates duplicate registrations but logs
+// `[WARN] Capacitor plugin "KumikoAlarms" already registered` for every
+// repeat — easily 10+ lines per minute under normal use, drowning out
+// the actually-useful logcat entries. With the cached handle the warn
+// fires at most once (the very first call after the native side
+// pre-registered it from MainActivity).
+let cachedPlugin: KumikoAlarmsPluginShape | null = null;
+let pluginPromise: Promise<KumikoAlarmsPluginShape | null> | null = null;
 async function getPlugin(): Promise<KumikoAlarmsPluginShape | null> {
   if (!isCapacitorNative()) return null;
-  try {
-    // Lazy-import @capacitor/core only when we actually need to dispatch
-    // (so PC / PWA bundles don't pay the import cost).
-    const { registerPlugin } = await import('@capacitor/core');
-    return registerPlugin<KumikoAlarmsPluginShape>('KumikoAlarms');
-  } catch (e) {
-    console.warn('[androidAlarms] plugin import failed:', e);
-    return null;
-  }
+  if (cachedPlugin) return cachedPlugin;
+  if (pluginPromise) return pluginPromise;
+  pluginPromise = (async () => {
+    try {
+      // Lazy-import @capacitor/core only when we actually need to dispatch
+      // (so PC / PWA bundles don't pay the import cost).
+      const { registerPlugin } = await import('@capacitor/core');
+      const plugin = registerPlugin<KumikoAlarmsPluginShape>('KumikoAlarms');
+      cachedPlugin = plugin;
+      return plugin;
+    } catch (e) {
+      console.warn('[androidAlarms] plugin import failed:', e);
+      // Reset the promise so a future caller can retry — useful in dev
+      // when @capacitor/core is mid-HMR.
+      pluginPromise = null;
+      return null;
+    }
+  })();
+  return pluginPromise;
 }
 
 export async function scheduleAndroidAlarm(input: ScheduleAlarmInput): Promise<ScheduleAlarmResult> {

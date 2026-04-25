@@ -39,6 +39,12 @@ export interface VectorEntity {
   source?: string;
   score?: number;
   canonicalKey?: string;
+  // v2.14.3 M.5: PC parity for boostHybridScore role penalty (`role === 'mixed'`
+  // → -0.015) and PC's `searchTierVectors` role filter. Stored as opaque string
+  // because PC accepts any role label (user / model / mixed / system / unknown);
+  // IndexedDB is schemaless at the row level so adding this field needs no
+  // schema bump — old rows simply read back with `role === undefined`.
+  role?: string;
 }
 
 export interface EpisodeEntity {

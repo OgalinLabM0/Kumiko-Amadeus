@@ -10,6 +10,7 @@ import {
   PREFERENCES_UPDATED_EVENT,
   queueLocalStoragePreferenceSync,
 } from '../services/preferencesSync';
+import { isCapacitorNative } from '../services/environment';
 
 // Cloud sync removed from the product — any references to CLOUD_SYNC_AVAILABLE have been
 // deleted along with the CLOUD tab. If the feature returns, reintroduce the constant
@@ -154,9 +155,14 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   const [loginError, setLoginError] = useState(false);
   const [resetState, setResetState] = useState<'IDLE' | 'CONFIRMING' | 'SUCCESS'>('IDLE');
 
-  // Only LOCAL and MANUAL tabs remain; the CLOUD tab (and its isCloudConnected state)
-  // were removed along with the cloud sync feature (P0 #6).
-  const [setupTab, setSetupTab] = useState<'LOCAL' | 'MANUAL'>('LOCAL');
+  // v2.14.3 N.1: on Capacitor (Android APK) the "LOCAL" tab — which mounts a
+  // file off the host filesystem via a system picker — has no analogue. The
+  // app is fully sandboxed under scoped storage and the only way to bring
+  // existing data in is the explicit ZIP / JSON import (the "MANUAL" tab).
+  // Default to MANUAL there and hide the LOCAL pill entirely so users don't
+  // chase a dead end. PC keeps the original LOCAL-default behaviour.
+  const isCapacitor = useMemo(() => isCapacitorNative(), []);
+  const [setupTab, setSetupTab] = useState<'LOCAL' | 'MANUAL'>(isCapacitor ? 'MANUAL' : 'LOCAL');
   const [setupStatus, setSetupStatus] = useState<string>('');
   const [setupError, setSetupError] = useState<string | null>(null);
   const [isReadyToEnter, setIsReadyToEnter] = useState(false);
@@ -343,7 +349,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
   useEffect(() => {
     if (step !== 'SETUP') return;
 
-    const localReady = setupTab === 'LOCAL' && !!connectedFileName;
+    // On Capacitor LOCAL is hidden, so only consider the MANUAL ready signal.
+    const localReady = !isCapacitor && setupTab === 'LOCAL' && !!connectedFileName;
     const manualReady = setupTab === 'MANUAL' && setupStatus === t.statusSuccess;
 
     if (localReady || manualReady) {
@@ -351,7 +358,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
     } else {
       setIsReadyToEnter(false);
     }
-  }, [step, setupTab, connectedFileName, setupStatus, t.statusSuccess]);
+  }, [step, setupTab, connectedFileName, setupStatus, t.statusSuccess, isCapacitor]);
 
   const handleLogin = () => {
     const storedUser = localStorage.getItem('kumiko_auth_username') || DEFAULT_USER;
@@ -503,11 +510,13 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                 {/* ============ SETUP STEP ============ */}
                 {step === 'SETUP' && (
                 <div className="flex flex-col gap-[clamp(10px,1.5vw,18px)] w-full animate-in fade-in duration-300">
-                    {/* PILL TABS */}
+                    {/* PILL TABS — LOCAL hidden on Capacitor (N.1) */}
                     <div className="pill-tabs flex">
-                        <ForceTouchButton onClick={() => handleTabChange('LOCAL')} className={`pill-tab flex-1 min-w-0 py-[clamp(8px,1.4vw,14px)] min-h-[44px] text-[clamp(0.6rem,1.2vw,0.75rem)] font-bold tracking-tight flex flex-col items-center justify-center gap-1 whitespace-nowrap overflow-hidden ${setupTab === 'LOCAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
-                          <HardDrive size={16} /> {t.tabLocal}
-                        </ForceTouchButton>
+                        {!isCapacitor && (
+                          <ForceTouchButton onClick={() => handleTabChange('LOCAL')} className={`pill-tab flex-1 min-w-0 py-[clamp(8px,1.4vw,14px)] min-h-[44px] text-[clamp(0.6rem,1.2vw,0.75rem)] font-bold tracking-tight flex flex-col items-center justify-center gap-1 whitespace-nowrap overflow-hidden ${setupTab === 'LOCAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
+                            <HardDrive size={16} /> {t.tabLocal}
+                          </ForceTouchButton>
+                        )}
                         <ForceTouchButton onClick={() => handleTabChange('MANUAL')} className={`pill-tab flex-1 min-w-0 py-[clamp(8px,1.4vw,14px)] min-h-[44px] text-[clamp(0.6rem,1.2vw,0.75rem)] font-bold tracking-tight flex flex-col items-center justify-center gap-1 whitespace-nowrap overflow-hidden ${setupTab === 'MANUAL' ? 'pill-tab-active' : 'text-[#785A42]/70 hover:bg-white/30'}`} >
                           <Download size={16} /> {t.tabManual}
                         </ForceTouchButton>
@@ -517,7 +526,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                     {/* CONTENT AREA */}
                     <div className="h-[clamp(200px,28vh,300px)] glass-input p-[clamp(16px,2.5vw,28px)] flex flex-col justify-between">
                         <div className="flex-1 min-h-0 flex flex-col justify-center">
-                        {setupTab === 'LOCAL' && (
+                        {!isCapacitor && setupTab === 'LOCAL' && (
                         <div className="w-full h-full flex flex-col gap-[clamp(12px,1.3vw,16px)] items-center justify-center text-center">
                             <p className="auth-hint ka-copy-sm text-[#785A42]/60 leading-relaxed max-w-[28rem] break-words">{t.authLocalDesc}</p>
                             {/* F2B.1/3: the PWA remote-file-picker hint is gone

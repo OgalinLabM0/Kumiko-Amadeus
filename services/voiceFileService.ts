@@ -66,26 +66,43 @@ const VOICE_DIR = 'voices';
 // produced 100+ entries of log spam per session. Memoize the first
 // successful (or already-exists) attempt module-wide so the spam stops
 // after a single boot-time call.
-let voiceDirEnsured = false;
+// v2.14.3 N.6: switched from a boolean flag to an in-flight Promise so
+// concurrent callers (capacitorVoiceWrite + capacitorVoiceList +
+// clearAllVoices firing on settings open) all share the same mkdir
+// attempt instead of racing into separate Filesystem.mkdir calls. Each
+// race produced one OS-PLUG-FILE-0010 "Directory already exists" warn
+// log per concurrent caller — visible as a wall of yellow lines on app
+// startup, even though the outcome was always benign. With a Promise
+// memo, the first caller does the mkdir, every subsequent caller within
+// the same boot awaits the same Promise (or short-circuits if it
+// already settled).
+let voiceDirEnsuredPromise: Promise<void> | null = null;
 async function ensureVoiceDir(
     Filesystem: typeof import('@capacitor/filesystem').Filesystem,
     Directory: typeof import('@capacitor/filesystem').Directory,
 ): Promise<void> {
-    if (voiceDirEnsured) return;
-    try {
-        await Filesystem.mkdir({ path: VOICE_DIR, directory: Directory.Data, recursive: true });
-    } catch (e: any) {
-        // OS-PLUG-FILE-0010 ("Directory already exists"), localized variants
-        // ("Directory exists", "已存在", "存在しています"), and OS-PLUG-FILE
-        // numeric tail are all benign — the directory is there, we proceed.
-        // Anything else (sandbox revoked, OOM) we still swallow because
-        // the subsequent readdir / writeFile will surface the real error.
-        const msg = String(e?.message || e || '').toLowerCase();
-        if (!/exist|already|0010|0008/i.test(msg)) {
-            console.warn('[voiceFileService] ensureVoiceDir non-exist error:', e);
+    if (voiceDirEnsuredPromise) return voiceDirEnsuredPromise;
+    voiceDirEnsuredPromise = (async () => {
+        try {
+            await Filesystem.mkdir({ path: VOICE_DIR, directory: Directory.Data, recursive: true });
+        } catch (e: any) {
+            // OS-PLUG-FILE-0010 ("Directory already exists"), localized variants
+            // ("Directory exists", "已存在", "存在しています"), and OS-PLUG-FILE
+            // numeric tail are all benign — the directory is there, we proceed.
+            // Anything else (sandbox revoked, OOM) we still swallow because
+            // the subsequent readdir / writeFile will surface the real error.
+            const msg = String(e?.message || e || '').toLowerCase();
+            if (!/exist|already|0010|0008/i.test(msg)) {
+                console.warn('[voiceFileService] ensureVoiceDir non-exist error:', e);
+                // Reset the memo so the next *new* call retries — only on a
+                // genuine, unexpected failure. We deliberately don't reset on
+                // the benign "already exists" path; that would defeat the
+                // whole purpose of the Promise memo.
+                voiceDirEnsuredPromise = null;
+            }
         }
-    }
-    voiceDirEnsured = true;
+    })();
+    return voiceDirEnsuredPromise;
 }
 
 async function capacitorVoiceWrite(messageId: string, buffer: ArrayBuffer): Promise<boolean> {

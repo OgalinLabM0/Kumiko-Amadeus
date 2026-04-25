@@ -12,9 +12,23 @@ declare const __APP_VERSION__: string;
 // a chance to call `app:get-version`. Capacitor never calls that IPC so
 // the field stayed '0.0.0' forever — surfaced in v2.14.0 as the user
 // complaint "应用更新页显示 v0.0.0".
+// v2.14.3 N.3: every renderer that displays a version wraps the value
+// with a literal `v` prefix (`v{currentVersion}` / `v{availableVersion}`),
+// because Electron's electron-updater historically delivers a bare
+// "2.14.2" string. Capacitor's GitHub Releases path delivers the raw
+// `tag_name`, which by our convention is "v2.14.2" — so the renderer ends
+// up rendering "vv2.14.2". Normalize at the slice boundary so neither
+// path leaks the prefix into shared state. Any string starting with
+// "v" or "V" followed by a digit gets the prefix dropped; everything
+// else (including empty / null) is passed through untouched.
+const stripLeadingV = (raw: string | null | undefined): string => {
+  if (!raw || typeof raw !== 'string') return '';
+  return /^v\d/i.test(raw) ? raw.slice(1) : raw;
+};
+
 const INITIAL_VERSION: string = (() => {
   try {
-    return typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : '0.0.0';
+    return stripLeadingV(typeof __APP_VERSION__ === 'string' && __APP_VERSION__ ? __APP_VERSION__ : '0.0.0') || '0.0.0';
   } catch {
     return '0.0.0';
   }
@@ -91,14 +105,15 @@ export const createUpdaterSlice: StateCreator<UpdaterSlice, [], [], UpdaterSlice
           get().setAppUpdateState((prev) => ({
             ...prev,
             status: 'available',
-            availableVersion: info.latestVersion!,
+            // Strip the leading "v" so the UI's `v{...}` prefix doesn't double up.
+            availableVersion: stripLeadingV(info.latestVersion!),
             error: null,
           }));
         } else {
           get().setAppUpdateState((prev) => ({
             ...prev,
             status: 'not-available',
-            availableVersion: info?.latestVersion ?? null,
+            availableVersion: info?.latestVersion ? stripLeadingV(info.latestVersion) : null,
             error: null,
           }));
         }

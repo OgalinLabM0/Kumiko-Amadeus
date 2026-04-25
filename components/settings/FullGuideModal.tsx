@@ -368,7 +368,17 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                       <div className={`rounded-lg md:rounded-xl p-1.5 md:p-2 ${isActive ? (isDarkMode ? 'bg-[#21150a]/30 text-[#21150a]' : 'bg-[#e0c58f]/40 text-[#8a6122]') : (isDarkMode ? 'bg-white/5 text-[#8f7458]' : 'bg-black/[0.04] text-[#9d8251]')}`}>
                         <Icon size={14} />
                       </div>
-                      <span className="md:hidden ka-micro font-semibold">{String(index + 1).padStart(2, '0')}</span>
+                      {/* v2.14.3 N.8: mobile strip now shows the section
+                          title alongside the index. Previously only "01"
+                          / "02" / … was visible, forcing the user to tap
+                          every pill to find out what each chapter covered.
+                          Title is allowed to truncate at ~10ch so the
+                          horizontal scroll still fits a healthy number of
+                          chapters in view at once. */}
+                      <div className="md:hidden flex items-center gap-1.5 min-w-0">
+                        <span className="ka-micro font-semibold opacity-60 shrink-0">{String(index + 1).padStart(2, '0')}</span>
+                        <span className="ka-copy-sm font-semibold truncate max-w-[8.5rem]">{section.title}</span>
+                      </div>
                       <div className="min-w-0 hidden md:block">
                         <div className="ka-micro opacity-55">{String(index + 1).padStart(2, '0')}</div>
                         <div className="text-[14.5px] leading-6 font-semibold md:text-[15px]">{section.title}</div>

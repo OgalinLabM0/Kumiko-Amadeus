@@ -162,7 +162,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   // A5.0: Cloud embedding config (Capacitor Android only). Section
   // hides itself on Electron / PWA via internal isCapacitorNative()
   // gate, so this state is harmless on non-mobile platforms.
-  const [isEmbeddingOpen, setIsEmbeddingOpen] = useState(true);
+  // v2.14.3 N.5: default to collapsed. The user mostly only touches this
+  // once (set provider on first launch) — keeping it expanded was forcing
+  // long scrolls past API-key-shaped fields every time they opened
+  // settings. Re-embed banner inside the section is enough to draw the
+  // user back in when something *actually* needs attention.
+  const [isEmbeddingOpen, setIsEmbeddingOpen] = useState(false);
   const [isTtsOpen, setIsTtsOpen] = useState(true);
   const [isDataManagementOpen, setIsDataManagementOpen] = useState(true);
   const [isLogViewerOpen, setIsLogViewerOpen] = useState(false);

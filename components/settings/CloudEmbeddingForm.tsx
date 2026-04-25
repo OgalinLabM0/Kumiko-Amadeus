@@ -218,7 +218,11 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
           disabled={testStatus === 'testing' || !config.apiKey}
           className={`px-3 py-2 rounded-lg ka-copy-sm font-semibold transition-colors flex items-center gap-1.5 ${
             testStatus === 'testing' || !config.apiKey
-              ? (isDarkMode ? 'bg-gray-700 text-gray-500 cursor-not-allowed' : 'bg-gray-200 text-gray-400 cursor-not-allowed')
+              // v2.14.3 N.5: disabled tone uses warm ka muted-brown rather
+              // than neutral gray so the button reads as "waiting on you"
+              // instead of "broken / dead". Old gray-200 on cream made the
+              // whole section look monochromatic.
+              ? (isDarkMode ? 'bg-[#2c241a] text-[#7a6a52] cursor-not-allowed border border-[#3d3023]' : 'bg-[#f3eada] text-[#a0896a] cursor-not-allowed border border-[#e0d4bd]')
               : (isDarkMode ? 'bg-[#2a3a2b] hover:bg-[#344a35] text-[#c7e6c9] border border-[#4c6a4e]' : 'bg-[#eaf5eb] hover:bg-[#d9ecda] text-[#3e6a42] border border-[#b8d4bb]')
           }`}
         >

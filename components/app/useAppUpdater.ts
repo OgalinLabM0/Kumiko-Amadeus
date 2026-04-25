@@ -85,10 +85,17 @@ export const useAppUpdater = ({
         if (cancelled || !info?.hasUpdate || !info.latestVersion) return;
         if (!shouldShowUpdatePrompt(info.latestVersion)) return;
         markUpdatePrompted(info.latestVersion);
+        // v2.14.3 N.3: normalize both sides of the arrow so a "2.14.2 → v2.14.3"
+        // mismatch never shows up. `__APP_VERSION__` is bare ("2.14.2"); the
+        // GitHub tag may include a leading "v". Strip uniformly then re-add `v`.
+        const stripV = (raw: string | undefined | null) =>
+          raw && /^v\d/i.test(raw) ? raw.slice(1) : (raw || '');
+        const cur = stripV(info.currentVersion);
+        const lat = stripV(info.latestVersion);
         const title = language === 'zh' ? '有新版本可用' : 'New version available';
         const message = language === 'zh'
-          ? `当前版本 ${info.currentVersion} → 最新 ${info.latestVersion}\n\n点击「打开下载页」会跳到 GitHub Release 页面，请下载 APK 后手动安装。`
-          : `Current ${info.currentVersion} → latest ${info.latestVersion}\n\nTapping "Open download page" will jump to the GitHub Release page; download the APK and install it manually.`;
+          ? `当前版本 v${cur} → 最新 v${lat}\n\n点击「打开下载页」会跳到 GitHub Release 页面，请下载 APK 后手动安装。`
+          : `Current v${cur} → latest v${lat}\n\nTapping "Open download page" will jump to the GitHub Release page; download the APK and install it manually.`;
         const ok = await dialogService.confirm({
           title,
           message,
@@ -132,10 +139,26 @@ export const useAppUpdater = ({
       setShowAppUpdateModal(true);
     }
 
+    // v2.14.3 N.3: surface a toast when a *manual* check returns
+    // "already on latest". Triggered only on the `checking → not-available`
+    // edge so the periodic background poll (which leaves the previous
+    // status as `idle` / `unsupported`) doesn't silently shower the user
+    // with toasts every time they reopen the app. Same edge guard for
+    // `error`, which previously was visible only inside the section's
+    // collapsed status string.
+    if (previousStatus === 'checking' && appUpdateState.status === 'not-available') {
+      setSystemNotice(UI_TRANSLATIONS[language].updateUpToDate);
+    }
+    if (previousStatus === 'checking' && appUpdateState.status === 'error') {
+      const errMsg = appUpdateState.error || UI_TRANSLATIONS[language].updateError;
+      setSystemNotice(errMsg);
+    }
+
     lastAppUpdateStatusRef.current = appUpdateState.status;
   }, [
     appUpdateState.status,
     appUpdateState.availableVersion,
+    appUpdateState.error,
     language,
     setShowAppUpdateModal,
     setSystemNotice,

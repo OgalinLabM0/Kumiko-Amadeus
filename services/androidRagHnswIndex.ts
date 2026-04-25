@@ -1,43 +1,80 @@
 // services/androidRagHnswIndex.ts
 //
-// v2.14.2 J.3 — HNSW WASM index for the Android Capacitor APK.
+// v2.14.3 M.1 / M.3 / M.4 — Tier-sharded HNSW WASM index for the Android
+// Capacitor APK. Replaces v2.14.2's single-graph implementation so Android
+// matches PC's electron-rag.cjs three-tier topology byte-for-byte:
 //
-// Why this exists:
-//   v2.14.1 shipped an Android RAG path that scored every Dexie row in JS
-//   with a hand-rolled cosine kernel (services/androidRagService.ts handle-
-//   Search). That's fine at 4-12k vectors (~50-100 ms / query), but degrades
-//   linearly and the user-facing search latency budget is ~150-300 ms total
-//   (the cloud embedding round-trip eats most of it). HNSW gives us O(log N)
-//   approximate search with a single C++ implementation — same algorithm as
-//   PC's hnswlib-node, same upstream nmslib/hnswlib library, just via the
-//   WebAssembly port (`hnswlib-wasm`).
+//   - core        — turn pairs, memory chunks, anchor highlights (signal)
+//   - episodic    — per-window summaries, episode boundaries
+//   - background  — wide-net periphery (lower priority, max-budget noise)
 //
-// Failure model (every entry point falls back to brute force gracefully):
-//   - HNSW init throws  → mode = 'bruteforce', WARN log, callers stay happy
-//   - HNSW load throws  → drop file, treat as needsRebuild, fall back
-//   - HNSW search throws → fall back per-call, do NOT poison the module
-//   - Vector count > HNSW_MAX_ELEMENTS → mode = 'bruteforce' on init
-//   - Embedding dim drifted (provider switch) → drop file, needsRebuild,
-//     fall back this call
+// Each tier owns its own HNSW graph, IDBFS file, idMap blob, and label
+// space. Search is per-tier (callers stage core → episodic → background
+// at the service layer). The 50 000-element cap is enforced **per tier**,
+// so a worst-case install can hold 150 000 vectors before falling back to
+// brute force on any single tier.
 //
-// Persistence:
-//   - Index file lives in Emscripten IDBFS at IDBFS_INDEX_FILENAME.
-//   - label↔vectorId map persisted via Dexie keyval rows
-//     (rag.hnsw.idMap / rag.hnsw.dim / rag.hnsw.savedAt).
-//   - flush() debounces writeIndex + syncFs(false) so we don't pay full
-//     persistence cost on every add — instead batch every FLUSH_DEBOUNCE_MS.
+// M.3 — `labelToTimestamp` is persisted alongside `labelToVectorId` so the
+// service layer can pass a `FilterFunction` to `searchKnn` for true
+// pre-filtering by `startTime` / `endTime` (instead of post-filter on
+// topK*2 results which silently truncates when the time window is tight).
 //
-// PC behavior:
-//   This module is NEVER imported on Electron. The androidRagService side
-//   imports it dynamically; localRagService.getRagInvoker() routes Electron
-//   to ipcRenderer.invoke('rag:*') and Capacitor to invokeAndroidRag(),
-//   which is the only thing that touches this file.
+// M.4 — `rebuildInProgress` short-circuits `search()` to `null`. The
+// service layer routes that to brute-force so users searching mid-rebuild
+// don't hit a half-populated graph. The rebuild loop itself uses
+// `addBatchFresh` which bypasses the gate (it has to write).
+//
+// Failure model (per tier — one tier degrading does not poison the others):
+//   - HNSW init throws       → tier.mode = 'bruteforce', service falls back
+//   - HNSW load throws       → mark needsRebuild, fall back this call
+//   - HNSW search throws     → return null, service falls back per-call
+//   - Vector count > 50 000  → tier.mode = 'bruteforce' on init
+//   - Embedding dim drift    → mark needsRebuild on first detect, fall back
+//
+// Persistence layout:
+//   IDBFS file:    kumiko-rag-{tier}.hnsw                     (per tier)
+//   keyval blob:   rag.hnsw.idMap.{tier}                       (per tier)
+//                  → { entries: [[label, vectorId, timestamp], …], nextLabel }
+//   keyval shared: rag.hnsw.dim                                (any tier writes
+//                                                                 same value;
+//                                                                 dim drift is
+//                                                                 a global event)
+//                  rag.hnsw.savedAt                            (last flush ms)
+//
+// PC behavior: this module is NEVER imported on Electron. The Android
+// service layer (`services/androidRagService.ts`) imports it dynamically;
+// `localRagService.getRagInvoker()` routes Electron to ipcRenderer.invoke()
+// and Capacitor to invokeAndroidRag(), which is the only thing that touches
+// this file. Zero impact on PC's electron-rag.cjs.
+//
+// **No backward compatibility:** v2.14.3 is a clean break from v2.14.2's
+// single-graph layout. Old `kumiko-rag.hnsw` / `rag.hnsw.idMap` artifacts
+// in IDBFS / keyval are NOT read or migrated; treat any leftovers as if
+// they were never there. Rationale: zero current users, zero install base
+// to protect.
 
 import { db } from './db';
 import { getEmbeddingConfig } from './cloudEmbeddingService';
 
-// Lazy-loaded; never imported synchronously to keep the brute-force fallback
-// path 100% functional even when hnswlib-wasm fails to load on a given device.
+// =====================================================================
+// Tier definitions — mirror electron-rag.cjs RAG_TIER_* constants.
+// =====================================================================
+
+export type RagTier = 'core' | 'episodic' | 'background';
+
+const TIERS: readonly RagTier[] = ['core', 'episodic', 'background'] as const;
+
+export function normalizeTier(tier: unknown): RagTier {
+  if (tier === 'episodic') return 'episodic';
+  if (tier === 'background') return 'background';
+  return 'core';
+}
+
+// =====================================================================
+// hnswlib-wasm dynamic typing — kept identical to v2.14.2 J.3 so we
+// don't pin to a stricter shape than upstream actually exports.
+// =====================================================================
+
 type HnswModule = {
   HierarchicalNSW: new (
     spaceName: 'l2' | 'ip' | 'cosine',
@@ -49,6 +86,8 @@ type HnswModule = {
     setDebugLogs(enable: boolean): void;
   };
 };
+
+type FilterFunction = (label: number) => boolean;
 
 type HnswIndexInstance = {
   initIndex(maxElements: number, m: number, efConstruction: number, randomSeed: number): void;
@@ -64,7 +103,7 @@ type HnswIndexInstance = {
   searchKnn(
     queryPoint: Float32Array | number[],
     numNeighbors: number,
-    filter: ((label: number) => boolean) | undefined,
+    filter: FilterFunction | undefined,
   ): { distances: number[]; neighbors: number[] };
   getCurrentCount(): number;
   getMaxElements(): number;
@@ -74,7 +113,24 @@ type HnswIndexInstance = {
 
 type IndexMode = 'hnsw' | 'bruteforce' | 'uninitialized';
 
-interface HnswStatus {
+interface TierIndexState {
+  tier: RagTier;
+  mode: IndexMode;
+  index: HnswIndexInstance | null;
+  dim: number | null;
+  labelToVectorId: Map<number, string>;
+  vectorIdToLabel: Map<string, number>;
+  labelToTimestamp: Map<number, number>;
+  nextLabel: number;
+  needsRebuild: boolean;
+  deletedCount: number;
+  lastError?: string;
+  flushDirty: boolean;
+  initialized: boolean;
+}
+
+export interface TierStatus {
+  tier: RagTier;
   mode: IndexMode;
   count: number;
   dim: number | null;
@@ -84,46 +140,82 @@ interface HnswStatus {
   lastError?: string;
 }
 
-const IDBFS_INDEX_FILENAME = 'kumiko-rag.hnsw';
+export interface AggregateStatus {
+  tiers: Record<RagTier, TierStatus>;
+  rebuildInProgress: boolean;
+}
+
 const KEYVAL_DIM_KEY = 'rag.hnsw.dim';
-const KEYVAL_IDMAP_KEY = 'rag.hnsw.idMap';
 const KEYVAL_SAVED_AT_KEY = 'rag.hnsw.savedAt';
 const HNSW_MAX_ELEMENTS = 50_000;
 const HNSW_M = 32;
 const HNSW_EF_CONSTRUCTION = 200;
 const HNSW_EF_SEARCH = 64;
-const HNSW_MIN_CAPACITY = 10_000;
+const HNSW_MIN_CAPACITY = 1_000;
 const HNSW_DELETED_RATIO_THRESHOLD = 0.3;
 const FLUSH_DEBOUNCE_MS = 5_000;
 
-let mode: IndexMode = 'uninitialized';
+const idbfsFilename = (tier: RagTier): string => `kumiko-rag-${tier}.hnsw`;
+const idMapKey = (tier: RagTier): string => `rag.hnsw.idMap.${tier}`;
+
+function makeTierState(tier: RagTier): TierIndexState {
+  return {
+    tier,
+    mode: 'uninitialized',
+    index: null,
+    dim: null,
+    labelToVectorId: new Map(),
+    vectorIdToLabel: new Map(),
+    labelToTimestamp: new Map(),
+    nextLabel: 0,
+    needsRebuild: false,
+    deletedCount: 0,
+    lastError: undefined,
+    flushDirty: false,
+    initialized: false,
+  };
+}
+
+const tiers: Record<RagTier, TierIndexState> = {
+  core: makeTierState('core'),
+  episodic: makeTierState('episodic'),
+  background: makeTierState('background'),
+};
+
 let lib: HnswModule | null = null;
-let index: HnswIndexInstance | null = null;
-let dim: number | null = null;
-let needsRebuild = false;
-let lastError: string | undefined;
-let deletedCount = 0;
 let initPromise: Promise<void> | null = null;
-
-let labelToVectorId = new Map<number, string>();
-let vectorIdToLabel = new Map<string, number>();
-let nextLabel = 0;
-
+let rebuildInProgress = false;
 let flushHandle: ReturnType<typeof setTimeout> | null = null;
-let flushDirty = false;
+let initialFsRead = false;
 
-function setBrute(reason: string, error?: unknown): void {
-  mode = 'bruteforce';
-  lastError = error instanceof Error ? `${reason}: ${error.message}` : reason;
-  console.warn(`[androidRagHnsw] falling back to brute force — ${lastError}`);
+// =====================================================================
+// Diagnostics + small helpers
+// =====================================================================
+
+function setTierBrute(state: TierIndexState, reason: string, error?: unknown): void {
+  state.mode = 'bruteforce';
+  state.lastError = error instanceof Error ? `${reason}: ${error.message}` : reason;
+  console.warn(`[androidRagHnsw] tier=${state.tier} → brute force: ${state.lastError}`);
 }
 
-function clearMaps(): void {
-  labelToVectorId = new Map();
-  vectorIdToLabel = new Map();
-  nextLabel = 0;
-  deletedCount = 0;
+function clearTierMaps(state: TierIndexState): void {
+  state.labelToVectorId = new Map();
+  state.vectorIdToLabel = new Map();
+  state.labelToTimestamp = new Map();
+  state.nextLabel = 0;
+  state.deletedCount = 0;
 }
+
+function tierDeletedRatio(state: TierIndexState): number {
+  if (!state.index) return 0;
+  const live = state.index.getCurrentCount();
+  if (live === 0) return 0;
+  return state.deletedCount / (live + state.deletedCount);
+}
+
+// =====================================================================
+// hnswlib-wasm module / IDBFS sync — shared across all tiers
+// =====================================================================
 
 async function loadModule(): Promise<HnswModule | null> {
   if (lib) return lib;
@@ -135,11 +227,11 @@ async function loadModule(): Promise<HnswModule | null> {
     try {
       lib.EmscriptenFileSystemManager.setDebugLogs(false);
     } catch {
-      // Older builds may not expose this — non-fatal.
+      /* older hnswlib-wasm builds don't expose setDebugLogs — non-fatal */
     }
     return lib;
   } catch (e) {
-    setBrute('hnswlib-wasm load failed', e);
+    for (const t of TIERS) setTierBrute(tiers[t], 'hnswlib-wasm load failed', e);
     return null;
   }
 }
@@ -156,139 +248,216 @@ async function syncFsWrite(): Promise<void> {
   await sync('write');
 }
 
-async function loadIdMapFromKeyval(): Promise<void> {
+// =====================================================================
+// Per-tier idMap + timestamp persistence
+// =====================================================================
+
+interface IdMapEntry {
+  label: number;
+  vectorId: string;
+  timestamp: number;
+}
+
+interface IdMapBlob {
+  // v2.14.3 layout: triples [label, vectorId, timestamp]. timestamp can be 0
+  // for legacy or unknown — service layer will tolerate that and skip the
+  // pre-filter when it sees ts === 0.
+  entries?: Array<[number, string, number]>;
+  nextLabel?: number;
+}
+
+async function loadTierIdMap(state: TierIndexState): Promise<void> {
   try {
-    const raw = await db.getVal<{ entries?: Array<[number, string]>; nextLabel?: number } | null>(
-      KEYVAL_IDMAP_KEY,
-      null,
-    );
+    const raw = await db.getVal<IdMapBlob | null>(idMapKey(state.tier), null);
     if (raw && Array.isArray(raw.entries)) {
-      labelToVectorId = new Map(raw.entries);
-      vectorIdToLabel = new Map(raw.entries.map(([label, id]) => [id, label]));
-      nextLabel = typeof raw.nextLabel === 'number' ? raw.nextLabel : labelToVectorId.size;
+      state.labelToVectorId = new Map();
+      state.vectorIdToLabel = new Map();
+      state.labelToTimestamp = new Map();
+      let maxLabel = -1;
+      for (const triple of raw.entries) {
+        if (!Array.isArray(triple) || triple.length < 2) continue;
+        const label = typeof triple[0] === 'number' ? triple[0] : Number(triple[0]);
+        const vectorId = typeof triple[1] === 'string' ? triple[1] : String(triple[1]);
+        const timestamp =
+          triple.length >= 3 && typeof triple[2] === 'number' ? (triple[2] as number) : 0;
+        if (!Number.isFinite(label) || !vectorId) continue;
+        state.labelToVectorId.set(label, vectorId);
+        state.vectorIdToLabel.set(vectorId, label);
+        state.labelToTimestamp.set(label, timestamp);
+        if (label > maxLabel) maxLabel = label;
+      }
+      state.nextLabel =
+        typeof raw.nextLabel === 'number' && raw.nextLabel > maxLabel
+          ? raw.nextLabel
+          : maxLabel + 1;
     } else {
-      clearMaps();
+      clearTierMaps(state);
     }
   } catch (e) {
-    console.warn('[androidRagHnsw] failed to load idMap from keyval, starting fresh:', e);
-    clearMaps();
+    console.warn(`[androidRagHnsw] tier=${state.tier} loadIdMap failed:`, e);
+    clearTierMaps(state);
   }
 }
 
-function scheduleFlush(): void {
-  flushDirty = true;
-  if (flushHandle) clearTimeout(flushHandle);
-  flushHandle = setTimeout(() => {
-    flushHandle = null;
-    void flush().catch((e) => console.warn('[androidRagHnsw] flush failed:', e));
-  }, FLUSH_DEBOUNCE_MS);
-}
-
-async function persistIdMap(): Promise<void> {
+async function persistTierIdMap(state: TierIndexState): Promise<void> {
   try {
-    await db.setVal(KEYVAL_IDMAP_KEY, {
-      entries: Array.from(labelToVectorId.entries()),
-      nextLabel,
-    });
-  } catch (e) {
-    console.warn('[androidRagHnsw] persistIdMap failed:', e);
-  }
-}
-
-async function dropIndexFile(): Promise<void> {
-  try {
-    const mod = await import('hnswlib-wasm');
-    const factoryLib = (mod as unknown as { loadHnswlib: () => Promise<HnswModule> });
-    const liveLib = lib || (await factoryLib.loadHnswlib());
-    if (liveLib?.EmscriptenFileSystemManager?.checkFileExists?.(IDBFS_INDEX_FILENAME)) {
-      // Emscripten doesn't expose a direct unlink API in the typed surface;
-      // we rely on overwriting on next writeIndex. Mark needsRebuild to make
-      // sure we don't readIndex the stale file.
-      needsRebuild = true;
+    const entries: Array<[number, string, number]> = [];
+    for (const [label, vectorId] of state.labelToVectorId.entries()) {
+      const ts = state.labelToTimestamp.get(label) ?? 0;
+      entries.push([label, vectorId, ts]);
     }
-    await syncFsWrite();
+    const blob: IdMapBlob = { entries, nextLabel: state.nextLabel };
+    await db.setVal(idMapKey(state.tier), blob);
   } catch (e) {
-    console.warn('[androidRagHnsw] dropIndexFile encountered:', e);
+    console.warn(`[androidRagHnsw] tier=${state.tier} persistIdMap failed:`, e);
   }
 }
+
+// Backfill labelToTimestamp from db.vectors when an existing IDBFS file is
+// loaded but the new triple layout was empty (e.g., crashed before flush).
+// One-shot per tier per process.
+async function backfillTimestampsFromDexie(state: TierIndexState): Promise<void> {
+  if (state.labelToTimestamp.size > 0) return;
+  if (state.labelToVectorId.size === 0) return;
+  try {
+    const ids = Array.from(state.labelToVectorId.values());
+    const rows = await db.vectors.bulkGet(ids);
+    let i = 0;
+    for (const [label, vectorId] of state.labelToVectorId.entries()) {
+      const row = rows[i];
+      const ts = row && typeof row.timestamp === 'number' ? row.timestamp : 0;
+      state.labelToTimestamp.set(label, ts);
+      i += 1;
+    }
+  } catch (e) {
+    console.warn(`[androidRagHnsw] tier=${state.tier} timestamp backfill failed:`, e);
+  }
+}
+
+// =====================================================================
+// Init — eagerly initialize all tiers on first ensureInit() call.
+// Each tier independently lands in 'hnsw' / 'bruteforce'; one tier failing
+// does not poison the others (PC has the same independence).
+// =====================================================================
 
 async function ensureInit(): Promise<void> {
-  if (mode === 'hnsw' || mode === 'bruteforce') return;
   if (initPromise) return initPromise;
-  initPromise = (async () => {
-    const targetDim = getEmbeddingConfig().dimensions;
-    const cnt = await db.vectors.count();
+  if (TIERS.every((t) => tiers[t].initialized)) return;
 
-    if (cnt > HNSW_MAX_ELEMENTS) {
-      setBrute(`vector count ${cnt} exceeds HNSW cap ${HNSW_MAX_ELEMENTS}`);
+  initPromise = (async () => {
+    const targetDim = getEmbeddingConfig().dimensions ?? 768;
+
+    const hnswMod = await loadModule();
+    if (!hnswMod) {
+      // setTierBrute already called inside loadModule's catch.
+      for (const t of TIERS) tiers[t].initialized = true;
       return;
     }
 
-    const hnswMod = await loadModule();
-    if (!hnswMod) return;
-
-    try {
-      await syncFsRead();
-    } catch (e) {
-      console.warn('[androidRagHnsw] IDBFS read sync failed (non-fatal):', e);
+    // Single global FS read for the whole process — IDBFS sync covers all
+    // files in one shot, so we don't pay it three times.
+    if (!initialFsRead) {
+      try {
+        await syncFsRead();
+      } catch (e) {
+        console.warn('[androidRagHnsw] IDBFS read sync failed (non-fatal):', e);
+      }
+      initialFsRead = true;
     }
 
     const persistedDim = await db.getVal<number | null>(KEYVAL_DIM_KEY, null);
     const dimMismatch = typeof persistedDim === 'number' && persistedDim !== targetDim;
-    if (dimMismatch) {
-      console.warn(
-        `[androidRagHnsw] dim drift detected (persisted=${persistedDim} target=${targetDim}); marking rebuild`,
-      );
-      needsRebuild = true;
-      clearMaps();
-    } else {
-      await loadIdMapFromKeyval();
-    }
 
-    let inst: HnswIndexInstance;
+    // Per-tier vector counts let us size capacity proportionally instead of
+    // forcing every tier to start at the same min/cap.
+    const counts: Record<RagTier, number> = {
+      core: 0,
+      episodic: 0,
+      background: 0,
+    };
     try {
-      inst = new hnswMod.HierarchicalNSW('cosine', targetDim, '');
+      counts.core = await db.vectors.where('tier').equals('core').count();
+      counts.episodic = await db.vectors.where('tier').equals('episodic').count();
+      counts.background = await db.vectors.where('tier').equals('background').count();
+      // PC normalizes legacy null/undefined tiers to 'core'; mirror that
+      // by counting them as core for capacity sizing.
+      const untiered = await db.vectors
+        .filter((v) => v.tier !== 'core' && v.tier !== 'episodic' && v.tier !== 'background')
+        .count();
+      counts.core += untiered;
     } catch (e) {
-      setBrute('HierarchicalNSW constructor threw', e);
-      return;
+      console.warn('[androidRagHnsw] per-tier count failed (sizing with defaults):', e);
     }
 
-    const fileExists = (() => {
-      try {
-        return hnswMod.EmscriptenFileSystemManager.checkFileExists(IDBFS_INDEX_FILENAME);
-      } catch {
-        return false;
-      }
-    })();
+    for (const tier of TIERS) {
+      const state = tiers[tier];
+      state.initialized = true;
+      const cnt = counts[tier];
 
-    if (fileExists && !dimMismatch && !needsRebuild) {
+      if (cnt > HNSW_MAX_ELEMENTS) {
+        setTierBrute(state, `count ${cnt} exceeds per-tier HNSW cap ${HNSW_MAX_ELEMENTS}`);
+        continue;
+      }
+
+      if (dimMismatch) {
+        console.warn(
+          `[androidRagHnsw] tier=${tier} dim drift (persisted=${persistedDim} target=${targetDim}); marking rebuild`,
+        );
+        state.needsRebuild = true;
+        clearTierMaps(state);
+      } else {
+        await loadTierIdMap(state);
+      }
+
+      let inst: HnswIndexInstance;
       try {
-        const capacity = Math.max(HNSW_MIN_CAPACITY, cnt * 2);
-        await inst.readIndex(IDBFS_INDEX_FILENAME, capacity);
-        inst.setEfSearch(HNSW_EF_SEARCH);
-        index = inst;
-        dim = targetDim;
-        mode = 'hnsw';
-        return;
+        inst = new hnswMod.HierarchicalNSW('cosine', targetDim, '');
       } catch (e) {
-        console.warn('[androidRagHnsw] readIndex failed, will rebuild empty:', e);
-        needsRebuild = true;
-        clearMaps();
+        setTierBrute(state, 'HierarchicalNSW constructor threw', e);
+        continue;
       }
-    }
 
-    try {
-      const capacity = Math.max(HNSW_MIN_CAPACITY, cnt * 2);
-      inst.initIndex(capacity, HNSW_M, HNSW_EF_CONSTRUCTION, 100);
-      inst.setEfSearch(HNSW_EF_SEARCH);
-      index = inst;
-      dim = targetDim;
-      mode = 'hnsw';
-      await db.setVal(KEYVAL_DIM_KEY, targetDim);
-    } catch (e) {
-      setBrute('initIndex failed', e);
+      const fileExists = (() => {
+        try {
+          return hnswMod.EmscriptenFileSystemManager.checkFileExists(idbfsFilename(tier));
+        } catch {
+          return false;
+        }
+      })();
+
+      const capacity = Math.max(HNSW_MIN_CAPACITY, cnt * 2 + 256);
+
+      if (fileExists && !dimMismatch && !state.needsRebuild) {
+        try {
+          await inst.readIndex(idbfsFilename(tier), capacity);
+          inst.setEfSearch(HNSW_EF_SEARCH);
+          state.index = inst;
+          state.dim = targetDim;
+          state.mode = 'hnsw';
+          // Belt-and-braces: timestamps may be missing if the idMap blob was
+          // written before v2.14.3's triple layout. Backfill from Dexie once.
+          await backfillTimestampsFromDexie(state);
+          continue;
+        } catch (e) {
+          console.warn(`[androidRagHnsw] tier=${tier} readIndex failed; will rebuild empty:`, e);
+          state.needsRebuild = true;
+          clearTierMaps(state);
+        }
+      }
+
+      try {
+        inst.initIndex(capacity, HNSW_M, HNSW_EF_CONSTRUCTION, 100);
+        inst.setEfSearch(HNSW_EF_SEARCH);
+        state.index = inst;
+        state.dim = targetDim;
+        state.mode = 'hnsw';
+        await db.setVal(KEYVAL_DIM_KEY, targetDim);
+      } catch (e) {
+        setTierBrute(state, 'initIndex failed', e);
+      }
     }
   })();
+
   try {
     await initPromise;
   } finally {
@@ -296,58 +465,117 @@ async function ensureInit(): Promise<void> {
   }
 }
 
-function ensureCapacityFor(extra: number): boolean {
-  if (!index) return false;
-  const used = index.getCurrentCount();
-  const cap = index.getMaxElements();
+function ensureTierCapacityFor(state: TierIndexState, extra: number): boolean {
+  if (!state.index) return false;
+  const used = state.index.getCurrentCount();
+  const cap = state.index.getMaxElements();
   if (used + extra <= cap) return true;
   try {
     const newCap = Math.max(cap * 2, used + extra + HNSW_MIN_CAPACITY);
     if (newCap > HNSW_MAX_ELEMENTS) {
-      setBrute(`would exceed HNSW cap ${HNSW_MAX_ELEMENTS}`);
+      setTierBrute(state, `would exceed per-tier HNSW cap ${HNSW_MAX_ELEMENTS}`);
       return false;
     }
-    index.resizeIndex(newCap);
+    state.index.resizeIndex(newCap);
     return true;
   } catch (e) {
-    setBrute('resizeIndex failed', e);
+    setTierBrute(state, 'resizeIndex failed', e);
     return false;
   }
 }
 
-export async function add(vectorId: string, vector: Float32Array): Promise<boolean> {
+// =====================================================================
+// Debounced flush — one global timer that walks every dirty tier.
+// =====================================================================
+
+function scheduleFlush(): void {
+  if (flushHandle) clearTimeout(flushHandle);
+  flushHandle = setTimeout(() => {
+    flushHandle = null;
+    void flush().catch((e) => console.warn('[androidRagHnsw] flush failed:', e));
+  }, FLUSH_DEBOUNCE_MS);
+}
+
+async function flushTier(state: TierIndexState): Promise<void> {
+  if (state.mode !== 'hnsw' || !state.index) return;
+  if (!state.flushDirty) return;
+  state.flushDirty = false;
+  try {
+    await state.index.writeIndex(idbfsFilename(state.tier));
+    await persistTierIdMap(state);
+  } catch (e) {
+    console.warn(`[androidRagHnsw] tier=${state.tier} writeIndex/persist failed:`, e);
+    state.flushDirty = true; // retry next tick
+  }
+}
+
+export async function flush(): Promise<void> {
+  let any = false;
+  for (const tier of TIERS) {
+    const state = tiers[tier];
+    if (state.flushDirty) any = true;
+    await flushTier(state);
+  }
+  if (!any) return;
+  try {
+    await syncFsWrite();
+    await db.setVal(KEYVAL_SAVED_AT_KEY, Date.now());
+  } catch (e) {
+    console.warn('[androidRagHnsw] global syncFsWrite failed:', e);
+  }
+}
+
+// =====================================================================
+// Public API — add / search / markDeleted* / clearAll / status
+// =====================================================================
+
+export async function add(
+  vectorId: string,
+  vector: Float32Array,
+  tierInput: RagTier | string | null | undefined,
+  timestamp: number,
+): Promise<boolean> {
   await ensureInit();
-  if (mode !== 'hnsw' || !index) return false;
-  if (dim !== null && vector.length !== dim) {
+  const tier = normalizeTier(tierInput);
+  const state = tiers[tier];
+  if (state.mode !== 'hnsw' || !state.index) return false;
+
+  if (state.dim !== null && vector.length !== state.dim) {
     console.warn(
-      `[androidRagHnsw] add(${vectorId}) dim mismatch (vector=${vector.length} index=${dim}); skipping HNSW`,
+      `[androidRagHnsw] add(${vectorId}, tier=${tier}) dim mismatch (vector=${vector.length} index=${state.dim}); skipping HNSW`,
     );
-    needsRebuild = true;
+    state.needsRebuild = true;
     return false;
   }
-  if (vectorIdToLabel.has(vectorId)) {
-    // Same id resaved — mark old label deleted, then insert fresh so the
-    // search graph reflects the new vector.
-    const oldLabel = vectorIdToLabel.get(vectorId)!;
+
+  // Same id resaved within this tier — mark old label deleted, then insert
+  // fresh so the search graph reflects the new vector.
+  if (state.vectorIdToLabel.has(vectorId)) {
+    const oldLabel = state.vectorIdToLabel.get(vectorId)!;
     try {
-      index.markDelete(oldLabel);
-      labelToVectorId.delete(oldLabel);
-      vectorIdToLabel.delete(vectorId);
-      deletedCount += 1;
+      state.index.markDelete(oldLabel);
+      state.labelToVectorId.delete(oldLabel);
+      state.labelToTimestamp.delete(oldLabel);
+      state.vectorIdToLabel.delete(vectorId);
+      state.deletedCount += 1;
     } catch (e) {
-      console.warn(`[androidRagHnsw] markDelete(${oldLabel}) for resave failed:`, e);
+      console.warn(`[androidRagHnsw] tier=${tier} markDelete(${oldLabel}) for resave failed:`, e);
     }
   }
-  if (!ensureCapacityFor(1)) return false;
+
+  if (!ensureTierCapacityFor(state, 1)) return false;
+
   try {
-    const label = nextLabel++;
-    index.addPoint(vector, label, true);
-    labelToVectorId.set(label, vectorId);
-    vectorIdToLabel.set(vectorId, label);
+    const label = state.nextLabel++;
+    state.index.addPoint(vector, label, true);
+    state.labelToVectorId.set(label, vectorId);
+    state.vectorIdToLabel.set(vectorId, label);
+    state.labelToTimestamp.set(label, timestamp);
+    state.flushDirty = true;
     scheduleFlush();
     return true;
   } catch (e) {
-    setBrute(`addPoint(${vectorId}) failed`, e);
+    setTierBrute(state, `addPoint(${vectorId}) failed`, e);
     return false;
   }
 }
@@ -355,74 +583,127 @@ export async function add(vectorId: string, vector: Float32Array): Promise<boole
 export async function search(
   query: Float32Array,
   k: number,
+  tierInput: RagTier | string | null | undefined,
+  filter?: FilterFunction,
 ): Promise<Array<{ vectorId: string; score: number }> | null> {
+  // M.4 — rebuild gate: while a rebuild is in flight, the graph is
+  // half-populated. Returning null here makes the service layer fall
+  // through to brute-force on the Dexie corpus, which is always correct.
+  if (rebuildInProgress) return null;
+
   await ensureInit();
-  if (mode !== 'hnsw' || !index) return null;
-  if (dim !== null && query.length !== dim) {
+  const tier = normalizeTier(tierInput);
+  const state = tiers[tier];
+  if (state.mode !== 'hnsw' || !state.index) return null;
+
+  if (state.dim !== null && query.length !== state.dim) {
     console.warn(
-      `[androidRagHnsw] search dim mismatch (query=${query.length} index=${dim}); skipping HNSW`,
+      `[androidRagHnsw] tier=${tier} search dim mismatch (query=${query.length} index=${state.dim}); skipping HNSW`,
     );
-    needsRebuild = true;
+    state.needsRebuild = true;
     return null;
   }
+
   try {
     const want = Math.max(1, k);
-    const result = index.searchKnn(query, want, undefined);
+    const result = state.index.searchKnn(query, want, filter);
     const out: Array<{ vectorId: string; score: number }> = [];
     for (let i = 0; i < result.neighbors.length; i += 1) {
       const label = result.neighbors[i];
-      const vectorId = labelToVectorId.get(label);
+      const vectorId = state.labelToVectorId.get(label);
       if (!vectorId) continue;
-      // hnswlib cosine returns distance = 1 - cos(a,b); convert back to a
-      // similarity score so scoring stays consistent with the brute-force
-      // cosine path elsewhere in the codebase.
+      // hnswlib cosine returns distance = 1 - cos(a, b); convert back so
+      // scoring is consistent with the brute-force cosine path elsewhere.
       const score = 1 - result.distances[i];
       out.push({ vectorId, score });
     }
     return out;
   } catch (e) {
-    console.warn('[androidRagHnsw] searchKnn failed, caller should fall back:', e);
+    console.warn(`[androidRagHnsw] tier=${tier} searchKnn failed; caller should fall back:`, e);
     return null;
   }
 }
 
-export async function markDeleted(vectorId: string): Promise<void> {
-  await ensureInit();
-  if (mode !== 'hnsw' || !index) return;
-  const label = vectorIdToLabel.get(vectorId);
-  if (label === undefined) return;
-  try {
-    index.markDelete(label);
-    labelToVectorId.delete(label);
-    vectorIdToLabel.delete(vectorId);
-    deletedCount += 1;
-    scheduleFlush();
-    if (deletedRatio() > HNSW_DELETED_RATIO_THRESHOLD) needsRebuild = true;
-  } catch (e) {
-    console.warn(`[androidRagHnsw] markDeleted(${vectorId}) failed:`, e);
-  }
+export function getLabelTimestamp(tier: RagTier, label: number): number | undefined {
+  return tiers[tier].labelToTimestamp.get(label);
 }
 
-export async function markDeletedBatch(vectorIds: string[]): Promise<void> {
+export async function markDeleted(vectorId: string, tierHint?: RagTier): Promise<void> {
   await ensureInit();
-  if (mode !== 'hnsw' || !index) return;
-  const labels: number[] = [];
-  for (const id of vectorIds) {
-    const label = vectorIdToLabel.get(id);
+  const targets: RagTier[] = tierHint ? [tierHint] : [...TIERS];
+  for (const tier of targets) {
+    const state = tiers[tier];
+    if (state.mode !== 'hnsw' || !state.index) continue;
+    const label = state.vectorIdToLabel.get(vectorId);
     if (label === undefined) continue;
-    labels.push(label);
-    labelToVectorId.delete(label);
-    vectorIdToLabel.delete(id);
+    try {
+      state.index.markDelete(label);
+      state.labelToVectorId.delete(label);
+      state.labelToTimestamp.delete(label);
+      state.vectorIdToLabel.delete(vectorId);
+      state.deletedCount += 1;
+      state.flushDirty = true;
+      if (tierDeletedRatio(state) > HNSW_DELETED_RATIO_THRESHOLD) state.needsRebuild = true;
+    } catch (e) {
+      console.warn(`[androidRagHnsw] tier=${tier} markDeleted(${vectorId}) failed:`, e);
+    }
   }
-  if (labels.length === 0) return;
-  try {
-    index.markDeleteItems(labels);
-    deletedCount += labels.length;
-    scheduleFlush();
-    if (deletedRatio() > HNSW_DELETED_RATIO_THRESHOLD) needsRebuild = true;
-  } catch (e) {
-    console.warn(`[androidRagHnsw] markDeleteItems(${labels.length}) failed:`, e);
+  scheduleFlush();
+}
+
+export async function markDeletedBatch(
+  vectorIds: string[],
+  tierMap?: Map<string, RagTier>,
+): Promise<void> {
+  if (vectorIds.length === 0) return;
+  await ensureInit();
+
+  // Bucket ids by tier — caller may pass a tier hint per id (faster), or
+  // omit it (we then probe all three tiers per id, which is O(3n) maps
+  // lookups but no IDBFS work).
+  const byTier: Record<RagTier, number[]> = { core: [], episodic: [], background: [] };
+  const seen = new Set<string>();
+  for (const id of vectorIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const hinted = tierMap?.get(id);
+    if (hinted) {
+      const label = tiers[hinted].vectorIdToLabel.get(id);
+      if (label !== undefined) byTier[hinted].push(label);
+      tiers[hinted].labelToVectorId.delete(label!);
+      tiers[hinted].labelToTimestamp.delete(label!);
+      tiers[hinted].vectorIdToLabel.delete(id);
+      continue;
+    }
+    for (const t of TIERS) {
+      const state = tiers[t];
+      const label = state.vectorIdToLabel.get(id);
+      if (label === undefined) continue;
+      byTier[t].push(label);
+      state.labelToVectorId.delete(label);
+      state.labelToTimestamp.delete(label);
+      state.vectorIdToLabel.delete(id);
+    }
   }
+
+  for (const tier of TIERS) {
+    const state = tiers[tier];
+    const labels = byTier[tier];
+    if (labels.length === 0) continue;
+    if (state.mode !== 'hnsw' || !state.index) continue;
+    try {
+      state.index.markDeleteItems(labels);
+      state.deletedCount += labels.length;
+      state.flushDirty = true;
+      if (tierDeletedRatio(state) > HNSW_DELETED_RATIO_THRESHOLD) state.needsRebuild = true;
+    } catch (e) {
+      console.warn(
+        `[androidRagHnsw] tier=${tier} markDeleteItems(${labels.length}) failed:`,
+        e,
+      );
+    }
+  }
+  scheduleFlush();
 }
 
 export async function clearAll(): Promise<void> {
@@ -430,123 +711,178 @@ export async function clearAll(): Promise<void> {
     clearTimeout(flushHandle);
     flushHandle = null;
   }
-  flushDirty = false;
-  index = null;
-  mode = 'uninitialized';
-  dim = null;
-  needsRebuild = false;
-  lastError = undefined;
-  clearMaps();
+  for (const tier of TIERS) {
+    const state = tiers[tier];
+    state.index = null;
+    state.mode = 'uninitialized';
+    state.dim = null;
+    state.needsRebuild = false;
+    state.lastError = undefined;
+    state.flushDirty = false;
+    state.initialized = false;
+    clearTierMaps(state);
+    try {
+      await db.setVal(idMapKey(tier), null);
+    } catch (e) {
+      console.warn(`[androidRagHnsw] tier=${tier} idMap clear failed:`, e);
+    }
+  }
   try {
-    await db.setVal(KEYVAL_IDMAP_KEY, null);
     await db.setVal(KEYVAL_DIM_KEY, null);
     await db.setVal(KEYVAL_SAVED_AT_KEY, null);
   } catch (e) {
-    console.warn('[androidRagHnsw] keyval clear failed:', e);
+    console.warn('[androidRagHnsw] dim/savedAt clear failed:', e);
   }
-  await dropIndexFile();
-}
-
-export async function flush(): Promise<void> {
-  if (mode !== 'hnsw' || !index) return;
-  if (!flushDirty) return;
-  flushDirty = false;
+  // We can't reliably unlink IDBFS files from JS — overwriting on next
+  // writeIndex is sufficient. syncFsWrite to commit the cleared idMap blob.
   try {
-    await index.writeIndex(IDBFS_INDEX_FILENAME);
     await syncFsWrite();
-    await persistIdMap();
-    await db.setVal(KEYVAL_SAVED_AT_KEY, Date.now());
   } catch (e) {
-    console.warn('[androidRagHnsw] flush writeIndex/syncFs failed:', e);
+    console.warn('[androidRagHnsw] clearAll syncFsWrite failed:', e);
   }
 }
 
-function deletedRatio(): number {
-  if (!index) return 0;
-  const live = index.getCurrentCount();
-  if (live === 0) return 0;
-  return deletedCount / (live + deletedCount);
+export function getStatus(): AggregateStatus {
+  const out: Record<RagTier, TierStatus> = {
+    core: emptyTierStatus('core'),
+    episodic: emptyTierStatus('episodic'),
+    background: emptyTierStatus('background'),
+  };
+  for (const tier of TIERS) {
+    const state = tiers[tier];
+    out[tier] = {
+      tier,
+      mode: state.mode,
+      count: state.index ? state.index.getCurrentCount() : 0,
+      dim: state.dim,
+      capacity: state.index ? state.index.getMaxElements() : 0,
+      needsRebuild: state.needsRebuild,
+      deletedRatio: tierDeletedRatio(state),
+      lastError: state.lastError,
+    };
+  }
+  return { tiers: out, rebuildInProgress };
 }
 
-export function getStatus(): HnswStatus {
+function emptyTierStatus(tier: RagTier): TierStatus {
   return {
-    mode,
-    count: index ? index.getCurrentCount() : 0,
-    dim,
-    capacity: index ? index.getMaxElements() : 0,
-    needsRebuild,
-    deletedRatio: deletedRatio(),
-    lastError,
+    tier,
+    mode: 'uninitialized',
+    count: 0,
+    dim: null,
+    capacity: 0,
+    needsRebuild: false,
+    deletedRatio: 0,
   };
 }
 
+// =====================================================================
+// Rebuild gate (M.4) + bulk add path (rebuild loop only)
+// =====================================================================
+
+export function setRebuildInProgress(value: boolean): void {
+  rebuildInProgress = value;
+}
+
+export function isRebuildInProgress(): boolean {
+  return rebuildInProgress;
+}
+
 /**
- * Hard reset used by handleRebuildStart — drops everything and re-inits the
- * index empty so the rebuild loop can stream Dexie rows back in.
+ * Hard reset used by handleRebuildStart — drops every tier and re-inits
+ * each one empty, sized to the per-tier vector count provided by the caller.
+ * The rebuild loop then streams Dexie rows back in via addBatchFresh().
  */
-export async function reinitEmpty(targetCapacity: number): Promise<boolean> {
+export async function reinitEmpty(
+  perTierTotals: Partial<Record<RagTier, number>>,
+): Promise<boolean> {
   if (flushHandle) {
     clearTimeout(flushHandle);
     flushHandle = null;
   }
-  flushDirty = false;
-  index = null;
-  mode = 'uninitialized';
-  needsRebuild = false;
-  clearMaps();
 
-  const targetDim = getEmbeddingConfig().dimensions;
-  if (targetCapacity > HNSW_MAX_ELEMENTS) {
-    setBrute(`rebuild target ${targetCapacity} exceeds HNSW cap ${HNSW_MAX_ELEMENTS}`);
-    return false;
-  }
-
+  const targetDim = getEmbeddingConfig().dimensions ?? 768;
   const hnswMod = await loadModule();
   if (!hnswMod) return false;
 
-  try {
-    const inst = new hnswMod.HierarchicalNSW('cosine', targetDim, '');
-    inst.initIndex(Math.max(HNSW_MIN_CAPACITY, targetCapacity), HNSW_M, HNSW_EF_CONSTRUCTION, 100);
-    inst.setEfSearch(HNSW_EF_SEARCH);
-    index = inst;
-    dim = targetDim;
-    mode = 'hnsw';
-    await db.setVal(KEYVAL_DIM_KEY, targetDim);
-    return true;
-  } catch (e) {
-    setBrute('reinitEmpty initIndex failed', e);
-    return false;
+  let allOk = true;
+  for (const tier of TIERS) {
+    const state = tiers[tier];
+    state.index = null;
+    state.mode = 'uninitialized';
+    state.needsRebuild = false;
+    state.lastError = undefined;
+    state.flushDirty = false;
+    state.initialized = true;
+    clearTierMaps(state);
+
+    const want = perTierTotals[tier] ?? 0;
+    if (want > HNSW_MAX_ELEMENTS) {
+      setTierBrute(state, `rebuild target ${want} exceeds per-tier HNSW cap ${HNSW_MAX_ELEMENTS}`);
+      allOk = false;
+      continue;
+    }
+    const capacity = Math.max(HNSW_MIN_CAPACITY, want * 2 + 256);
+
+    try {
+      const inst = new hnswMod.HierarchicalNSW('cosine', targetDim, '');
+      inst.initIndex(capacity, HNSW_M, HNSW_EF_CONSTRUCTION, 100);
+      inst.setEfSearch(HNSW_EF_SEARCH);
+      state.index = inst;
+      state.dim = targetDim;
+      state.mode = 'hnsw';
+    } catch (e) {
+      setTierBrute(state, 'reinitEmpty initIndex failed', e);
+      allOk = false;
+    }
   }
+
+  try {
+    await db.setVal(KEYVAL_DIM_KEY, targetDim);
+  } catch (e) {
+    console.warn('[androidRagHnsw] reinitEmpty dim persist failed:', e);
+  }
+
+  return allOk;
 }
 
 /**
  * Bulk path used by the rebuild loop. Skips the per-vector resave-delete
- * fast path since the index is guaranteed empty here.
+ * fast path since `reinitEmpty` guarantees every tier index is empty.
+ * Bypasses the rebuildInProgress gate (the rebuild itself needs to write).
  */
 export function addBatchFresh(
-  rows: Array<{ id: string; vector: Float32Array }>,
+  rows: Array<{ id: string; vector: Float32Array; tier: RagTier; timestamp: number }>,
 ): { added: number; skipped: number } {
-  if (mode !== 'hnsw' || !index) return { added: 0, skipped: rows.length };
-  if (!ensureCapacityFor(rows.length)) return { added: 0, skipped: rows.length };
-
   let added = 0;
   let skipped = 0;
   for (const row of rows) {
-    if (dim !== null && row.vector.length !== dim) {
+    const tier = normalizeTier(row.tier);
+    const state = tiers[tier];
+    if (state.mode !== 'hnsw' || !state.index) {
+      skipped += 1;
+      continue;
+    }
+    if (state.dim !== null && row.vector.length !== state.dim) {
+      skipped += 1;
+      continue;
+    }
+    if (!ensureTierCapacityFor(state, 1)) {
       skipped += 1;
       continue;
     }
     try {
-      const label = nextLabel++;
-      index.addPoint(row.vector, label, false);
-      labelToVectorId.set(label, row.id);
-      vectorIdToLabel.set(row.id, label);
+      const label = state.nextLabel++;
+      state.index.addPoint(row.vector, label, false);
+      state.labelToVectorId.set(label, row.id);
+      state.vectorIdToLabel.set(row.id, label);
+      state.labelToTimestamp.set(label, row.timestamp);
+      state.flushDirty = true;
       added += 1;
     } catch {
       skipped += 1;
     }
   }
-  if (added > 0) flushDirty = true;
   return { added, skipped };
 }
 
@@ -556,13 +892,11 @@ export function addBatchFresh(
 export function _resetForTests(): void {
   if (flushHandle) clearTimeout(flushHandle);
   flushHandle = null;
-  flushDirty = false;
-  index = null;
+  for (const tier of TIERS) {
+    tiers[tier] = makeTierState(tier);
+  }
   lib = null;
-  mode = 'uninitialized';
-  dim = null;
-  needsRebuild = false;
-  lastError = undefined;
   initPromise = null;
-  clearMaps();
+  rebuildInProgress = false;
+  initialFsRead = false;
 }

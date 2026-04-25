@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronUp, Database, HardDrive, Image, Power, RotateCcw, Trash2, Volume2, FolderOpen, Music } from 'lucide-react';
+import { ChevronDown, ChevronUp, Database, HardDrive, Image, Power, RotateCcw, Trash2, Volume2, FolderOpen, Music, Brain, RefreshCw } from 'lucide-react';
 import { Language } from '../../types';
 import {
   getVoiceStorageInfo,
@@ -14,6 +14,13 @@ import { isCapacitorNative } from '../../services/environment';
 import { dialogService } from '../../services/dialogService';
 import { db } from '../../services/db';
 import { Collapse } from '../Collapse';
+// v2.14.3 N.4: cloud embedding stats card. Pulls vector count + last
+// applied provider fingerprint from Dexie / RAG service so the user has a
+// single place to see "how big is my embedding store" alongside the other
+// data buckets (voice, image, ringtone). Capacitor-only — desktop manages
+// its embedding via the PC RAG main process which has its own UI.
+import { getEmbeddingConfig, type EmbeddingProviderConfig } from '../../services/cloudEmbeddingService';
+import ReembedConfirmDialog from './ReembedConfirmDialog';
 
 export interface DataDirectoryInfo {
   success: boolean;
@@ -87,6 +94,18 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
   const voiceAvailable = isVoiceServiceAvailable();
   const isCapacitor = isCapacitorNative();
 
+  // v2.14.3 N.4: embedding stats — vector count + last applied provider
+  // fingerprint. Both come from the Android RAG service (`rag:stats` and
+  // `rag:reembed:info`). Lazy import so the PC bundle stays lean.
+  const [embeddingStats, setEmbeddingStats] = useState<{
+    vectorCount: number;
+    perTier: { core: number; episodic: number; background: number };
+    lastFingerprint: string;
+    hasResumable: boolean;
+  } | null>(null);
+  const [reembedDialogOpen, setReembedDialogOpen] = useState(false);
+  const [embeddingConfig, setEmbeddingConfigState] = useState<EmbeddingProviderConfig | null>(null);
+
   const refreshVoiceStorage = useCallback(async () => {
     if (!voiceAvailable) return;
     const info = await getVoiceStorageInfo();
@@ -144,22 +163,56 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
     }
   }, [isCapacitor]);
 
+  // v2.14.3 N.4: pulls vector count + provider fingerprint from the
+  // Android RAG service. No-op on PC (where Android RAG isn't loaded).
+  const refreshEmbeddingStats = useCallback(async () => {
+    if (!isCapacitor) return;
+    try {
+      setEmbeddingConfigState(getEmbeddingConfig());
+      const { invokeAndroidRag } = await import('../../services/androidRagService');
+      const stats = await invokeAndroidRag<{
+        count?: number;
+        perTierCounts?: { core: number; episodic: number; background: number };
+      }>('rag:status', {});
+      const info = await invokeAndroidRag<{
+        hasResumable?: boolean;
+        lastFingerprint?: string;
+      }>('rag:reembed:info', {});
+      const total = await db.vectors.count();
+      const perTier = stats?.perTierCounts || { core: 0, episodic: 0, background: 0 };
+      setEmbeddingStats({
+        vectorCount: total,
+        perTier,
+        lastFingerprint: typeof info?.lastFingerprint === 'string' ? info.lastFingerprint : '',
+        hasResumable: !!info?.hasResumable,
+      });
+    } catch (e) {
+      console.warn('[DataManagementSection] embedding stats refresh failed:', e);
+    }
+  }, [isCapacitor]);
+
   useEffect(() => {
     if (!isOpen) return;
     refreshVoiceStorage();
     refreshImageStorage();
     refreshRingtoneInfo();
+    refreshEmbeddingStats();
 
     const handleRingtoneStorageChanged = () => {
       refreshRingtoneInfo();
       refreshStorageEstimate();
     };
+    const handleEmbeddingChanged = () => {
+      refreshEmbeddingStats();
+    };
 
     window.addEventListener('kumiko:ringtone-storage-changed', handleRingtoneStorageChanged);
+    window.addEventListener('kumiko:embedding-config-changed', handleEmbeddingChanged);
     return () => {
       window.removeEventListener('kumiko:ringtone-storage-changed', handleRingtoneStorageChanged);
+      window.removeEventListener('kumiko:embedding-config-changed', handleEmbeddingChanged);
     };
-  }, [isOpen, refreshRingtoneInfo, refreshStorageEstimate, refreshVoiceStorage, refreshImageStorage]);
+  }, [isOpen, refreshRingtoneInfo, refreshStorageEstimate, refreshVoiceStorage, refreshImageStorage, refreshEmbeddingStats]);
 
   // v2.14.1 E.4: per-platform copy. Android can't expose a "open folder"
   // affordance because scoped storage hides app-private dirs from the
@@ -213,12 +266,18 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
     : isCapacitor
       ? (language === 'zh'
         ? {
+            // v2.14.3 N.4: rewritten to be 100% Android-specific. The
+            // previous copy described iOS-style "Library/WebView/IndexedDB/"
+            // which is wrong for Android. Android stores WebView IndexedDB
+            // under /data/data/<pkg>/app_webview/Default/IndexedDB/ but
+            // surfacing the absolute path is misleading because it requires
+            // root to inspect — we summarise as "APK 私有沙盒".
             info: '图片文件',
-            desc: 'Android 上图片以 base64 形式存放在 APK 私有 IndexedDB 中（与浏览器实现一致），系统文件管理器中不可见。',
-            location: '存放位置：APK 私有 IndexedDB / Library/WebView/IndexedDB/',
+            desc: 'Android 上图片以 base64 编码存放在 APK 私有沙盒的 IndexedDB 中。沙盒由 Android 强制隔离，无法在系统文件管理器或电脑挂载时看到，只能用下方按钮清理。',
+            location: '存放位置：/data/data/com.kumiko.amadeus.app/app_webview/Default/IndexedDB/（应用私有，普通文件管理器不可见）',
             actionLabel: '清理全部图片',
             confirmTitle: '清理图片',
-            confirmBody: '将删除 APK 内全部图片文件 (含历史消息中已发送的图片，文字内容保留)。确定继续？',
+            confirmBody: '将删除 APK 内全部图片文件（历史消息中的图片缩略图会丢失，对应的文字消息内容保留）。确定继续？',
             confirmOk: '清理',
             confirmCancel: '取消',
             successPrefix: '已清理',
@@ -229,11 +288,11 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
           }
         : {
             info: 'Image Files',
-            desc: 'On Android, images live as base64 in the APK\'s private IndexedDB (same as web), invisible to the OS file manager.',
-            location: 'Stored in: APK private IndexedDB / Library/WebView/IndexedDB/',
+            desc: 'On Android, images live as base64 strings inside IndexedDB in the APK\'s private sandbox. The sandbox is enforced by Android — you cannot see it in the system file manager or via USB, only the button below can clear it.',
+            location: 'Stored in: /data/data/com.kumiko.amadeus.app/app_webview/Default/IndexedDB/ (app-private; not visible to file managers)',
             actionLabel: 'Clear All Images',
             confirmTitle: 'Clear Images',
-            confirmBody: 'This deletes every image stored inside the APK (history image references will lose their picture; the message text is preserved). Continue?',
+            confirmBody: 'This deletes every image stored inside the APK. History thumbnails will be lost, but the underlying text messages stay intact. Continue?',
             confirmOk: 'Clear',
             confirmCancel: 'Cancel',
             successPrefix: 'Cleared ',
@@ -420,7 +479,14 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
             );
           })()}
 
-          {voiceAvailable && voiceStorage && voiceStorage.count > 0 && (
+          {/* v2.14.3 N.4: card now ALWAYS renders when voice service is
+              available, even when there are zero files. Previous
+              `voiceStorage.count > 0` gate hid the entire block on a
+              fresh install which is exactly when users wanted to peek at
+              "where will my voices be stored?". The clear button is
+              disabled (gray) when count is 0 — same UX as the ringtone
+              card when no custom ringtone is uploaded. */}
+          {voiceAvailable && voiceStorage && (
             <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-800/50 border border-gray-700' : 'bg-gray-100 border border-gray-200'}`}>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
@@ -429,9 +495,15 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
                     {voiceT.info}
                   </span>
                 </div>
-                <span className={`ka-label ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}>
-                  {voiceStorage.count} {language === 'zh' ? '个文件' : 'files'} · {formatBytes(voiceStorage.totalBytes)}
-                </span>
+                {voiceStorage.count > 0 ? (
+                  <span className={`ka-label ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`}>
+                    {voiceStorage.count} {language === 'zh' ? '个文件' : 'files'} · {formatBytes(voiceStorage.totalBytes)}
+                  </span>
+                ) : (
+                  <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                    {language === 'zh' ? '暂无语音文件' : 'No voice files yet'}
+                  </span>
+                )}
               </div>
               <p className={`ka-copy-sm mb-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                 {voiceT.desc}
@@ -441,8 +513,15 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
                   <p className={`ka-copy-sm mb-2 font-mono break-all ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                     {(voiceT as any).location}
                   </p>
-                  <button onClick={handleClearVoices}
-                    className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-purple-500/50 text-purple-400 hover:bg-purple-500/10' : 'border-purple-600/50 text-purple-600 hover:bg-purple-600/10'}`}>
+                  <button
+                    onClick={handleClearVoices}
+                    disabled={voiceStorage.count === 0}
+                    className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${
+                      voiceStorage.count === 0
+                        ? (isDarkMode ? 'border-gray-700 text-gray-500' : 'border-gray-300 text-gray-400')
+                        : (isDarkMode ? 'border-purple-500/50 text-purple-400 hover:bg-purple-500/10' : 'border-purple-600/50 text-purple-600 hover:bg-purple-600/10')
+                    }`}
+                  >
                     <Trash2 size={13} /> {(voiceT as any).actionLabel}
                   </button>
                 </>
@@ -477,8 +556,15 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
                 </p>
               )}
               {isCapacitor && (imageT as any).actionLabel ? (
-                <button onClick={handleClearImages}
-                  className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${isDarkMode ? 'border-sky-500/50 text-sky-400 hover:bg-sky-500/10' : 'border-sky-600/50 text-sky-600 hover:bg-sky-600/10'}`}>
+                <button
+                  onClick={handleClearImages}
+                  disabled={imageStorage.count === 0}
+                  className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${
+                    imageStorage.count === 0
+                      ? (isDarkMode ? 'border-gray-700 text-gray-500' : 'border-gray-300 text-gray-400')
+                      : (isDarkMode ? 'border-sky-500/50 text-sky-400 hover:bg-sky-500/10' : 'border-sky-600/50 text-sky-600 hover:bg-sky-600/10')
+                  }`}
+                >
                   <Trash2 size={13} /> {(imageT as any).actionLabel}
                 </button>
               ) : (imageT as any).open ? (
@@ -540,6 +626,86 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
               )}
             </div>
           )}
+
+          {/* v2.14.3 N.4: Embedding (RAG vector store) data card —
+              Capacitor-only. Shows total vector count, per-tier breakdown
+              (core / episodic / background), the provider fingerprint
+              that was applied at the last successful re-embed, and a
+              "重嵌入" button that opens the same M.6 ReembedConfirmDialog
+              the EmbeddingConfigSection uses. The button stays enabled
+              even when count==0 (so the user can validate the round-trip
+              with no data) but a "继续未完成" hint appears when the
+              service reports `hasResumable`. */}
+          {isCapacitor && embeddingStats && embeddingConfig && (() => {
+            const lastFp = embeddingStats.lastFingerprint;
+            const [lastProvider, lastModel, lastDimsRaw] = (lastFp || '').split('|');
+            const lastDims = parseInt(lastDimsRaw || '', 10) || 0;
+            const fpDisplay = lastFp
+              ? `${lastProvider} · ${lastModel}${lastDims ? ` · ${lastDims} ${language === 'zh' ? '维' : 'd'}` : ''}`
+              : (language === 'zh' ? '尚未应用任何嵌入提供商' : 'No embedding provider applied yet');
+            return (
+              <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-800/50 border border-gray-700' : 'bg-gray-100 border border-gray-200'}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <Brain size={16} className={isDarkMode ? 'text-emerald-400' : 'text-emerald-600'} />
+                    <span className={`ka-copy-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                      {language === 'zh' ? '嵌入向量库（RAG 记忆）' : 'Embedding Vector Store (RAG Memory)'}
+                    </span>
+                  </div>
+                  {embeddingStats.vectorCount > 0 ? (
+                    <span className={`ka-label ${isDarkMode ? 'text-emerald-400' : 'text-emerald-600'}`}>
+                      {embeddingStats.vectorCount.toLocaleString()} {language === 'zh' ? '条向量' : 'vectors'}
+                    </span>
+                  ) : (
+                    <span className={`ka-copy-sm ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                      {language === 'zh' ? '暂无向量' : 'No vectors yet'}
+                    </span>
+                  )}
+                </div>
+                <p className={`ka-copy-sm mb-2 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  {language === 'zh'
+                    ? '语义检索（RAG）使用的向量数据库，存放在 APK 私有 IndexedDB 中。每条聊天消息会嵌入为一条向量，按 core / episodic / background 三层分别索引。'
+                    : 'Vector store powering semantic retrieval (RAG). Lives in the APK\'s private IndexedDB. Each chat message becomes one vector, indexed across three tiers (core / episodic / background).'}
+                </p>
+                <div className={`ka-copy-sm mb-2 grid grid-cols-3 gap-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  <div className="text-center">
+                    <div className="font-mono text-base">{embeddingStats.perTier.core}</div>
+                    <div className="ka-micro opacity-70">core</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="font-mono text-base">{embeddingStats.perTier.episodic}</div>
+                    <div className="ka-micro opacity-70">episodic</div>
+                  </div>
+                  <div className="text-center">
+                    <div className="font-mono text-base">{embeddingStats.perTier.background}</div>
+                    <div className="ka-micro opacity-70">background</div>
+                  </div>
+                </div>
+                <p className={`ka-copy-sm mb-2 font-mono break-all ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                  {language === 'zh' ? '已应用提供商：' : 'Applied provider: '}{fpDisplay}
+                </p>
+                {embeddingStats.hasResumable && (
+                  <div className={`mb-2 px-2 py-1.5 rounded-md ka-copy-sm border ${isDarkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                    {language === 'zh'
+                      ? '检测到上次重嵌入未完成，可点击下方按钮选择「继续」从断点恢复。'
+                      : 'A previous re-embed run was interrupted. Click below and select "Resume" to pick up from where it stopped.'}
+                  </div>
+                )}
+                <button
+                  onClick={() => setReembedDialogOpen(true)}
+                  disabled={embeddingStats.vectorCount === 0 && !embeddingStats.hasResumable}
+                  className={`w-full py-2 rounded border border-dashed flex items-center justify-center gap-2 ka-label transition-all ${
+                    embeddingStats.vectorCount === 0 && !embeddingStats.hasResumable
+                      ? (isDarkMode ? 'border-gray-700 text-gray-500' : 'border-gray-300 text-gray-400')
+                      : (isDarkMode ? 'border-emerald-500/50 text-emerald-400 hover:bg-emerald-500/10' : 'border-emerald-600/50 text-emerald-600 hover:bg-emerald-600/10')
+                  }`}
+                >
+                  <RefreshCw size={13} />
+                  {language === 'zh' ? '重嵌入向量库' : 'Re-embed Vector Store'}
+                </button>
+              </div>
+            );
+          })()}
 
           {isDesktopElectron && dataDirectoryInfo && (
             <div className={`p-3 rounded-lg space-y-3 ${isDarkMode ? 'bg-gray-800/50 border border-gray-700' : 'bg-gray-100 border border-gray-200'}`}>
@@ -626,6 +792,26 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
           </div>
         </div>
       </Collapse>
+
+      {/* v2.14.3 N.4: re-embed dialog mounted at the section root so the
+          backdrop covers the whole settings sheet. The card invokes it as
+          a manual re-embed (no provider switch), so prevConfig === nextConfig. */}
+      {isCapacitor && embeddingConfig && (
+        <ReembedConfirmDialog
+          isOpen={reembedDialogOpen}
+          language={language === 'zh' ? 'zh' : 'en'}
+          isDarkMode={isDarkMode}
+          onClose={() => {
+            setReembedDialogOpen(false);
+            void refreshEmbeddingStats();
+          }}
+          prevConfig={embeddingConfig}
+          nextConfig={embeddingConfig}
+          onCompleted={() => {
+            void refreshEmbeddingStats();
+          }}
+        />
+      )}
     </div>
   );
 };
