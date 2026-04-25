@@ -83,21 +83,26 @@ async function ensureVoiceDir(
 ): Promise<void> {
     if (voiceDirEnsuredPromise) return voiceDirEnsuredPromise;
     voiceDirEnsuredPromise = (async () => {
+        // v2.14.4 C.1: stat-then-mkdir。Capacitor 原生侧的 mkdir 在目录已
+        // 存在时仍会先把 [ERROR] OS-PLUG-FILE-0010 写进 logcat 才把异常
+        // throw 上来；JS 端的 try/catch 救不了那一行 native log。先用 stat
+        // 探测：目录存在直接返回，stat 抛 not-exists 时才走 mkdir。这样
+        // 常态分支（目录已存在）不再产出任何 native ERROR 日志。
+        try {
+            const info = await Filesystem.stat({ path: VOICE_DIR, directory: Directory.Data });
+            if ((info as { type?: string } | undefined)?.type === 'directory') return;
+        } catch {
+            /* stat 抛 not-exists / 其它异常都 fall through 到 mkdir */
+        }
         try {
             await Filesystem.mkdir({ path: VOICE_DIR, directory: Directory.Data, recursive: true });
         } catch (e: any) {
-            // OS-PLUG-FILE-0010 ("Directory already exists"), localized variants
-            // ("Directory exists", "已存在", "存在しています"), and OS-PLUG-FILE
-            // numeric tail are all benign — the directory is there, we proceed.
-            // Anything else (sandbox revoked, OOM) we still swallow because
-            // the subsequent readdir / writeFile will surface the real error.
+            // 仍保留 race condition 兜底：理论上 stat→mkdir 之间另一个调用方
+            // 可能恰好把目录建出来，此时再 mkdir 会触发 OS-PLUG-FILE-0010。
+            // 这种二选一窗口很窄，已经远比之前每次启动都触发好。
             const msg = String(e?.message || e || '').toLowerCase();
             if (!/exist|already|0010|0008/i.test(msg)) {
                 console.warn('[voiceFileService] ensureVoiceDir non-exist error:', e);
-                // Reset the memo so the next *new* call retries — only on a
-                // genuine, unexpected failure. We deliberately don't reset on
-                // the benign "already exists" path; that would defeat the
-                // whole purpose of the Promise memo.
                 voiceDirEnsuredPromise = null;
             }
         }

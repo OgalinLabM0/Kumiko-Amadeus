@@ -1270,7 +1270,7 @@ export const App = () => {
   });
 
   if (!isDataLoaded) {
-    return <LoadingDataScreen />;
+    return <LoadingDataScreen language={language} />;
   }
 
   return (

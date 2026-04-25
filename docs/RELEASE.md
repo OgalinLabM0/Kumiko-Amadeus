@@ -76,6 +76,65 @@ dropped when the release flow's wall-clock cost outgrew the value of
 shipping every chore. If in doubt, prefer not to cut a release — the
 backlog queued on `main` is free, the 45-minute release run is not.
 
+## v2.14.4 one-time Android signing migration
+
+> Applies only to the `v2.14.3 → v2.14.4` upgrade. Future Android
+> releases (`v2.14.4 → v2.14.5 → …`) install in-place without any
+> uninstall step. Documented here so the messaging stays consistent
+> across the commit body, GitHub Release notes, and any user-facing
+> announcement.
+
+Background: every Android APK before v2.14.4 was built with
+`assembleDebug`, which signs with an AGP-generated debug keystore that
+**differs per CI run**. Android refuses to upgrade an installed APK
+across mismatched signing certificates (`INSTALL_FAILED_UPDATE_INCOMPATIBLE`),
+so users had to uninstall the previous version to install a new one,
+and the uninstall wiped the entire app sandbox (IndexedDB + Capacitor
+Filesystem + LocalStorage = all chats, images, voice files, settings).
+
+v2.14.4 (Phase H) introduces a stable release keystore stored as four
+GitHub Secrets. From v2.14.4 onwards every APK is signed with the same
+certificate, so Android accepts in-place upgrades and the sandbox
+survives. **The v2.14.3 → v2.14.4 transition itself is the last forced
+uninstall**, because v2.14.3's debug signature can never match the new
+release signature.
+
+### Standard messaging template (copy into commit + release notes)
+
+```
+Android v2.14.4 起改用稳定的发布签名。
+
+⚠️ 一次性升级提示：v2.14.3 → v2.14.4 是最后一次必须卸载重装的 Android 升级。
+   之前的 v2.14.3 是 debug 签名，新版本是 release 签名，Android 不允许
+   不同签名证书之间 in-place 升级。请按以下顺序操作：
+
+   1. 在 v2.14.3 里：设置 → 备份 & 恢复 → 导出 ZIP。
+   2. 卸载 v2.14.3（系统会清空沙箱，所以备份是必须的）。
+   3. 安装 v2.14.4 APK。
+   4. 在 v2.14.4 里：开始页 → 手动导入 → 选刚才导出的 ZIP。
+
+   从 v2.14.4 → v2.14.5 → … 全部 in-place 升级，沙箱永久保留，再也不需要卸载。
+
+Android v2.14.4 switches to a stable release-signing keystore.
+
+⚠️ One-time upgrade note: v2.14.3 → v2.14.4 is the LAST Android upgrade
+   that requires uninstalling the previous version. v2.14.3 is debug-signed
+   and v2.14.4 is release-signed, and Android refuses in-place upgrades
+   across mismatched signing certificates. Steps:
+
+   1. In v2.14.3: Settings → Backup & Restore → Export ZIP.
+   2. Uninstall v2.14.3 (the OS wipes the sandbox, hence the backup).
+   3. Install the v2.14.4 APK.
+   4. In v2.14.4: Start screen → Manual import → pick the ZIP from step 1.
+
+   From v2.14.4 onwards every Android upgrade is in-place — the sandbox
+   survives forever, no more uninstalls, no more data loss.
+```
+
+PC users (Windows / Linux) are not affected; this only applies to the
+Android APK channel. PC installers (`Setup-*.exe`, `*.AppImage`) keep
+their existing signing chain.
+
 ## The three distribution channels
 
 | Channel | Workflow | Runs on | Publishes |

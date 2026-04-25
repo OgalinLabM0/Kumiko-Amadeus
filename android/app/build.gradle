@@ -8,10 +8,11 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         // versionCode = MAJOR*10000 + MINOR*100 + PATCH，跟 package.json 同步：
-        // 2.12.0 → 21200，2.12.1 → 21201，2.13.0 → 21300，2.14.0 → 21400，2.14.1 → 21401，2.14.2 → 21402。
+        // 2.12.0 → 21200，2.12.1 → 21201，2.13.0 → 21300，2.14.0 → 21400，2.14.1 → 21401，
+        // 2.14.2 → 21402，2.14.3 → 21403，2.14.4 → 21404。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21403
-        versionName "2.14.3"
+        versionCode 21404
+        versionName "2.14.4"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -19,10 +20,61 @@ android {
             ignoreAssetsPattern '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
         }
     }
+    // v2.14.4 H.1: stable release signing.
+    //
+    // Why this exists:
+    //   Until v2.14.3, the CI workflow built `assembleDebug`, which
+    //   relies on Gradle's auto-generated debug.keystore. That keystore
+    //   is unique per machine / per CI run, so each new APK Android
+    //   sees has a *different* signing certificate from the one
+    //   previously installed. Android refuses in-place updates across
+    //   mismatched certs (INSTALL_FAILED_UPDATE_INCOMPATIBLE), forcing
+    //   the user to uninstall the previous version — which wipes the
+    //   sandbox (IndexedDB + Capacitor Filesystem + LocalStorage), so
+    //   they lose every chat / image / voice / config row that wasn't
+    //   manually exported as a ZIP.
+    //
+    // What this fix is:
+    //   The CI workflow decodes a base64-encoded
+    //   `kumiko-release.keystore` from a GitHub repository secret into
+    //   `android/app/release.keystore` before invoking
+    //   `assembleRelease`. Gradle reads the keystore + the matching
+    //   passwords from environment variables exported by the same
+    //   workflow step (KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD).
+    //   The first time the user installs v2.14.4 they must uninstall
+    //   v2.14.3 once (last forced uninstall ever); every subsequent
+    //   release is signed with the same keystore, so the OS accepts
+    //   it as an in-place update and the sandbox survives.
+    //
+    // Local dev fallback:
+    //   When the env vars are absent (every dev machine + the rare CI
+    //   path that builds without the secret), we silently skip the
+    //   release signingConfig block. Gradle's default behaviour kicks
+    //   back in: `assembleDebug` still works, `assembleRelease` will
+    //   refuse to sign and produce an unsigned APK we'd never ship.
+    //   This keeps the file safe to commit regardless of whether the
+    //   developer has the keystore on disk.
+    signingConfigs {
+        if (System.getenv("KEYSTORE_PASSWORD") != null) {
+            release {
+                storeFile file(System.getenv("KEYSTORE_FILE") ?: "release.keystore")
+                storePassword System.getenv("KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KEY_ALIAS") ?: "kumiko"
+                keyPassword System.getenv("KEY_PASSWORD") ?: System.getenv("KEYSTORE_PASSWORD")
+            }
+        }
+    }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // Bind the release keystore only when the env vars actually
+            // produced a config above. Without the guard, Gradle would
+            // throw "signingConfig signingConfigs.release not found"
+            // on every dev machine that lacks the keystore.
+            if (System.getenv("KEYSTORE_PASSWORD") != null) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }

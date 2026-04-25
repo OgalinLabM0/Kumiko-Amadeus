@@ -79,10 +79,14 @@ export const AppFlowScreens: React.FC<AppFlowScreensProps> = ({
         />
       )}
 
-      <AppConnectingOverlay isOpen={appState === AppState.CONNECTING && flowState === 'APP'} />
+      <AppConnectingOverlay
+        isOpen={appState === AppState.CONNECTING && flowState === 'APP'}
+        language={language}
+      />
 
       <AppErrorOverlay
         isOpen={appState === AppState.ERROR && flowState === 'APP'}
+        language={language}
         onReconfigure={onReconfigure}
       />
     </>

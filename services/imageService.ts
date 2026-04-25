@@ -7,11 +7,19 @@ import {
 } from '../constants/imageQualityConfig';
 import { useAppStore } from '../store';
 import { isDesktopElectron } from './desktopBackupService';
-// F2B.3: dropped `isMobilePwa` + `httpInvoke` + `getHttpImageUrl` +
-// `isCapacitorNative` imports. Capacitor APK keeps image bytes inside
-// the local Dexie (base64Data), Electron desktop writes to
-// userData/images via IPC. Branching is now `isDesktopElectron()` vs
-// "everything else uses Dexie".
+import { isCapacitorNative } from './environment';
+import {
+  capacitorImageWrite,
+  capacitorImageRead,
+  capacitorImageClearAll,
+} from './imageFileService';
+// v2.14.4 F.3: Capacitor branch was previously the Dexie base64
+// fallback (post-F2B.3). It now writes the raw bytes to the Capacitor
+// Filesystem under Directory.Data/images/<id>.<ext> via the new
+// services/imageFileService.ts helpers, mirroring voiceFileService.ts.
+// Dexie keeps a metadata-only row (base64Data: '', relativePath set on
+// ImageEntity F.1) so getAllImages / getImageDisplayUrl / clearAllImages
+// / backup export+import keep working through the same imageService API.
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Image storage service (P1 #36)
@@ -107,8 +115,8 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
   const ext = pickExtFromMime(mimeType);
 
   // F2B.3: simplified to "Electron desktop only" for filesystem path.
-  // Capacitor APK + dev-server fallback drop straight to the Dexie base64
-  // path below — both store images self-contained inside IndexedDB.
+  // Capacitor APK now also takes a filesystem path (v2.14.4 F.3); only
+  // pure dev-server / web preview drops through to the Dexie base64 path.
   if (isDesktopElectron() && (window as any).electronAPI) {
     try {
       const dataUrl = await blobToDataUrl(processed);
@@ -130,9 +138,36 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
     }
   }
 
-  // Web / Capacitor / fallback path: keep the existing base64-in-Dexie
-  // behaviour. Capacitor (A4.5) hits this branch directly so images are
-  // self-contained inside the APK's IndexedDB.
+  // v2.14.4 F.3: Capacitor branch — write raw bytes to Filesystem and
+  // keep only metadata in Dexie. On any failure (out-of-space, sandbox
+  // revoked, etc.) we fall through to the Dexie base64 branch so the
+  // image isn't lost — the user just gets the older heavy storage shape
+  // for that one entry instead of a broken send.
+  if (isCapacitorNative()) {
+    try {
+      const dataUrl = await blobToDataUrl(processed);
+      const rawBase64 = dataUrl.split(',')[1] || '';
+      const result = await capacitorImageWrite(imageId, ext, rawBase64);
+      if (!result.success || !result.relativePath) {
+        throw new Error(result.error || 'capacitorImageWrite failed');
+      }
+      await db.images.add({
+        id: imageId,
+        base64Data: '',
+        mimeType,
+        timestamp: Date.now(),
+        relativePath: result.relativePath,
+      });
+      return imageId;
+    } catch (err) {
+      console.warn('[imageService] Capacitor filesystem save failed, falling back to Dexie:', err);
+      // Fall through to the Dexie path below.
+    }
+  }
+
+  // Web / dev-preview fallback: keep the existing base64-in-Dexie
+  // behaviour. Self-contained inside IndexedDB; no filesystem available
+  // in plain browser.
   const dataUrl = await blobToDataUrl(processed);
   await db.images.add({
     id: imageId,
@@ -146,16 +181,29 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
 // Resolve a URL we can put into <img src> for a given imageId.
 //   - Desktop: custom kumiko-image:// protocol so Chromium can lazy-load
 //     and cache the file off-renderer.
-//   - Capacitor APK + dev-server fallback: data URL from Dexie. F2B.3
-//     dropped the PWA `getHttpImageUrl()` branch alongside the rest of
-//     the PC bridge.
+//   - Capacitor APK (v2.14.4 F.3): metadata row carries `relativePath`
+//     pointing into Directory.Data/images/. We read the bytes via
+//     capacitorImageRead and assemble a data: URL on demand. The chat
+//     UI's primary read path is useMessageImage.ts (F.4), which goes
+//     through createObjectURL for proper memory lifecycle; this function
+//     stays as the sync-API fallback for non-message callers (export,
+//     model tool calls, RAG attachments, etc.).
+//   - Dev-server fallback: data URL straight from Dexie.base64Data
+//     (untouched).
 export const getImageDisplayUrl = async (imageId: string): Promise<string | null> => {
   if (!imageId) return null;
   if (isDesktopElectron()) {
     return `kumiko-image://${encodeURIComponent(imageId)}`;
   }
   const row = await db.images.get(imageId);
-  return row?.base64Data || null;
+  if (!row) return null;
+  if (row.relativePath) {
+    const rawB64 = await capacitorImageRead(row.relativePath);
+    if (rawB64) return `data:${row.mimeType || 'image/jpeg'};base64,${rawB64}`;
+    // File missing — fall through to whatever's in base64Data (probably
+    // empty for v2.14.4 rows, populated for legacy ones).
+  }
+  return row.base64Data || null;
 };
 
 // Legacy callers (model tool calls, RAG, etc.) still want the data URL.
@@ -175,12 +223,17 @@ export const getImageBase64 = async (imageId: string): Promise<string | undefine
       console.warn('[imageService] images:load failed, falling back to Dexie:', err);
     }
   }
-  // F2B.3: dropped the PWA /media/images fetch path. Capacitor APK and
-  // dev-server fallback both reach here: the image bytes live in
-  // db.images.base64Data because the saveImage Capacitor branch wrote
-  // them there. Returns the cached data URL as-is.
+  // v2.14.4 F.3: Capacitor APK now writes binaries to disk. Read the
+  // bytes via capacitorImageRead when the row carries a relativePath,
+  // otherwise fall back to whatever's in base64Data (covers dev-server
+  // preview + any legacy row with the bytes still inline).
   const row = await db.images.get(imageId);
-  return row?.base64Data || undefined;
+  if (!row) return undefined;
+  if (row.relativePath) {
+    const rawB64 = await capacitorImageRead(row.relativePath);
+    if (rawB64) return `data:${row.mimeType || 'image/jpeg'};base64,${rawB64}`;
+  }
+  return row.base64Data || undefined;
 };
 
 // Preserved for backwards-compatibility with callers that expected a sync-ish
@@ -220,8 +273,9 @@ export const saveImageWithId = async (id: string, base64Data: string) => {
   const mimeType = match ? match[1] : 'image/jpeg';
   const rawBase64 = match ? match[2] : base64Data;
 
-  // F2B.3: simplified to "Electron desktop only" for filesystem path.
-  // Capacitor APK keeps the bytes in Dexie (base64Data) like dev preview.
+  // F2B.3: filesystem path. Electron desktop plus, since v2.14.4 F.3,
+  // Capacitor APK. Dev-server / web preview still falls through to the
+  // Dexie base64 path so the byte stays self-contained.
   if (isDesktopElectron() && (window as any).electronAPI) {
     try {
       const ext = pickExtFromMime(mimeType);
@@ -238,6 +292,26 @@ export const saveImageWithId = async (id: string, base64Data: string) => {
       console.warn('[imageService] images:save fallback to Dexie:', result?.error);
     } catch (err) {
       console.warn('[imageService] images:save threw, falling back to Dexie:', err);
+    }
+  }
+
+  if (isCapacitorNative()) {
+    try {
+      const ext = pickExtFromMime(mimeType);
+      const result = await capacitorImageWrite(id, ext, rawBase64);
+      if (result.success && result.relativePath) {
+        await db.images.put({
+          id,
+          base64Data: '',
+          mimeType,
+          timestamp: Date.now(),
+          relativePath: result.relativePath,
+        });
+        return;
+      }
+      console.warn('[imageService] capacitorImageWrite fallback to Dexie:', result.error);
+    } catch (err) {
+      console.warn('[imageService] capacitorImageWrite threw, falling back to Dexie:', err);
     }
   }
 
@@ -281,12 +355,23 @@ export const clearAllImages = async (): Promise<{ success: boolean; cleared: num
       }
     }
 
+    // v2.14.4 F.3: Capacitor branch — wipe the Filesystem images/ dir
+    // first; Dexie clear() below then drops the metadata rows. We use
+    // the directory-scan helper rather than chasing per-row paths so
+    // any orphan file (Dexie row deleted but file write hadn't been
+    // GC'd yet) gets caught too.
+    if (isCapacitorNative()) {
+      try {
+        await capacitorImageClearAll();
+      } catch (e) {
+        console.warn('[imageService] capacitor image clear failed:', e);
+      }
+    }
+
     // Dexie clear is platform-agnostic and the canonical "no metadata
-    // left" guarantee. Capacitor (Android) reaches here with the bytes
-    // still inside base64Data and a clear() wipes them in one stroke;
-    // Electron reaches here after the IPC + per-id loop above already
-    // removed the on-disk PNG/JPG copies, so this just nukes the
-    // remaining metadata rows.
+    // left" guarantee. On Capacitor (post-F.3) the bytes are already
+    // gone from disk so this just removes the metadata rows; on
+    // dev-server preview this is the only step that matters.
     await db.images.clear();
     return { success: true, cleared };
   } catch (e) {

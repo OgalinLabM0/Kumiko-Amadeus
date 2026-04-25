@@ -10,6 +10,8 @@ import { clearAllLocalRagMemory, syncRawHistoryMessagesToMain } from '../service
 import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel } from '../services/appConfig';
 import { db } from '../services/db';
 import { deleteRingtoneFile, deleteVoiceFile, isVoiceServiceAvailable, listVoiceFiles } from '../services/voiceFileService';
+import { isCapacitorNative } from '../services/environment';
+import { capacitorImageDelete, capacitorImageClearAll } from '../services/imageFileService';
 import { DataManagementSection } from './settings/DataManagementSection';
 // F2B.4: removed `MobileAccessSection` + `MobileBrowseRootSection` imports.
 // The PC-side Tailscale-cert + Fastify mobile-bridge UI was deleted along
@@ -538,6 +540,18 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                   if (images.length > 50) {
                       const toDelete = images.slice(0, images.length - 50);
                       const idsToDelete = toDelete.map(img => img.id);
+                      // v2.14.4 F.6: drop the on-disk byte first (Capacitor
+                      // only) so the Dexie row delete doesn't orphan a file.
+                      // PC's filesystem cleanup goes through Electron IPC
+                      // elsewhere; web/dev preview has nothing on disk.
+                      if (isCapacitorNative()) {
+                          for (const img of toDelete) {
+                              if (img.relativePath) {
+                                  try { await capacitorImageDelete(img.relativePath); }
+                                  catch { /* swallow individual failures */ }
+                              }
+                          }
+                      }
                       await db.images.bulkDelete(idsToDelete);
                       refreshStorageEstimate();
                       showDialog({ 
@@ -595,6 +609,17 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                                           const voiceFiles = await listVoiceFiles();
                                           await Promise.all(voiceFiles.map(file => deleteVoiceFile(file.id)));
                                           await deleteRingtoneFile();
+                                      }
+
+                                      // v2.14.4 F.6: wipe Capacitor image
+                                      // files before db.images.clear() drops
+                                      // the metadata that points at them.
+                                      // PC's userData/images/ is wiped via
+                                      // Electron IPC elsewhere in the
+                                      // shutdown path; web/dev has nothing.
+                                      if (isCapacitorNative()) {
+                                          try { await capacitorImageClearAll(); }
+                                          catch (e) { console.warn('[SettingsPanel] Capacitor image wipe failed:', e); }
                                       }
 
                                       await Promise.all([

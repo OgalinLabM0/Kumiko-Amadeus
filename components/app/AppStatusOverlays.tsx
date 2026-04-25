@@ -1,13 +1,27 @@
 import React from 'react';
 import { AlertTriangle, Loader2, WifiOff, Settings } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
+import { UI_TRANSLATIONS } from '../../constants/uiTranslations';
 
-export const LoadingDataScreen: React.FC = () => {
+// v2.14.4 A.1: 三个状态 overlay 改为 i18n。原硬编码英文（"LOADING DATA..." /
+// "ESTABLISHING NEURAL LINK..." / "NEURAL LINK FAILED" 等）下放到
+// constants/uiTranslations.ts 的 errorOverlay* / loadingDataLine /
+// connectingNeuralLink 五个键。`language` 由调用方（App.tsx 与
+// AppFlowScreens.tsx）从 useAppStore(s => s.language) 透传进来，
+// store 是响应式的 → 切换 UI 语言时三段文案立即重渲染。
+type OverlayLanguage = 'zh' | 'en';
+
+interface LoadingDataScreenProps {
+  language: OverlayLanguage;
+}
+
+export const LoadingDataScreen: React.FC<LoadingDataScreenProps> = ({ language }) => {
+  const t = UI_TRANSLATIONS[language];
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-[#f9f7f2] dark:bg-[#1b140d]">
       <div className="animate-pulse flex flex-col items-center">
         <div className="w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full animate-spin"></div>
-        <p className="mt-4 ka-kicker font-mono text-orange-600 dark:text-orange-400">LOADING DATA...</p>
+        <p className="mt-4 ka-kicker font-mono text-orange-600 dark:text-orange-400">{t.loadingDataLine}</p>
       </div>
     </div>
   );
@@ -15,9 +29,11 @@ export const LoadingDataScreen: React.FC = () => {
 
 interface AppConnectingOverlayProps {
   isOpen: boolean;
+  language: OverlayLanguage;
 }
 
-export const AppConnectingOverlay: React.FC<AppConnectingOverlayProps> = ({ isOpen }) => {
+export const AppConnectingOverlay: React.FC<AppConnectingOverlayProps> = ({ isOpen, language }) => {
+  const t = UI_TRANSLATIONS[language];
   return (
     <div
       className="fixed inset-0 z-[200] flex items-center justify-center text-yellow-600 backdrop-blur-sm gap-3"
@@ -32,13 +48,14 @@ export const AppConnectingOverlay: React.FC<AppConnectingOverlayProps> = ({ isOp
       inert={!isOpen}
     >
       <Loader2 className="animate-spin" size={24} />
-      <span className="ka-kicker font-mono tracking-[0.2em]">ESTABLISHING NEURAL LINK...</span>
+      <span className="ka-kicker font-mono tracking-[0.2em]">{t.connectingNeuralLink}</span>
     </div>
   );
 };
 
 interface AppErrorOverlayProps {
   isOpen: boolean;
+  language: OverlayLanguage;
   onReconfigure: () => void;
 }
 
@@ -96,7 +113,8 @@ export const DisconnectedBanner: React.FC<DisconnectedBannerProps> = ({ isVisibl
   </AnimatePresence>
 );
 
-export const AppErrorOverlay: React.FC<AppErrorOverlayProps> = ({ isOpen, onReconfigure }) => {
+export const AppErrorOverlay: React.FC<AppErrorOverlayProps> = ({ isOpen, language, onReconfigure }) => {
+  const t = UI_TRANSLATIONS[language];
   return (
     <div
       className="fixed inset-0 z-[200] flex flex-col items-center justify-center text-red-500 backdrop-blur-sm gap-4 p-6 text-center"
@@ -111,13 +129,13 @@ export const AppErrorOverlay: React.FC<AppErrorOverlayProps> = ({ isOpen, onReco
       inert={!isOpen}
     >
       <AlertTriangle size={48} className="mb-2" />
-      <h2 className="font-mincho text-xl font-semibold tracking-[0.18em]">NEURAL LINK FAILED</h2>
-      <p className="ka-copy-sm opacity-70">CONNECTION TERMINATED. CHECK SIGNAL STRENGTH.</p>
+      <h2 className="font-mincho text-xl font-semibold tracking-[0.18em]">{t.errorOverlayTitle}</h2>
+      <p className="ka-copy-sm opacity-70">{t.errorOverlayBody}</p>
       <button
         onClick={onReconfigure}
         className="mt-4 px-6 py-2 border border-red-500 text-red-500 hover:bg-red-500 hover:text-white transition-colors ka-label tracking-[0.14em]"
       >
-        RECONFIGURE API KEY
+        {t.errorOverlayReconfigBtn}
       </button>
     </div>
   );

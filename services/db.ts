@@ -23,9 +23,13 @@ export interface MessageEntity {
 
 export interface ImageEntity {
   id: string;
-  base64Data: string; // The compressed image data
+  base64Data: string; // PC: full compressed image bytes. Android v2.14.4+: '' (binary lives on disk; see relativePath).
   mimeType: string;
   timestamp: number;
+  // v2.14.4 F.1: Android 把图片二进制移到 Capacitor Filesystem 的 Directory.Data/images/<id>.<ext>。
+  // 该字段只在 Capacitor 分支写入，PC 始终留空。可选字段，旧行（无 relativePath）继续按 base64Data 路径渲染，
+  // 因此不需要 bump Dexie schema version——Dexie 对未声明字段是允许任意附带的。
+  relativePath?: string;
 }
 
 export interface VectorEntity {

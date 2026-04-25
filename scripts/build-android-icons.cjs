@@ -77,10 +77,14 @@ const ADAPTIVE_DENSITIES = [
   { dir: 'mipmap-xxxhdpi', size: 432 },
 ];
 
-// Visible glyph occupies the inner 66dp (out of 108dp canvas) — 21dp of
-// safe zone all around, comfortably inside the 18dp Android-spec minimum
-// while still showing a punchy logo at typical launcher sizes.
-const ADAPTIVE_INNER_RATIO = 66 / 108;
+// v2.14.4 B.1: 66/108 (61%) leaves ~21dp of cream halo all around. Real
+// launcher masks (Pixel circle / Samsung squircle / OnePlus teardrop)
+// clip in the 72-88dp band, so a 66dp glyph always shows a ring of
+// #f9f7f2 background. Bumping to 88/108 (≈ 81.5%) lets the glyph fill
+// virtually every common mask. Corner pixels nudge ~10dp past the
+// official 72dp safe zone but get cleanly clipped by every mask shape;
+// favicon-KA.png is centered with no edge content, so no branding loss.
+const ADAPTIVE_INNER_RATIO = 88 / 108;
 
 async function renderLegacyLauncher(sharp, outName) {
   for (const target of LEGACY_DENSITIES) {

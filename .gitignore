@@ -37,6 +37,16 @@ ios/App/Pods
 ios/App/build
 ios/**/DerivedData
 
+# v2.14.4 H.4: Android 发布签名 keystore（极度敏感，泄漏 = 失去应用身份证）
+# 详细配置见 docs/android-keystore-setup.md。CI 通过 GitHub Secret 注入，
+# 任何写到工作树里的拷贝（包括解码出的 release.keystore、临时的
+# keystore.b64、或者人手放进 android/app/ 调试用的 *.jks）都不能进 git。
+*.keystore
+*.jks
+keystore.b64
+android/app/release.keystore
+android/app/upload-keystore.jks
+
 # Capacitor Android（Gradle 构建产物 / 本机 SDK 路径 / IDE 文件不入仓）
 # android/ 工程本身要提交，让 GitHub Actions / 协作者无须重新跑 cap add
 android/.gradle/

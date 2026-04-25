@@ -13,20 +13,32 @@
 #                            workflow normally creates it via
 #                            electron-builder --publish always).
 #
-# Signing strategy (A1 → A8 transition):
-# - A1: AGP-generated `~/.android/debug.keystore` signs the APK. Each
-#   CI run generates a *different* keystore, which means a user who
-#   installed APK build N can NOT in-place upgrade to build N+1 (Android
-#   requires identical signing certs across versions of the same package
-#   id). For A1.8 verification this is fine — the user just uninstalls /
-#   reinstalls between builds.
-# - A8 (in-app updater milestone): we replace the per-run debug keystore
-#   with a stable upload keystore stored as a base64-encoded GitHub
-#   Secret + decoded into the runner before assembleRelease. At that
-#   point we switch the gradle task from assembleDebug to assembleRelease
-#   (the release variant uses minify + proguard + a real signing config).
-#   Keeping the workflow shape identical here means A8 only edits the
-#   "Build APK" step.
+# Signing strategy (v2.14.4 H.2: stable release keystore):
+# - When the four GitHub Secrets are set —
+#     ANDROID_KEYSTORE_BASE64   (the binary keystore, base64-encoded)
+#     ANDROID_KEYSTORE_PASSWORD (the keystore's storepass)
+#     ANDROID_KEY_ALIAS         (the alias inside the keystore)
+#     ANDROID_KEY_PASSWORD      (the keypass for that alias; can equal
+#                                ANDROID_KEYSTORE_PASSWORD)
+#   the workflow decodes the keystore into android/app/release.keystore,
+#   exports the matching env vars (which app/build.gradle picks up via
+#   System.getenv to hydrate signingConfigs.release), and runs
+#   `assembleRelease`. Output: app-release.apk, signed with the stable
+#   keystore. Every future build signs with the same cert, so Android
+#   accepts in-place updates and the sandbox (IndexedDB + Capacitor
+#   Filesystem + LocalStorage) survives across versions.
+# - When the secrets are absent (forked repo / pre-keystore-setup runs)
+#   the workflow falls back to `assembleDebug`. Each CI run generates a
+#   different debug.keystore so devices that installed an earlier debug
+#   APK still need an uninstall+reinstall to upgrade — the same
+#   pre-v2.14.4 behaviour. The fallback exists so the workflow keeps
+#   being green for contributors without secret access.
+# - First v2.14.4 install: existing v2.14.3 users (only the maintainer's
+#   own test devices, since there are no public users yet) need to
+#   uninstall once because v2.14.3 was debug-signed. From v2.14.4
+#   onwards, in-place upgrades work and the sandbox is preserved.
+# Setup guide for the keystore + secrets lives in
+# docs/android-keystore-setup.md.
 #
 # Universal APK (single APK with every ABI's native libs) is the default
 # AGP behavior since we do NOT set `android.splits.abi.enable true`.
@@ -152,20 +164,67 @@ jobs:
         # depending on core.fileMode settings. Force-set it before invoke.
         run: chmod +x android/gradlew
 
-      - name: Build universal debug APK
-        # assembleDebug uses the AGP-generated `~/.android/debug.keystore`
-        # so the APK installs without `adb install -r`. Output path:
-        # android/app/build/outputs/apk/debug/app-debug.apk
-        # When A8 introduces a stable signing key, switch to assembleRelease.
+      - name: Detect release-keystore secret + decode
+        # v2.14.4 H.2: when the maintainer-owned keystore secret is
+        # present, decode it into android/app/release.keystore so
+        # build.gradle's signingConfigs.release picks it up. When it's
+        # missing (forked repo build / first-time setup), this step
+        # exits cleanly with signed=false and the next step falls back
+        # to assembleDebug.
+        id: keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "${ANDROID_KEYSTORE_BASE64:-}" ]; then
+            echo "ANDROID_KEYSTORE_BASE64 secret not set — falling back to debug signing."
+            echo "signed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "Decoding release keystore from secret…"
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+          if [ ! -s android/app/release.keystore ]; then
+            echo "::error::Decoded keystore is empty. Re-check ANDROID_KEYSTORE_BASE64 (must be base64 of the .keystore binary, no line wraps)."
+            exit 1
+          fi
+          # Quick header sanity check (Java keystore magic bytes).
+          # Catches "I pasted a path instead of file contents" mistakes
+          # before gradle later fails with a less obvious error.
+          head -c 4 android/app/release.keystore | xxd | grep -E '(feed feed|cece cece)' >/dev/null || {
+            echo "::warning::release.keystore header does not match JKS or PKCS12 magic — gradle may still succeed if it's a valid BKS, but double-check the secret if signing fails below."
+          }
+          echo "signed=true" >> $GITHUB_OUTPUT
+
+      - name: Build universal APK
+        # v2.14.4 H.2: pick the assemble task based on whether the
+        # release keystore was decoded above. assembleRelease uses the
+        # signingConfigs.release block in app/build.gradle which reads
+        # KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD env vars below.
         working-directory: android
-        run: ./gradlew assembleDebug --no-daemon --warning-mode=summary
+        env:
+          KEYSTORE_FILE: release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
+            echo "Running assembleRelease (signed with stable release keystore)."
+            ./gradlew assembleRelease --no-daemon --warning-mode=summary
+          else
+            echo "Running assembleDebug (no release keystore secret available)."
+            ./gradlew assembleDebug --no-daemon --warning-mode=summary
+          fi
 
       - name: Verify APK exists + show size
-        # Sanity gate: if assembleDebug succeeded but the APK is missing
-        # for whatever reason (custom output dir, AGP version skew), fail
-        # loudly here instead of producing an empty Release asset upload.
+        # Sanity gate: if the assemble task succeeded but the APK is
+        # missing for whatever reason (custom output dir, AGP version
+        # skew), fail loudly here instead of producing an empty Release
+        # asset upload.
         run: |
-          APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
+            APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
+          else
+            APK_PATH="android/app/build/outputs/apk/debug/app-debug.apk"
+          fi
           if [ ! -f "$APK_PATH" ]; then
             echo "::error::Expected APK not found at $APK_PATH"
             ls -la android/app/build/outputs/apk/ || true
@@ -173,17 +232,26 @@ jobs:
           fi
           SIZE=$(du -h "$APK_PATH" | cut -f1)
           echo "Built $APK_PATH ($SIZE)"
+          echo "APK_PATH=$APK_PATH" >> $GITHUB_ENV
 
       - name: Rename APK to release-friendly filename
         # Mirrors windows-release.yml's
         # `Kumiko-Amadeus-Setup-${arch}-${version}.exe` naming so the APK
         # sits next to the per-arch Windows installers on the Release page
         # with a consistent version-suffixed scheme.
+        # v2.14.4 H.2: drop the "-debug" suffix when release-signed so
+        # the user can tell at a glance which APK is the upgrade-safe
+        # one. Debug fallback keeps the suffix as a visible "this won't
+        # in-place-upgrade your existing install" warning.
         id: rename
         run: |
-          OUT="release/Kumiko-Amadeus-${{ steps.appver.outputs.version }}-universal-debug.apk"
+          if [ "${{ steps.keystore.outputs.signed }}" = "true" ]; then
+            OUT="release/Kumiko-Amadeus-${{ steps.appver.outputs.version }}-universal.apk"
+          else
+            OUT="release/Kumiko-Amadeus-${{ steps.appver.outputs.version }}-universal-debug.apk"
+          fi
           mkdir -p release
-          cp android/app/build/outputs/apk/debug/app-debug.apk "$OUT"
+          cp "$APK_PATH" "$OUT"
           echo "apk_path=$OUT" >> $GITHUB_OUTPUT
           ls -la release/
 

@@ -46,6 +46,12 @@ export const UI_TRANSLATIONS = {
     // App Status
     connecting: "正在连接 AMADEUS 系统...",
     connectionFailed: "连接失败。请检查 API KEY。",
+    // v2.14.4 A.1: Overlay 文案 i18n（原硬编码英文移到这里）
+    errorOverlayTitle: "神经链路中断",
+    errorOverlayBody: "连接终止 · 请检查信号强度",
+    errorOverlayReconfigBtn: "重新配置 API KEY",
+    loadingDataLine: "正在加载数据...",
+    connectingNeuralLink: "正在建立神经链路...",
     systemName: "AMADEUS 系统",
     systemId: "SYS-ID: 7759-KUMIKO-V3",
     voiceSync: "语音同步率",
@@ -604,6 +610,12 @@ export const UI_TRANSLATIONS = {
     // App Status
     connecting: "CONNECTING TO AMADEUS SYSTEM...",
     connectionFailed: "CONNECTION FAILED. CHECK API KEY.",
+    // v2.14.4 A.1: Overlay copy i18n (was hardcoded inline before)
+    errorOverlayTitle: "NEURAL LINK FAILED",
+    errorOverlayBody: "CONNECTION TERMINATED. CHECK SIGNAL STRENGTH.",
+    errorOverlayReconfigBtn: "RECONFIGURE API KEY",
+    loadingDataLine: "LOADING DATA...",
+    connectingNeuralLink: "ESTABLISHING NEURAL LINK...",
     systemName: "AMADEUS SYSTEM",
     systemId: "SYS-ID: 7759-KUMIKO-V3",
     voiceSync: "VOICE_SYNC",

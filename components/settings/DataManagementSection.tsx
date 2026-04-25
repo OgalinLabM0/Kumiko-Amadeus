@@ -10,6 +10,7 @@ import {
   loadRingtoneFileWithName,
 } from '../../services/voiceFileService';
 import { clearAllImages } from '../../services/imageService';
+import { getImageStorageInfo } from '../../services/imageFileService';
 import { isCapacitorNative } from '../../services/environment';
 import { dialogService } from '../../services/dialogService';
 import { db } from '../../services/db';
@@ -123,6 +124,21 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
         }
       } catch {
         /* fall through */
+      }
+    }
+    // v2.14.4 F.5: Capacitor (Android) byte size now lives on the
+    // Filesystem (Directory.Data/images/) instead of inside Dexie's
+    // base64Data. Read the directory's total via getImageStorageInfo
+    // so the "X.X MB" readout reflects on-disk usage, not the empty
+    // metadata rows.
+    if (isCapacitor) {
+      try {
+        const fileInfo = await getImageStorageInfo();
+        setImageStorage(fileInfo);
+        return;
+      } catch (e) {
+        console.warn('[DataManagement] Capacitor image storage read failed:', e);
+        // fall through to Dexie tally so the UI still shows something
       }
     }
     const count = await db.images.count();
@@ -254,10 +270,14 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
       ? { info: '语音文件', desc: '删除语音文件不影响消息文字，仅无法再次播放语音。', open: '打开语音文件夹' }
       : { info: 'Voice Files', desc: 'Deleting voice files does not affect message text; only playback is lost.', open: 'Open Voice Folder' });
 
-  // P1 #36 follow-up + v2.14.1 E.4: image card now has three branches:
+  // P1 #36 follow-up + v2.14.1 E.4 + v2.14.4 F.5: image card now has
+  // three branches:
   //   - Desktop: real files under userData/images/ → "Open Folder".
-  //   - Capacitor (Android): app-private IndexedDB → "Clear All Images"
-  //     because the OS file manager can't reach the WebView sandbox.
+  //   - Capacitor (Android): real files under
+  //     Directory.Data/images/<id>.<ext> via @capacitor/filesystem
+  //     (v2.14.4 F.3 moved them out of IndexedDB) → "Clear All Images"
+  //     because Android Scoped Storage still hides the sandbox from
+  //     external file managers.
   //   - Web: dev preview only → metadata note, no actionable button.
   const imageT = isDesktopElectron
     ? (language === 'zh'
@@ -266,15 +286,14 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
     : isCapacitor
       ? (language === 'zh'
         ? {
-            // v2.14.3 N.4: rewritten to be 100% Android-specific. The
-            // previous copy described iOS-style "Library/WebView/IndexedDB/"
-            // which is wrong for Android. Android stores WebView IndexedDB
-            // under /data/data/<pkg>/app_webview/Default/IndexedDB/ but
-            // surfacing the absolute path is misleading because it requires
-            // root to inspect — we summarise as "APK 私有沙盒".
+            // v2.14.4 F.5: bytes are now real files on the Capacitor
+            // Filesystem (Directory.Data/images/<id>.<ext>), mirroring
+            // PC's userData/images/ shape. Sandbox is still invisible
+            // to ordinary file managers (Scoped Storage), so the
+            // in-app "Clear" button stays the only operator.
             info: '图片文件',
-            desc: 'Android 上图片以 base64 编码存放在 APK 私有沙盒的 IndexedDB 中。沙盒由 Android 强制隔离，无法在系统文件管理器或电脑挂载时看到，只能用下方按钮清理。',
-            location: '存放位置：/data/data/com.kumiko.amadeus.app/app_webview/Default/IndexedDB/（应用私有，普通文件管理器不可见）',
+            desc: 'Android 上图片以真实文件形式存放在 APK 私有沙盒的 files 目录内，与 PC 端 userData/images/ 一一对应。沙盒由 Android 强制隔离，无法在系统文件管理器或电脑挂载时看到，只能用下方按钮清理。',
+            location: '存放位置：/data/data/com.kumiko.amadeus.app/files/images/<id>.<ext>（应用私有，普通文件管理器不可见）',
             actionLabel: '清理全部图片',
             confirmTitle: '清理图片',
             confirmBody: '将删除 APK 内全部图片文件（历史消息中的图片缩略图会丢失，对应的文字消息内容保留）。确定继续？',
@@ -288,8 +307,8 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
           }
         : {
             info: 'Image Files',
-            desc: 'On Android, images live as base64 strings inside IndexedDB in the APK\'s private sandbox. The sandbox is enforced by Android — you cannot see it in the system file manager or via USB, only the button below can clear it.',
-            location: 'Stored in: /data/data/com.kumiko.amadeus.app/app_webview/Default/IndexedDB/ (app-private; not visible to file managers)',
+            desc: 'On Android, images are stored as real files under the APK\'s private files directory — same shape as PC\'s userData/images/. The sandbox is enforced by Android (Scoped Storage), so you cannot see it in the system file manager or via USB; only the button below can clear it.',
+            location: 'Stored in: /data/data/com.kumiko.amadeus.app/files/images/<id>.<ext> (app-private; not visible to file managers)',
             actionLabel: 'Clear All Images',
             confirmTitle: 'Clear Images',
             confirmBody: 'This deletes every image stored inside the APK. History thumbnails will be lost, but the underlying text messages stay intact. Continue?',
