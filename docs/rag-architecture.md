@@ -182,7 +182,7 @@ flowchart LR
     INV -->|"Capacitor"| ARS
     ARS --> HNSW
     HNSW -->|"OK"| LRS
-    HNSW -->|"throw / dim drift / >50k"| BF
+    HNSW -->|"throw / dim drift / resize failure"| BF
     BF --> LRS
     HNSW <--> IDBFS
     ARS <-->|"raw vectors"| DEX
@@ -211,8 +211,10 @@ Electron uses is not packaged into the APK.
 
 - Space: `cosine` (matches the brute-force fallback's similarity metric).
 - M = 32, `efConstruction` = 200, `efSearch` = 64.
-- Initial capacity = `max(10 000, vectorCount × 2)`; we `resizeIndex` on
-  the fly (doubling) up to `HNSW_MAX_ELEMENTS` = 50 000.
+- Initial capacity = `max(1 000, vectorCount × 2 + 256)` per tier; we
+  `resizeIndex` on the fly (doubling), matching the PC behavior. If the
+  WASM heap cannot grow far enough, `resizeIndex` throws and that tier
+  gracefully falls back to brute-force cosine over Dexie.
 
 ### Failure modes & graceful degradation
 
@@ -225,7 +227,7 @@ Dexie. Triggering conditions:
 | Trigger | Detection | Recovery |
 | --- | --- | --- |
 | `hnswlib-wasm` module load fails | Dynamic import throws | Fall back permanently for this session; brute force serves searches |
-| Vector count > 50 000 at init | `db.vectors.count()` check | Skip HNSW load, brute force |
+| HNSW init / resize exhausts WASM memory | `initIndex` / `resizeIndex` throws | Mark that tier brute force; Dexie remains authoritative |
 | Embedding dim drift (provider switch) | Compare `keyval.rag.hnsw.dim` vs current `getEmbeddingConfig().dimensions` | Mark needsRebuild, fall back this session, prompt user via "Rebuild RAG memory" button |
 | `readIndex` throws (corrupt IDBFS file) | Try/catch around `readIndex` | Drop in-memory index, mark needsRebuild, brute force |
 | `searchKnn` throws | Try/catch around `hnsw.search` | Per-query fall back to brute force, do not poison module |

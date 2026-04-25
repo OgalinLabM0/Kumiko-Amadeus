@@ -12,9 +12,9 @@
 //   - **PC-parity hybrid scoring** (androidRagHybridScore) — BM25 +
 //     RRF + boostHybridScore byte-for-byte equal to PC.
 //   - **Brute-force fallback** over Dexie's `vectors` table for the cases
-//     where HNSW is unavailable: init failure, dim drift, mid-rebuild,
-//     temporal filter active (PC also brute-forces with filters), or the
-//     50 000-per-tier cap exceeded.
+//     where HNSW is unavailable: init failure, resize/add failure
+//     (including WASM heap exhaustion), dim drift, mid-rebuild, or temporal
+//     filter active (PC also brute-forces with filters).
 //
 // PC behavior: this module is NEVER imported on Electron. The Capacitor
 // branch in localRagService.getRagInvoker() short-circuits to here only

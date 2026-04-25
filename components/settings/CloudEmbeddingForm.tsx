@@ -62,6 +62,10 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
     () => modelOptions.find((m) => m.id === config.model) || modelOptions[0],
     [modelOptions, config.model],
   );
+  const modelSelectOptions = useMemo<ThemedSelectItem[]>(
+    () => modelOptions.map((m) => ({ value: m.id, label: m.label })),
+    [modelOptions],
+  );
 
   const update = useCallback((patch: Partial<EmbeddingProviderConfig>) => {
     setConfig((prev) => {
@@ -141,15 +145,16 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
 
       <div>
         <label className={fieldLabelClass}>{language === 'zh' ? '模型' : 'Model'}</label>
-        <select
-          value={config.model}
-          onChange={(e) => handleModelChange(e.target.value)}
-          className={`${inputClass} w-full mt-1`}
-        >
-          {modelOptions.map((m) => (
-            <option key={m.id} value={m.id}>{m.label}</option>
-          ))}
-        </select>
+        <div className="mt-1">
+          <ThemedSelect
+            value={config.model}
+            onChange={handleModelChange}
+            options={modelSelectOptions}
+            isDarkMode={isDarkMode}
+            className={`${inputClass} w-full`}
+            ariaLabel={language === 'zh' ? '选择 Embedding 模型' : 'Select embedding model'}
+          />
+        </div>
         {config.provider === 'custom' && (
           <input
             type="text"

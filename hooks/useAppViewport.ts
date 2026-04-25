@@ -41,6 +41,14 @@ const measureEnvInset = (
   return val;
 };
 
+const isEditableElement = (el: EventTarget | null): boolean => {
+  const node = el as HTMLElement | null;
+  if (!node || !node.tagName) return false;
+  const tag = node.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return true;
+  return !!node.isContentEditable;
+};
+
 export interface UseViewportSyncInput {
   /** 背景色：会写到 html / body / #root / appShell 的 backgroundColor。
    *  PairingGate 阶段传配对页米色 `#f9f7f2`，APP 阶段传主题色（白 / 棕黑）。 */
@@ -256,16 +264,8 @@ export const useViewportSync = ({
       }
     };
 
-    const isEditableTarget = (el: EventTarget | null): boolean => {
-      const node = el as HTMLElement | null;
-      if (!node || !node.tagName) return false;
-      const tag = node.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return true;
-      return !!node.isContentEditable;
-    };
-
     const handleFocusIn = (e: FocusEvent) => {
-      if (!isEditableTarget(e.target)) return;
+      if (!isEditableElement(e.target)) return;
       focusEstimateActive = true;
       document.documentElement.style.setProperty(
         '--kb-inset',
@@ -288,7 +288,7 @@ export const useViewportSync = ({
       // （Safari 切换 INPUT 时会先 focusout 再 focusin）。如果还是
       // editable，保留估算窗口；否则归零让 footer 自然落回底部。
       setTimeout(() => {
-        if (isEditableTarget(document.activeElement)) return;
+        if (isEditableElement(document.activeElement)) return;
         focusEstimateActive = false;
         if (focusEstimateTimer !== null) {
           clearTimeout(focusEstimateTimer);
@@ -507,6 +507,11 @@ export const useAppViewport = ({
   useEffect(() => {
     let timer: number | null = null;
     const onResize = () => {
+      // Android WebView emits window.resize while the IME opens/closes. While an
+      // input is focused, skip the heavy-subtree freeze so Settings panels stay
+      // mounted and the keyboard does not immediately collapse.
+      if (!isDesktopElectron() && isEditableElement(document.activeElement)) return;
+
       document.documentElement.setAttribute('data-resizing', '');
       if (timer !== null) window.clearTimeout(timer);
       timer = window.setTimeout(() => {

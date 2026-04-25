@@ -10,9 +10,9 @@
 //
 // Each tier owns its own HNSW graph, IDBFS file, idMap blob, and label
 // space. Search is per-tier (callers stage core → episodic → background
-// at the service layer). The 50 000-element cap is enforced **per tier**,
-// so a worst-case install can hold 150 000 vectors before falling back to
-// brute force on any single tier.
+// at the service layer). Capacity follows the PC path: start from the
+// current per-tier count and expand with resizeIndex on demand. Brute
+// force is only the real fallback when HNSW itself cannot load/init/resize.
 //
 // M.3 — `labelToTimestamp` is persisted alongside `labelToVectorId` so the
 // service layer can pass a `FilterFunction` to `searchKnn` for true
@@ -27,8 +27,8 @@
 // Failure model (per tier — one tier degrading does not poison the others):
 //   - HNSW init throws       → tier.mode = 'bruteforce', service falls back
 //   - HNSW load throws       → mark needsRebuild, fall back this call
+//   - HNSW resize/add throws → tier.mode = 'bruteforce', service falls back
 //   - HNSW search throws     → return null, service falls back per-call
-//   - Vector count > 50 000  → tier.mode = 'bruteforce' on init
 //   - Embedding dim drift    → mark needsRebuild on first detect, fall back
 //
 // Persistence layout:
@@ -147,7 +147,6 @@ export interface AggregateStatus {
 
 const KEYVAL_DIM_KEY = 'rag.hnsw.dim';
 const KEYVAL_SAVED_AT_KEY = 'rag.hnsw.savedAt';
-const HNSW_MAX_ELEMENTS = 50_000;
 const HNSW_M = 32;
 const HNSW_EF_CONSTRUCTION = 200;
 const HNSW_EF_SEARCH = 64;
@@ -394,11 +393,6 @@ async function ensureInit(): Promise<void> {
       state.initialized = true;
       const cnt = counts[tier];
 
-      if (cnt > HNSW_MAX_ELEMENTS) {
-        setTierBrute(state, `count ${cnt} exceeds per-tier HNSW cap ${HNSW_MAX_ELEMENTS}`);
-        continue;
-      }
-
       if (dimMismatch) {
         console.warn(
           `[androidRagHnsw] tier=${tier} dim drift (persisted=${persistedDim} target=${targetDim}); marking rebuild`,
@@ -472,10 +466,6 @@ function ensureTierCapacityFor(state: TierIndexState, extra: number): boolean {
   if (used + extra <= cap) return true;
   try {
     const newCap = Math.max(cap * 2, used + extra + HNSW_MIN_CAPACITY);
-    if (newCap > HNSW_MAX_ELEMENTS) {
-      setTierBrute(state, `would exceed per-tier HNSW cap ${HNSW_MAX_ELEMENTS}`);
-      return false;
-    }
     state.index.resizeIndex(newCap);
     return true;
   } catch (e) {
@@ -817,11 +807,6 @@ export async function reinitEmpty(
     clearTierMaps(state);
 
     const want = perTierTotals[tier] ?? 0;
-    if (want > HNSW_MAX_ELEMENTS) {
-      setTierBrute(state, `rebuild target ${want} exceeds per-tier HNSW cap ${HNSW_MAX_ELEMENTS}`);
-      allOk = false;
-      continue;
-    }
     const capacity = Math.max(HNSW_MIN_CAPACITY, want * 2 + 256);
 
     try {

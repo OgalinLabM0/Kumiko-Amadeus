@@ -39,13 +39,13 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
   // v2.14.2 J.6: split the RAG description by platform.
   // - PC: ONNX bge-m3 + sqlite-vec, fully local, no network needed for embeddings.
   // - Android: cloud embeddings + Dexie persistence + hnswlib-wasm HNSW index;
-  //   above 50 000 vectors we auto-fall-back to brute-force cosine over Dexie.
+  //   HNSW grows on demand and falls back to brute-force only if WASM fails.
   //   The previous unified copy claimed local ONNX, which was a lie on Android.
   const isCapacitor = isCapacitorNative();
   const ragDescription = isCapacitor
     ? (language === 'zh'
-        ? '云端 Embedding（OpenAI / Gemini / 智谱 / 通义 / 自定义）+ Dexie 持久化 + hnswlib-wasm HNSW 索引（>5 万向量自动降级为暴力余弦检索），完全在 app 内运行。'
-        : 'Cloud embeddings (OpenAI / Gemini / Zhipu / Tongyi / Custom) + Dexie persistence + hnswlib-wasm HNSW index (auto-fallback to brute-force cosine above 50 000 vectors). Runs entirely on-device.')
+        ? '云端 Embedding（OpenAI / Gemini / 智谱 / 通义 / 自定义）+ Dexie 持久化 + hnswlib-wasm HNSW 索引（按需扩容，WASM 失败时自动降级为暴力余弦检索），完全在 app 内运行。'
+        : 'Cloud embeddings (OpenAI / Gemini / Zhipu / Tongyi / Custom) + Dexie persistence + hnswlib-wasm HNSW index (grows on demand, auto-fallback to brute-force cosine if WASM fails). Runs entirely on-device.')
     : (language === 'zh'
         ? '使用本地 ONNX + SQLite 向量检索，不再依赖外部 Embedding API'
         : 'Use local ONNX + SQLite vector retrieval without external embedding APIs');
