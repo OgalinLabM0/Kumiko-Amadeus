@@ -12,6 +12,7 @@ import {
 } from '../services/preferencesSync';
 import { isCapacitorNative } from '../services/environment';
 import { ComposableInput } from './common/ComposableInput';
+import { shouldIgnoreEnterDuringImeGrace } from './common/imeGuards';
 
 // Cloud sync removed from the product — any references to CLOUD_SYNC_AVAILABLE have been
 // deleted along with the CLOUD tab. If the feature returns, reintroduce the constant
@@ -491,12 +492,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                           </div>
                           <ComposableInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => {
                             if (e.key !== 'Enter') return;
-                            // v2.14.12: align with App.tsx / CustomDialog Enter guard.
-                            // Password fields normally don't trigger IME but the
-                            // username field above shares the same form & handleLogin,
-                            // so keep the guard here for consistency in case a future
-                            // refactor wires the username Enter through this same handler.
-                            if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+                            if (shouldIgnoreEnterDuringImeGrace(e)) return;
                             handleLogin();
                           }} className="bg-transparent outline-none w-full ka-input-copy auth-input-text placeholder-[#785A42]/30" placeholder="••••" />
                         </div>

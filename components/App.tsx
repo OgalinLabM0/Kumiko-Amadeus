@@ -156,6 +156,7 @@ import { installGlobalAudioUnlock } from '../utils/audioUnlock';
 import { startForegroundServiceIfNeeded } from '../services/foregroundServiceController';
 import { isCapacitorNative } from '../services/environment';
 import { useAndroidPendingActionsDrainer } from '../hooks/useAndroidPendingActionsDrainer';
+import { shouldIgnoreEnterDuringImeGrace } from './common/imeGuards';
 
 
 export const App = () => {
@@ -1080,20 +1081,13 @@ export const App = () => {
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== 'Enter') return;
-    // v2.14.12 IME guard: when the user presses Enter to commit a Chinese / JP / KR
-    // IME candidate, the native Enter event reaches React with the composition
-    // already torn down on Android WebView. Without the guard handleSend would
-    // fire, setInputValue('') would clear the just-committed candidate, and the
-    // user would see "I typed 我我我, it appeared for ~1s, then vanished + an
-    // empty message got sent". Three checks because different browsers / Android
-    // WebViews surface IME-mediated keys differently:
-    //   - e.nativeEvent.isComposing   : current spec, Chromium/WebKit modern
-    //   - e.keyCode === 229           : Chromium IME placeholder keycode (very
-    //                                   common on Android WebView even when the
-    //                                   composition state is already cleared)
-    //   - e.key === 'Process'         : older Firefox/legacy spec, occasionally
-    //                                   surfaces on Android WebView fallback
-    if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key === 'Process') return;
+    // v2.14.17 IME guard (replaces v2.14.12 brute-force keyCode 229 / key
+    // 'Process' check). Now uses shouldIgnoreEnterDuringImeGrace which
+    // blocks during active composition + a brief 80ms post-composition
+    // window. The old check ate the real send Enter on some Chinese IMEs
+    // that leave keyCode 229 set after the candidate is already committed,
+    // forcing users to type a non-Chinese character before Send would fire.
+    if (shouldIgnoreEnterDuringImeGrace(e)) return;
     handleSend();
   };
   const toggleTheme = (e?: React.MouseEvent) => {
