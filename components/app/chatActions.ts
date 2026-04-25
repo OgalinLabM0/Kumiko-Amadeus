@@ -29,6 +29,7 @@ const getKumikoLocalRag = (language?: Language) =>
   language === 'en' ? KUMIKO_LOCAL_RAG_EN : KUMIKO_LOCAL_RAG_ZH;
 import { setAIConfig } from '../../services/llmCore';
 import { dialogService } from '../../services/dialogService';
+import { extractReminderIntentLLM } from '../../services/reminderIntentRetry';
 import {
   sendMessageToGemini,
   getCurrentAIConfig,
@@ -1792,13 +1793,39 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       }
     }
 
+    // D-fallback (v2.14.17): when the regex says the user expressed reminder
+    // intent but neither the main-pass LLM scheduleTrigger nor the local
+    // parser produced a usable reminder, fire a single triggered second-
+    // opinion LLM pass via reminderIntentRetry. Only runs in this edge
+    // case (0 LLM cost on every normal turn). LLM judges if it's really
+    // a reminder, extracts timing+event in strict JSON, and we save iff
+    // sanity checks pass.
+    let llmRetryResult: import('../../services/reminderIntentRetry').ReminderIntentRetryResult | null = null;
     if (hasReminderIntent && !createdReminderThisTurn) {
-      console.warn('[REMINDER] intent detected but no reminder was created:', {
+      llmRetryResult = await extractReminderIntentLLM(userTextForRag, language);
+      if (llmRetryResult?.isReminder && llmRetryResult.event) {
+        if (
+          llmRetryResult.recurrence === 'daily' &&
+          typeof llmRetryResult.hour === 'number' &&
+          typeof llmRetryResult.minute === 'number'
+        ) {
+          await s2.saveDailyReminder(llmRetryResult.event, llmRetryResult.hour, llmRetryResult.minute, userTextForRag);
+          createdReminderThisTurn = true;
+        } else if (typeof llmRetryResult.delaySeconds === 'number' && llmRetryResult.delaySeconds > 0) {
+          await s2.saveRelativeReminder(llmRetryResult.event, llmRetryResult.delaySeconds, userTextForRag);
+          createdReminderThisTurn = true;
+        }
+      }
+    }
+
+    if (hasReminderIntent && !createdReminderThisTurn) {
+      console.warn('[REMINDER] intent detected but no reminder was created (D-fallback also missed):', {
         text: userTextForRag.slice(0, 200),
         hasLlmScheduleTrigger: !!response.scheduleTrigger,
         llmScheduleTriggerKeys: response.scheduleTrigger ? Object.keys(response.scheduleTrigger) : null,
         parsedDailyReminder,
         parsedRelativeReminder,
+        llmRetryResult,
       });
     }
 
