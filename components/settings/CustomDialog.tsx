@@ -3,7 +3,6 @@ import { Info, AlertTriangle, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useModalKeyboard } from '../../hooks/useModalKeyboard';
 import { useModalPortal } from '../../hooks/useModalPortal';
 import { ComposableInput } from '../common/ComposableInput';
-import { shouldIgnoreEnterDuringImeGrace } from '../common/imeGuards';
 
 export type CustomDialogVariant = 'default' | 'danger';
 export type CustomDialogIcon = 'info' | 'warning' | 'error' | 'success';
@@ -158,7 +157,11 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
               placeholder={inputPlaceholder}
               onKeyDown={(e) => {
                 if (e.key !== 'Enter') return;
-                if (shouldIgnoreEnterDuringImeGrace(e)) return;
+                // v2.14.12: same IME guard as chat input — Android WebView users
+                // typing Chinese into a prompt dialog were getting their committed
+                // candidate eaten when the IME's Enter triggered Confirm before
+                // they could review what they typed. See components/App.tsx.
+                if (e.nativeEvent.isComposing || e.keyCode === 229 || e.key === 'Process') return;
                 e.preventDefault();
                 onConfirm(inputValue);
                 setInputValue('');

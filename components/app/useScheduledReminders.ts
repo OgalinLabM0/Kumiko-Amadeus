@@ -7,14 +7,8 @@ import {
   type ExecuteSendHelpers,
 } from './chatActions';
 import { getTimePartsInTimezone } from './backupHelpers';
-import { getCapacitorPlatform, isCapacitorNative } from '../../services/environment';
-import {
-  cancelAndroidAlarm,
-  scheduleAndroidAlarm,
-  EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY,
-  type ScheduleAlarmResult,
-} from '../../services/androidAlarmService';
-import { useAppStore } from '../../store';
+import { isCapacitorNative } from '../../services/environment';
+import { cancelAndroidAlarm, scheduleAndroidAlarm } from '../../services/androidAlarmService';
 
 type FlowState = 'INTRO' | 'AUTH' | 'CONFIG' | 'APP';
 
@@ -119,18 +113,6 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
   } = params;
 
   const reminderDispatchingRef = useRef<boolean>(false);
-
-  const notifyExactAlarmFallbackOnce = useCallback((result: ScheduleAlarmResult) => {
-    if (!result.scheduled || result.exact !== false || typeof window === 'undefined') return;
-    if (window.localStorage.getItem(EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY) === 'true') return;
-
-    window.localStorage.setItem(EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY, 'true');
-    const message = language === 'zh'
-      ? '安卓精确闹钟权限未开启，提醒已用非精确闹钟兜底；省电模式下可能晚一点响。'
-      : 'Exact alarm permission is off. Reminders will use an inexact fallback and may ring a little late in battery saver.';
-    useAppStore.getState().setSystemNotice(message);
-    showBackgroundMessageNotification(message, 'reminder');
-  }, [language, showBackgroundMessageNotification]);
 
   const triggerTimedReminderMessage = useCallback(async (reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>): Promise<boolean> => {
     return triggerTimedReminderMessageAction(
@@ -254,7 +236,7 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
   //   so the native receiver knows whether to launch full-screen call
   //   (IncomingCallActivity) or post a text MessagingStyle notification.
   useEffect(() => {
-      if (!isCapacitorNative() || getCapacitorPlatform() !== 'android') return;
+      if (!isCapacitorNative()) return;
       if (flowState !== 'APP') return;
 
       const lastSyncedIdsRef = new Set<string>();
@@ -276,14 +258,13 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
               for (const r of relatives) {
                   if (!r || !r.id || !r.dueAt || r.dueAt <= Date.now()) continue;
                   seenIds.add(r.id);
-                  const result = await scheduleAndroidAlarm({
+                  await scheduleAndroidAlarm({
                       reminderId: r.id,
                       at: r.dueAt,
                       event: r.event,
                       text: r.event,
                       wantsCall,
                   });
-                  notifyExactAlarmFallbackOnce(result);
               }
               for (const d of dailies) {
                   if (!d || !d.id || d.paused) continue;
@@ -313,14 +294,13 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                   // Daily alarms get a stable id to avoid orphaning across days.
                   const alarmId = `daily-${d.id}`;
                   seenIds.add(alarmId);
-                  const result = await scheduleAndroidAlarm({
+                  await scheduleAndroidAlarm({
                       reminderId: alarmId,
                       at: atMs,
                       event: d.event,
                       text: d.event,
                       wantsCall,
                   });
-                  notifyExactAlarmFallbackOnce(result);
               }
 
               // Cancel alarms that were synced previously but are no longer
@@ -340,5 +320,5 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
       void reconcile();
       const syncInterval = setInterval(() => { void reconcile(); }, 30_000);
       return () => clearInterval(syncInterval);
-  }, [flowState, getRelativeReminders, getDailyReminders, ttsConfigRef, notifyExactAlarmFallbackOnce]);
+  }, [flowState, getRelativeReminders, getDailyReminders, ttsConfigRef]);
 };

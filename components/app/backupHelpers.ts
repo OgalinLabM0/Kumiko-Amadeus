@@ -43,7 +43,7 @@ export const parseRelativeReminderRequest = (text: string): { event: string; del
 
   let delaySeconds = 0;
   const zhMatch = normalized.match(/(\d+(?:\.\d+)?)\s*(秒钟?|秒|分钟?|分|小时|钟头|个小时)/u);
-  const enMatch = normalized.match(/(\d+(?:\.\d+)?)\s*(seconds?|secs?|sec|s|minutes?|mins?|min|m|hours?|hrs?|hour|hr|h)\b/i);
+  const enMatch = normalized.match(/(\d+(?:\.\d+)?)\s*(seconds?|secs?|sec|minutes?|mins?|min|hours?|hrs?|hour|hr)\b/i);
   const timeMatch = zhMatch || enMatch;
 
   if (!timeMatch) return null;
@@ -54,9 +54,9 @@ export const parseRelativeReminderRequest = (text: string): { event: string; del
   const unit = timeMatch[2].toLowerCase();
   if (/^秒/.test(unit) || /^sec/.test(unit) || unit === 's' || /^second/.test(unit)) {
     delaySeconds = Math.round(amount);
-  } else if (/^分/.test(unit) || /^min/.test(unit) || /^minute/.test(unit) || unit === 'm') {
+  } else if (/^分/.test(unit) || /^min/.test(unit) || /^minute/.test(unit)) {
     delaySeconds = Math.round(amount * 60);
-  } else if (/^小/.test(unit) || /钟头/.test(unit) || /^h(?:ou)?r/.test(unit) || unit === 'h') {
+  } else if (/^小/.test(unit) || /钟头/.test(unit) || /^h(?:ou)?r/.test(unit)) {
     delaySeconds = Math.round(amount * 3600);
   }
 
@@ -87,13 +87,8 @@ export const parseRelativeReminderRequest = (text: string): { event: string; del
   }
 
   rawEvent = rawEvent.replace(/\b(?:in|after)\s+\d+(?:\.\d+)?\s*(?:seconds?|secs?|sec|minutes?|mins?|min|hours?|hrs?|hour|hr)\b.*$/i, '').trim();
-  rawEvent = rawEvent
-    .replace(/^\d+(?:\.\d+)?\s*(?:秒钟?|秒|分钟?|分|小时|钟头|个小时)\s*(?:后|後)?\s*/u, '')
-    .replace(/^\d+(?:\.\d+)?\s*(?:seconds?|secs?|sec|s|minutes?|mins?|min|m|hours?|hrs?|hour|hr|h)\b\s*(?:later|after)?\s*/i, '')
-    .replace(/\b(?:in|after)\s+\d+(?:\.\d+)?\s*(?:seconds?|secs?|sec|s|minutes?|mins?|min|m|hours?|hrs?|hour|hr|h)\b.*$/i, '')
-    .trim();
 
-  const event = normalizeReminderEvent(rawEvent) || (/[\u4e00-\u9fff]/u.test(normalized) ? '提醒你' : 'remind you');
+  const event = normalizeReminderEvent(rawEvent);
   if (!event) return null;
 
   return {
@@ -171,7 +166,7 @@ export const parseDailyReminderRequest = (text: string): { event: string; hour: 
     .replace(/^(?:remind|ping|tell)(?: me)?(?: to)?\s+/i, '')
     .trim();
 
-  const event = normalizeReminderEvent(rawEvent) || (/[\u4e00-\u9fff]/u.test(normalized) ? '提醒你' : 'remind you');
+  const event = normalizeReminderEvent(rawEvent);
   if (!event) return null;
 
   return {

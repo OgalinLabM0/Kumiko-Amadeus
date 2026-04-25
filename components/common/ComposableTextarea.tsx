@@ -5,7 +5,6 @@
 // same onCompositionUpdate isComposingRef rearm.
 
 import React, { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
-import { stampCompositionEnd } from './imeGuards';
 
 export type ComposableTextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement>;
 
@@ -75,7 +74,6 @@ export const ComposableTextarea = forwardRef<HTMLTextAreaElement, ComposableText
         }}
         onCompositionEnd={(e) => {
           isComposingRef.current = false;
-          stampCompositionEnd(e.currentTarget);
           onCompositionEnd?.(e);
           onChange?.(e as unknown as React.ChangeEvent<HTMLTextAreaElement>);
         }}

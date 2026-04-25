@@ -16,7 +16,6 @@ import { Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
 import {
   DEFAULT_EMBEDDING_CONFIG,
   EMBEDDING_MODEL_CATALOG,
-  getEmbeddingConfig,
   type EmbeddingProvider,
   type EmbeddingProviderConfig,
   testEmbeddingConfig,
@@ -122,13 +121,6 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
 
-  useEffect(() => {
-    // One-time mount self-heal: if a WebView restore left Zustand at the
-    // default while localStorage still has the user's real config,
-    // getEmbeddingConfig() will reconcile the store before the form is used.
-    getEmbeddingConfig();
-  }, []);
-
   const modelOptions = useMemo(() => EMBEDDING_MODEL_CATALOG[config.provider] || [], [config.provider]);
   const activeModelPreset = useMemo(
     () => modelOptions.find((m) => m.id === config.model) || modelOptions[0],
@@ -153,7 +145,7 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
     const firstModel = newPresets[0];
     update({
       provider,
-      model: provider === 'custom' ? '' : (firstModel?.id || DEFAULT_EMBEDDING_CONFIG.model),
+      model: firstModel?.id || DEFAULT_EMBEDDING_CONFIG.model,
       dimensions: firstModel?.defaultDimensions || DEFAULT_EMBEDDING_CONFIG.dimensions,
     });
   }, [update]);
@@ -216,28 +208,27 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
 
       <div>
         <label className={fieldLabelClass}>{language === 'zh' ? '模型' : 'Model'}</label>
-        {config.provider === 'custom' ? (
+        <div className="mt-1">
+          <ThemedSelect
+            value={config.model}
+            onChange={handleModelChange}
+            options={modelSelectOptions}
+            isDarkMode={isDarkMode}
+            className={`${inputClass} w-full`}
+            ariaLabel={language === 'zh' ? '选择 Embedding 模型' : 'Select embedding model'}
+          />
+        </div>
+        {config.provider === 'custom' && (
           <ComposableInput
             type="text"
             value={config.model}
             onChange={(e) => update({ model: e.target.value })}
-            className={`${inputClass} w-full mt-1`}
+            className={`${inputClass} w-full mt-2`}
             placeholder={language === 'zh' ? '自定义模型 ID' : 'Custom model ID'}
             autoComplete="off"
             autoCapitalize="off"
             spellCheck={false}
           />
-        ) : (
-          <div className="mt-1">
-            <ThemedSelect
-              value={config.model}
-              onChange={handleModelChange}
-              options={modelSelectOptions}
-              isDarkMode={isDarkMode}
-              className={`${inputClass} w-full`}
-              ariaLabel={language === 'zh' ? '选择 Embedding 模型' : 'Select embedding model'}
-            />
-          </div>
         )}
       </div>
 

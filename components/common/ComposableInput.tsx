@@ -47,7 +47,6 @@
 // wouldn't fire onChange (React would think the value hadn't changed).
 
 import React, { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
-import { stampCompositionEnd } from './imeGuards';
 
 export type ComposableInputProps = React.InputHTMLAttributes<HTMLInputElement>;
 
@@ -119,7 +118,6 @@ export const ComposableInput = forwardRef<HTMLInputElement, ComposableInputProps
         }}
         onCompositionEnd={(e) => {
           isComposingRef.current = false;
-          stampCompositionEnd(e.currentTarget);
           onCompositionEnd?.(e);
           onChange?.(e as unknown as React.ChangeEvent<HTMLInputElement>);
         }}
