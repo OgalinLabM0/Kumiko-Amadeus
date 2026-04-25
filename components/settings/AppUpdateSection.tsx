@@ -91,12 +91,18 @@ export const AppUpdateSection: React.FC<AppUpdateSectionProps> = ({
   const platform = detectPlatform();
   const isPackagedDesktop = platform === 'desktop' && !!updateState.isPackaged;
 
+  // v2.14.5 A: don't hijack `statusText` on mobile. Previously the
+  // platform==='mobile' branch overwrote statusText with updateMobileHint
+  // unconditionally, which then duplicated the same string the banner
+  // (line 336 below) was already showing — version card and banner ended
+  // up rendering the identical "Android 通过 GitHub Releases…" sentence.
+  // Now mobile follows the same status-driven branches as desktop so the
+  // version card reads "已是最新版本" / "发现新版本 vX.Y.Z" / etc., while
+  // the banner stays the single source of the GitHub Releases hint.
   let statusText = t.updateSectionDesc;
-  if (platform === 'mobile') {
-    statusText = t.updateMobileHint;
-  } else if (platform === 'web') {
+  if (platform === 'web') {
     statusText = t.updateUnsupported;
-  } else if (!updateState.isPackaged) {
+  } else if (platform === 'desktop' && !updateState.isPackaged) {
     // Desktop dev (npm run dev). Use the dev-specific hint so users
     // don't think the packaged build is also broken.
     statusText = t.updateUnsupportedDev;

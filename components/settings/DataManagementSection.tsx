@@ -241,7 +241,7 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
       ? {
           info: '语音文件',
           desc: '删除语音文件不影响消息文字，仅无法再次播放语音。Android 上路径在系统文件管理器中不可见。',
-          location: '存放位置：APK 私有 Files 目录 /Android/data/com.kumiko.amadeus.app/files/voices/',
+          location: '存放位置：APK 私有 Files 目录 /data/data/com.kumiko.amadeus.app/files/voices/（应用沙盒，普通文件管理器不可见）',
           actionLabel: '清理全部语音文件',
           confirmTitle: '清理语音文件',
           confirmBody: '将删除 APK 内全部已生成的语音音频文件，原始消息文字会保留，下次重新播放时需要重新合成。确定继续？',
@@ -255,7 +255,7 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
       : {
           info: 'Voice Files',
           desc: 'Deleting voice files does not affect message text; only playback is lost. The folder is not visible in the Android file manager.',
-          location: 'Stored in: APK private files dir /Android/data/com.kumiko.amadeus.app/files/voices/',
+          location: 'Stored in: APK private files dir /data/data/com.kumiko.amadeus.app/files/voices/ (sandboxed, not visible to ordinary file managers)',
           actionLabel: 'Clear All Voice Files',
           confirmTitle: 'Clear Voice Files',
           confirmBody: 'This deletes every generated voice audio file in the APK. Message text is preserved; playback will require re-synthesizing. Continue?',
@@ -685,6 +685,16 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
                   {language === 'zh'
                     ? '语义检索（RAG）使用的向量数据库，存放在 APK 私有 IndexedDB 中。每条聊天消息会嵌入为一条向量，按 core / episodic / background 三层分别索引。'
                     : 'Vector store powering semantic retrieval (RAG). Lives in the APK\'s private IndexedDB. Each chat message becomes one vector, indexed across three tiers (core / episodic / background).'}
+                </p>
+                {/* v2.14.5 B: clarify what "Re-embed Vector Store" does
+                    vs the *other* RAG button (AI Core Configuration →
+                    Local RAG Memory → "Rebuild RAG Memory"). Without
+                    this users see two superficially-identical "rebuild"
+                    buttons and don't know which to use. */}
+                <p className={`ka-copy-sm mb-2 whitespace-pre-line ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  {language === 'zh'
+                    ? '「重嵌入向量库」（仅 Android）：只用当前 Embedding 配置重新生成 Dexie 已有向量的 embedding，不重扫消息也不改变向量数量与三层分组。适合切换 provider / model / dimensions 后或重试失败行。\n\n若想从聊天历史从零重建（含重新分组与计数）请去「AI 核心配置 → 本地 RAG 记忆」用「重建 RAG 记忆库」。'
+                    : '"Re-embed Vector Store" (Android only): regenerates embeddings for vectors already in Dexie using your current embedding settings. It does not rescan messages or change vector counts / tier grouping. Use this after switching provider / model / dimensions, or to retry rows that failed.\n\nTo rebuild from chat history from scratch (including regrouping and re-counting), go to "AI Core Configuration → Local RAG Memory → Rebuild RAG Memory" instead.'}
                 </p>
                 <div className={`ka-copy-sm mb-2 grid grid-cols-3 gap-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                   <div className="text-center">

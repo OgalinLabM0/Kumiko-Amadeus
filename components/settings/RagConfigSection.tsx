@@ -75,7 +75,7 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
 
       <Collapse isOpen={isOpen} duration={180}>
         <div>
-          <div className={`flex items-center justify-between py-2 border-b mb-4 ${isDarkMode ? 'border-[#8c6a3c]/30' : 'border-[#ebe1d3]'}`}>
+          <div className="flex items-center justify-between py-2 mb-3">
             <div className="flex-1 min-w-0">
               <span className={`ka-setting-item-title block ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>
                 {language === 'zh' ? '启用本地长期记忆' : 'Enable local long-term memory'}
@@ -95,25 +95,38 @@ export const RagConfigSection: React.FC<RagConfigSectionProps> = ({
             </div>
           </div>
 
-          <div className={`ka-copy-sm italic p-3 rounded-lg ${isDarkMode ? 'bg-[#211811]/60 text-[#b69f87]' : 'bg-[#f5ebd9] text-[#8f7458]'}`}>
+          {/* v2.14.5 C: previously this lock-hint was a gold italic banner
+              with its own background colour, which made the card feel
+              entirely unlike the other AI-config sub-cards (Cloud Embedding
+              / Vision Helper / Cortex Allocation all use plain helperClass
+              hint text). Switched to standard helper-text for visual
+              parity. */}
+          <p className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
             {ragLockedHint}
-          </div>
+          </p>
 
           {onRequestRebuildRag && (
-            <div className={`mt-4 pt-4 border-t ${isDarkMode ? 'border-[#8c6a3c]/30' : 'border-[#ebe1d3]'}`}>
+            <div className="mt-3">
               <button
                 onClick={onRequestRebuildRag}
                 disabled={isRebuilding}
-                className={`w-full py-3 px-4 rounded-xl flex items-center justify-center gap-2 ka-label font-semibold transition-colors disabled:opacity-70 disabled:cursor-not-allowed ${isDarkMode ? 'bg-purple-900/30 hover:bg-purple-900/50 text-purple-300 border border-purple-500/30' : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200'}`}
+                className={`w-full py-2 px-3 rounded-lg flex items-center justify-center gap-2 ka-copy-sm font-semibold transition-colors disabled:opacity-70 disabled:cursor-not-allowed ${isDarkMode ? 'bg-purple-900/30 hover:bg-purple-900/50 text-purple-300 border border-purple-500/30' : 'bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200'}`}
               >
-                <RefreshCw size={14} className={isRebuilding ? 'animate-spin' : ''} /> {isRebuilding ? (language === 'zh' ? '正在重建 RAG 记忆库' : 'Rebuilding RAG Memory') : (language === 'zh' ? '重建 RAG 记忆库' : 'Rebuild RAG Memory')}
+                <RefreshCw size={13} className={isRebuilding ? 'animate-spin' : ''} /> {isRebuilding ? (language === 'zh' ? '正在重建 RAG 记忆库' : 'Rebuilding RAG Memory') : (language === 'zh' ? '重建 RAG 记忆库' : 'Rebuild RAG Memory')}
               </button>
-              <p className={`ka-copy-sm mt-2 text-center ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
+              {/* v2.14.5 B: explain what this button does + when to use it
+                  + where the *other* RAG-related button lives, so users
+                  who see two "rebuild" buttons (this one + DataManagement
+                  → Embedding Vector Store → "Re-embed Vector Store") know
+                  the difference instead of randomly trying both.
+                  whitespace-pre-line keeps the \n\n paragraph break
+                  visible (ka-copy-sm uses default white-space). */}
+              <p className={`ka-copy-sm mt-2 whitespace-pre-line ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
                 {ragProgressLabel
                   ? ragProgressLabel
                   : language === 'zh'
-                    ? '会重新扫描历史消息并生成本地向量索引。'
-                    : 'This will rescan message history and regenerate the local vector index.'}
+                    ? '完整流水线（PC + Android）：清空当前 turn_pair 向量 → 重扫历史消息 → 重新分组 → 重新调用 embedding → 写入向量库。耗时较长（按消息量计，几分钟到十几分钟）。\n\n如果只想用新的 embedding 设置重新生成已有向量（不重扫消息、不改变向量数量与分组），请去「数据清理 → 嵌入向量库」用「重嵌入向量库」（仅 Android）。'
+                    : 'Full pipeline (PC + Android): clears current turn_pair vectors → rescans message history → regroups → re-runs embedding → writes back. Takes a few to ~15 minutes depending on message volume.\n\nIf you just want to regenerate existing vectors with the current embedding settings (no message rescan, no count change), go to "Data Management → Embedding Vector Store → Re-embed Vector Store" (Android only).'}
               </p>
             </div>
           )}

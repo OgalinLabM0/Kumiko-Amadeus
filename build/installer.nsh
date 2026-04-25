@@ -1,37 +1,39 @@
 ; =============================================================================
-; Kumiko-Amadeus installer / uninstaller custom hooks.
+; Kumiko-Amadeus installer / uninstaller custom hooks (v2.14.5).
 ;
-; Restored to the "AstrBot 朴素路线" (A 路线): plain MUI2 standard 4 pages
-; (Welcome / Directory / Install / Finish) with system-native chrome, no
-; custom nsDialogs pages, no Hero+CTA layout.  This sheds 70% of the previous
-; nsh's surface area and ALL the cosmetic overlay bugs that came with it
-; (themed-button SetCtlColors no-op, header strip bleed-through, KA half-icon
-; in page header, owner-drawn z-order conflicts).
+; Layout: standard MUI2 4-page wizard (Welcome / Directory / Install / Finish)
+; with system-native chrome — same skeleton that landed in v2.14.4 — plus four
+; v2.14.5 polish passes:
 ;
-; What stays:
+;   E.2  HEADERIMAGE bitmap (configured via package.json nsis.installerHeader)
+;        renders a small KA wordmark strip in the top-right of every page after
+;        the welcome page.  electron-builder defines MUI_HEADERIMAGE for us.
+;
+;   E.3  Warmer brand copy on customWelcomePage / customUnWelcomePage.
+;
+;   E.4  Uninstall data-cleanup choice is now a dedicated nsDialogs page with
+;        two RadioButtons (Keep / Wipe), inserted between MUI_UNPAGE_WELCOME
+;        and MUI_UNPAGE_CONFIRM.  Replaces the v2.14.4 MessageBox prompt that
+;        popped DURING InstFiles execution.  Choice is persisted to
+;        HKCU\Software\KumikoAIAmadeus\UninstallWipeData and read back inside
+;        customUnInstall.  Uses ONLY native nsDialogs widgets (no themed-button,
+;        no owner-drawn) so we don't recreate the Hero+CTA z-order bugs that
+;        were rolled back in v2.14.4.
+;
+;   E.5  Per-step DetailPrint narration for customInstall / customUnInit /
+;        customUnInstall.  Every progress-bar advance now has a "正在..." line
+;        in the install log so the user can see what each step is doing
+;        (avoids "is this thing a virus quietly poking my registry?" panic).
+;
+; Preserved from earlier versions:
 ;   - ManifestDPIAware true so Win10/11 don't bitmap-scale the installer
 ;   - SetFont Segoe UI 9 so all controls inherit a modern dialog font
-;   - MUI_BGCOLOR + MUI_TEXTCOLOR so the wizard reads as a clean
-;     neutral Win11-style surface instead of the earlier cream/brown skin
-;   - PreferredInstallDrive auto-selection (D: > E: > ... over C: when an
-;     extra fixed drive is present) - the single most useful UX hook
-;   - customHeader: ShowInstDetails show + InstProgressFlags smooth +
-;     branded BrandingText footer (so the install progress page actually
-;     shows a scrolling log instead of an empty cream box)
-;   - customWelcomePage / customUnWelcomePage: just MUI_PAGE_WELCOME +
-;     MUI_UNPAGE_WELCOME with localized title/text so the cream sidebar
-;     bitmap actually renders (electron-builder skips the welcome page
-;     entirely when these macros are undefined, regardless of installerSidebar)
-;   - customFinishPage: NOT defined; electron-builder injects MUI_PAGE_FINISH
-;     with auto-generated StartApp + Run / Show release notes checkboxes
+;   - MUI_BGCOLOR + MUI_TEXTCOLOR neutral surface
+;   - PreferredInstallDrive auto-selection (D: > E: > ... over C:)
+;   - customHeader: ShowInstDetails + InstProgressFlags + branded BrandingText
 ;   - customInit (drive auto-selection)
-;   - customInstall (legacy updater-cache cleanup + v3 detail-print narration)
-;   - customUnInit (taskkill running processes)
-;   - customUnInstall (silent-update skip + MessageBox prompt + thorough RMDir
-;     of every historical profile / cache directory name across HKCU/HKLM
-;     shell contexts)
 ;
-; Upstream electron-builder hook points we rely on (see assistedInstaller.nsh):
+; Upstream electron-builder hook points:
 ;   customHeader            - run after common.nsh, before MUI pages
 ;   customWelcomePage       - replaces default (none) welcome page
 ;   customUnWelcomePage     - replaces default (none) uninstall welcome page
@@ -43,48 +45,27 @@
 
 ; -----------------------------------------------------------------------------
 ; Declare DPI awareness at PE manifest level.
-;
-; Without this, Windows 10/11 treats the installer as a legacy DPI-unaware
-; app and DWM bitmap-scales the whole UI at 125%/150%/175% system scaling,
-; blurring every label.  With it, NSIS renders vector-crisp via GDI,
-; matching Win11 native dialogs.  This is a NSIS attribute (manifest-time),
-; not a runtime command.
 ; -----------------------------------------------------------------------------
 
 ManifestDPIAware true
 
 !include LogicLib.nsh
-; FileFunc: ${GetParent}.  Used in customUnInstall to strip the basename
-; off the user's custom UserDataPath so we can clean the sibling
-; updater-cache directory on a custom drive.
 !include FileFunc.nsh
+; v2.14.5 E.4: nsDialogs custom uninstall data-choice page.
+!include nsDialogs.nsh
 
 ; -----------------------------------------------------------------------------
 ; Global dialog font.
-;
-; Myth: !define MUI_FONT + MUI_FONTSIZE changes the installer font.
-; Reality: MUI2.nsh never reads those.  Every MUI page's static controls,
-; buttons, edits, list boxes inherit the *NSIS dialog default font*, set by
-; the top-level SetFont command.  MUI's own header/title labels are created
-; with CreateFont using $(^Font) from the language file - which on Win10/11
-; is "MS Shell Dlg", GDI font-substituted to Segoe UI automatically.  So
-; SetFont alone is enough to get a uniformly modern Segoe UI look.
 ; -----------------------------------------------------------------------------
 
 SetFont "Segoe UI" "9"
 
-; Neutral surface + dark graphite copy. This keeps the stock MUI2 controls
-; looking current on Win10/11 and avoids the previous cream/brown tone that
-; made the wizard feel older than the app itself.
+; Neutral surface + dark graphite copy.
 !define MUI_BGCOLOR "F6F7FB"
 !define MUI_TEXTCOLOR "1F2937"
 
 ; -----------------------------------------------------------------------------
 ; Drive auto-selection (installer-only).
-;
-; If the user has any non-system fixed drive (D:, E: ...), default INSTDIR to
-; that drive instead of C:.  Avoids burning the system SSD with a 800MB+
-; install on machines that have a dedicated data drive.
 ; -----------------------------------------------------------------------------
 
 !ifndef BUILD_UNINSTALLER
@@ -178,59 +159,115 @@ FunctionEnd
 
 ; -----------------------------------------------------------------------------
 ; customHeader - runs *after* common.nsh, so we can override its defaults.
-;
-; common.nsh has the final word on BrandingText / ShowInstDetails / progress
-; flags, so any changes to these MUST live inside customHeader (NOT at file
-; top-level), otherwise common.nsh just stomps them back to defaults.
 ; -----------------------------------------------------------------------------
 
 !macro customHeader
   ; Show the rolling install log instead of a blank "Installing" panel.
-  ; The 7z extractor doesn't DetailPrint per-file (electron-builder solid
-  ; archive limitation), but our trailing customInstall section emits 4-5
-  ; status lines so the final phase has real text to read.
   ShowInstDetails show
   !ifdef BUILD_UNINSTALLER
     ShowUninstDetails show
   !endif
 
-  ; Smooth progress bar animation; without this it advances in chunky
-  ; integer-percent jumps.
   InstProgressFlags smooth
 
-  ; Branded footer — replaces "Nullsoft Install System vX" and the
-  ; PRODUCT_NAME VERSION that common.nsh sets.
   BrandingText "Kumiko·Amadeus  v${VERSION}"
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customWelcomePage - the standard MUI welcome page.
+; customWelcomePage - the standard MUI welcome page (v2.14.5 E.3 copy refresh).
 ;
-; electron-builder's assistedInstaller.nsh skips MUI_PAGE_WELCOME entirely
-; unless this macro is defined — even when nsis.installerSidebar is set in
-; package.json.  We just !insertmacro MUI_PAGE_WELCOME with a couple of
-; localized title/text overrides so the cream sidebar bitmap actually
-; renders next to readable Chinese copy.
+; v2.14.5 widens the welcome copy from a one-line "即将安装" stub into a short
+; introduction so first-time users actually understand what KA is, where its
+; data will live, and how big the install footprint is — without making them
+; hunt down a separate readme.
 ; -----------------------------------------------------------------------------
 
 !macro customWelcomePage
-  !define MUI_WELCOMEPAGE_TITLE "安装 Kumiko·Amadeus"
-  !define MUI_WELCOMEPAGE_TEXT "即将在此电脑上安装 Kumiko·Amadeus v${VERSION}。$\r$\n$\r$\n继续前，建议先关闭正在运行的 Kumiko 窗口。$\r$\n$\r$\n点击「下一步」继续。"
+  !define MUI_WELCOMEPAGE_TITLE "欢迎使用 Kumiko·Amadeus"
+  !define MUI_WELCOMEPAGE_TEXT "Kumiko·Amadeus 是一款桌面端 AI 陪伴程序，专注长期记忆与自然角色互动。$\r$\n$\r$\n本次将在此电脑安装 Kumiko·Amadeus v${VERSION}（约 800 MB，含本地 Embedding 模型）。安装后聊天记录、记忆向量、设置等数据保存在 %APPDATA%\Kumiko·Amadeus 目录下。$\r$\n$\r$\n继续前请关闭所有正在运行的 Kumiko·Amadeus 窗口。$\r$\n$\r$\n点击「下一步」继续。"
   !insertmacro MUI_PAGE_WELCOME
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customUnWelcomePage - the standard MUI uninstall welcome page.
+; customUnWelcomePage - the standard MUI uninstall welcome page + the new
+; data-choice page (v2.14.5 E.3 copy + E.4 page).
 ;
-; Same reasoning as customWelcomePage.  Without this macro the uninstaller
-; jumps straight to the confirmation prompt with no cream sidebar context.
+; By inserting `UninstPage custom` AFTER MUI_UNPAGE_WELCOME inside this macro,
+; the custom data-choice page lands BEFORE electron-builder's
+; MUI_UNPAGE_CONFIRM / MUI_UNPAGE_INSTFILES — exactly where we want the user
+; to make the keep-or-wipe decision (i.e. before InstFiles starts running).
 ; -----------------------------------------------------------------------------
 
 !macro customUnWelcomePage
   !define MUI_UNWELCOMEPAGE_TITLE "卸载 Kumiko·Amadeus"
-  !define MUI_UNWELCOMEPAGE_TEXT "即将从此电脑卸载 Kumiko·Amadeus。$\r$\n$\r$\n继续前，请先关闭正在运行的程序窗口。$\r$\n$\r$\n点击「下一步」继续。"
+  !define MUI_UNWELCOMEPAGE_TEXT "即将从此电脑卸载 Kumiko·Amadeus v${VERSION}。$\r$\n$\r$\n卸载只会移除程序本身。是否一并清理聊天记录 / 语音 / 图片 / 设置等用户数据，将在下一页选择。$\r$\n$\r$\n继续前请先关闭所有正在运行的 Kumiko·Amadeus 窗口。$\r$\n$\r$\n点击「下一步」继续。"
   !insertmacro MUI_UNPAGE_WELCOME
+
+  ; v2.14.5 E.4: dedicated data-choice page (nsDialogs RadioButton + Label).
+  ; Functions are defined below as un.KumikoUnDataChoice* so they execute in
+  ; the uninstaller context.
+  UninstPage custom un.KumikoUnDataChoiceShow un.KumikoUnDataChoiceLeave
 !macroend
+
+; -----------------------------------------------------------------------------
+; v2.14.5 E.4: uninstall data-choice page.
+;
+; Two RadioButtons + a multi-line description Label.  Choice persists to
+; HKCU\Software\KumikoAIAmadeus\UninstallWipeData ("0" = keep, "1" = wipe).
+; customUnInstall reads this back to decide whether to run do_data_removal.
+;
+; Default selection is "Keep" (BST_CHECKED on $KumikoKeepRadio) so a user who
+; just clicks Next during an uninstall WITHOUT reading is protected from
+; accidental data loss — same defensive posture as the v2.14.4 MessageBox
+; (which defaulted to "No" / keep on Enter).
+; -----------------------------------------------------------------------------
+
+Var /GLOBAL KumikoDataChoiceDialog
+Var /GLOBAL KumikoKeepRadio
+Var /GLOBAL KumikoWipeRadio
+
+Function un.KumikoUnDataChoiceShow
+  ; MUI_HEADER_TEXT auto-resolves to MUI_HeaderText OR un.MUI_HeaderText based
+  ; on whether MUI_PAGE_UNINSTALLER is defined at expansion time, which is
+  ; only true INSIDE MUI_UNPAGE_* blocks.  We're in a standalone un. function
+  ; (UninstPage custom), so MUI_HEADER_TEXT would emit a Call MUI_HeaderText
+  ; that doesn't link in the uninstaller.  Call un.MUI_HeaderText directly
+  ; instead — that function is auto-injected by MUI2 whenever any
+  ; MUI_UNPAGE_* macro is inserted (which customUnWelcomePage does above).
+  Push "处理用户数据"
+  Push "请选择是否清理本地的聊天记录、语音、图片与设置。"
+  Call un.MUI_HeaderText
+
+  nsDialogs::Create 1018
+  Pop $KumikoDataChoiceDialog
+  ${If} $KumikoDataChoiceDialog == error
+    Abort
+  ${EndIf}
+
+  ; Description block (top of page).
+  ${NSD_CreateLabel} 0u 0u 100% 60u "Kumiko·Amadeus 在 %APPDATA%\Kumiko·Amadeus 等目录中存放：聊天记录、语音 MP3 缓存、图片、记忆向量、用户设置。$\r$\n$\r$\n— 升级到新版本时建议「保留」，新版本会自动接续上你的全部数据。$\r$\n— 只有彻底告别 Kumiko·Amadeus、且确认不再需要这些数据时，才需要选择「清理」。"
+  Pop $0
+
+  ; "Keep" radio (default).
+  ${NSD_CreateRadioButton} 0u 70u 100% 12u "保留所有用户数据（推荐：升级或暂时卸载时使用）"
+  Pop $KumikoKeepRadio
+  ${NSD_SetState} $KumikoKeepRadio ${BST_CHECKED}
+
+  ; "Wipe" radio.
+  ${NSD_CreateRadioButton} 0u 86u 100% 12u "清理所有用户数据（彻底卸载，无法撤销）"
+  Pop $KumikoWipeRadio
+
+  nsDialogs::Show
+FunctionEnd
+
+Function un.KumikoUnDataChoiceLeave
+  ${NSD_GetState} $KumikoWipeRadio $0
+  ${If} $0 == ${BST_CHECKED}
+    WriteRegStr HKCU "Software\KumikoAIAmadeus" "UninstallWipeData" "1"
+  ${Else}
+    WriteRegStr HKCU "Software\KumikoAIAmadeus" "UninstallWipeData" "0"
+  ${EndIf}
+FunctionEnd
 
 ; -----------------------------------------------------------------------------
 ; customInit - drive auto-selection (preserved from earlier versions).
@@ -271,21 +308,22 @@ FunctionEnd
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customInstall - final cleanup after main files are written.
+; customInstall - final cleanup + v2.14.5 E.5 progress narration.
 ;
-; Wipes legacy electron-updater cache directories from earlier package-name
-; spellings so users upgrading from v2.10.0 or older don't accumulate
-; orphaned downloader caches.  Then narrates the last few install steps
-; via DetailPrint so the install progress panel has visible text in its
-; final ~20% (electron-builder's own registry / shortcut writes do not
-; DetailPrint by themselves).
+; v2.14.5 expands the trailing DetailPrint block from 4 lines to a full
+; "what just happened" recap (8 lines).  The recap is retrospective — by the
+; time customInstall fires, electron-builder has already extracted files,
+; written the registry, and created shortcuts — but listing each step in the
+; install log gives the user a clear "this is a normal installer doing normal
+; things" signal instead of an opaque blank stretch in the final 20% of the
+; progress bar.
 ; -----------------------------------------------------------------------------
 
 !ifndef BUILD_UNINSTALLER
 !macro customInstall
-  SetDetailsPrint textonly
-  DetailPrint "清理旧版本缓存"
+  ; --- legacy updater-cache cleanup (unchanged from v2.14.4) ---
   SetDetailsPrint both
+  DetailPrint "正在清理旧版本的 updater 缓存目录"
   ${if} $installMode == "all"
     SetShellVarContext current
   ${endif}
@@ -306,69 +344,93 @@ FunctionEnd
     SetShellVarContext all
   ${endif}
 
-  ; Narrate the trailing registry / shortcut work so the install details
-  ; panel doesn't end on a blank stretch.
+  ; --- v2.14.5 E.5: full install-recap narration ---
+  ; Each line maps to something electron-builder OR this macro just did.
+  ; SetDetailsPrint both echoes to both the log AND the status strip below
+  ; the progress bar, so even users who don't expand the log see them tick by.
   SetDetailsPrint both
-  DetailPrint "正在写入注册表项"
+  DetailPrint "—— 安装介质校验通过 ——"
+  DetailPrint "—— 程序文件解压完成 ——"
+  DetailPrint "—— 旧版本 updater 缓存清理完成 ——"
+  DetailPrint "正在写入注册表（产品信息 / 卸载入口 / 自动更新通道）"
   DetailPrint "正在创建桌面快捷方式"
   DetailPrint "正在创建开始菜单项"
-  DetailPrint "Kumiko·Amadeus 准备就绪"
+  DetailPrint "正在配置自动更新通道（GitHub Releases）"
+  DetailPrint "正在准备启动器（双击图标即可使用）"
+  DetailPrint "Kumiko·Amadeus 准备就绪，欢迎进入"
 !macroend
 !endif
 
 ; -----------------------------------------------------------------------------
-; customUnInit - kill running instances before uninstall starts.
+; customUnInit - kill running instances before uninstall starts (v2.14.5 E.5
+; narrates each kill step instead of a single opaque "结束正在运行的进程").
 ; -----------------------------------------------------------------------------
 
 !macro customUnInit
-  DetailPrint "结束正在运行的进程"
+  DetailPrint "正在结束运行中的 Kumiko·Amadeus 进程..."
   nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM "Kumiko AI.exe" /F /T'
   Pop $0
   nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM "Kumiko-Amadeus.exe" /F /T'
   Pop $0
   nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /IM "Kumiko·Amadeus.exe" /F /T'
   Pop $0
+  DetailPrint "正在等待文件句柄释放..."
   Sleep 1200
+  DetailPrint "进程清理完成"
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customUnInstall - optionally wipe user data.
+; customUnInstall - optionally wipe user data (v2.14.5 E.4 + E.5 rewrite).
 ;
 ; Three paths:
 ;   1. Silent uninstall (triggered by an installer doing in-place upgrade) →
-;      keep all data, no prompt.
-;   2. Interactive uninstall → prompt with MessageBox.  Yes wipes, No keeps.
-;   3. (Removed in this rewrite) The previous custom uninstall page would
-;      pre-write HKCU\Software\KumikoAIAmadeus\UninstallKeepData and we'd
-;      read it here.  Now that the custom page is gone, we always fall
-;      through to the MessageBox path on interactive runs.
+;      keep all data, no prompt (same as v2.14.4).
+;   2. Interactive uninstall + user picked "Keep" on the data-choice page
+;      → skip data removal.  Reads HKCU\...\UninstallWipeData (= "0").
+;   3. Interactive uninstall + user picked "Wipe" on the data-choice page
+;      → run do_data_removal.  Reads HKCU\...\UninstallWipeData (= "1").
+;
+; The HKCU flag is cleared at the very end of this macro regardless of branch,
+; so the next install starts from a clean slate.
 ; -----------------------------------------------------------------------------
 
 !macro customUnInstall
   ${If} ${Silent}
-    DetailPrint "检测到版本更新，保留用户数据"
+    DetailPrint "—— 静默卸载（版本升级中），保留全部用户数据 ——"
     Goto skip_data_removal
   ${EndIf}
 
-  MessageBox MB_YESNO|MB_ICONQUESTION "是否一并删除所有用户数据？$\r$\n$\r$\n包括聊天记录、语音文件与设置。选择「否」将仅卸载程序，数据保留。$\r$\n$\r$\nDelete all user data (chat history, voice files, settings)?" IDNO skip_data_removal
+  ; v2.14.5 E.4: read user choice from data-choice page instead of MessageBox.
+  ReadRegStr $0 HKCU "Software\KumikoAIAmadeus" "UninstallWipeData"
+  ${If} $0 != "1"
+    DetailPrint "—— 已选择「保留所有用户数据」，仅卸载程序本身 ——"
+    Goto skip_data_removal
+  ${EndIf}
 
   do_data_removal:
+  DetailPrint "—— 已选择「清理所有用户数据」，开始清理 ——"
 
   SetShellVarContext current
   !ifdef APP_INSTALLER_STORE_FILE
     Delete "$LOCALAPPDATA\${APP_INSTALLER_STORE_FILE}"
   !endif
+
+  ; v2.14.5 E.5: per-segment narration so each RMDir burst has a heading.
+  DetailPrint "正在清理 LOCALAPPDATA 旧版本 updater 缓存目录..."
   ; Legacy default cache (LOCALAPPDATA, pre-v2.10.1).
   RMDir /r "$LOCALAPPDATA\kumiko-ai-amadeus-updater"
   RMDir /r "$LOCALAPPDATA\Kumiko AI-updater"
   RMDir /r "$LOCALAPPDATA\kumiko-amadeus-updater"
   RMDir /r "$LOCALAPPDATA\Kumiko-Amadeus-updater"
+
+  DetailPrint "正在清理 APPDATA 当前版本 updater 缓存目录..."
   ; Current default cache (APPDATA sibling of userData).
   RMDir /r "$APPDATA\kumiko-ai-amadeus-updater"
   RMDir /r "$APPDATA\Kumiko AI-updater"
   RMDir /r "$APPDATA\kumiko-amadeus-updater"
   RMDir /r "$APPDATA\Kumiko-Amadeus-updater"
-  DetailPrint "清理应用数据目录"
+
+  DetailPrint "正在清理用户配置目录（聊天记录 / 记忆 / 设置）..."
   ReadRegStr $0 HKCU "Software\KumikoAIAmadeus" "UserDataPath"
 
   ; Per-machine uninstall may run under a different shell context.  Clear
@@ -391,6 +453,7 @@ FunctionEnd
   RMDir /r "$APPDATA\Kumiko Amadeus"
   RMDir /r "$LOCALAPPDATA\Kumiko Amadeus"
 
+  DetailPrint "正在清理全用户上下文的同名残留..."
   ; Also clear machine/all-users shell-context locations just in case.
   SetShellVarContext all
   RMDir /r "$APPDATA\Kumiko AI"
@@ -405,11 +468,9 @@ FunctionEnd
   RMDir /r "$LOCALAPPDATA\Kumiko Amadeus"
 
   ; Custom user-selected data directory (if configured) + its sibling
-  ; updater-cache dir.  Example: $0 = "D:\KumikoData\Kumiko·Amadeus"
-  ; → updater cache lives at "D:\KumikoData\kumiko-ai-amadeus-updater\".
-  ; ${GetParent} extracts "D:\KumikoData", then we sweep the four
-  ; historical cache-folder names before deleting userData itself.
+  ; updater-cache dir.
   StrCmp $0 "" skip_custom_data_removal
+  DetailPrint "正在清理自定义数据目录 $0 ..."
   ${GetParent} "$0" $1
   StrCmp $1 "" +5
     RMDir /r "$1\kumiko-ai-amadeus-updater"
@@ -419,12 +480,19 @@ FunctionEnd
   RMDir /r "$0"
   skip_custom_data_removal:
 
+  DetailPrint "正在清理注册表项（用户数据路径 / 待迁移标记）..."
   DeleteRegValue HKCU "Software\KumikoAIAmadeus" "UserDataPath"
   DeleteRegValue HKCU "Software\KumikoAIAmadeus" "PendingMigrationSource"
   DeleteRegValue HKCU "Software\KumikoAIAmadeus" "PendingMigrationTarget"
   DeleteRegKey HKCU "Software\KumikoAIAmadeus"
 
-  DetailPrint "用户数据清理完成"
+  DetailPrint "—— 用户数据清理完成 ——"
 
   skip_data_removal:
+  ; Always clear the v2.14.5 E.4 choice flag so the next install starts fresh.
+  ; (DeleteRegKey above already covers the wipe branch; the keep branch needs
+  ; this explicit cleanup since DeleteRegKey was skipped.)
+  ${IfNot} ${Silent}
+    DeleteRegValue HKCU "Software\KumikoAIAmadeus" "UninstallWipeData"
+  ${EndIf}
 !macroend
