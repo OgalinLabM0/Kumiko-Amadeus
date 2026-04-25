@@ -206,20 +206,52 @@ FunctionEnd
 !macroend
 
 ; -----------------------------------------------------------------------------
-; customPageAfterChangeDir (v2.14.6 C) - electron-builder hook that fires
-; AFTER MUI_PAGE_DIRECTORY is inserted and BEFORE MUI_PAGE_INSTFILES is
-; inserted. By defining MUI_PAGE_CUSTOMFUNCTION_PRE here, MUI2 attaches our
-; KumikoInstFilesPre function to the next-inserted page (= InstFiles). MUI2
-; auto-undefines after the page macro consumes it, so we don't leak the
-; define to the FinishPage.
+; customPageAfterChangeDir (v2.14.6 C, v2.14.7 X.0 hotfix) - electron-builder
+; hook that fires AFTER MUI_PAGE_DIRECTORY is inserted and BEFORE
+; MUI_PAGE_INSTFILES is inserted. By defining MUI_PAGE_CUSTOMFUNCTION_PRE
+; here, MUI2 attaches our KumikoInstFilesPre function to the next-inserted
+; page (= InstFiles). MUI2 auto-undefines after the page macro consumes it,
+; so we don't leak the define to the FinishPage.
+;
+; v2.14.7 X.0 hotfix (CI failures 24925862265 / 24926173714 / 24926727156):
+; electron-builder's templates/nsis/assistedInstaller.nsh line 30 ALREADY
+; does `!define MUI_PAGE_CUSTOMFUNCTION_PRE instFilesPre` whenever
+; `allowToChangeInstallationDirectory` is set (Kumiko sets it true in
+; electron-builder.json), in order to wire up its own $INSTDIR sanitizer
+; that forces a trailing app-name subfolder. Our v2.14.6 C added a second
+; `!define` of the same symbol here, which NSIS rejects with
+; `!define: "MUI_PAGE_CUSTOMFUNCTION_PRE" already defined!` → makensis
+; aborts both x64/arm64 installer AND uninstaller (4 builds gone).
+;
+; The fix is two-part:
+;   1. !ifdef + !undef + !define so the redefine compiles cleanly
+;      regardless of whether electron-builder defined it first.
+;   2. Wrapper function KumikoInstFilesPre Calls instFilesPre FIRST so
+;      electron-builder's critical $INSTDIR sanitization still runs before
+;      our DetailPrint. The Call is itself guarded by !ifdef on
+;      allowToChangeInstallationDirectory so configurations that disable
+;      directory-change (where instFilesPre would never be defined)
+;      compile too.
 ; -----------------------------------------------------------------------------
 
 !ifndef BUILD_UNINSTALLER
 !macro customPageAfterChangeDir
+  !ifdef MUI_PAGE_CUSTOMFUNCTION_PRE
+    !undef MUI_PAGE_CUSTOMFUNCTION_PRE
+  !endif
   !define MUI_PAGE_CUSTOMFUNCTION_PRE KumikoInstFilesPre
 !macroend
 
 Function KumikoInstFilesPre
+  ; v2.14.7 X.0: delegate to electron-builder's $INSTDIR sanitizer so users
+  ; who picked a bare-root folder (e.g. C:\) still get "\App Name" appended
+  ; before extraction. Without this Call, files would scatter across the
+  ; drive root because we just overwrote the only place electron-builder
+  ; wires that function in.
+  !ifdef allowToChangeInstallationDirectory
+    Call instFilesPre
+  !endif
+
   ; Force "both" again in case any earlier page LEAVE handler reset it.
   SetDetailsPrint both
   DetailPrint "正在解压程序文件，请耐心等候..."
