@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Settings, Key, Zap, Brain, CheckCircle, RefreshCw, AlertTriangle, Check, ShieldCheck, Activity, Power, Globe, Save, Languages, Eye } from 'lucide-react';
+import { Settings, Key, Zap, Brain, CheckCircle, RefreshCw, AlertTriangle, Check, ShieldCheck, Activity, Power, Globe, Save, Languages, Eye, Cloud, Loader2 } from 'lucide-react';
 import { AIConfig, AIProvider, Language } from '../types';
 import { Collapse } from './Collapse';
 import { ThemedSelect, type ThemedSelectItem } from './common/ThemedSelect';
@@ -213,6 +213,15 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
   const [searchStatusType, setSearchStatusType] = useState<'neutral' | 'success' | 'error'>('neutral');
   const [isModelValidating, setIsModelValidating] = useState(false);
   const [modelValidationResult, setModelValidationResult] = useState<{ main: boolean | null, summary: boolean | null, vision: boolean | null }>({ main: null, summary: null, vision: null });
+  // v2.14.9 W.3.A: AIConfigScreen previously skipped Cloud Embedding in
+  // "Validate All" even though it's a hard dependency for RAG/diary on
+  // Android. SettingsPanel already validates it (v2.14.6 H.2). Mirror that
+  // behaviour here so first-launch users see the same green/red signal.
+  // Native-only — PC uses local ONNX and doesn't need a cloud probe.
+  const [embeddingValidation, setEmbeddingValidation] = useState<{
+    status: 'idle' | 'checking' | 'pass' | 'fail';
+    detail?: string;
+  }>({ status: 'idle' });
   const [isSecurityOpen, setIsSecurityOpen] = useState(true);
   // v2.14.3 N.2: this screen is the *initial first-launch wizard*, not the
   // ordinary settings panel — the user has no other place to discover the
@@ -364,18 +373,61 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
       setStatusType('neutral');
       setModelValidationResult({ main: null, summary: null, vision: null }); 
       setSearchStatus('');
+      // v2.14.9 W.3.B: reset embedding row at the start of every Validate-All
+      // so a previous run's green/red doesn't linger past a config edit.
+      setEmbeddingValidation({ status: isCapacitorNative() ? 'checking' : 'idle' });
       if (!config.apiKey_primary) {
-          setStatus(t.error_missing); setStatusType('error'); setIsValidating(false); return;
+          setStatus(t.error_missing); setStatusType('error'); setIsValidating(false);
+          setEmbeddingValidation({ status: 'idle' });
+          return;
       }
       const isValid = await validateConnectionUnified(config);
       if (!isValid) {
           setStatus(t.error_invalid);
-          setStatusType('error'); setIsValidating(false); return;
+          setStatusType('error'); setIsValidating(false);
+          setEmbeddingValidation({ status: 'idle' });
+          return;
       }
       setIsModelValidating(true);
       const modelResult = await validateModelsUnified(config);
       setModelValidationResult(modelResult);
       setIsModelValidating(false);
+
+      // v2.14.9 W.3.B: probe cloud embedding right after model validation
+      // (independent of API connection, so we still surface a config issue
+      // even if Gemini search later fails). Native-only — PC RAG uses
+      // local bge-m3 ONNX and doesn't need a network probe.
+      if (isCapacitorNative()) {
+          try {
+              const { getEmbeddingConfig, testEmbeddingConfig } = await import('../services/cloudEmbeddingService');
+              const embCfg = getEmbeddingConfig();
+              if (!embCfg.apiKey || !embCfg.model) {
+                  setEmbeddingValidation({
+                      status: 'fail',
+                      detail: language === 'zh' ? '未配置' : 'NOT SET',
+                  });
+              } else {
+                  const r = await testEmbeddingConfig(embCfg);
+                  if (r.ok) {
+                      setEmbeddingValidation({
+                          status: 'pass',
+                          detail: language === 'zh' ? '已连通' : 'OK',
+                      });
+                  } else {
+                      setEmbeddingValidation({
+                          status: 'fail',
+                          detail: language === 'zh' ? '连接失败' : 'FAILED',
+                      });
+                  }
+              }
+          } catch (e) {
+              setEmbeddingValidation({
+                  status: 'fail',
+                  detail: e instanceof Error ? e.message.slice(0, 40) : 'ERROR',
+              });
+          }
+      }
+
       if (!config.provider || config.provider === 'gemini') {
           setIsSearchValidating(true);
           const searchResult = await validateSearchUnified(config);
@@ -641,6 +693,40 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                   {statusType === 'success' && (modelValidationResult.main === false || modelValidationResult.summary === false || modelValidationResult.vision === false) && (
                       <p className="ka-copy-sm text-red-600 text-center">{t.modelValidationWarning}</p>
                   )}
+                </div>
+              )}
+              {/* v2.14.9 W.3.C: Cloud Embedding row — Android-only. Mirrors the
+                  CheckItem layout in components/settings/AiValidationActions.tsx
+                  but uses AIConfigScreen's color tokens so it sits naturally
+                  above the action buttons. Hidden on PC (local ONNX) and
+                  hidden in 'idle' state to avoid a stale empty row before
+                  the user clicks Validate-All. */}
+              {isCapacitorNative() && embeddingValidation.status !== 'idle' && (
+                <div className={`flex items-center gap-[clamp(6px,0.8vw,10px)] px-[clamp(10px,1.4vw,14px)] py-[clamp(6px,1vw,9px)] rounded-lg transition-colors ${
+                  embeddingValidation.status === 'fail'
+                    ? (isDarkMode ? 'bg-red-950/30' : 'bg-red-50')
+                    : embeddingValidation.status === 'pass'
+                      ? (isDarkMode ? 'bg-green-950/20' : 'bg-green-50/60')
+                      : ''
+                }`}>
+                  <Cloud size={14} className={`shrink-0 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`} />
+                  <span className={`flex-1 ka-copy-sm font-semibold ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>
+                    {language === 'zh' ? '云端 Embedding' : 'Cloud Embedding'}
+                  </span>
+                  {embeddingValidation.detail && (
+                    <span className={`ka-micro font-mono ${
+                      embeddingValidation.status === 'fail'
+                        ? 'text-red-500'
+                        : embeddingValidation.status === 'pass'
+                          ? (isDarkMode ? 'text-green-300' : 'text-green-700')
+                          : (isDarkMode ? 'text-[#b69f87]' : 'text-[#9e7c51]')
+                    }`}>{embeddingValidation.detail}</span>
+                  )}
+                  {embeddingValidation.status === 'checking'
+                    ? <Loader2 size={14} className="animate-spin text-blue-400 shrink-0" />
+                    : embeddingValidation.status === 'pass'
+                      ? <Check size={14} className="text-green-500 shrink-0" />
+                      : <AlertTriangle size={14} className="text-red-500 shrink-0" />}
                 </div>
               )}
               <button onClick={handleValidateAll} disabled={isValidating || isSearchValidating || isModelValidating}

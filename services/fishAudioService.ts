@@ -1,9 +1,12 @@
 import type { TtsConfig } from '../types';
-// F2B.3: dropped `isCapacitorNative` + `isMobilePwa` + `httpApi` imports.
+import { CapacitorHttp } from '@capacitor/core';
+import { isCapacitorNative } from './environment';
+// F2B.3: dropped `isMobilePwa` + `httpApi` imports.
 // PWA used to proxy Fish TTS through PC's Fastify (`tts:fish-synth`)
 // because the PWA WebView origin can't pass Fish Audio's CORS check;
 // Capacitor APK uses CapacitorHttp to bypass CORS natively. With the PWA
-// bridge gone, both Electron and Capacitor go through direct fetch.
+// bridge gone, Electron uses direct fetch + streaming and Capacitor APK
+// uses CapacitorHttp.post directly (see v2.14.9 W.2.A below).
 
 export interface TtsSynthesisResult {
     audio: ArrayBuffer;
@@ -74,13 +77,32 @@ export async function synthesizeSpeechStreaming(
         body.prosody = { ...body.prosody as any, speed: config.speed };
     }
 
+    const headers = {
+        'Authorization': `Bearer ${config.fishAudioApiKey}`,
+        'Content-Type': 'application/json',
+        'model': config.fishAudioModel || 's2-pro',
+    };
+
+    // v2.14.9 W.2.A: bypass the @capacitor/core fetch shim entirely on
+    // native. v2.14.8 V.1 already switched the native branch to
+    // res.arrayBuffer() instead of streaming, but users still hit
+    // "Failed to load because no supported source was found" — the shim
+    // mangles binary POST response bodies even via arrayBuffer(). Calling
+    // CapacitorHttp.post directly with responseType:'arraybuffer' goes
+    // through the native OkHttp plugin's binary path (returns base64) and
+    // sidesteps the shim. Electron / Web continue to use real fetch +
+    // streaming so onChunk callers still work for the desktop TTS path.
+    if (isCapacitorNative()) {
+        const audio = await postFishNative(url, headers, body, config.format || 'mp3');
+        return {
+            audio,
+            durationEstimate: estimateDurationFromSize(audio.byteLength, config.format || 'mp3'),
+        };
+    }
+
     const res = await fetch(url, {
         method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${config.fishAudioApiKey}`,
-            'Content-Type': 'application/json',
-            'model': config.fishAudioModel || 's2-pro',
-        },
+        headers,
         body: JSON.stringify(body),
     });
 
@@ -94,26 +116,7 @@ export async function synthesizeSpeechStreaming(
         );
     }
 
-    // v2.14.8 V.1: CapacitorHttp (configured in capacitor.config.ts) patches
-    // global fetch and routes requests through native OkHttp on Android.
-    // The native bridge does NOT correctly stream binary bytes back through
-    // res.body.getReader() — chunks are mangled / truncated, producing
-    // un-decodable bytes that look like valid MP3 to our blob('audio/mpeg')
-    // wrap but fail HTMLAudioElement decode with
-    // "Failed to load because no supported source was found"
-    // (MEDIA_ERR_SRC_NOT_SUPPORTED). Vocu works because it always uses
-    // arrayBuffer(). Skip the streaming branch on native; Electron real
-    // fetch is unaffected.
-    const isCapacitorNative = (() => {
-        try {
-            const cap = (globalThis as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
-            return Boolean(cap?.isNativePlatform?.());
-        } catch {
-            return false;
-        }
-    })();
-
-    if (res.body && !isCapacitorNative) {
+    if (res.body) {
         const reader = res.body.getReader();
         const chunks: Uint8Array[] = [];
         let totalBytes = 0;
@@ -138,6 +141,59 @@ export async function synthesizeSpeechStreaming(
         audio,
         durationEstimate: estimateDurationFromSize(audio.byteLength, config.format || 'mp3'),
     };
+}
+
+// v2.14.9 W.2.A: native-only Fish TTS POST that goes through CapacitorHttp
+// directly (no fetch shim). CapacitorHttp returns binary as base64 in
+// res.data when responseType is 'arraybuffer' (Android plugin contract).
+async function postFishNative(
+    url: string,
+    headers: Record<string, string>,
+    body: Record<string, unknown>,
+    format: string,
+): Promise<ArrayBuffer> {
+    const res = await CapacitorHttp.post({
+        url,
+        headers,
+        data: body,
+        responseType: 'arraybuffer',
+    });
+
+    if (res.status < 200 || res.status >= 300) {
+        const detail = typeof res.data === 'string' ? res.data : '';
+        throw new TtsError(
+            statusToErrorKind(res.status),
+            `Fish Audio TTS failed (${res.status}): ${detail}`,
+            res.status,
+        );
+    }
+
+    let buffer: ArrayBuffer;
+    if (typeof res.data === 'string') {
+        const bin = atob(res.data);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        buffer = bytes.buffer;
+    } else if (res.data instanceof ArrayBuffer) {
+        buffer = res.data;
+    } else {
+        throw new TtsError(
+            'unknown',
+            `Fish Audio TTS native response was unrecognised type: ${typeof res.data}`,
+        );
+    }
+
+    // v2.14.9 W.2.C: one-shot diagnostic. MP3 magic should be 49 44 33 (ID3)
+    // or ff fb / ff f3 / ff f2 (frame sync). OGG/Opus should be 4f 67 67 53.
+    // If we see 7b 22 ... it's JSON (an error response), and 3c ... is HTML.
+    // Remove this log in v2.14.10 once Fish TTS is confirmed stable on Android.
+    try {
+        const head = new Uint8Array(buffer.slice(0, 4));
+        const hex = Array.from(head).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        console.log(`[Fish-TTS native] format=${format} bytes=${buffer.byteLength} magic=${hex}`);
+    } catch { /* logging is best-effort */ }
+
+    return buffer;
 }
 
 export async function synthesizeSpeech(

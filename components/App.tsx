@@ -459,60 +459,35 @@ export const App = () => {
     []
   );
 
-  // v2.14.8 V.2.A: Dexie's useLiveQuery refires on ANY observed-table write
-  // (e.g. any keyval set from preference persistence). Even when the row's
-  // content is unchanged, it returns a NEW object reference, which would
-  // setState → App re-render → buildAppMainViewProps rebuild → all panel
-  // props new refs → visible flash on UI clicks. Guard with JSON.stringify
-  // deep-equal so a no-op refire keeps the existing ref and skips the
-  // entire downstream re-render cascade. JSON.stringify only runs when the
-  // live query refires (event-driven, not per frame), so cost is amortized.
+  // v2.14.9 W.1.A: reverted v2.14.8 V.2.A. JSON.stringify on potentially
+  // 100KB+ objects (liveDailyFragments / liveKumikoDiary) blocked the main
+  // thread for 50–200ms on every Dexie keyval write, which interrupted
+  // Android IME composition events and caused typed characters to be
+  // dropped ("input flash + content gone"). Going back to the simple
+  // setState; downstream React.memo / shallow checks on individual panels
+  // already absorb the cost of a no-op re-render at this scope.
   useEffect(() => {
-    if (!liveWorldCharacterStatus) return;
-    setWorldCharacterStatus((prev) => {
-      try {
-        if (prev && JSON.stringify(prev) === JSON.stringify(liveWorldCharacterStatus)) {
-          return prev;
-        }
-      } catch { /* fall through */ }
-      return liveWorldCharacterStatus;
-    });
+    if (liveWorldCharacterStatus) {
+      setWorldCharacterStatus(liveWorldCharacterStatus);
+    }
   }, [liveWorldCharacterStatus]);
 
   useEffect(() => {
-    if (!liveKumikoDiary) return;
-    setAutoSavedKumikoDiary((prev) => {
-      try {
-        if (JSON.stringify(prev) === JSON.stringify(liveKumikoDiary)) {
-          return prev;
-        }
-      } catch { /* fall through */ }
-      return liveKumikoDiary;
-    });
+    if (liveKumikoDiary) {
+      setAutoSavedKumikoDiary(liveKumikoDiary);
+    }
   }, [liveKumikoDiary]);
 
   useEffect(() => {
-    if (!liveDailyFragments) return;
-    setAutoSavedDailyFragments((prev) => {
-      try {
-        if (JSON.stringify(prev) === JSON.stringify(liveDailyFragments)) {
-          return prev;
-        }
-      } catch { /* fall through */ }
-      return liveDailyFragments;
-    });
+    if (liveDailyFragments) {
+      setAutoSavedDailyFragments(liveDailyFragments);
+    }
   }, [liveDailyFragments]);
 
   useEffect(() => {
-    if (livePsycheState === undefined) return;
-    setAutoSavedPsycheState((prev) => {
-      try {
-        if (JSON.stringify(prev) === JSON.stringify(livePsycheState)) {
-          return prev;
-        }
-      } catch { /* fall through */ }
-      return livePsycheState;
-    });
+    if (livePsycheState !== undefined) {
+      setAutoSavedPsycheState(livePsycheState);
+    }
   }, [livePsycheState]);
   
   const appUpdateState = useAppStore(s => s.appUpdateState);
@@ -1149,9 +1124,10 @@ export const App = () => {
         ? 'STALE'
         : 'IDLE';
 
-  // v2.14.8 V.2.B: stabilize the 3 inline alert-related lambdas via
-  // useCallback so they don't allocate new function refs every App render
-  // (which would make the useMemo on appMainViewProps below pointless).
+  // Stabilize the 3 inline alert-related lambdas via useCallback so they
+  // don't allocate new function refs every App render. The original v2.14.8
+  // V.2.B useMemo wrapper that consumed these is gone (W.1.C), but stable
+  // identities still help any downstream React.memo'd consumers.
   const handleOpenMessageFromAlert = useCallback((messageId: string) => {
     setIsMessageCenterOpen(false);
     handleJumpToMessage(messageId);
@@ -1164,15 +1140,15 @@ export const App = () => {
     setMessageAlerts([]);
   }, [setMessageAlerts]);
 
-  // v2.14.8 V.2.B: memoize the giant props bag so a same-input App re-render
-  // (e.g. an unrelated store value updated then no-op'd back) doesn't churn
-  // through buildAppMainViewProps and hand fresh references to AppMainView.
-  // NOTE: AppMainView itself is not React.memo'd today, so React still
-  // reconciles the subtree on parent re-render — V.2.A is the actual flash
-  // fix; this useMemo is preventive scaffolding for future memoization and
-  // saves the per-render object-construction cost when nothing changed.
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- exhaustive list is enumerated below; setters/refs/t are stable identities.
-  const appMainViewProps = useMemo(() => buildAppMainViewProps({
+  // v2.14.9 W.1.C: removed the v2.14.8 V.2.B `useMemo` wrapper. In current
+  // code `handleKeyDown` and `toggleTheme` are recreated every render, so
+  // the memo's deps array always changed and the memo recomputed every
+  // render anyway — useless overhead + risk of stale handlers if anyone
+  // later stabilizes those identities without auditing the (incomplete)
+  // deps list. AppMainView is not React.memo'd, so the subtree reconciles
+  // on parent re-render regardless. Keeping the 3 useCallbacks for the
+  // alert handlers (above) since those are correct on their own merits.
+  const appMainViewProps = buildAppMainViewProps({
     isMemoryPanelOpen,
     setIsMemoryPanelOpen,
     isProfileOpen,
@@ -1314,24 +1290,7 @@ export const App = () => {
     handleResendMessage,
     handleWithdrawMessage,
     isDisconnected,
-  }), [
-    isMemoryPanelOpen, isProfileOpen, isSettingsOpen, isMessageCenterOpen,
-    isTaskPanelOpen, isDiaryOpen, diaryRewritingDate, diaryBfProgress,
-    diaryBfComplete, diaryBfCount, coreMemory, contextLimit, messages,
-    worldBook, isDarkMode, turnCount, summaryProgressText, language,
-    anchors, kumikoNotebook, currentEmotion, unreadAlertCount, messageAlerts,
-    relativeReminders, dailyReminders, backupConfig, regeneratingVoiceIds,
-    devLogs, appUpdateState, updaterCacheInfo, showAppUpdateModal,
-    showDeleteConfirm, showClearFlow, showDoubleClearFlow, syncStatus,
-    showSyncErrorModal, syncErrorMessage, isIOS, viewingImage, isTalking,
-    statusText, avatarPanelBg, overlayClass, avatarGradient, statusTextColor,
-    isSelectionMode, displayRagStatus, headerBg, headerShadow, textColor,
-    mutedTextColor, selectedIds, highlightedMessageId, isListening,
-    isThinking, timeLeft, inputAreaBg, inputShadow, inputBoxBg, sidebarBg,
-    chatContainerShadow, isDisconnected,
-    handleOpenMessageFromAlert, handleDismissMessageAlert, handleClearMessageAlerts,
-    handleSend, handleKeyDown, toggleTheme,
-  ]);
+  });
 
   if (!isDataLoaded) {
     return <LoadingDataScreen language={language} />;

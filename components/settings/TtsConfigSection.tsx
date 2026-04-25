@@ -42,6 +42,19 @@ function renderTtsErrorKindLabel(kind: TtsErrorKind, language: Language): string
   }
 }
 
+// v2.14.9 W.2.B: pick the right MIME for the actual encoded format. Hard-
+// coding 'audio/mpeg' silently breaks decoding when ttsConfig.format is
+// 'opus' or 'wav' on Android WebView (Chromium media engine refuses to
+// auto-detect when the type tag conflicts with the bytestream).
+function audioMimeForFormat(format?: string): string {
+  switch (format) {
+    case 'opus': return 'audio/ogg';
+    case 'wav':  return 'audio/wav';
+    case 'mp3':
+    default:     return 'audio/mpeg';
+  }
+}
+
 const BUILT_IN_RINGTONES = [
   { id: '01.mp3', displayNum: '01', nameZh: '115万km的胶片 - 黄前久美子', nameEn: '115-man Kilo no Film - Kumiko Oumae' },
   { id: '02.mp3', displayNum: '02', nameZh: '小小恋歌 - 秀久合唱', nameEn: 'Chiisana Koi no Uta - Shuichi & Kumiko' },
@@ -584,7 +597,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       const result = await synthesizeSpeech(testText, ttsConfig);
       await unlockPromise;
       if (testAudioRef.current !== audio) return;
-      const blob = new Blob([result.audio], { type: 'audio/mpeg' });
+      const blob = new Blob([result.audio], { type: audioMimeForFormat(ttsConfig.format) });
       const url = URL.createObjectURL(blob);
       testAudioUrlRef.current = url;
       audio.onended = () => { stopTestVoicePlayback(); };
@@ -637,7 +650,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
       const result = await synthesizeWithVocu(testText, ttsConfig, 'neutral');
       await unlockPromise;
       if (testAudioRef.current !== audio) return;
-      const blob = new Blob([result.audio], { type: 'audio/mpeg' });
+      const blob = new Blob([result.audio], { type: audioMimeForFormat(ttsConfig.format) });
       const url = URL.createObjectURL(blob);
       testAudioUrlRef.current = url;
       audio.onended = () => { stopTestVoicePlayback(); };

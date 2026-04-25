@@ -469,30 +469,16 @@ export const useAppViewport = ({
     };
   }, [flowState]);
 
-  // v2.14.8 V.3.C: pause every infinite CSS animation while document is
-  // hidden. Pairs with the html[data-app-hidden] *,*::before,*::after
-  // { animation-play-state: paused !important } rule in index.html.
-  // Without this, KumikoAvatar (.animate-fake-live2d) and any active
-  // VoiceVisualizer / pulse animations keep ticking the GPU compositor
-  // even when the user has switched to another app — visible as device
-  // heat and faster battery drain on Android. Cross-platform: also
-  // helps Electron in the rare case of a minimised window.
-  useEffect(() => {
-    const html = document.documentElement;
-    const sync = () => {
-      if (document.hidden) {
-        html.setAttribute('data-app-hidden', '');
-      } else {
-        html.removeAttribute('data-app-hidden');
-      }
-    };
-    sync();
-    document.addEventListener('visibilitychange', sync);
-    return () => {
-      document.removeEventListener('visibilitychange', sync);
-      html.removeAttribute('data-app-hidden');
-    };
-  }, []);
+  // v2.14.9 W.1.B: removed v2.14.8 V.3.C `data-app-hidden` listener +
+  // global animation-pause CSS. Android WebView fires visibilitychange
+  // far more aggressively than expected (during IME open/close, system
+  // gestures, notification overlays). Each flip ran the universal `*`
+  // selector across the entire DOM, triggering layout/paint storms that
+  // interrupted IME composition events and made input fields lose
+  // focus/content mid-typing. Heat/battery savings already covered by
+  // V.3.A (Android wake-lock skip) + V.3.B (busy regulator visibility
+  // gating); CSS animations are a smaller win that wasn't worth the
+  // input regression.
 
   useEffect(() => {
     const handleFullscreenChange = () => setIsFullscreen(!!document.fullscreenElement);
