@@ -3,6 +3,7 @@ import { Activity, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, ExternalL
 import { Collapse } from '../Collapse';
 import { SettingsToggle } from './SettingsToggle';
 import { openExternalUrl } from '../../utils/openExternal';
+import { ComposableInput } from '../common/ComposableInput';
 
 interface InternetSearchTranslations {
   internetSearchConfig: string;
@@ -86,7 +87,7 @@ export const InternetSearchSection: React.FC<InternetSearchSectionProps> = ({
             <div className="space-y-3">
               <div>
                 <label className={`block ka-label ${isDarkMode ? 'text-gray-400' : 'text-gray-700'}`}>{t.tavilyApiKey}</label>
-                <input
+                <ComposableInput
                   type="password"
                   value={tavilyApiKey}
                   onChange={(e) => onSaveConfig(e.target.value, enableInternetSearch)}

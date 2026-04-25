@@ -5,6 +5,7 @@ import { getDefaultEndpoint, getDefaultVisionModel } from '../../services/appCon
 import { ModelCard } from './ModelCard';
 import { Collapse } from '../Collapse';
 import { ThemedSelect, type ThemedSelectItem } from '../common/ThemedSelect';
+import { ComposableInput } from '../common/ComposableInput';
 
 const PROVIDER_OPTIONS: { value: AIProvider; label: string; group: 'intl' | 'cn' }[] = [
   { value: 'gemini', label: 'Google Gemini', group: 'intl' },
@@ -149,7 +150,7 @@ export const VisionHelperSection: React.FC<VisionHelperSectionProps> = ({
 
               <div>
                 <label className={labelClass}>{language === 'zh' ? '视觉 API KEY (可选，默认使用主配置)' : 'VISION API KEY (Optional, fallback to main)'}</label>
-                <input
+                <ComposableInput
                   type="password"
                   value={localAiConfig.visionApiKey || ''}
                   onChange={(e) => onUpdateAiConfig('visionApiKey', e.target.value)}
@@ -173,7 +174,7 @@ export const VisionHelperSection: React.FC<VisionHelperSectionProps> = ({
 
                 {(localAiConfig.useVisionCustomEndpoint ?? localAiConfig.useCustomEndpoint) ? (
                   <div className="space-y-2 animate-in slide-in-from-top-1">
-                    <input
+                    <ComposableInput
                       type="text"
                       value={localAiConfig.visionCustomEndpoint ?? localAiConfig.customEndpoint ?? ''}
                       onChange={(e) => onUpdateAiConfig('visionCustomEndpoint', e.target.value)}

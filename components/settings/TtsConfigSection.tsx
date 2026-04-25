@@ -21,6 +21,7 @@ import { Collapse } from '../Collapse';
 import { openExternalUrl } from '../../utils/openExternal';
 import { primeAudioForUserGesture } from '../../utils/audioUnlock';
 import { isCapacitorNative } from '../../services/environment';
+import { ComposableInput } from '../common/ComposableInput';
 // F2B.3: dropped `isMobilePwa` + `httpApi` imports. The PWA used to mirror
 // PC's GPT-SoVITS process state via `genie:status` HTTP IPC + `genie:state`
 // WS events; that bridge is gone (SoVITS is hidden on Capacitor anyway).
@@ -926,7 +927,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               <div>
                 <label className={fieldLabelClass}>{language === 'zh' ? 'GPT-SoVITS 安装目录（必填）' : 'GPT-SoVITS Install Directory (required)'}</label>
                 <div className="flex gap-2 mt-1">
-                  <input type="text" value={ttsConfig.sovitsDir || ''}
+                  <ComposableInput type="text" value={ttsConfig.sovitsDir || ''}
                     onChange={e => update({ sovitsDir: e.target.value })}
                     className={`${inputClass} flex-1`}
                     placeholder={isLinuxHost
@@ -960,7 +961,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                     {language === 'zh' ? 'Python 解释器路径（Linux 专用，必填）' : 'Python Interpreter Path (Linux only, required)'}
                   </label>
                   <div className="flex gap-2 mt-1">
-                    <input type="text" value={ttsConfig.sovitsPythonPath || ''}
+                    <ComposableInput type="text" value={ttsConfig.sovitsPythonPath || ''}
                       onChange={e => update({ sovitsPythonPath: e.target.value })}
                       className={`${inputClass} flex-1`}
                       placeholder={language === 'zh' ? '例：/home/you/miniconda3/envs/GPTSoVits/bin/python' : 'e.g. /home/you/miniconda3/envs/GPTSoVits/bin/python'} />
@@ -1010,7 +1011,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
               <div>
                 <label className={fieldLabelClass}>{language === 'zh' ? 'GPT 模型路径 (.ckpt)' : 'GPT Model Path (.ckpt)'}</label>
-                <input type="text" value={ttsConfig.sovitsGptWeights || ''}
+                <ComposableInput type="text" value={ttsConfig.sovitsGptWeights || ''}
                   onChange={e => update({ sovitsGptWeights: e.target.value })}
                   className={`${inputClass} w-full mt-1`}
                   placeholder={language === 'zh' ? '例：GPT_weights_v2ProPlus/KMK.F.KA-e20.ckpt' : 'e.g. GPT_weights_v2ProPlus/model.ckpt'} />
@@ -1021,7 +1022,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
               <div>
                 <label className={fieldLabelClass}>{language === 'zh' ? 'SoVITS 模型路径 (.pth)' : 'SoVITS Model Path (.pth)'}</label>
-                <input type="text" value={ttsConfig.sovitsVitsWeights || ''}
+                <ComposableInput type="text" value={ttsConfig.sovitsVitsWeights || ''}
                   onChange={e => update({ sovitsVitsWeights: e.target.value })}
                   className={`${inputClass} w-full mt-1`}
                   placeholder={language === 'zh' ? '例：SoVITS_weights_v2ProPlus/KMK.F.KA_c8_s96.pth' : 'e.g. SoVITS_weights_v2ProPlus/model.pth'} />
@@ -1029,7 +1030,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
               <div>
                 <label className={fieldLabelClass}>{language === 'zh' ? '参考音频目录（必填）' : 'Reference Audio Directory (required)'}</label>
-                <input type="text" value={ttsConfig.sovitsRefAudioDir || ''}
+                <ComposableInput type="text" value={ttsConfig.sovitsRefAudioDir || ''}
                   onChange={e => update({ sovitsRefAudioDir: e.target.value })}
                   className={`${inputClass} w-full mt-1`}
                   placeholder={language === 'zh' ? '例：D:\\Models\\kumiko\\reference' : 'e.g. D:\\Models\\kumiko\\reference'} />
@@ -1286,7 +1287,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             <>
           <div>
             <label className={fieldLabelClass}>{t.ttsFishApiKey}</label>
-            <input type="password" value={ttsConfig.fishAudioApiKey} onChange={e => update({ fishAudioApiKey: e.target.value })}
+            <ComposableInput type="password" value={ttsConfig.fishAudioApiKey} onChange={e => update({ fishAudioApiKey: e.target.value })}
               className={`${inputClass} w-full mt-1`} placeholder="sk-..." />
           </div>
 
@@ -1302,7 +1303,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                 {language === 'zh' ? '恢复默认久美子 ID' : 'Restore Kumiko Default ID'}
               </button>
             </div>
-            <input type="text" value={ttsConfig.fishAudioReferenceId} onChange={e => update({ fishAudioReferenceId: e.target.value })}
+            <ComposableInput type="text" value={ttsConfig.fishAudioReferenceId} onChange={e => update({ fishAudioReferenceId: e.target.value })}
               className={`${inputClass} w-full mt-1`} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
             <div className={`${helperClass} mt-1 flex flex-wrap items-center gap-2`}>
               <span>{t.ttsFishReferenceIdHint}</span>
@@ -1419,7 +1420,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
               <div>
                 <label className={fieldLabelClass}>{(t as any).ttsVocuApiKey || 'Vocu AI API Key'}</label>
-                <input
+                <ComposableInput
                   type="password"
                   value={ttsConfig.vocuApiKey || ''}
                   onChange={e => update({ vocuApiKey: e.target.value })}
@@ -1440,7 +1441,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                     {language === 'zh' ? '恢复默认久美子 ID' : 'Restore Kumiko Default ID'}
                   </button>
                 </div>
-                <input
+                <ComposableInput
                   type="text"
                   value={ttsConfig.vocuVoiceId || ''}
                   onChange={e => update({ vocuVoiceId: e.target.value })}
@@ -1454,7 +1455,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
 
               <div>
                 <label className={fieldLabelClass}>{(t as any).ttsVocuPromptId || 'Prompt ID'}</label>
-                <input
+                <ComposableInput
                   type="text"
                   value={ttsConfig.vocuPromptId ?? 'default'}
                   onChange={e => update({ vocuPromptId: e.target.value })}

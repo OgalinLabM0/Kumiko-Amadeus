@@ -1,6 +1,7 @@
 import React from 'react';
 import { ChevronDown, ChevronUp, Edit2, Key, RotateCcw, UserCircle } from 'lucide-react';
 import { Collapse } from '../Collapse';
+import { ComposableInput } from '../common/ComposableInput';
 
 interface AccountSectionProps {
   isOpen: boolean;
@@ -82,11 +83,11 @@ export const AccountSection: React.FC<AccountSectionProps> = ({
             <div className="flex flex-col gap-3">
               <div>
                 <label className={labelClass}>{usernameLabel}</label>
-                <input type="text" value={authUsername} onChange={(e) => onUsernameChange(e.target.value)} disabled={!isEditing} className={inputClass} />
+                <ComposableInput type="text" value={authUsername} onChange={(e) => onUsernameChange(e.target.value)} disabled={!isEditing} className={inputClass} />
               </div>
               <div>
                 <label className={labelClass}>{passwordLabel}</label>
-                <input type="text" value={authPassword} onChange={(e) => onPasswordChange(e.target.value)} disabled={!isEditing} className={inputClass} />
+                <ComposableInput type="text" value={authPassword} onChange={(e) => onPasswordChange(e.target.value)} disabled={!isEditing} className={inputClass} />
               </div>
               {isEditing ? (
                 <div className="flex gap-2 mt-2">

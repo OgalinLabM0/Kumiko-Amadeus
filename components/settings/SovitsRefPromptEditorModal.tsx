@@ -9,6 +9,7 @@ import {
 import { useModalKeyboard } from '../../hooks/useModalKeyboard';
 import { useModalPortal } from '../../hooks/useModalPortal';
 import { dialogService } from '../../services/dialogService';
+import { ComposableTextarea } from '../common/ComposableTextarea';
 
 interface SovitsRefPromptEditorModalProps {
   isOpen: boolean;
@@ -274,7 +275,7 @@ export const SovitsRefPromptEditorModal: React.FC<SovitsRefPromptEditorModalProp
                         ·{' '}
                         {language === 'zh' ? row.hintZh : row.hintEn}
                       </div>
-                      <textarea
+                      <ComposableTextarea
                         value={current}
                         onChange={(e) => handleRowChange(row.file, e.target.value)}
                         rows={2}

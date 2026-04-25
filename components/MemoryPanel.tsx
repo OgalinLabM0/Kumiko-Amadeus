@@ -10,6 +10,8 @@ import { useAppStore } from '../store';
 import { isWideViewport } from '../services/datetimeFormat';
 import { useModalPortal } from '../hooks/useModalPortal';
 import { dialogService } from '../services/dialogService';
+import { ComposableInput } from './common/ComposableInput';
+import { ComposableTextarea } from './common/ComposableTextarea';
 
 interface MemoryPanelProps {
   isOpen: boolean;
@@ -810,7 +812,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                   </button>
                   <Collapse isOpen={isCoreSourceOpen}>
                     <div className={`relative w-full p-3 rounded border-2 border-double ${isDarkMode ? 'bg-[#14100c] border-[#5d4731]/55 text-[#eadfce]' : 'bg-[#fffefd] border-[#e8ddcf] text-[#4b3a2a]'}`}>
-                      <textarea
+                      <ComposableTextarea
                         value={localCoreMemory}
                         onChange={(e) => setLocalCoreMemory(e.target.value)}
                         className={`w-full h-32 p-1 rounded ka-input-copy text-base md:text-sm resize-none scrollbar-thin outline-none bg-transparent ${textClass}`}
@@ -1023,7 +1025,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                   {/* --- HISTORY SEARCH BAR (MOVED HERE & OPTIMIZED FOR MOBILE) --- */}
                   <div className={`flex items-center gap-1.5 p-1.5 rounded border ${isDarkMode ? 'bg-[#111413] border-[#2a3530]/40' : 'bg-[#f5f8f6] border-[#d0e8e0]'}`}>
                       <Search size={14} className="opacity-50 flex-shrink-0 ml-1" />
-                      <input 
+                      <ComposableInput 
                           value={historySearchQuery}
                           onChange={(e) => setHistorySearchQuery(e.target.value)}
                           placeholder="Search..."
@@ -1110,7 +1112,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                                         <div className={`relative flex-1 min-w-0 max-w-[85%] rounded-lg p-2 text-sm transition-colors ${isEditing ? (isDarkMode ? 'bg-blue-900/20 border border-blue-500/50' : 'bg-blue-50 border border-blue-300') : (isUser ? (isDarkMode ? 'bg-yellow-900/20 text-yellow-100' : 'bg-yellow-100 text-yellow-900') : (isDarkMode ? 'bg-[#1a1e1c] text-gray-300' : 'bg-white border text-gray-800'))}`}>
                                             {isEditing ? (
                                                 <div className="flex flex-col gap-2">
-                                                    <textarea value={editMessageText} onChange={(e) => setEditMessageText(e.target.value)} className={`w-full h-24 p-2 rounded text-base md:text-sm ka-input-copy resize-none outline-none focus:ring-1 focus:ring-blue-500 ${inputBgClass} ${textClass}`} />
+                                                    <ComposableTextarea value={editMessageText} onChange={(e) => setEditMessageText(e.target.value)} className={`w-full h-24 p-2 rounded text-base md:text-sm ka-input-copy resize-none outline-none focus:ring-1 focus:ring-blue-500 ${inputBgClass} ${textClass}`} />
                                                     <div className="flex justify-end gap-2"><button onClick={cancelEditingMessage} className={`p-1 px-2 rounded ka-label font-semibold border ${isDarkMode ? 'border-gray-600 hover:bg-gray-700' : 'border-gray-300 hover:bg-gray-200'}`}>CANCEL</button><button onClick={saveEditedMessage} className="flex items-center gap-1 p-1 px-2 rounded ka-label font-semibold bg-blue-600 text-white hover:bg-blue-500"><Check size={12} /> SAVE</button></div>
                                                 </div>
                                             ) : (
@@ -1351,7 +1353,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                                 <div className={`ka-label font-semibold tracking-[0.06em] mb-1 ${isDarkMode ? 'text-[#8eaac8]/70' : 'text-[#6882a8]/90'}`}>
                                   {t.contentSectionLabel}
                                 </div>
-                                <textarea
+                                <ComposableTextarea
                                   value={body}
                                   onChange={(e) => updateEntryBody(entry.id, e.target.value)}
                                   className={`w-full h-36 px-3 pb-3 rounded text-base md:text-sm ka-input-copy resize-y scrollbar-thin outline-none focus:ring-1 focus:ring-[#6882a8]/40 ${isDarkMode ? 'ka-notebook-lined-dark text-[#d7e1f0]' : 'ka-notebook-lined-light text-[#34405a]'}`}
@@ -1362,7 +1364,7 @@ export const MemoryPanel: React.FC<MemoryPanelProps> = ({
                                 <div className={`ka-label font-semibold tracking-[0.06em] mb-1 ${isDarkMode ? 'text-[#8eaac8]/70' : 'text-[#6882a8]/90'}`}>
                                   {t.keywordsSectionLabel}
                                 </div>
-                                <input
+                                <ComposableInput
                                   value={keywords}
                                   onChange={(e) => updateEntryKeywords(entry.id, e.target.value)}
                                   className={`w-full px-2 py-2 text-base md:text-sm ka-input-copy outline-none border-b border-dashed focus:border-solid transition-colors ${isDarkMode ? 'bg-[#1a1814]/60 border-[#4a4030] text-[#e3dcc7] focus:border-[#d0b878]' : 'bg-[#fdfaf1] border-[#b8a978] text-[#5a4a20] focus:border-[#7a6028]'}`}

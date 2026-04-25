@@ -23,6 +23,7 @@ import {
   testEmbeddingConfig,
 } from '../../services/cloudEmbeddingService';
 import { ThemedSelect, type ThemedSelectItem } from '../common/ThemedSelect';
+import { ComposableInput } from '../common/ComposableInput';
 
 const PROVIDER_LABELS: Record<EmbeddingProvider, { zh: string; en: string }> = {
   openai: { zh: 'OpenAI', en: 'OpenAI' },
@@ -156,7 +157,7 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
           />
         </div>
         {config.provider === 'custom' && (
-          <input
+          <ComposableInput
             type="text"
             value={config.model}
             onChange={(e) => update({ model: e.target.value })}
@@ -171,7 +172,7 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
 
       <div>
         <label className={fieldLabelClass}>API Key</label>
-        <input
+        <ComposableInput
           type="password"
           value={config.apiKey}
           onChange={(e) => update({ apiKey: e.target.value })}
@@ -186,7 +187,7 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
       {config.provider === 'custom' && (
         <div>
           <label className={fieldLabelClass}>{language === 'zh' ? '自定义 endpoint (无 /embeddings 后缀)' : 'Custom endpoint (no /embeddings suffix)'}</label>
-          <input
+          <ComposableInput
             type="url"
             inputMode="url"
             value={config.customEndpoint || ''}

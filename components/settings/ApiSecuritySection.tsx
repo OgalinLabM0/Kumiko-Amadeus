@@ -4,6 +4,7 @@ import { AIConfig, AIProvider } from '../../types';
 import { getDefaultEndpoint } from '../../services/appConfig';
 import { Collapse } from '../Collapse';
 import { ThemedSelect, type ThemedSelectItem } from '../common/ThemedSelect';
+import { ComposableInput } from '../common/ComposableInput';
 
 const PROVIDER_OPTIONS: { value: AIProvider; label: string; group: 'intl' | 'cn' }[] = [
   { value: 'gemini', label: 'Google Gemini', group: 'intl' },
@@ -127,11 +128,11 @@ export const ApiSecuritySection: React.FC<ApiSecuritySectionProps> = ({
           <div className="space-y-3">
             <div>
               <label className={`block ka-label ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t_local.keyLabel}</label>
-              <input type="password" value={localAiConfig.apiKey_primary || ''} onChange={(e) => onUpdateAiConfig('apiKey_primary', e.target.value)} placeholder={t_local.keyPlaceHolder} className={inputClass} />
+              <ComposableInput type="password" value={localAiConfig.apiKey_primary || ''} onChange={(e) => onUpdateAiConfig('apiKey_primary', e.target.value)} placeholder={t_local.keyPlaceHolder} className={inputClass} />
             </div>
             <div>
               <label className={`block ka-label ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t_local.keyLabel_backup}</label>
-              <input type="password" value={localAiConfig.apiKey_backup || ''} onChange={(e) => onUpdateAiConfig('apiKey_backup', e.target.value)} placeholder={t_local.keyPlaceHolder} className={inputClass} />
+              <ComposableInput type="password" value={localAiConfig.apiKey_backup || ''} onChange={(e) => onUpdateAiConfig('apiKey_backup', e.target.value)} placeholder={t_local.keyPlaceHolder} className={inputClass} />
             </div>
           </div>
 

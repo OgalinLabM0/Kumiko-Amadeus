@@ -1,6 +1,7 @@
 import React from 'react';
 import { AlertTriangle, CheckCircle, RefreshCw } from 'lucide-react';
 import { AIConfig } from '../../types';
+import { ComposableInput } from '../common/ComposableInput';
 
 interface ModelCardProps {
   title: string;
@@ -48,7 +49,7 @@ export const ModelCard: React.FC<ModelCardProps> = ({
       {validationResult === false && <AlertTriangle size={16} className="text-red-500 shrink-0" />}
     </div>
     <div className="relative">
-      <input
+      <ComposableInput
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}

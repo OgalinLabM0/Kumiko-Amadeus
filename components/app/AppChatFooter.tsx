@@ -1,6 +1,7 @@
 import React from 'react';
 import { Paperclip, Quote, Send, Trash2, Undo2, X } from 'lucide-react';
 import { useAppStore } from '../../store';
+import { ComposableInput } from '../common/ComposableInput';
 
 interface AppChatFooterProps {
   inputAreaBg: string;
@@ -129,7 +130,7 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
               <Paperclip size={18} />
             </button>
 
-            <input
+            <ComposableInput
               ref={inputRef}
               type="text"
               value={inputValue}

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { Settings, Key, Zap, Brain, CheckCircle, RefreshCw, AlertTriangle, Check, ShieldCheck, Activity, Power, Globe, Save, Languages, Eye, Cloud, Loader2 } from 'lucide-react';
+import { Settings, Key, Zap, Brain, CheckCircle, RefreshCw, AlertTriangle, Check, ShieldCheck, Activity, Power, Globe, Save, Languages, Eye, Loader2 } from 'lucide-react';
 import { AIConfig, AIProvider, Language } from '../types';
 import { Collapse } from './Collapse';
 import { ThemedSelect, type ThemedSelectItem } from './common/ThemedSelect';
@@ -13,6 +13,7 @@ import { isCapacitorNative } from '../services/environment';
 // so the phone never held the API key. Capacitor APK is fully standalone:
 // it talks to the LLM provider directly (CapacitorHttp bypasses CORS).
 import { CloudEmbeddingForm } from './settings/CloudEmbeddingForm';
+import { ComposableInput } from './common/ComposableInput';
 
 // F2B.3: simplified — both Electron desktop and Capacitor APK call the
 // validators in-process. The PWA `ai-config:validate-*-from-mobile`
@@ -192,7 +193,7 @@ const ModelCard: React.FC<ModelCardProps> = ({ title, icon: Icon, desc, defaultM
                 </div>
             </div>
             <div className="relative">
-                <input type="text" value={value} onChange={(e) => onChange(e.target.value)} placeholder={defaultModel}
+                <ComposableInput type="text" value={value} onChange={(e) => onChange(e.target.value)} placeholder={defaultModel}
                     className={inputClass} />
                 {validationResult === true && <span className="absolute right-[clamp(28px,3.5vw,36px)] top-1/2 -translate-y-1/2" title={t.modelAvailable}><CheckCircle size={15} className="text-green-600" /></span>}
                 {validationResult === false && <span className="absolute right-[clamp(28px,3.5vw,36px)] top-1/2 -translate-y-1/2" title={t.modelUnavailable}><AlertTriangle size={15} className="text-red-600" /></span>}
@@ -468,10 +469,17 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
       setSearchStatus(''); setSearchStatusType('neutral');
   };
 
-  const SectionHeader = ({ label, icon: Icon, isOpen, onToggle }: { label: string, icon: any, isOpen: boolean, onToggle: () => void }) => (
+  // v2.14.10 Y.3: optional `statusIcon` slot rendered inline next to the
+  // section label. Used by Cloud Embedding (Android) to mirror the green
+  // checkmark / red triangle / spinner that the per-model fields show
+  // inside ModelCard, instead of the dedicated row v2.14.9 added below
+  // the action button (which the user found visually inconsistent with
+  // the rest of the screen).
+  const SectionHeader = ({ label, icon: Icon, isOpen, onToggle, statusIcon }: { label: string, icon: any, isOpen: boolean, onToggle: () => void, statusIcon?: React.ReactNode }) => (
     <button onClick={onToggle} className="cfg-section-btn w-full cfg-section-title font-bold flex items-center justify-between">
         <div className={`flex items-center gap-[clamp(6px,1vw,10px)] ${textPrimary}`}>
             <Icon size={16} /> <span className="ka-section-title tracking-[0.02em]">{label}</span>
+            {statusIcon}
         </div>
         <span className={`cfg-label-sm opacity-50 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`}>▾</span>
     </button>
@@ -562,11 +570,11 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                     <div className="space-y-[clamp(10px,1.4vw,16px)]">
                         <div>
                            <label className={`block ka-label ${text65} mb-[clamp(3px,0.5vw,5px)]`}>{t.keyLabel}</label>
-                           <input type="password" value={config.apiKey_primary || ''} onChange={(e) => updateConfig('apiKey_primary', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
+                           <ComposableInput type="password" value={config.apiKey_primary || ''} onChange={(e) => updateConfig('apiKey_primary', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
                         </div>
                          <div>
                            <label className={`block ka-label ${text65} mb-[clamp(3px,0.5vw,5px)]`}>{t.keyLabel_backup}</label>
-                           <input type="password" value={config.apiKey_backup || ''} onChange={(e) => updateConfig('apiKey_backup', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
+                           <ComposableInput type="password" value={config.apiKey_backup || ''} onChange={(e) => updateConfig('apiKey_backup', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
                         </div>
                         <p className={`ka-copy-sm ${text55} pl-1`}>{t.keyLocalDesc}</p>
                     </div>
@@ -576,7 +584,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                             <ToggleCheck checked={config.useCustomEndpoint} onClick={() => updateConfig('useCustomEndpoint', !config.useCustomEndpoint)} label={t.useCustomEndpoint} />
                         </div>
                         {config.useCustomEndpoint ? (
-                            <div className="animate-in slide-in-from-top-1"><input type="text" value={config.customEndpoint || ''} onChange={(e) => updateConfig('customEndpoint', e.target.value)} placeholder={t.customEndpointPlaceholder} className={inputCls} /></div>
+                            <div className="animate-in slide-in-from-top-1"><ComposableInput type="text" value={config.customEndpoint || ''} onChange={(e) => updateConfig('customEndpoint', e.target.value)} placeholder={t.customEndpointPlaceholder} className={inputCls} /></div>
                         ) : (
                             <div className={`ka-copy-sm ${text55} italic ${fill5} p-[clamp(8px,1.2vw,12px)] rounded-lg`}>{t.useCustomEndpointDesc}</div>
                         )}
@@ -623,7 +631,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                             </div>
                             <div>
                                <label className={`block ka-label ${text65} mb-[clamp(3px,0.5vw,5px)]`}>{t.visionApiKeyLabel}</label>
-                               <input type="password" value={config.visionApiKey || ''} onChange={(e) => updateConfig('visionApiKey', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
+                               <ComposableInput type="password" value={config.visionApiKey || ''} onChange={(e) => updateConfig('visionApiKey', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
                             </div>
                             <div className={`pt-[clamp(8px,1.2vw,12px)] border-t ${borderFaint}`}>
                                 <div className="flex items-center justify-between mb-[clamp(6px,0.8vw,10px)]">
@@ -631,7 +639,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                                     <ToggleCheck checked={config.useVisionCustomEndpoint ?? config.useCustomEndpoint} onClick={() => updateConfig('useVisionCustomEndpoint', !(config.useVisionCustomEndpoint ?? config.useCustomEndpoint))} label={t.useCustomEndpoint} />
                                 </div>
                                 {(config.useVisionCustomEndpoint ?? config.useCustomEndpoint) ? (
-                                    <div className="animate-in slide-in-from-top-1"><input type="text" value={config.visionCustomEndpoint ?? config.customEndpoint ?? ''} onChange={(e) => updateConfig('visionCustomEndpoint', e.target.value)} placeholder={t.customEndpointPlaceholder} className={inputCls} /></div>
+                                    <div className="animate-in slide-in-from-top-1"><ComposableInput type="text" value={config.visionCustomEndpoint ?? config.customEndpoint ?? ''} onChange={(e) => updateConfig('visionCustomEndpoint', e.target.value)} placeholder={t.customEndpointPlaceholder} className={inputCls} /></div>
                                 ) : (
                                     <div className={`ka-copy-sm ${text55} italic ${fill5} p-[clamp(8px,1.2vw,12px)] rounded-lg`}>{t.useCustomEndpointDesc}</div>
                                 )}
@@ -656,6 +664,15 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                   icon={Brain}
                   isOpen={isEmbeddingOpen}
                   onToggle={() => setIsEmbeddingOpen(!isEmbeddingOpen)}
+                  statusIcon={
+                    embeddingValidation.status === 'checking'
+                      ? <Loader2 size={14} className="animate-spin text-blue-400" />
+                      : embeddingValidation.status === 'pass'
+                        ? <CheckCircle size={14} className="text-green-600" />
+                        : embeddingValidation.status === 'fail'
+                          ? <AlertTriangle size={14} className="text-red-600" />
+                          : null
+                  }
                 />
                 <Collapse isOpen={isEmbeddingOpen} duration={180}>
                   <div className="cfg-glass rounded-xl p-[clamp(14px,2vw,22px)]">
@@ -695,40 +712,14 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                   )}
                 </div>
               )}
-              {/* v2.14.9 W.3.C: Cloud Embedding row — Android-only. Mirrors the
-                  CheckItem layout in components/settings/AiValidationActions.tsx
-                  but uses AIConfigScreen's color tokens so it sits naturally
-                  above the action buttons. Hidden on PC (local ONNX) and
-                  hidden in 'idle' state to avoid a stale empty row before
-                  the user clicks Validate-All. */}
-              {isCapacitorNative() && embeddingValidation.status !== 'idle' && (
-                <div className={`flex items-center gap-[clamp(6px,0.8vw,10px)] px-[clamp(10px,1.4vw,14px)] py-[clamp(6px,1vw,9px)] rounded-lg transition-colors ${
-                  embeddingValidation.status === 'fail'
-                    ? (isDarkMode ? 'bg-red-950/30' : 'bg-red-50')
-                    : embeddingValidation.status === 'pass'
-                      ? (isDarkMode ? 'bg-green-950/20' : 'bg-green-50/60')
-                      : ''
-                }`}>
-                  <Cloud size={14} className={`shrink-0 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`} />
-                  <span className={`flex-1 ka-copy-sm font-semibold ${isDarkMode ? 'text-[#f5ebdc]' : 'text-[#49301f]'}`}>
-                    {language === 'zh' ? '云端 Embedding' : 'Cloud Embedding'}
-                  </span>
-                  {embeddingValidation.detail && (
-                    <span className={`ka-micro font-mono ${
-                      embeddingValidation.status === 'fail'
-                        ? 'text-red-500'
-                        : embeddingValidation.status === 'pass'
-                          ? (isDarkMode ? 'text-green-300' : 'text-green-700')
-                          : (isDarkMode ? 'text-[#b69f87]' : 'text-[#9e7c51]')
-                    }`}>{embeddingValidation.detail}</span>
-                  )}
-                  {embeddingValidation.status === 'checking'
-                    ? <Loader2 size={14} className="animate-spin text-blue-400 shrink-0" />
-                    : embeddingValidation.status === 'pass'
-                      ? <Check size={14} className="text-green-500 shrink-0" />
-                      : <AlertTriangle size={14} className="text-red-500 shrink-0" />}
-                </div>
-              )}
+              {/* v2.14.10 Y.3: the dedicated Cloud Embedding row that v2.14.9
+                  W.3.C placed here was visually inconsistent with the rest
+                  of the screen — every other model field shows its
+                  validation result via a small icon "behind" the field
+                  label, not a separate row. The status icon now lives on
+                  the Cloud Embedding SectionHeader (statusIcon prop)
+                  above so it follows the same pattern and stays visible
+                  whether the section is collapsed or expanded. */}
               <button onClick={handleValidateAll} disabled={isValidating || isSearchValidating || isModelValidating}
                   className={`w-full py-[clamp(8px,1.4vw,14px)] min-h-[44px] border ${secondaryBtnCls} font-semibold cfg-btn-text rounded-xl transition-all active:scale-[0.98] disabled:opacity-40 flex items-center justify-center gap-[clamp(4px,0.8vw,8px)]`}>
                   {(isValidating || isSearchValidating || isModelValidating) ? <RefreshCw className="animate-spin" size={15} /> : <ShieldCheck size={15} />}

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Info, AlertTriangle, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { useModalKeyboard } from '../../hooks/useModalKeyboard';
 import { useModalPortal } from '../../hooks/useModalPortal';
+import { ComposableInput } from '../common/ComposableInput';
 
 export type CustomDialogVariant = 'default' | 'danger';
 export type CustomDialogIcon = 'info' | 'warning' | 'error' | 'success';
@@ -148,7 +149,7 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
           <p className={`text-sm whitespace-pre-wrap leading-relaxed ${isDarkMode ? 'text-[#cdb89f]' : 'text-gray-600'}`}>{message}</p>
 
           {type === 'prompt' && (
-            <input
+            <ComposableInput
               ref={inputRef}
               type="text"
               value={inputValue}

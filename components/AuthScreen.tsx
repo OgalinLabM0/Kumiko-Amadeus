@@ -11,6 +11,7 @@ import {
   queueLocalStoragePreferenceSync,
 } from '../services/preferencesSync';
 import { isCapacitorNative } from '../services/environment';
+import { ComposableInput } from './common/ComposableInput';
 
 // Cloud sync removed from the product — any references to CLOUD_SYNC_AVAILABLE have been
 // deleted along with the CLOUD tab. If the feature returns, reintroduce the constant
@@ -478,7 +479,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                           <div className="p-[clamp(6px,0.8vw,10px)] rounded-full bg-[#785A42]/8 fingerprint-glow">
                             <Fingerprint size={20} className="text-[#785A42]/50" />
                           </div>
-                          <input type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="bg-transparent outline-none w-full ka-input-copy auth-input-text placeholder-[#785A42]/30" placeholder="Kumiko" />
+                          <ComposableInput type="text" value={username} onChange={(e) => setUsername(e.target.value)} className="bg-transparent outline-none w-full ka-input-copy auth-input-text placeholder-[#785A42]/30" placeholder="Kumiko" />
                         </div>
                     </div>
 
@@ -488,7 +489,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
                           <div className="p-[clamp(6px,0.8vw,10px)] rounded-full bg-[#785A42]/8">
                             <Lock size={20} className="text-[#785A42]/50" />
                           </div>
-                          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} className="bg-transparent outline-none w-full ka-input-copy auth-input-text placeholder-[#785A42]/30" placeholder="••••" />
+                          <ComposableInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin()} className="bg-transparent outline-none w-full ka-input-copy auth-input-text placeholder-[#785A42]/30" placeholder="••••" />
                         </div>
                     </div>
 
