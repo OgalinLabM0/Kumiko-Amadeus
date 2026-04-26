@@ -6,6 +6,8 @@ import { showBackgroundNotification } from '../components/app/chatActions';
 import {
   EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY,
   FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY,
+  prewarmKumikoAlarmsPlugin,
+  pruneExpiredAlarmLedger,
 } from '../services/androidAlarmService';
 import {
   ensureAndroidAlertChannelsBootstrap,
@@ -142,10 +144,24 @@ export function useUnreadAlertsChrome(
       running = true;
       try {
         const copy = getPermissionCopy();
-        // Bootstrap notification channels FIRST (side effect, separated from
-        // the read-only snapshot path so it can never stall the detection UI).
+        // v2.14.23: serial start — first warm the Capacitor↔native bridge
+        // (the first call after WebView startup pays a 2-5s descriptor-resolution
+        // tax that, in v2.14.22, was being absorbed by the permission probe and
+        // collapsing every item into "Unknown"). Then create the notification
+        // channels (side effect kept OUT of the read-only snapshot path so a
+        // misbehaving ROM can't stall the UI). Only then take the actual
+        // permission snapshot. Total budget ~10s on cold start, ~1s on hot.
+        await prewarmKumikoAlarmsPlugin();
+        if (cancelled) return;
         await ensureAndroidAlertChannelsBootstrap();
         if (cancelled) return;
+        // v2.14.23: prune the native alarm ledger of any reminderId whose
+        // scheduled `at` is already in the past. The BootReceiver does this
+        // inline on device reboot; we also call it on every cold start so
+        // a long-paused app (sleep mode, etc.) doesn't reschedule stale
+        // reminders. Guarded against being called on platforms that don't
+        // expose this method yet (older binaries) — failure is silent.
+        void pruneExpiredAlarmLedger().catch(() => undefined);
         let snapshot = await getAndroidAlertPermissionSnapshot();
         if (cancelled) return;
         if (!snapshot.supported) return;

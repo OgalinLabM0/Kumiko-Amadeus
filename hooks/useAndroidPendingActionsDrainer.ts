@@ -54,11 +54,17 @@ export const useAndroidPendingActionsDrainer = (): void => {
         );
       }
 
-      // Accept-call: open the VoiceCallOverlay for this reminder. The
-      // existing useScheduledReminders 1s polling will pick the same
-      // reminder up within 1-2 seconds and run triggerTimedReminderMessage,
-      // which builds the overlay payload + voice playback. So accept here
-      // is functionally a no-op — we just trust the polling to run.
+      // Accept-call: park the reminder event in the store as an
+      // auto-accept hint. v2.14.23: when useScheduledReminders polling
+      // catches up within 1-2s and calls triggerTimedReminderMessage,
+      // it consumes the hint and skips the in-app ringing UI — the
+      // user already tapped Accept on the lock-screen FSI, so making
+      // them tap Accept a second time was the v2.14.22 paper-cut.
+      if (drained.call?.action === 'accept_call' && drained.call.reminderEvent) {
+        useAppStore.getState().setPendingAutoAcceptReminderEvent(drained.call.reminderEvent);
+        const lang = useAppStore.getState().language;
+        useAppStore.getState().setSystemNotice(lang === 'zh' ? '正在接通…' : 'Connecting…');
+      }
 
       // Each Direct Reply gets injected as a user message via the existing
       // chat pipeline. Each call to addUserMessage triggers the LLM round

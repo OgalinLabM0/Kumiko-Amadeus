@@ -4,6 +4,8 @@ import {
   ensureKumikoNotificationChannelsNative,
   getNativeAndroidAlertPermissionStatus,
   getOemDeviceInfo,
+  isIgnoringBatteryOptimizations,
+  isPhoneAccountRegistered,
   openAndroidAppNotificationSettings,
   openVendorPermissionSetting,
   postAndroidTestIncomingCall,
@@ -26,7 +28,11 @@ export type AndroidAlertPermissionKey =
   | 'exactAlarm'
   | 'fullScreenIntent'
   | 'messagesChannel'
-  | 'callsChannel';
+  | 'callsChannel'
+  /** v2.14.23: REQUEST_IGNORE_BATTERY_OPTIMIZATIONS allowlist state. */
+  | 'batteryOptimizations'
+  /** v2.14.23: self-managed Telecom PhoneAccount registered + enabled by user. */
+  | 'phoneAccount';
 
 export interface AndroidAlertPermissionItem {
   key: AndroidAlertPermissionKey;
@@ -75,7 +81,13 @@ export interface AndroidAlertTestResult {
   reason?: AndroidAlertPermissionKey | 'unsupported' | 'native-failed' | 'timeout';
 }
 
-const SNAPSHOT_PROBE_TIMEOUT_MS = 2_500;
+// v2.14.23: pumped from 2.5s → 5s. Cold-start Capacitor bridge can take
+// 2-5s on busy ROMs (HyperOS/MIUI especially); a 2.5s budget was the
+// root cause of v2.14.22's "everything Unknown" regression. The
+// snapshot caller (`getAndroidAlertPermissionSnapshot`) also retries
+// once on partial result, so the worst-case wall clock of a cold UI
+// probe is ~10s, still inside the 8s+buffer overall UI timeout.
+const SNAPSHOT_PROBE_TIMEOUT_MS = 5_000;
 const TEST_ACTION_TIMEOUT_MS = 6_000;
 
 class TimeoutError extends Error {
@@ -101,13 +113,13 @@ async function withTimeout<T>(label: string, promise: Promise<T>, ms = SNAPSHOT_
   });
 }
 
-async function safeProbe<T>(label: string, run: () => Promise<T>, fallback: T): Promise<{ value: T; ok: boolean }> {
+async function safeProbe<T>(label: string, run: () => Promise<T>, fallback: T, timeoutMs: number = SNAPSHOT_PROBE_TIMEOUT_MS): Promise<{ value: T; ok: boolean }> {
   try {
-    const value = await withTimeout(label, run());
+    const value = await withTimeout(label, run(), timeoutMs);
     return { value, ok: true };
   } catch (e) {
     if (e instanceof TimeoutError) {
-      console.warn(`[androidAlertPermission] ${label} timed out after ${SNAPSHOT_PROBE_TIMEOUT_MS}ms`);
+      console.warn(`[androidAlertPermission] ${label} timed out after ${timeoutMs}ms`);
     } else {
       console.warn(`[androidAlertPermission] ${label} failed:`, e);
     }
@@ -202,6 +214,8 @@ const unsupportedSnapshot = (): AndroidAlertPermissionSnapshot => {
     fullScreenIntent: unavailableItem('fullScreenIntent'),
     messagesChannel: unavailableItem('messagesChannel'),
     callsChannel: unavailableItem('callsChannel'),
+    batteryOptimizations: unavailableItem('batteryOptimizations'),
+    phoneAccount: unavailableItem('phoneAccount'),
   };
   return {
     supported: false,
@@ -219,18 +233,23 @@ const unsupportedSnapshot = (): AndroidAlertPermissionSnapshot => {
  *     `ensureKumikoNotificationChannelsForBootstrap` and the native `MainActivity`).
  *   - every native/Capacitor probe is wrapped in `withTimeout`. A stalled
  *     probe degrades that single item to `unknown` instead of hanging the UI.
- *   - returns within ~2.5s × number-of-parallel-probes (we run them in parallel
- *     so the wall-clock cap is the slowest single probe).
+ *   - returns within ~5s × number-of-parallel-probes (we run them in parallel
+ *     so the wall-clock cap is the slowest single probe). v2.14.23: bumped
+ *     from 2.5s → 5s because cold Capacitor bridge can take 2-5s on busy
+ *     ROMs (HyperOS/MIUI), and added a one-shot retry when `partial` flips
+ *     true to give the bridge another chance after warm-up.
  */
-export async function getAndroidAlertPermissionSnapshot(): Promise<AndroidAlertPermissionSnapshot> {
+async function buildAlertPermissionSnapshotOnce(): Promise<AndroidAlertPermissionSnapshot> {
   if (!isCapacitorNative() || getCapacitorPlatform() !== 'android') {
     return unsupportedSnapshot();
   }
 
-  const [permResult, nativeResult, oemResult] = await Promise.all([
+  const [permResult, nativeResult, oemResult, batteryResult, phoneAccountResult] = await Promise.all([
     safeProbe('checkKumikoNotificationPermission', () => checkKumikoNotificationPermission(), false),
     safeProbe<NativeAndroidAlertPermissionStatus | null>('getAlertPermissionStatus', () => getNativeAndroidAlertPermissionStatus(), null),
     safeProbe<NativeOemDeviceInfo | null>('getOemDeviceInfo', () => getOemDeviceInfo(), null),
+    safeProbe<boolean | null>('isIgnoringBatteryOptimizations', () => isIgnoringBatteryOptimizations(), null),
+    safeProbe<{ registered: boolean; enabled: boolean } | null>('isPhoneAccountRegistered', () => isPhoneAccountRegistered(), null),
   ]);
 
   const nativeStatus = nativeResult.value;
@@ -261,22 +280,55 @@ export async function getAndroidAlertPermissionSnapshot(): Promise<AndroidAlertP
     ? itemFromBoolean('fullScreenIntent', nativeStatus.fullScreenIntentReady)
     : itemFromState('fullScreenIntent', 'unknown');
 
+  // v2.14.23: prefer the new `batteryOptimizationsIgnored` field on
+  // NativeAndroidAlertPermissionStatus; fall back to the standalone
+  // probe if the alert-status payload is missing it (older native
+  // binary). batteryOptimizations isn't a hard "denied" by Android —
+  // it's an opt-in allowlist; so when neither path produces an answer
+  // we mark unknown rather than denied.
+  const batteryGranted = nativeStatus && typeof nativeStatus.batteryOptimizationsIgnored === 'boolean'
+    ? nativeStatus.batteryOptimizationsIgnored
+    : batteryResult.value;
+  const batteryItem: AndroidAlertPermissionItem = batteryGranted == null
+    ? itemFromState('batteryOptimizations', batteryResult.ok ? 'unknown' : 'unknown')
+    : itemFromBoolean('batteryOptimizations', batteryGranted);
+
+  const phoneAccountValue = nativeStatus && typeof nativeStatus.phoneAccountReady === 'boolean'
+    ? { registered: nativeStatus.phoneAccountReady, enabled: nativeStatus.phoneAccountReady }
+    : phoneAccountResult.value;
+  const phoneAccountItem: AndroidAlertPermissionItem = phoneAccountValue == null
+    ? itemFromState('phoneAccount', 'unknown')
+    : itemFromBoolean('phoneAccount', phoneAccountValue.registered && phoneAccountValue.enabled);
+
   const items: AndroidAlertPermissionSnapshot['items'] = {
     notifications: notificationsItem,
     exactAlarm: exactAlarmItem,
     fullScreenIntent: fullScreenItem,
     messagesChannel: messagesChannelItem,
     callsChannel: callsChannelItem,
+    batteryOptimizations: batteryItem,
+    phoneAccount: phoneAccountItem,
   };
 
-  const values = Object.values(items).map((item) => item.state);
-  const overall: AndroidAlertPermissionState = values.every((state) => state === 'granted')
+  // v2.14.23: only "core" items count toward the overall pipeline state.
+  // `batteryOptimizations` and `phoneAccount` are both optional reliability
+  // boosters: phoneAccount degrades gracefully to the legacy FSI Activity
+  // path, and batteryOptimizations is an allowlist that some users prefer
+  // not to grant. Their state is surfaced individually in the UI but the
+  // top-level "ready / needs setup" badge tracks the AOSP basics so we
+  // don't scare users into thinking the entire pipeline is broken when
+  // it's really just a reliability optimisation that's off.
+  const coreItems: AndroidAlertPermissionItem[] = [
+    items.notifications, items.messagesChannel, items.callsChannel, items.exactAlarm, items.fullScreenIntent,
+  ];
+  const coreStates = coreItems.map((item) => item.state);
+  const overall: AndroidAlertPermissionState = coreStates.every((state) => state === 'granted')
     ? 'granted'
-    : values.some((state) => state === 'denied')
+    : coreStates.some((state) => state === 'denied')
       ? 'denied'
       : 'unknown';
 
-  const partial = !permResult.ok || !nativeResult.ok || !oemResult.ok;
+  const partial = !permResult.ok || !nativeResult.ok || !oemResult.ok || !batteryResult.ok || !phoneAccountResult.ok;
 
   return {
     supported: true,
@@ -287,6 +339,21 @@ export async function getAndroidAlertPermissionSnapshot(): Promise<AndroidAlertP
     oem,
     partial,
   };
+}
+
+export async function getAndroidAlertPermissionSnapshot(opts: { retryOnPartial?: boolean } = {}): Promise<AndroidAlertPermissionSnapshot> {
+  const { retryOnPartial = true } = opts;
+  const first = await buildAlertPermissionSnapshotOnce();
+  if (!first.partial || !retryOnPartial || !first.supported) return first;
+  // v2.14.23: cold Capacitor bridge often resolves on the first call.
+  // Retry once before reporting `partial: true` to the UI; the retry
+  // benefits from the cached plugin handle so it should return inside
+  // the SNAPSHOT_PROBE_TIMEOUT_MS budget. If it still partials we give
+  // up and surface partial=true so the UI can prompt the user to
+  // refresh manually.
+  console.info('[androidAlertPermission] partial snapshot detected; retrying once');
+  const second = await buildAlertPermissionSnapshotOnce();
+  return second;
 }
 
 /**
@@ -312,6 +379,28 @@ export async function openAndroidAlertPermissionSettings(key: AndroidAlertPermis
   }
   if (key === 'fullScreenIntent') {
     await safeProbe('requestFullScreenIntentPermission', () => requestFullScreenIntentPermission(), undefined);
+    return;
+  }
+  if (key === 'batteryOptimizations') {
+    // v2.14.23: REQUEST_IGNORE_BATTERY_OPTIMIZATIONS spawns an in-place
+    // system dialog. If that fails (e.g. the user already accepted once
+    // and Android is suppressing the dialog), KumikoAlarmsPlugin falls
+    // back to opening Settings → Apps → Battery so the user can flip
+    // the toggle manually. The native helper handles both paths so we
+    // don't need to differentiate here.
+    const { requestIgnoreBatteryOptimization } = await import('./androidAlarmService');
+    await safeProbe('requestIgnoreBatteryOptimization', () => requestIgnoreBatteryOptimization(), false);
+    return;
+  }
+  if (key === 'phoneAccount') {
+    // v2.14.23: registering the PhoneAccount is a one-time native call;
+    // enabling it is a user action in Settings → Apps → Default apps →
+    // Calling accounts. We attempt the registration first, then deep-link
+    // into the calling-accounts settings page so the user can flip the
+    // toggle. Falls back to App details if the deep-link fails.
+    const { registerPhoneAccount, openPhoneAccountSettings } = await import('./androidAlarmService');
+    await safeProbe('registerPhoneAccount', () => registerPhoneAccount(), false);
+    await safeProbe('openPhoneAccountSettings', () => openPhoneAccountSettings(), undefined);
     return;
   }
   await safeProbe('openAndroidAppNotificationSettings', () => openAndroidAppNotificationSettings(), undefined);
