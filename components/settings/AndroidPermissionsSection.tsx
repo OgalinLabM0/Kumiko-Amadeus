@@ -96,6 +96,10 @@ const COPY = {
     testTimeout: '测试请求 6 秒内未收到系统回执，请重新尝试或检查 OEM 后台限制。',
     partialNotice: '部分项目无法确认（以「未知」标记），系统可能繁忙或厂商接口未公开，请重新检测。',
     unknownHint: '「未知」并不等于失败，只是 native 桥还没回应；请用下方测试按钮直接验证（最权威）。',
+    bridgeDeadTitle: '原生桥接 5 秒无响应',
+    bridgeDeadDesc: '我们已经把所有桥接调用换到后台线程，但本设备（多见于小米 / HyperOS）的 WebView 仍可能阻塞自定义插件，导致测试超时；请尝试「立即重启应用」，重启后所有自检和测试会自动恢复正常路径。',
+    bridgeDeadRestart: '立即重启应用',
+    fallbackUsedHint: '原生桥接超时 - 已尝试备用 LocalNotifications，请检查通知栏。',
     callTestHint: '提示：请把 App 退到后台或锁屏后再点测试，这样才能验证锁屏弹窗。',
     callCountdownHint: (sec: number) => `准备触发来电…${sec} 秒后开始；请立刻按 Home 退到后台或锁屏，否则只能验证前台横幅。`,
     messageCountdownHint: (sec: number) => `准备触发消息通知…${sec} 秒后开始；可保持当前页或退到后台。`,
@@ -206,6 +210,10 @@ const COPY = {
     testTimeout: 'No system response within 6s; please retry or check OEM background restrictions.',
     partialNotice: 'Some items could not be confirmed (shown as "Unknown"). The system may be busy or the OEM exposes no API. Please refresh.',
     unknownHint: '"Unknown" does not mean failure — only that the native bridge has not answered yet. The test buttons below give the most authoritative answer.',
+    bridgeDeadTitle: 'Native bridge unresponsive after 5s',
+    bridgeDeadDesc: 'All plugin calls now run on a background thread, but this device (often Xiaomi / HyperOS) may still block our custom plugin so test buttons time out. Try Restart now — all self-tests will return to the normal path on the next launch.',
+    bridgeDeadRestart: 'Restart app now',
+    fallbackUsedHint: 'Native bridge timed out — falling back to LocalNotifications. Please check the notification tray.',
     callTestHint: 'Tip: send the app to background or lock the screen first, then run the test to verify lock-screen pop-ups.',
     callCountdownHint: (sec: number) => `Triggering the call test in ${sec}s. Press Home now or lock the screen, otherwise you only test the foreground heads-up.`,
     messageCountdownHint: (sec: number) => `Triggering the message test in ${sec}s. You can stay on this page or send the app to background.`,
@@ -550,12 +558,21 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
         return;
       }
       const result = await runAndroidMessageNotificationTest();
-      setMessage(result.ok ? copy.submittedMessage : reasonText(result.reason));
+      // v2.14.25: when KumikoAlarms times out we fall back to LocalNotifications;
+      // surface that explicitly so the user knows where the notification came from
+      // and that the bridge issue is real (not a permission problem).
+      if (result.ok && result.fallbackUsed) {
+        setMessage(`${copy.submittedMessage}\n${copy.fallbackUsedHint}`);
+      } else if (!result.ok && result.fallbackUsed) {
+        setMessage(`${reasonText(result.reason)}\n${copy.fallbackUsedHint}`);
+      } else {
+        setMessage(result.ok ? copy.submittedMessage : reasonText(result.reason));
+      }
       await refresh();
     } finally {
       setBusyKey(null);
     }
-  }, [copy.abortedHint, copy.messageCountdownHint, copy.submittedMessage, reasonText, refresh, startCountdown]);
+  }, [copy.abortedHint, copy.fallbackUsedHint, copy.messageCountdownHint, copy.submittedMessage, reasonText, refresh, startCountdown]);
 
   const handleTestCall = useCallback(async () => {
     setBusyKey('test-call');
@@ -567,12 +584,18 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
         return;
       }
       const result = await runAndroidIncomingCallTest(ringtoneFileId);
-      setMessage(result.ok ? copy.submittedCall : reasonText(result.reason));
+      if (result.ok && result.fallbackUsed) {
+        setMessage(`${copy.submittedCall}\n${copy.fallbackUsedHint}`);
+      } else if (!result.ok && result.fallbackUsed) {
+        setMessage(`${reasonText(result.reason)}\n${copy.fallbackUsedHint}`);
+      } else {
+        setMessage(result.ok ? copy.submittedCall : reasonText(result.reason));
+      }
       await refresh();
     } finally {
       setBusyKey(null);
     }
-  }, [copy.abortedHint, copy.callCountdownHint, copy.callTestHint, copy.submittedCall, reasonText, refresh, ringtoneFileId, startCountdown]);
+  }, [copy.abortedHint, copy.callCountdownHint, copy.callTestHint, copy.fallbackUsedHint, copy.submittedCall, reasonText, refresh, ringtoneFileId, startCountdown]);
 
   const handleClearTests = useCallback(async () => {
     cancelCountdown();
@@ -584,6 +607,26 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
       setBusyKey(null);
     }
   }, [cancelCountdown, copy.cleared]);
+
+  // v2.14.25: hard-restart escape hatch. When the native KumikoAlarms bridge
+  // is non-responsive (snapshot.partial && nativeStatus===null), the only
+  // way to recover without uninstalling the app is to kill the WebView host
+  // process and let Android cold-restart it. Capacitor's App.exitApp() does
+  // exactly that on Android. We intentionally don't auto-relaunch — the user
+  // taps the launcher icon to come back, which guarantees a clean cold path.
+  const handleRestartApp = useCallback(async () => {
+    setBusyKey('restart-app');
+    try {
+      const { App } = await import('@capacitor/app');
+      await App.exitApp();
+    } catch (e) {
+      console.warn('[AndroidPermissions] App.exitApp failed:', e);
+    } finally {
+      setBusyKey(null);
+    }
+  }, []);
+
+  const showBridgeDeadBanner = !!(snapshot?.partial && snapshot?.nativeStatus === null);
 
   const handleAbortCountdown = useCallback(() => {
     cancelCountdown();
@@ -755,6 +798,29 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
               </button>
             </div>
 
+            {isSupported && showBridgeDeadBanner && (
+              <div className={`mt-4 rounded-2xl border p-3 ${isDarkMode ? 'border-rose-500/45 bg-rose-500/15' : 'border-rose-300 bg-rose-50'}`}>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="flex flex-col gap-1">
+                    <div className={`flex items-center gap-2 ka-setting-item-title ${isDarkMode ? 'text-rose-100' : 'text-rose-800'}`}>
+                      <AlertTriangle size={14} />
+                      <span>{copy.bridgeDeadTitle}</span>
+                    </div>
+                    <p className={`ka-copy-sm ${isDarkMode ? 'text-rose-100/85' : 'text-rose-700/90'}`}>{copy.bridgeDeadDesc}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleRestartApp}
+                    disabled={busyKey === 'restart-app'}
+                    className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold transition-colors disabled:opacity-60 ${isDarkMode ? 'border-rose-400/55 bg-rose-500/25 text-rose-100 hover:bg-rose-500/35' : 'border-rose-400 bg-rose-100 text-rose-800 hover:bg-rose-200'}`}
+                  >
+                    {busyKey === 'restart-app' ? <RefreshCw size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                    {copy.bridgeDeadRestart}
+                  </button>
+                </div>
+              </div>
+            )}
+
             {isSupported && (
               <>
                 <div className="mt-4 grid gap-3">
@@ -896,7 +962,7 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
                       </button>
                     )}
                   </div>
-                  {message && <p className={`ka-copy-sm mt-3 ${isDarkMode ? 'text-[#d9c1a4]' : 'text-[#785a42]'}`}>{message}</p>}
+                  {message && <p className={`ka-copy-sm mt-3 whitespace-pre-line ${isDarkMode ? 'text-[#d9c1a4]' : 'text-[#785a42]'}`}>{message}</p>}
                 </div>
 
                 <div className={`mt-4 rounded-2xl border p-3 ${isDarkMode ? 'border-[#4e3d2e]/55 bg-[#120e0c]/45' : 'border-[#e8dfd1] bg-[#fbf8f2]'}`}>

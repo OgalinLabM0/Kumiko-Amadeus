@@ -209,6 +209,10 @@ const TEST_COPY = {
     timeout: '6 秒内未收到系统回执,请重试或检查 OEM 后台限制。',
     notificationsHint: '建议先在第 1 步把通知权限打开,否则测试也不会有声音。',
     callHint: '建议先在第 3 步把全屏来电打开,这次只测能不能弹出来电卡片。',
+    fallbackUsedHint: '原生桥接超时 - 已尝试备用 LocalNotifications,请检查通知栏。',
+    bridgeDeadTitle: '原生桥接 5 秒无响应',
+    bridgeDeadDesc: '我们已经把所有桥接调用换到后台线程,但本设备(多见于小米 / HyperOS)的 WebView 仍可能阻塞自定义插件,导致测试超时;请尝试「立即重启应用」,重启后所有自检和测试会自动恢复正常路径。',
+    bridgeDeadRestart: '立即重启应用',
   },
   en: {
     msgButton: 'Send a test notification now',
@@ -221,6 +225,10 @@ const TEST_COPY = {
     timeout: 'No system response within 6s. Retry or check OEM background restrictions.',
     notificationsHint: 'Tip: enable notification permission in step 1 first; otherwise the test will be silent.',
     callHint: 'Tip: grant full-screen call permission in step 3 first. This only verifies the call card pops.',
+    fallbackUsedHint: 'Native bridge timed out — falling back to LocalNotifications. Please check the notification tray.',
+    bridgeDeadTitle: 'Native bridge unresponsive after 5s',
+    bridgeDeadDesc: 'All plugin calls now run on a background thread, but this device (often Xiaomi / HyperOS) may still block our custom plugin so test buttons time out. Try Restart now — all self-tests will return to the normal path on the next launch.',
+    bridgeDeadRestart: 'Restart app now',
   },
 } as const;
 
@@ -379,10 +387,16 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
   // exact same channels.
   const interpretTestResult = useCallback((result: AndroidAlertTestResult, kind: 'message' | 'call'): string => {
     const t = TEST_COPY[language === 'zh' ? 'zh' : 'en'];
-    if (result.ok) return kind === 'message' ? t.posted : t.callPosted;
-    if (result.reason === 'timeout') return t.timeout;
-    if (result.reason === 'native-failed') return t.nativeFailed;
-    return t.failed;
+    let base: string;
+    if (result.ok) base = kind === 'message' ? t.posted : t.callPosted;
+    else if (result.reason === 'timeout') base = t.timeout;
+    else if (result.reason === 'native-failed') base = t.nativeFailed;
+    else base = t.failed;
+    // v2.14.25: when the native KumikoAlarmsPlugin path failed and we
+    // fell through to LocalNotifications, surface that explicitly so the
+    // user knows where to look (and that the bridge issue is real).
+    if (result.fallbackUsed) return `${base}\n${t.fallbackUsedHint}`;
+    return base;
   }, [language]);
 
   const runMessageTest = useCallback(async () => {
@@ -496,6 +510,20 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
 
   const copy = STEP_COPY[currentStep][language === 'zh' ? 'zh' : 'en'];
 
+  // v2.14.25: when the native KumikoAlarms bridge is non-responsive
+  // (snapshot.partial && nativeStatus===null), the only safe recovery
+  // is to cold-restart via @capacitor/app App.exitApp(). The wizard
+  // surfaces that as a red banner with a single restart button.
+  const showBridgeDeadBanner = !!(snapshot?.partial && snapshot?.nativeStatus === null);
+  const handleRestartApp = useCallback(async () => {
+    try {
+      const { App } = await import('@capacitor/app');
+      await App.exitApp();
+    } catch (e) {
+      console.warn('[onboardingWizard] App.exitApp failed:', e);
+    }
+  }, []);
+
   const stateBadge = () => {
     if (currentStep === 'selfTest') {
       return (
@@ -564,6 +592,23 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
           </div>
           <p className="text-sm text-zinc-400 mb-3 leading-relaxed">{copy.why}</p>
           <p className="text-xs text-zinc-500 mb-4">{copy.tip}</p>
+
+          {showBridgeDeadBanner && (
+            <div className="mb-4 p-3 bg-rose-500/10 border border-rose-500/40 rounded text-xs text-rose-100 space-y-2">
+              <div className="flex items-center gap-2 font-semibold text-rose-100">
+                <AlertTriangle size={14} />
+                <span>{TEST_COPY[language === 'zh' ? 'zh' : 'en'].bridgeDeadTitle}</span>
+              </div>
+              <p className="leading-relaxed text-rose-100/85">{TEST_COPY[language === 'zh' ? 'zh' : 'en'].bridgeDeadDesc}</p>
+              <button
+                onClick={handleRestartApp}
+                className="inline-flex items-center justify-center gap-2 rounded border border-rose-400/60 bg-rose-500/30 hover:bg-rose-500/45 px-3 py-1.5 text-xs font-semibold text-rose-50 transition-colors"
+              >
+                <RefreshCw size={12} />
+                {TEST_COPY[language === 'zh' ? 'zh' : 'en'].bridgeDeadRestart}
+              </button>
+            </div>
+          )}
 
           {currentStep === 'selfTest' && selfTestStage === 'waiting' && selfTestStartedAt && (
             <div className="mb-4 p-3 bg-blue-500/5 border border-blue-500/20 rounded text-xs text-blue-200">
@@ -639,7 +684,7 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
                   </button>
                 )}
                 {testKind && testMessage && (
-                  <p className="text-xs text-zinc-400 leading-relaxed mt-1">
+                  <p className="text-xs text-zinc-400 leading-relaxed mt-1 whitespace-pre-line">
                     {testMessage}
                   </p>
                 )}
