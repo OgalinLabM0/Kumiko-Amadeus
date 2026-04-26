@@ -266,6 +266,78 @@ public class KumikoAlarmsPlugin extends Plugin {
         call.resolve();
     }
 
+    /**
+     * v2.14.21: One-shot bootstrap for the kumiko_messages / kumiko_calls
+     * notification channels. Side effect kept OUT of getAlertPermissionStatus
+     * so the read-only detection path can never stall on misbehaving ROMs.
+     * Idempotent — the underlying createNotificationChannel re-binds an
+     * existing channel.
+     */
+    @PluginMethod
+    public void ensureNotificationChannels(PluginCall call) {
+        try {
+            Context context = getContext();
+            ensureMessagesChannel(context);
+            ensureCallsChannel(context);
+            JSObject ret = new JSObject();
+            ret.put("ready", true);
+            call.resolve(ret);
+        } catch (Throwable t) {
+            Log.w(TAG, "ensureNotificationChannels failed", t);
+            JSObject ret = new JSObject();
+            ret.put("ready", false);
+            call.resolve(ret);
+        }
+    }
+
+    /**
+     * v2.14.21: Reports manufacturer/brand/model so JS can branch into
+     * vendor-specific guidance (Xiaomi/Huawei/Samsung/OPPO/vivo). Also
+     * surfaces best-effort MIUI "Show on lock screen" state via reflection.
+     */
+    @PluginMethod
+    public void getOemDeviceInfo(PluginCall call) {
+        Context context = getContext();
+        JSObject ret = new JSObject();
+        ret.put("manufacturer", KumikoVendorPermissionHelper.manufacturer());
+        ret.put("brand", KumikoVendorPermissionHelper.brand());
+        ret.put("model", KumikoVendorPermissionHelper.model());
+        ret.put("androidVersion", KumikoVendorPermissionHelper.androidVersion());
+        KumikoVendorPermissionHelper.ShowOnLockState lockState =
+            KumikoVendorPermissionHelper.detectMiuiShowOnLock(context);
+        switch (lockState) {
+            case GRANTED: ret.put("showOnLockState", "granted"); break;
+            case DENIED: ret.put("showOnLockState", "denied"); break;
+            default: ret.put("showOnLockState", "unknown"); break;
+        }
+        call.resolve(ret);
+    }
+
+    /**
+     * v2.14.21: Vendor-aware deep link. Caller passes a stable key like
+     * "xiaomi.autostart" / "samsung.batteryUsage"; the helper probes a list
+     * of candidate Intents (most-specific first) with PackageManager.resolveActivity()
+     * before launching, falling back to the AOSP App details page if every
+     * vendor candidate is missing on the device.
+     */
+    @PluginMethod
+    public void openVendorSetting(PluginCall call) {
+        String key = call.getString("key", "");
+        if (key == null || key.isEmpty()) {
+            JSObject ret = new JSObject();
+            ret.put("opened", false);
+            ret.put("usedFallback", false);
+            call.resolve(ret);
+            return;
+        }
+        KumikoVendorPermissionHelper.OpenResult result =
+            KumikoVendorPermissionHelper.openVendorSetting(getContext(), key);
+        JSObject ret = new JSObject();
+        ret.put("opened", result.opened);
+        ret.put("usedFallback", result.usedFallback);
+        call.resolve(ret);
+    }
+
     @PluginMethod
     public void postTestMessageNotification(PluginCall call) {
         Context context = getContext();

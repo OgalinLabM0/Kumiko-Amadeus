@@ -115,4 +115,40 @@
     <!-- B.1 启动屏幕开机自启动（仅在用户开了"开机自启"开关时生效）。FG service 用它在重启后
          自动恢复，否则用户重启手机后 4h 自动备份循环就断了。 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- v2.14.21 OEM 权限体检：Android 11+ 引入 Package Visibility 限制，
+         没有 <queries> 声明的话 PackageManager.resolveActivity() 看不到其它 App，
+         导致我们 deep-link 到小米 / 华为 / 三星 / OPPO / vivo 各家自家「自启动」「锁屏」
+         「受保护应用」设置页之前无法判断目标 Activity 是否存在。这里把已知的厂商
+         设置 Activity 都列出来，让 resolveActivity 能返回可用结果。 -->
+    <queries>
+        <!-- 小米 MIUI / HyperOS 安全中心 -->
+        <package android:name="com.miui.securitycenter" />
+        <!-- 华为系统管家（含受保护应用 / 启动管理） -->
+        <package android:name="com.huawei.systemmanager" />
+        <!-- 荣耀系统管家 -->
+        <package android:name="com.hihonor.systemmanager" />
+        <!-- 三星 Smart Manager / Device Care -->
+        <package android:name="com.samsung.android.lool" />
+        <package android:name="com.samsung.android.sm" />
+        <!-- OPPO ColorOS 安全中心 -->
+        <package android:name="com.coloros.safecenter" />
+        <package android:name="com.coloros.oppoguardelf" />
+        <package android:name="com.oppo.safe" />
+        <!-- realme 安全中心 -->
+        <package android:name="com.realme.securitycheck" />
+        <!-- vivo iManager -->
+        <package android:name="com.iqoo.secure" />
+        <package android:name="com.vivo.permissionmanager" />
+        <!-- OnePlus 安全中心（OxygenOS 11+ 基于 ColorOS） -->
+        <package android:name="com.oneplus.security" />
+        <!-- 通用：系统设置 App，用于打开 App 详情页 / 电池优化白名单 -->
+        <intent>
+            <action android:name="android.settings.APPLICATION_DETAILS_SETTINGS" />
+            <data android:scheme="package" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS" />
+        </intent>
+    </queries>
 </manifest>
