@@ -821,6 +821,14 @@ export async function triggerTimedReminderMessage(
       }
 
       return new Promise<boolean>((resolve) => {
+        // v2.14.23: if the user already tapped Accept on the native
+        // lock-screen FSI / CallStyle UI before MainActivity came back
+        // to foreground, useAndroidPendingActionsDrainer has parked
+        // an auto-accept hint in the store. Consume it here; on a
+        // match we'll auto-fire the onAccept closure as soon as the
+        // overlay mounts, so the user doesn't have to tap Accept twice.
+        const autoAccept = useAppStore.getState().consumePendingAutoAcceptReminderEvent(reminder.event);
+
         useAppStore.getState().setVoiceCallOverlayData({
           reminderEvent: reminder.event,
           reminderText: combinedReminderText,
@@ -888,6 +896,25 @@ export async function triggerTimedReminderMessage(
             resolve(true);
           },
         });
+
+        // v2.14.23: auto-accept fire — if the native FSI accept already
+        // happened, immediately invoke the onAccept closure so the user
+        // sees an "isConnecting → playback" overlay rather than a fresh
+        // ringing UI on top of an already-accepted call. Use a microtask
+        // delay (queueMicrotask) so the setVoiceCallOverlayData state
+        // commit lands first; calling onAccept synchronously here would
+        // race the React render. Wrapped in setTimeout(0) to also push
+        // past any zustand subscribers reacting to the state change.
+        if (autoAccept) {
+          setTimeout(() => {
+            const overlay = useAppStore.getState().voiceCallOverlayData;
+            if (overlay && overlay.reminderEvent === reminder.event) {
+              try { void overlay.onAccept(); } catch (e) {
+                console.warn('[TIMED REMINDER] auto-accept onAccept threw:', e);
+              }
+            }
+          }, 0);
+        }
       });
     }
 
@@ -1744,6 +1771,24 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     const parsedRelativeReminder = parseRelativeReminderRequest(userTextForRag);
     const parsedDailyReminder = parseDailyReminderRequest(userTextForRag);
     let createdReminderThisTurn = false;
+    // v2.14.23: structured pipeline log. Gate 1 = turn-start. Lets us see in
+    // logcat exactly which path hit / missed without sprinkling ad-hoc
+    // console.logs that drift across releases. The five subsequent gates
+    // (llm-trigger / local-regex / dfallback-* / dropped) log the same
+    // shape so a quick `adb logcat -s ReactNative.JS | grep "\\[REMINDER\\]"`
+    // gives a complete trace.
+    console.log('[REMINDER] gate=turn-start', {
+      userText: userTextForRag.slice(0, 200),
+      hasReminderIntent,
+      hasModelAcknowledgedReminder,
+      modelAckPreview: modelReminderAckText.slice(0, 120),
+      llmScheduleTrigger: response.scheduleTrigger ? Object.keys(response.scheduleTrigger) : null,
+      parsedRelativeReminderEvent: parsedRelativeReminder?.event,
+      parsedRelativeReminderDelaySec: parsedRelativeReminder?.delaySeconds,
+      parsedDailyReminderEvent: parsedDailyReminder?.event,
+      parsedDailyReminderHour: parsedDailyReminder?.hour,
+      parsedDailyReminderMinute: parsedDailyReminder?.minute,
+    });
 
     // Two-phase reminder creation (v2.14.16, originally landed in v2.14.14).
     //
@@ -1766,9 +1811,20 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       if (recurrence === 'daily' && typeof hour === 'number' && typeof minute === 'number') {
         await s2.saveDailyReminder(event, hour, minute, userTextForRag);
         createdReminderThisTurn = true;
+        console.log('[REMINDER] gate=llm-trigger-hit', { kind: 'daily', event, hour, minute });
       } else if (typeof delay_seconds === 'number' && delay_seconds > 0) {
         await s2.saveRelativeReminder(event, delay_seconds, userTextForRag);
         createdReminderThisTurn = true;
+        console.log('[REMINDER] gate=llm-trigger-hit', { kind: 'relative', event, delay_seconds });
+      } else {
+        console.log('[REMINDER] gate=llm-trigger-incomplete', {
+          event,
+          recurrence,
+          hour,
+          minute,
+          delay_seconds,
+          reason: 'scheduleTrigger has event but timing fields missing or invalid; falling through to local regex',
+        });
       }
       if (typeof days_offset === 'number') {
         try {
@@ -1790,10 +1846,12 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
         const eventText = llmEvent || parsedRelativeReminder.event;
         await s2.saveRelativeReminder(eventText, parsedRelativeReminder.delaySeconds, userTextForRag);
         createdReminderThisTurn = true;
+        console.log('[REMINDER] gate=local-regex-hit', { kind: 'relative', event: eventText, delaySec: parsedRelativeReminder.delaySeconds });
       } else if (parsedDailyReminder) {
         const eventText = llmEvent || parsedDailyReminder.event;
         await s2.saveDailyReminder(eventText, parsedDailyReminder.hour, parsedDailyReminder.minute, userTextForRag);
         createdReminderThisTurn = true;
+        console.log('[REMINDER] gate=local-regex-hit', { kind: 'daily', event: eventText, hour: parsedDailyReminder.hour, minute: parsedDailyReminder.minute });
       }
     }
 
@@ -1813,7 +1871,20 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       const retryInput = (hasModelAcknowledgedReminder || hasIncompleteLlmSchedule) && modelReminderAckText
         ? `用户原文: ${userTextForRag}\n模型回复: ${modelReminderAckText}`
         : userTextForRag;
+      console.log('[REMINDER] gate=dfallback-start', {
+        retryInputLen: retryInput.length,
+        hasIncompleteLlmSchedule,
+        hasModelAcknowledgedReminder,
+      });
       llmRetryResult = await extractReminderIntentLLM(retryInput, language);
+      console.log('[REMINDER] gate=dfallback-result', {
+        isReminder: llmRetryResult?.isReminder,
+        recurrence: llmRetryResult?.recurrence,
+        delaySeconds: llmRetryResult?.delaySeconds,
+        hour: llmRetryResult?.hour,
+        minute: llmRetryResult?.minute,
+        event: llmRetryResult?.event,
+      });
       if (llmRetryResult?.isReminder && llmRetryResult.event) {
         if (
           llmRetryResult.recurrence === 'daily' &&
@@ -1822,15 +1893,32 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
         ) {
           await s2.saveDailyReminder(llmRetryResult.event, llmRetryResult.hour, llmRetryResult.minute, userTextForRag);
           createdReminderThisTurn = true;
+          console.log('[REMINDER] gate=dfallback-hit', { kind: 'daily', event: llmRetryResult.event, hour: llmRetryResult.hour, minute: llmRetryResult.minute });
         } else if (typeof llmRetryResult.delaySeconds === 'number' && llmRetryResult.delaySeconds > 0) {
           await s2.saveRelativeReminder(llmRetryResult.event, llmRetryResult.delaySeconds, userTextForRag);
           createdReminderThisTurn = true;
+          console.log('[REMINDER] gate=dfallback-hit', { kind: 'relative', event: llmRetryResult.event, delaySec: llmRetryResult.delaySeconds });
         }
       }
     }
 
     if (shouldRetryReminderIntent && !createdReminderThisTurn) {
-      console.warn('[REMINDER] intent detected but no reminder was created (D-fallback also missed):', {
+      // v2.14.23: classify why nothing got created so the dropped log gives
+      // an actionable hint, not just a soup of fields. The user-facing
+      // SystemToast below uses the same reason buckets so the UI is
+      // consistent with what dev logs say.
+      const reason = (() => {
+        if (llmRetryResult?.isReminder && !llmRetryResult.event) return 'intent-no-event';
+        if (llmRetryResult?.isReminder
+          && typeof llmRetryResult.delaySeconds !== 'number'
+          && (llmRetryResult.recurrence !== 'daily' || typeof llmRetryResult.hour !== 'number' || typeof llmRetryResult.minute !== 'number'))
+          return 'intent-no-timing';
+        if (llmRetryResult && llmRetryResult.isReminder === false) return 'intent-rejected-by-llm';
+        if (!llmRetryResult) return 'dfallback-null';
+        return 'unclassified';
+      })();
+      console.warn('[REMINDER] gate=dropped', {
+        reason,
         text: userTextForRag.slice(0, 200),
         modelReminderAckText: modelReminderAckText.slice(0, 200),
         hasLlmScheduleTrigger: !!response.scheduleTrigger,
@@ -1839,6 +1927,20 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
         parsedRelativeReminder,
         llmRetryResult,
       });
+      // v2.14.23: surface intent-no-timing to the user. Previous behaviour
+      // was: user says "晚点提醒我", model agrees, nothing fires, user is
+      // confused. Now they at least see "时间没听清" and can rephrase.
+      // Other reasons stay silent (rejected-by-llm means the ask wasn't
+      // actually a reminder; null/unclassified are usually transient).
+      if (reason === 'intent-no-timing' || reason === 'intent-no-event') {
+        const toastZh = reason === 'intent-no-timing'
+          ? '听到了「提醒我」，但没听清是几分钟还是几点。可以再说一遍具体时间吗？'
+          : '听到了时间，但没听清要提醒做什么，可以再说一次吗？';
+        const toastEn = reason === 'intent-no-timing'
+          ? 'I heard "remind me" but missed the time. Could you repeat the duration or hour?'
+          : 'I heard the time but missed what to remind about. Could you say it again?';
+        s2.setSystemNotice(language === 'en' ? toastEn : toastZh);
+      }
     }
 
     if (response.anchorAction) {

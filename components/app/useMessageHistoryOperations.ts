@@ -261,22 +261,40 @@ export const useMessageHistoryOperations = (
     const msg = messagesRef.current.find(m => m.id === messageId);
     if (!msg || msg.sendStatus !== 'failed') return;
 
-    const config = getCurrentAIConfig();
-    try {
-      const isValid = await validateAIConnection(config);
-      if (!isValid) {
-        setSystemNotice(language === 'zh' ? '连接仍不可用，请检查 API 配置' : 'Connection still unavailable, check API config');
-        return;
-      }
-    } catch {
-      setSystemNotice(language === 'zh' ? '连接仍不可用，请检查 API 配置' : 'Connection still unavailable, check API config');
-      return;
-    }
-
+    // v2.14.23: optimistic UX flip. Previously we awaited
+    // validateAIConnection() (which can take 1-3s on poor connections)
+    // BEFORE flipping `sendStatus` back to 'sending'. The user clicked
+    // "重新发送" and saw nothing change for several seconds, then either
+    // the message resent or it didn't - the lag made the button feel
+    // broken. Now we flip immediately so the bubble shows "sending" the
+    // moment they tap, and revert to 'failed' if the validate proves
+    // the connection is still down. This matches every other modern
+    // chat client (Telegram/微信 both flip optimistically).
+    const previousFailReason = msg.failReason;
     setIsDisconnected(false);
     setMessages(prev => prev.map(m =>
       m.id === messageId ? { ...m, sendStatus: 'sending' as const, failReason: undefined } : m
     ));
+
+    const revertToFailed = (reason?: string) => {
+      setMessages(prev => prev.map(m =>
+        m.id === messageId ? { ...m, sendStatus: 'failed' as const, failReason: reason ?? previousFailReason } : m
+      ));
+      setSystemNotice(language === 'zh' ? '连接仍不可用，请检查 API 配置' : 'Connection still unavailable, check API config');
+    };
+
+    const config = getCurrentAIConfig();
+    try {
+      const isValid = await validateAIConnection(config);
+      if (!isValid) {
+        revertToFailed('连接验证失败');
+        return;
+      }
+    } catch (err) {
+      console.warn('[handleResend] validateAIConnection threw, treating as failure:', err);
+      revertToFailed('连接验证异常');
+      return;
+    }
 
     pendingTextRef.current = msg.text;
     // Hydrate the resend payload from `imageId` via IPC. Inline `msg.image`
@@ -307,8 +325,35 @@ export const useMessageHistoryOperations = (
 
     const remaining = messagesRef.current.filter(m => m.id !== messageId && m.sendStatus === 'failed');
     if (remaining.length === 0) setIsDisconnected(false);
+
+    // v2.14.23: visible feedback for "撤回并编辑". Before this, the user
+    // tapped the button and only saw the failed bubble disappear; the
+    // text reappeared in the input but on small screens that input is
+    // off-screen, and the user concluded the button "didn't work". We
+    // now: (a) focus the input on the next frame so the system keyboard
+    // re-opens, (b) place the caret at end so they can immediately edit,
+    // (c) scroll the input into view in case it was occluded by the
+    // virtual keyboard, (d) flash a 1.6s toast confirming the action.
+    // The setTimeout 0 lets React commit setInputValue before we read
+    // the DOM; without it, the input still shows the old (empty) value
+    // and the caret position is wrong.
+    setTimeout(() => {
+      const input = inputRef.current;
+      if (input) {
+        try { input.focus({ preventScroll: false }); } catch { input.focus(); }
+        try {
+          const len = input.value?.length ?? 0;
+          if (typeof input.setSelectionRange === 'function') input.setSelectionRange(len, len);
+        } catch {
+          // Some hybrid input wrappers (e.g. with contenteditable) don't
+          // support setSelectionRange; safe to ignore.
+        }
+        try { input.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
+      }
+      setSystemNotice(language === 'zh' ? '已恢复到输入框，可继续编辑' : 'Restored to the input box for editing');
+    }, 0);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- preserve original empty deps
-  }, []);
+  }, [language]);
 
   // FIX: Clear pendingImageMessageIdRef on Recall if the recalled message was the one with the image
   const handleRecall = useCallback((id: string) => {

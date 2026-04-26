@@ -21,7 +21,7 @@ interface ChatBubbleProps {
   onImageClick?: (src: string) => void; 
   onRegenerateVoice?: (msg: Message) => void;
   isRegeneratingVoice?: boolean;
-  onResend?: (id: string) => void;
+  onResend?: (id: string) => void | Promise<void>;
   onWithdraw?: (id: string) => void;
   onLongPress?: (msg: Message) => void;
 }
@@ -75,6 +75,15 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   const [imgError, setImgError] = useState(false);
   const [showFailPopover, setShowFailPopover] = useState(false);
   const [popoverDir, setPopoverDir] = useState<'up' | 'down'>('up');
+  // v2.14.23: per-action busy flags. The Resend handler is async (it
+  // awaits validateAIConnection + getImageBase64), and Withdraw schedules
+  // a focus on the next frame. If the user double-taps either button -
+  // common on slow networks because the popover stays open until they
+  // pick - we used to fire two resends/two withdraws back-to-back. We
+  // now disable the button while its handler is in flight, and make the
+  // popover dismiss only after the handler resolves.
+  const [resendBusy, setResendBusy] = useState(false);
+  const [withdrawBusy, setWithdrawBusy] = useState(false);
   const failPopoverRef = useRef<HTMLDivElement>(null);
   const failBtnRef = useRef<HTMLButtonElement>(null);
   // Single source of truth for the message image URL. Desktop returns
@@ -297,17 +306,47 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                         ${isDarkMode ? 'bg-gray-900/95 border-gray-700 backdrop-blur-md' : 'bg-white/95 border-gray-200 backdrop-blur-md shadow-lg'}
                       `}>
                         <button
-                          onClick={(e) => { e.stopPropagation(); setShowFailPopover(false); onResend?.(message.id); }}
-                          className={`flex items-center gap-2 w-full px-3 py-2.5 ka-copy-sm font-semibold transition-colors
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (resendBusy || withdrawBusy) return;
+                            setResendBusy(true);
+                            try {
+                              await onResend?.(message.id);
+                            } finally {
+                              setResendBusy(false);
+                              setShowFailPopover(false);
+                            }
+                          }}
+                          disabled={resendBusy || withdrawBusy}
+                          aria-busy={resendBusy}
+                          className={`flex items-center gap-2 w-full px-3 py-2.5 ka-copy-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-wait
                             ${isDarkMode ? 'text-gray-200 hover:bg-white/10' : 'text-gray-700 hover:bg-gray-50'}`}
                         >
-                          <RotateCcw size={13} />
-                          {language === 'zh' ? '重新发送' : 'Resend'}
+                          <RotateCcw size={13} className={resendBusy ? 'animate-spin' : ''} />
+                          {resendBusy
+                            ? (language === 'zh' ? '正在重发…' : 'Resending…')
+                            : (language === 'zh' ? '重新发送' : 'Resend')}
                         </button>
                         <div className={`h-px ${isDarkMode ? 'bg-gray-700/50' : 'bg-gray-200'}`} />
                         <button
-                          onClick={(e) => { e.stopPropagation(); setShowFailPopover(false); onWithdraw?.(message.id); }}
-                          className={`flex items-center gap-2 w-full px-3 py-2.5 ka-copy-sm font-semibold transition-colors
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (resendBusy || withdrawBusy) return;
+                            setWithdrawBusy(true);
+                            try {
+                              onWithdraw?.(message.id);
+                            } finally {
+                              setShowFailPopover(false);
+                              // Withdraw is synchronous on the JS side
+                              // but schedules a focus on the next tick;
+                              // release the busy flag after a short
+                              // delay so the button doesn't flicker.
+                              setTimeout(() => setWithdrawBusy(false), 200);
+                            }
+                          }}
+                          disabled={resendBusy || withdrawBusy}
+                          aria-busy={withdrawBusy}
+                          className={`flex items-center gap-2 w-full px-3 py-2.5 ka-copy-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-wait
                             ${isDarkMode ? 'text-gray-200 hover:bg-white/10' : 'text-gray-700 hover:bg-gray-50'}`}
                         >
                           <PenLine size={13} />

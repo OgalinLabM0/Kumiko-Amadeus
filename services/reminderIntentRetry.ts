@@ -88,21 +88,53 @@ function tryParseJson(raw: string): ReminderIntentRetryResult | null {
     text = braceMatch[0];
   }
   try {
-    const parsed = JSON.parse(text) as Partial<ReminderIntentRetryResult>;
-    if (typeof parsed.isReminder !== 'boolean') return null;
+    // v2.14.23: looser coercion. Some models stream JSON with stringified
+    // primitives (`"isReminder": "true"`, `"hour": "22"`) which under the
+    // strict typeof checks below would silently get rejected and the
+    // whole D-fallback would return null - the user then sees their
+    // "晚点提醒我" go nowhere. Accept stringified bool/int as long as the
+    // semantic value is unambiguous.
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+
+    const coerceBool = (v: unknown): boolean | null => {
+      if (typeof v === 'boolean') return v;
+      if (typeof v === 'string') {
+        const lo = v.trim().toLowerCase();
+        if (lo === 'true' || lo === 'yes' || lo === '1') return true;
+        if (lo === 'false' || lo === 'no' || lo === '0') return false;
+      }
+      return null;
+    };
+    const coerceInt = (v: unknown): number | null => {
+      if (typeof v === 'number' && Number.isFinite(v)) return Math.round(v);
+      if (typeof v === 'string') {
+        const trimmed = v.trim();
+        if (!trimmed) return null;
+        const n = Number(trimmed);
+        if (Number.isFinite(n)) return Math.round(n);
+      }
+      return null;
+    };
+    const coerceStringTrim = (v: unknown): string | undefined => {
+      if (typeof v === 'string') return v.trim() || undefined;
+      if (typeof v === 'number' || typeof v === 'boolean') return String(v).trim() || undefined;
+      return undefined;
+    };
+
+    const isReminder = coerceBool(parsed.isReminder);
+    if (isReminder === null) return null;
+    const delayInt = coerceInt(parsed.delaySeconds);
+    const hourInt = coerceInt(parsed.hour);
+    const minuteInt = coerceInt(parsed.minute);
+    const rec = typeof parsed.recurrence === 'string' ? parsed.recurrence.trim().toLowerCase() : null;
+
     return {
-      isReminder: parsed.isReminder,
-      event: typeof parsed.event === 'string' ? parsed.event.trim() : undefined,
-      delaySeconds: typeof parsed.delaySeconds === 'number' && Number.isFinite(parsed.delaySeconds) && parsed.delaySeconds > 0
-        ? Math.round(parsed.delaySeconds)
-        : undefined,
-      hour: typeof parsed.hour === 'number' && Number.isInteger(parsed.hour) && parsed.hour >= 0 && parsed.hour <= 23
-        ? parsed.hour
-        : undefined,
-      minute: typeof parsed.minute === 'number' && Number.isInteger(parsed.minute) && parsed.minute >= 0 && parsed.minute <= 59
-        ? parsed.minute
-        : undefined,
-      recurrence: parsed.recurrence === 'daily' || parsed.recurrence === 'once' ? parsed.recurrence : null,
+      isReminder,
+      event: coerceStringTrim(parsed.event),
+      delaySeconds: delayInt !== null && delayInt > 0 ? delayInt : undefined,
+      hour: hourInt !== null && hourInt >= 0 && hourInt <= 23 ? hourInt : undefined,
+      minute: minuteInt !== null && minuteInt >= 0 && minuteInt <= 59 ? minuteInt : undefined,
+      recurrence: rec === 'daily' || rec === 'once' ? (rec as 'daily' | 'once') : null,
     };
   } catch {
     return null;

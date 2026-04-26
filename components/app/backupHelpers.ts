@@ -69,8 +69,16 @@ const parseSmallChineseNumber = (raw: string): number | null => {
   return CHINESE_NUMERAL_VALUES[text] ?? null;
 };
 
+// v2.14.23: full-width-digit normalisation. Some Chinese IMEs (notably
+// the Pinyin keyboard on HyperOS) commit "２分钟" with a U+FF12 instead
+// of an ASCII '2', and our timing regex is ASCII-only. The same applies
+// to "５" "８" etc. Mapping FF10..FF19 → 0..9 once at the top of the
+// regex pipeline lets every downstream pattern just see ASCII.
+const normalizeFullwidthDigits = (text: string): string =>
+  text.replace(/[\uFF10-\uFF19]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFF10 + 0x30));
+
 export const parseRelativeReminderRequest = (text: string): { event: string; delaySeconds: number } | null => {
-  const normalized = text.replace(/\s+/g, ' ').trim();
+  const normalized = normalizeFullwidthDigits(text).replace(/\s+/g, ' ').trim();
   if (!normalized) return null;
 
   const hasReminderIntent = /(?:提醒|叫|喊)(?:一下)?我|记得.+(?:提醒|叫|喊)|remind me|ping me|tell me|wake me up/i.test(normalized);
@@ -169,7 +177,7 @@ export const normalizeDailyHourMinute = (hour: number, minute: number, period?: 
 };
 
 export const parseDailyReminderRequest = (text: string): { event: string; hour: number; minute: number } | null => {
-  const normalized = text.replace(/\s+/g, ' ').trim();
+  const normalized = normalizeFullwidthDigits(text).replace(/\s+/g, ' ').trim();
   if (!normalized) return null;
 
   const hasDailyIntent = /(?:每天|每日|每晚|每个?晚上|every day|daily)/i.test(normalized);

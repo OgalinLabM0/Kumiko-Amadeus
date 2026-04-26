@@ -87,9 +87,24 @@ export const createReminderSlice: StateCreator<
 
   saveRelativeReminder: async (event, delaySeconds, sourceText) => {
     try {
-      const safeEvent = normalizeReminderEvent(event);
+      // v2.14.23: tolerate an empty / pure-punctuation `event`. Prior
+      // behaviour silently `return`-ed, which is one of the root causes of
+      // the "model agreed to remind me but nothing fired" complaint:
+      // sometimes the LLM emits `{ event: "", delay_seconds: 600 }` and
+      // we'd drop the whole reminder. We now fall back to a generic label
+      // (CJK if the source text contains any Han chars, otherwise English)
+      // and log so the issue is still visible to devs.
+      const rawSafe = normalizeReminderEvent(event || '');
+      const sourceHasCjk = /[\u4e00-\u9fff]/u.test(sourceText || '');
+      const safeEvent = rawSafe || (sourceHasCjk ? '提醒你' : 'remind you');
       const safeDelaySeconds = Math.max(1, Math.round(delaySeconds));
-      if (!safeEvent) return;
+      if (!Number.isFinite(safeDelaySeconds) || safeDelaySeconds <= 0) {
+        console.warn('[RELATIVE REMINDER] Refusing to save: invalid delay', { delaySeconds });
+        return;
+      }
+      if (!rawSafe) {
+        console.warn('[RELATIVE REMINDER] event was empty after normalisation; using generic label', { eventRaw: event, fallback: safeEvent });
+      }
 
       const existing = get().relativeReminders;
       const reminder: RelativeReminder = {
@@ -120,8 +135,19 @@ export const createReminderSlice: StateCreator<
 
   saveDailyReminder: async (event, hour, minute, sourceText) => {
     try {
-      const safeEvent = normalizeReminderEvent(event);
-      if (!safeEvent) return;
+      // v2.14.23: same empty-event fallback as the relative path. Daily
+      // reminders are rarer but the LLM sometimes returns
+      // `{ event: "", hour: 22, minute: 30 }` and we used to drop them.
+      const rawSafe = normalizeReminderEvent(event || '');
+      const sourceHasCjk = /[\u4e00-\u9fff]/u.test(sourceText || '');
+      const safeEvent = rawSafe || (sourceHasCjk ? '提醒你' : 'remind you');
+      if (!Number.isFinite(hour) || hour < 0 || hour > 23 || !Number.isFinite(minute) || minute < 0 || minute > 59) {
+        console.warn('[DAILY REMINDER] Refusing to save: invalid hour/minute', { hour, minute });
+        return;
+      }
+      if (!rawSafe) {
+        console.warn('[DAILY REMINDER] event was empty after normalisation; using generic label', { eventRaw: event, fallback: safeEvent });
+      }
 
       const existing = get().dailyReminders;
       const modelTimezone = get().locationConfig.modelTimezone;
