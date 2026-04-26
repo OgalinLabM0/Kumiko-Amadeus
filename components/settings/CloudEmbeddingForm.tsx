@@ -11,7 +11,7 @@
 // platform guard (Settings card returns null on non-Capacitor; AIConfig
 // screen renders the section only when isCapacitorNative()).
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
 import {
   DEFAULT_EMBEDDING_CONFIG,
@@ -121,6 +121,7 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   const setEmbeddingConfig = useAppStore((s) => s.setEmbeddingConfig);
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
+  const customModelInputRef = useRef<HTMLInputElement | null>(null);
 
   // v2.14.19 issue 2 修复: mount selfheal — 如果 store 当前是 default-shaped
   // (用户从未改过, 或 hydrate 时机出问题导致 first-hydrate 没读到 LS), 但
@@ -187,18 +188,38 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
     setTestMessage('');
   }, [setEmbeddingConfig]);
 
+  const commitCustomModelFromDom = useCallback((trim = false): EmbeddingProviderConfig => {
+    const current = useAppStore.getState().embeddingConfig;
+    if (current.provider !== 'custom') return current;
+
+    const domValue = customModelInputRef.current?.value;
+    if (typeof domValue !== 'string') return current;
+
+    const nextModel = trim ? domValue.trim() : domValue;
+    if (nextModel === current.model) return current;
+
+    const nextConfig = { ...current, model: nextModel };
+    setEmbeddingConfig(nextConfig);
+    setTestStatus('idle');
+    setTestMessage('');
+    return nextConfig;
+  }, [setEmbeddingConfig]);
+
   const handleProviderChange = useCallback((provider: EmbeddingProvider) => {
     const newPresets = EMBEDDING_MODEL_CATALOG[provider] || [];
     const firstModel = newPresets[0];
-    // v2.14.19 issue 1 修复: provider==='custom' 时把 model 清空,
-    // 让用户接下来自己填的模型 ID 不被任何下拉框默认值 (原本是 catalog
-    // 第一项 'custom-model' 占位) 在切到 custom 那一刻就先覆盖一次。
+    const current = useAppStore.getState().embeddingConfig;
+    const currentModel = typeof current.model === 'string' ? current.model.trim() : '';
+    // v2.14.20: custom provider 不再无条件 model=''。用户反馈自定义
+    // embedding 模型名重启后消失；切换/重开过程中如果 store 里已有
+    // meaningful model (例如 text-embedding-3-small + 自定义 endpoint),
+    // 必须保留,不能被 custom-model 占位或空字符串覆盖。
     // 配合下面 model 字段的三元渲染 (custom 时只渲染 ComposableInput,
     // 其他 provider 只渲染 ThemedSelect),彻底消除字段冲突。
     update({
       provider,
       model: provider === 'custom'
-        ? ''
+        ? (currentModel && currentModel !== 'custom-model' ? currentModel : '')
         : (firstModel?.id || DEFAULT_EMBEDDING_CONFIG.model),
       dimensions: firstModel?.defaultDimensions || DEFAULT_EMBEDDING_CONFIG.dimensions,
     });
@@ -215,19 +236,22 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   const handleTest = useCallback(async () => {
     setTestStatus('testing');
     setTestMessage('');
-    const result = await testEmbeddingConfig(config);
+    const configForTest = config.provider === 'custom'
+      ? commitCustomModelFromDom(true)
+      : config;
+    const result = await testEmbeddingConfig(configForTest);
     if (result.ok) {
       setTestStatus('ok');
-      const dimMatch = result.actualDimensions === config.dimensions;
+      const dimMatch = result.actualDimensions === configForTest.dimensions;
       const note = language === 'zh'
-        ? `连接成功！返回维度 ${result.actualDimensions}。${dimMatch ? '' : `（与本地配置 ${config.dimensions} 不一致，建议重建向量库）`}`
-        : `Connected. Returned ${result.actualDimensions}d.${dimMatch ? '' : ` (Doesn't match local ${config.dimensions}d — rebuild recommended.)`}`;
+        ? `连接成功！返回维度 ${result.actualDimensions}。${dimMatch ? '' : `（与本地配置 ${configForTest.dimensions} 不一致，建议重建向量库）`}`
+        : `Connected. Returned ${result.actualDimensions}d.${dimMatch ? '' : ` (Doesn't match local ${configForTest.dimensions}d — rebuild recommended.)`}`;
       setTestMessage(note);
     } else {
       setTestStatus('error');
       setTestMessage(result.error || (language === 'zh' ? '连接失败' : 'Connection failed'));
     }
-  }, [config, language]);
+  }, [commitCustomModelFromDom, config, language]);
 
   // v2.14.6 G.2: convert the 5-button provider grid (which the user
   // flagged as visually inconsistent with VisionHelperSection's API
@@ -271,9 +295,13 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
           */}
           {config.provider === 'custom' ? (
             <ComposableInput
+              ref={customModelInputRef}
               type="text"
               value={config.model}
+              onInput={(e) => update({ model: e.currentTarget.value })}
               onChange={(e) => update({ model: e.target.value })}
+              onCompositionEnd={(e) => update({ model: e.currentTarget.value })}
+              onBlur={(e) => update({ model: e.currentTarget.value.trim() })}
               className={`${inputClass} w-full`}
               placeholder={language === 'zh' ? '自定义模型 ID,如 text-embedding-3-large' : 'Custom model ID, e.g. text-embedding-3-large'}
               autoComplete="off"
