@@ -47,9 +47,19 @@ android {
         // 应用 / 永不休眠 / 后台高耗电 设置页；MIUI Show on lock screen
         // best-effort 反射检测；测试按钮加 6s 超时 + 5s/3s 退后台倒计时
         // 提示，作为 OEM 层唯一可信验证）。
+        // 2.14.23 → 21423（提醒可达性深度改造：消息发送失败 popover
+        // 改为乐观更新 + busy-state；提醒管道加 D-fallback 结构化日志、
+        // 全角数字归一化、空 event 兜底、JSON 字符串 boolean/number 容忍；
+        // 新增 KumikoBootReceiver/KumikoAlarmGuardianService/
+        // KumikoConnectionService 自管理 Telecom 通道 +
+        // SharedPreferences ledger 持久化以实现重启后重新调度；
+        // IncomingCallActivity ACCEPT 入队，JS drainer 在 overlay
+        // 自动接听；Xiaomi/HyperOS T-5min 预热缓解漂移；新增首启
+        // PermissionOnboardingWizard 8 步引导 + 60 秒锁屏深度自检；
+        // AppChatHeader 加可靠性体检小灯）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21422
-        versionName "2.14.22"
+        versionCode 21423
+        versionName "2.14.23"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
