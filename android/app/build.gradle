@@ -40,9 +40,16 @@ android {
         // AlarmManager call 分支改 full-screen notification；IncomingCallActivity
         // 自己播放用户配置铃声 + 长震动；APP 入口主动创建 notification channels
         // 并请求通知权限，避免后台主动消息静默失败）。
+        // 2.14.22 → 21422（OEM 权限体检与转圈修复：snapshot 去除副作用 +
+        // 加 timeout/unknown 降级，避免转圈不结束；新增 KumikoVendorPermissionHelper
+        // + Manifest queries 让设置页能检测并 deep-link 小米 / 华为 / 三星 /
+        // OPPO / vivo / OnePlus / realme / 荣耀 各家自启动 / 锁屏 / 受保护
+        // 应用 / 永不休眠 / 后台高耗电 设置页；MIUI Show on lock screen
+        // best-effort 反射检测；测试按钮加 6s 超时 + 5s/3s 退后台倒计时
+        // 提示，作为 OEM 层唯一可信验证）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21421
-        versionName "2.14.21"
+        versionCode 21422
+        versionName "2.14.22"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
