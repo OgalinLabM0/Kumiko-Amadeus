@@ -15,6 +15,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Loader2, CheckCircle, AlertTriangle } from 'lucide-react';
 import {
   DEFAULT_EMBEDDING_CONFIG,
+  EMBEDDING_CONFIG_STORAGE_KEY,
   EMBEDDING_MODEL_CATALOG,
   type EmbeddingProvider,
   type EmbeddingProviderConfig,
@@ -120,6 +121,52 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   const setEmbeddingConfig = useAppStore((s) => s.setEmbeddingConfig);
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
+
+  // v2.14.19 issue 2 修复: mount selfheal — 如果 store 当前是 default-shaped
+  // (用户从未改过, 或 hydrate 时机出问题导致 first-hydrate 没读到 LS), 但
+  // localStorage 里其实有真实保存过的非 default config, 把 store 拉回 LS
+  // 的值。这样用户再次打开 settings → embedding 时不会看到一个空白的
+  // default 面板, 而是上次保存的真值。
+  //
+  // 守卫双判:
+  //   - storeIsDefault: store 必须看起来像 "从未配置过"
+  //   - lsHasMeaningful: LS 必须有 "真实值" 才值得拉回
+  // 两个条件都满足才 set, 既不会反向覆写用户在 settings 里刚改的新值
+  // (那时 store 已经不是 default 了), 也不会在 LS 也是 default 时无意义触发
+  // 一次渲染。
+  //
+  // 跟 SettingsPanel.tsx line 306-321 的 API config selfheal 是同一模式
+  // (form 拿到自己专属的 LS 兜底, 不全局, 不动 store / slice 顶层)。
+  //
+  // 跟 v2.14.17 c4 的危险改法 (新建 leaf 文件 + 改 service 顶层 + 改 5 个
+  // 文件 import 源) 完全不同性质 — 这里只是 Form 内 useEffect 副作用,
+  // React mount 之后才执行, 完全晚于 module-load, 0 booting 风险。
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const raw = window.localStorage.getItem(EMBEDDING_CONFIG_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as Partial<EmbeddingProviderConfig>;
+      const lsConfig: EmbeddingProviderConfig = { ...DEFAULT_EMBEDDING_CONFIG, ...parsed };
+      // 用 useAppStore.getState() 直读最新 store 而不是闭包里的 config,
+      // 这样 useEffect 的 deps 可以保持空数组 (mount-only) 而无 eslint 误报。
+      const current = useAppStore.getState().embeddingConfig;
+      const storeIsDefault =
+        current.apiKey === '' &&
+        current.provider === DEFAULT_EMBEDDING_CONFIG.provider &&
+        current.model === DEFAULT_EMBEDDING_CONFIG.model &&
+        current.dimensions === DEFAULT_EMBEDDING_CONFIG.dimensions;
+      const lsHasMeaningful =
+        lsConfig.apiKey !== '' ||
+        lsConfig.provider !== DEFAULT_EMBEDDING_CONFIG.provider ||
+        lsConfig.model !== DEFAULT_EMBEDDING_CONFIG.model;
+      if (storeIsDefault && lsHasMeaningful) {
+        useAppStore.getState().setEmbeddingConfig(lsConfig);
+      }
+    } catch (err) {
+      console.warn('[CloudEmbeddingForm] mount selfheal parse failed:', err);
+    }
+  }, []);
 
   const modelOptions = useMemo(() => EMBEDDING_MODEL_CATALOG[config.provider] || [], [config.provider]);
   const activeModelPreset = useMemo(
