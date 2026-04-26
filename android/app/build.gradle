@@ -23,10 +23,18 @@ android {
         // 2.14.18 → 21418（v2.14.17 装机 booting 排查：revert c4 ac67aaf
         // Embedding 重构 — 改 ESM 依赖图最有可能在 Capacitor cold-start 触发
         // module-load-time 死锁。其他 4 commit c1/c2/c3/c5 全部保留。装机
-        // 仍 booting 则下次再 revert c5 60b121e Android exact alarm 二分）。
+        // 仍 booting 则下次再 revert c5 60b121e Android exact alarm 二分），
+        // 2.14.19 → 21419（splash 一闪而过 + Embedding issue 1/2 一发解决：
+        // c1 index.html IIFE 加 Capacitor 检测一并 remove ka-boot-splash 文字层；
+        // c2 styles.xml windowBackground 改 @color/ic_launcher_background
+        // (#f9f7f2 跟 Web 同色)，OS launch → WebView → React mount 全程纯色；
+        // c3 CloudEmbeddingForm 模型字段三元渲染 + custom 切换时 model=''
+        // 修自定义模型 ID 被下拉框覆盖；c4 CloudEmbeddingForm mount selfheal
+        // — store 是 default-shaped 但 LS 有真值时拉回，修配置不同步。
+        // 全部不动 ESM 依赖图，0 booting 风险，仍按 5 commit 拆分便于二分）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21418
-        versionName "2.14.18"
+        versionCode 21419
+        versionName "2.14.19"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
