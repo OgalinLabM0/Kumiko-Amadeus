@@ -33,6 +33,41 @@ export const recalculateTurnCountFromMessages = (messages: Message[]) => {
   return turns;
 };
 
+const CHINESE_NUMERAL_VALUES: Record<string, number> = {
+  零: 0,
+  〇: 0,
+  一: 1,
+  二: 2,
+  两: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  七: 7,
+  八: 8,
+  九: 9,
+};
+
+const parseSmallChineseNumber = (raw: string): number | null => {
+  const text = raw.trim();
+  if (!text) return null;
+  if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text);
+
+  if (text === '十') return 10;
+  const tenIndex = text.indexOf('十');
+  if (tenIndex >= 0) {
+    const tensRaw = text.slice(0, tenIndex);
+    const onesRaw = text.slice(tenIndex + 1);
+    const tens = tensRaw ? CHINESE_NUMERAL_VALUES[tensRaw] : 1;
+    const ones = onesRaw ? CHINESE_NUMERAL_VALUES[onesRaw] : 0;
+    if (typeof tens === 'number' && typeof ones === 'number') {
+      return tens * 10 + ones;
+    }
+    return null;
+  }
+
+  return CHINESE_NUMERAL_VALUES[text] ?? null;
+};
 
 export const parseRelativeReminderRequest = (text: string): { event: string; delaySeconds: number } | null => {
   const normalized = text.replace(/\s+/g, ' ').trim();
@@ -43,12 +78,15 @@ export const parseRelativeReminderRequest = (text: string): { event: string; del
 
   let delaySeconds = 0;
   const zhMatch = normalized.match(/(\d+(?:\.\d+)?)\s*(秒钟?|秒|分钟?|分|小时|钟头|个小时)/u);
+  const zhTextMatch = normalized.match(/([零〇一二两三四五六七八九十]{1,4})\s*(秒钟?|秒|分钟?|分|小时|钟头|个小时)/u);
   const enMatch = normalized.match(/(\d+(?:\.\d+)?)\s*(seconds?|secs?|sec|s|minutes?|mins?|min|m|hours?|hrs?|hour|hr|h)\b/i);
-  const timeMatch = zhMatch || enMatch;
+  const timeMatch = zhMatch || zhTextMatch || enMatch;
 
   if (!timeMatch) return null;
 
-  const amount = Number(timeMatch[1]);
+  const amount = zhTextMatch && timeMatch === zhTextMatch
+    ? parseSmallChineseNumber(timeMatch[1])
+    : Number(timeMatch[1]);
   if (!Number.isFinite(amount) || amount <= 0) return null;
 
   const unit = timeMatch[2].toLowerCase();
@@ -89,6 +127,7 @@ export const parseRelativeReminderRequest = (text: string): { event: string; del
   rawEvent = rawEvent.replace(/\b(?:in|after)\s+\d+(?:\.\d+)?\s*(?:seconds?|secs?|sec|minutes?|mins?|min|hours?|hrs?|hour|hr)\b.*$/i, '').trim();
   rawEvent = rawEvent
     .replace(/^\d+(?:\.\d+)?\s*(?:秒钟?|秒|分钟?|分|小时|钟头|个小时)\s*(?:后|後)?\s*/u, '')
+    .replace(/^[零〇一二两三四五六七八九十]{1,4}\s*(?:秒钟?|秒|分钟?|分|小时|钟头|个小时)\s*(?:后|後)?\s*/u, '')
     .replace(/^\d+(?:\.\d+)?\s*(?:seconds?|secs?|sec|s|minutes?|mins?|min|m|hours?|hrs?|hour|hr|h)\b\s*(?:later|after)?\s*/i, '')
     .replace(/\b(?:in|after)\s+\d+(?:\.\d+)?\s*(?:seconds?|secs?|sec|s|minutes?|mins?|min|m|hours?|hrs?|hour|hr|h)\b.*$/i, '')
     .trim();

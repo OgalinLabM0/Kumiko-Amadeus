@@ -1737,6 +1737,10 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
 
     // --- REMINDERS & ANCHORS ---
     const hasReminderIntent = /(?:提醒|叫|喊)(?:一下)?我|记得.+(?:提醒|叫|喊)|remind me|ping me|tell me|wake me up/i.test(userTextForRag);
+    const modelReminderAckText = (response.textParts || []).join(' ').replace(/\s+/g, ' ').trim();
+    const hasModelAcknowledgedReminder =
+      /(?:开始计时|倒计时|计时|到时候.{0,12}(?:提醒你|喊你|叫你)|(?:提醒你|喊你|叫你).{0,12}(?:分钟|秒|小时|分|秒钟|钟头)|remind you|ping you|timer|countdown)/i
+        .test(modelReminderAckText);
     const parsedRelativeReminder = parseRelativeReminderRequest(userTextForRag);
     const parsedDailyReminder = parseDailyReminderRequest(userTextForRag);
     let createdReminderThisTurn = false;
@@ -1793,16 +1797,23 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       }
     }
 
-    // D-fallback (v2.14.17): when the regex says the user expressed reminder
-    // intent but neither the main-pass LLM scheduleTrigger nor the local
-    // parser produced a usable reminder, fire a single triggered second-
-    // opinion LLM pass via reminderIntentRetry. Only runs in this edge
-    // case (0 LLM cost on every normal turn). LLM judges if it's really
-    // a reminder, extracts timing+event in strict JSON, and we save iff
-    // sanity checks pass.
+    // D-fallback (v2.14.17, broadened in v2.14.20): when the user text,
+    // main-pass scheduleTrigger, or the model's own natural-language reply
+    // indicates a reminder but no usable task was created, fire a triggered
+    // second-opinion LLM pass via reminderIntentRetry. This covers the real
+    // Android failure case where the visible user text was truncated to "3"
+    // but the main model still replied "那我三分钟后喊你" — previously the
+    // retry was gated only by hasReminderIntent on the truncated user text.
     let llmRetryResult: import('../../services/reminderIntentRetry').ReminderIntentRetryResult | null = null;
-    if (hasReminderIntent && !createdReminderThisTurn) {
-      llmRetryResult = await extractReminderIntentLLM(userTextForRag, language);
+    const hasIncompleteLlmSchedule = !!response.scheduleTrigger?.event && !createdReminderThisTurn;
+    const shouldRetryReminderIntent =
+      !createdReminderThisTurn &&
+      (hasReminderIntent || hasModelAcknowledgedReminder || hasIncompleteLlmSchedule);
+    if (shouldRetryReminderIntent) {
+      const retryInput = (hasModelAcknowledgedReminder || hasIncompleteLlmSchedule) && modelReminderAckText
+        ? `用户原文: ${userTextForRag}\n模型回复: ${modelReminderAckText}`
+        : userTextForRag;
+      llmRetryResult = await extractReminderIntentLLM(retryInput, language);
       if (llmRetryResult?.isReminder && llmRetryResult.event) {
         if (
           llmRetryResult.recurrence === 'daily' &&
@@ -1818,9 +1829,10 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       }
     }
 
-    if (hasReminderIntent && !createdReminderThisTurn) {
+    if (shouldRetryReminderIntent && !createdReminderThisTurn) {
       console.warn('[REMINDER] intent detected but no reminder was created (D-fallback also missed):', {
         text: userTextForRag.slice(0, 200),
+        modelReminderAckText: modelReminderAckText.slice(0, 200),
         hasLlmScheduleTrigger: !!response.scheduleTrigger,
         llmScheduleTriggerKeys: response.scheduleTrigger ? Object.keys(response.scheduleTrigger) : null,
         parsedDailyReminder,
