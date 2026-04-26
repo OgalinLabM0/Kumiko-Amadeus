@@ -36,6 +36,9 @@ export interface ScheduleAlarmInput {
    *  ttsConfig.voiceMode + whether TTS keys are present, exactly the
    *  same check the desktop / PWA path uses. */
   wantsCall?: boolean;
+  /** Selected ringtone id (built-in 01.mp3..08.mp3 or custom.ext). Passed to
+   *  native so IncomingCallActivity can ring with the user's configured sound. */
+  ringtoneFileId?: string;
 }
 
 export interface ScheduleAlarmResult {

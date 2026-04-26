@@ -54,6 +54,7 @@ public class KumikoAlarmsPlugin extends Plugin {
         String reminderEvent = call.getString("event", "提醒");
         String reminderText = call.getString("text", reminderEvent);
         boolean wantsCall = Boolean.TRUE.equals(call.getBoolean("wantsCall", false));
+        String ringtoneFileId = call.getString("ringtoneFileId", "");
 
         Context context = getContext();
         AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
@@ -67,6 +68,7 @@ public class KumikoAlarmsPlugin extends Plugin {
         receiverIntent.putExtra(KumikoAlarmReceiver.EXTRA_REMINDER_EVENT, reminderEvent);
         receiverIntent.putExtra(KumikoAlarmReceiver.EXTRA_REMINDER_TEXT, reminderText);
         receiverIntent.putExtra(KumikoAlarmReceiver.EXTRA_WANTS_CALL, wantsCall);
+        receiverIntent.putExtra(KumikoAlarmReceiver.EXTRA_RINGTONE_FILE_ID, ringtoneFileId);
 
         int piFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
         PendingIntent pi = PendingIntent.getBroadcast(

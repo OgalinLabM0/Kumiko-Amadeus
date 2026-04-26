@@ -289,6 +289,7 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                   || !!ttsConfig.vocuApiKey
                   || ttsConfig.ttsBackend === 'sovits'
               );
+              const ringtoneFileId = ttsConfig.ringtoneFileId || '';
 
               const relatives = await getRelativeReminders();
               const dailies = await getDailyReminders();
@@ -304,6 +305,7 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                       event: r.event,
                       text: r.event,
                       wantsCall,
+                      ringtoneFileId,
                   });
                   notifyExactAlarmFallbackOnce(result);
               }
@@ -341,6 +343,7 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                       event: d.event,
                       text: d.event,
                       wantsCall,
+                      ringtoneFileId,
                   });
                   notifyExactAlarmFallbackOnce(result);
               }

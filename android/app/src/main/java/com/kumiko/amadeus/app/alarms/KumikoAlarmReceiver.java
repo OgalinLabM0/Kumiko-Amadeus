@@ -36,6 +36,9 @@ import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.media.AudioAttributes;
+import android.media.RingtoneManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.PowerManager;
 import android.util.Log;
@@ -51,9 +54,12 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
     public static final String EXTRA_REMINDER_EVENT = "reminder_event";
     public static final String EXTRA_REMINDER_TEXT = "reminder_text";
     public static final String EXTRA_WANTS_CALL = "wants_call";
+    public static final String EXTRA_RINGTONE_FILE_ID = "ringtone_file_id";
 
     public static final String CHANNEL_ID_MESSAGES = "kumiko_messages";
+    public static final String CHANNEL_ID_CALLS = "kumiko_calls";
     private static final String TAG = "KumikoAlarmReceiver";
+    private static final long[] CALL_VIBRATION_PATTERN = new long[]{0, 650, 250, 650, 250, 900};
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -72,6 +78,7 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
             String reminderEvent = intent.getStringExtra(EXTRA_REMINDER_EVENT);
             String reminderText = intent.getStringExtra(EXTRA_REMINDER_TEXT);
             boolean wantsCall = intent.getBooleanExtra(EXTRA_WANTS_CALL, false);
+            String ringtoneFileId = intent.getStringExtra(EXTRA_RINGTONE_FILE_ID);
 
             if (reminderId == null) reminderId = "alarm-" + System.currentTimeMillis();
             if (reminderEvent == null) reminderEvent = "提醒";
@@ -80,14 +87,51 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
             Log.i(TAG, "Alarm fired: id=" + reminderId + " event=" + reminderEvent + " wantsCall=" + wantsCall);
 
             if (wantsCall) {
-                // Route 1: full-screen incoming call. The activity itself
-                // handles ringtone + wake screen + Accept/Reject buttons.
+                // Route 1: full-screen incoming call. Posting a CATEGORY_CALL
+                // full-screen notification is the Android-supported route for
+                // background/locked-screen call UI; direct startActivity is only
+                // kept as a best-effort fallback for permissive ROMs.
+                ensureCallsChannel(context);
                 Intent callIntent = new Intent(context, IncomingCallActivity.class);
                 callIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
                 callIntent.putExtra(EXTRA_REMINDER_ID, reminderId);
                 callIntent.putExtra(EXTRA_REMINDER_EVENT, reminderEvent);
                 callIntent.putExtra(EXTRA_REMINDER_TEXT, reminderText);
-                context.startActivity(callIntent);
+                callIntent.putExtra(EXTRA_RINGTONE_FILE_ID, ringtoneFileId);
+
+                int piFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+                PendingIntent fullScreenPi = PendingIntent.getActivity(
+                    context,
+                    reminderId.hashCode(),
+                    callIntent,
+                    piFlags
+                );
+
+                Uri defaultRingtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+                Notification notification = new NotificationCompat.Builder(context, CHANNEL_ID_CALLS)
+                    .setSmallIcon(android.R.drawable.sym_call_incoming)
+                    .setContentTitle("黄前久美子 来电")
+                    .setContentText(reminderText)
+                    .setStyle(new NotificationCompat.BigTextStyle().bigText(reminderText))
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_CALL)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setFullScreenIntent(fullScreenPi, true)
+                    .setContentIntent(fullScreenPi)
+                    .setOngoing(true)
+                    .setAutoCancel(true)
+                    .setSound(defaultRingtone)
+                    .setVibrate(CALL_VIBRATION_PATTERN)
+                    .build();
+
+                NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+                nm.notify(reminderId.hashCode(), notification);
+
+                try {
+                    context.startActivity(callIntent);
+                } catch (Throwable t) {
+                    Log.w(TAG, "Direct call activity launch blocked; full-screen notification posted", t);
+                }
             } else {
                 // Route 2: text-mode reminder via a normal LocalNotification.
                 // Channel kumiko_messages was created by the JS LocalNotifications
@@ -136,6 +180,31 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
         channel.setDescription("黄前久美子 主动联络");
         channel.enableVibration(true);
         channel.setVibrationPattern(new long[]{0, 200});
+        nm.createNotificationChannel(channel);
+    }
+
+    private static void ensureCallsChannel(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        NotificationChannel existing = nm.getNotificationChannel(CHANNEL_ID_CALLS);
+        if (existing != null) return;
+
+        NotificationChannel channel = new NotificationChannel(
+            CHANNEL_ID_CALLS,
+            "来电提醒 · Calls",
+            NotificationManager.IMPORTANCE_HIGH
+        );
+        channel.setDescription("黄前久美子 来电式提醒");
+        channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
+        channel.enableVibration(true);
+        channel.setVibrationPattern(CALL_VIBRATION_PATTERN);
+
+        Uri defaultRingtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+        AudioAttributes attrs = new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build();
+        channel.setSound(defaultRingtone, attrs);
         nm.createNotificationChannel(channel);
     }
 }
