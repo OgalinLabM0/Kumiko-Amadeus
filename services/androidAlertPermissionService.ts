@@ -17,7 +17,11 @@ import {
   type VendorPermissionKey,
 } from './androidAlarmService';
 import {
+  CHANNEL_CALLS,
+  CHANNEL_MESSAGES,
   checkKumikoNotificationPermission,
+  postKumikoFallbackCallNotification,
+  postKumikoFallbackMessageNotification,
   requestKumikoNotificationPermission,
 } from './capacitorNotifications';
 import { ensureNativeRingtoneForAlarm } from './voiceFileService';
@@ -79,6 +83,14 @@ export interface AndroidAlertPermissionSnapshot {
 export interface AndroidAlertTestResult {
   ok: boolean;
   reason?: AndroidAlertPermissionKey | 'unsupported' | 'native-failed' | 'timeout';
+  /**
+   * v2.14.25: when true, the native KumikoAlarmsPlugin path failed (timeout
+   * or rejection) and we fell back to @capacitor/local-notifications. The
+   * UI surfaces this as "原生桥接超时 - 已尝试备用 LocalNotifications，请检查通知栏"
+   * so the user knows to check the system tray rather than assume the
+   * test silently failed.
+   */
+  fallbackUsed?: boolean;
 }
 
 // v2.14.23: pumped from 2.5s → 5s. Cold-start Capacitor bridge can take
@@ -436,14 +448,33 @@ export async function runAndroidMessageNotificationTest(): Promise<AndroidAlertT
   if (snapshot.items.notifications.state === 'denied') return { ok: false, reason: 'notifications' };
   if (snapshot.items.messagesChannel.state === 'denied') return { ok: false, reason: 'messagesChannel' };
 
-  return runTimedTest(
+  // v2.14.25: try the native KumikoAlarms path first. If it times out
+  // (HyperOS WebView throttling, custom plugin hung) or rejects, we
+  // route the test through the LocalNotifications fallback so the user
+  // still sees a real notification in the tray. The fallback uses the
+  // already-created v3 channels so MIUI's per-channel importance and
+  // lockscreen visibility settings still apply.
+  const TEST_TITLE = 'Kumiko·Amadeus';
+  const TEST_BODY = 'Android message notification test';
+  const nativeResult = await runTimedTest(
     'postAndroidTestMessageNotification',
     () => postAndroidTestMessageNotification({
-      title: 'Kumiko·Amadeus',
-      body: 'Android message notification test',
+      title: TEST_TITLE,
+      body: TEST_BODY,
     }),
     (posted) => posted === true,
   );
+  if (nativeResult.ok) return nativeResult;
+
+  const fallback = await postKumikoFallbackMessageNotification({
+    title: TEST_TITLE,
+    body: TEST_BODY,
+    channelId: CHANNEL_MESSAGES,
+  });
+  if (fallback.posted) {
+    return { ok: true, reason: nativeResult.reason, fallbackUsed: true };
+  }
+  return { ...nativeResult, fallbackUsed: true };
 }
 
 export async function runAndroidIncomingCallTest(ringtoneFileId?: string | null): Promise<AndroidAlertTestResult> {
@@ -454,15 +485,35 @@ export async function runAndroidIncomingCallTest(ringtoneFileId?: string | null)
   if (snapshot.items.fullScreenIntent.state === 'denied') return { ok: false, reason: 'fullScreenIntent' };
 
   await safeProbe('ensureNativeRingtoneForAlarm', () => ensureNativeRingtoneForAlarm(ringtoneFileId), undefined);
-  return runTimedTest(
+
+  // v2.14.25: same fallback policy as message test — KumikoAlarms first,
+  // LocalNotifications second. The fallback can't fire CallStyle or a
+  // FullScreenIntent (LocalNotifications doesn't expose those APIs), but
+  // it WILL post into kumiko_calls_v3 which is already at IMPORTANCE_MAX
+  // with DND-bypass + lockscreen public, so the user still gets a
+  // ringing heads-up.
+  const TEST_TITLE = '黄前久美子 来电测试';
+  const TEST_BODY = '来电弹窗 / 铃声 / 震动测试';
+  const nativeResult = await runTimedTest(
     'postAndroidTestIncomingCall',
     () => postAndroidTestIncomingCall({
-      title: '黄前久美子 来电测试',
-      body: '来电弹窗 / 铃声 / 震动测试',
+      title: TEST_TITLE,
+      body: TEST_BODY,
       ringtoneFileId: ringtoneFileId || '',
     }),
     (posted) => posted === true,
   );
+  if (nativeResult.ok) return nativeResult;
+
+  const fallback = await postKumikoFallbackCallNotification({
+    title: TEST_TITLE,
+    body: TEST_BODY,
+    channelId: CHANNEL_CALLS,
+  });
+  if (fallback.posted) {
+    return { ok: true, reason: nativeResult.reason, fallbackUsed: true };
+  }
+  return { ...nativeResult, fallbackUsed: true };
 }
 
 export async function clearAndroidAlertTests(): Promise<void> {

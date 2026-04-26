@@ -54,9 +54,18 @@ export interface PostNotificationOptions {
 }
 
 // v2.14.24: bumped to *_v3, native plugin owns creation/migration.
-const CHANNEL_MESSAGES = 'kumiko_messages_v3';
-const CHANNEL_CALLS = 'kumiko_calls_v3';
+export const CHANNEL_MESSAGES = 'kumiko_messages_v3';
+export const CHANNEL_CALLS = 'kumiko_calls_v3';
 const NOTIFICATION_ID_BASE = 1000;
+
+// v2.14.25: shared smallIcon resource name. Must match
+// android/app/src/main/res/drawable/ic_stat_kumiko.xml. MIUI 14+ silently
+// drops notifications whose smallIcon is a coloured AOSP drawable
+// (ic_dialog_info, sym_call_incoming) — we replaced the native paths in
+// KumikoAlarmsPlugin / KumikoAlarmReceiver / KumikoCallRingingService /
+// KumikoAlarmGuardianService, and the JS LocalNotifications fallback
+// path now also references the same drawable.
+const KUMIKO_SMALL_ICON = 'ic_stat_kumiko';
 
 let nextNotificationId = NOTIFICATION_ID_BASE;
 
@@ -139,7 +148,7 @@ export async function postKumikoNotification(opts: PostNotificationOptions): Pro
           title: opts.title,
           body: opts.body,
           channelId,
-          smallIcon: 'ic_stat_icon_config_sample', // capacitor's default Android template
+          smallIcon: KUMIKO_SMALL_ICON,
           // Android only honors `extra` after a tap, not in the OS panel,
           // so we stash messageId there for our future deep-link handler
           // (TODO: wire when we add a tap handler in App.tsx).
@@ -149,6 +158,97 @@ export async function postKumikoNotification(opts: PostNotificationOptions): Pro
     });
   } catch (e) {
     console.warn('[capacitorNotifications] schedule failed:', e);
+  }
+}
+
+// ── v2.14.25: LocalNotifications-only fallback path ──────────────────
+// Used when KumikoAlarmsPlugin (the custom Capacitor plugin) is
+// unresponsive — every @PluginMethod call hits the 5–8s safeProbe
+// timeout, even though the JS bridge itself is alive (because Capacitor
+// dispatched our @PluginMethod onto the WebView main thread which
+// HyperOS/MIUI is throttling). LocalNotifications is part of the
+// official @capacitor/local-notifications plugin and uses Capacitor's
+// own internal worker dispatch — it therefore reaches the
+// NotificationManager even when our custom plugin is hung.
+//
+// Both fallback variants accept `opts.title`/`opts.body` so the calling
+// site (test buttons, production triggerTimedReminderMessage) can match
+// what the native path would have rendered. Channel IDs are the v3
+// channels already registered by KumikoAlarmsPlugin.load() — if the
+// plugin truly never ran (uninstalled?), these channels won't exist
+// and Android will silently bucket the post into the default channel.
+// That's better than nothing.
+
+export interface KumikoFallbackPostOptions {
+  title: string;
+  body: string;
+  /** When omitted, defaults to the messages or calls channel based on
+   *  which postKumikoFallback*Notification was invoked. */
+  channelId?: string;
+}
+
+export interface KumikoFallbackPostResult {
+  posted: boolean;
+  reason?: 'no-native' | 'no-permission' | 'schedule-failed';
+}
+
+export async function postKumikoFallbackMessageNotification(
+  opts: KumikoFallbackPostOptions
+): Promise<KumikoFallbackPostResult> {
+  if (!isCapacitorNative()) return { posted: false, reason: 'no-native' };
+  try {
+    const { LocalNotifications } = await import('@capacitor/local-notifications');
+    // Skip the explicit checkPermissions probe here: when the user has
+    // POST_NOTIFICATIONS denied LocalNotifications.schedule() throws,
+    // and we surface that as schedule-failed below. Probing first would
+    // double the latency on a code path that explicitly exists for the
+    // "everything else timed out" emergency case.
+    await LocalNotifications.schedule({
+      notifications: [
+        {
+          id: deriveNotificationId(),
+          title: opts.title,
+          body: opts.body,
+          channelId: opts.channelId ?? CHANNEL_MESSAGES,
+          smallIcon: KUMIKO_SMALL_ICON,
+        },
+      ],
+    });
+    return { posted: true };
+  } catch (e) {
+    console.warn('[capacitorNotifications] fallback message schedule failed:', e);
+    return { posted: false, reason: 'schedule-failed' };
+  }
+}
+
+export async function postKumikoFallbackCallNotification(
+  opts: KumikoFallbackPostOptions
+): Promise<KumikoFallbackPostResult> {
+  if (!isCapacitorNative()) return { posted: false, reason: 'no-native' };
+  try {
+    const { LocalNotifications } = await import('@capacitor/local-notifications');
+    await LocalNotifications.schedule({
+      notifications: [
+        {
+          id: deriveNotificationId(),
+          title: opts.title,
+          body: opts.body,
+          channelId: opts.channelId ?? CHANNEL_CALLS,
+          smallIcon: KUMIKO_SMALL_ICON,
+          // We can't request CallStyle / FullScreenIntent through
+          // @capacitor/local-notifications — that's why the native
+          // plugin existed in the first place. But MIUI honours the
+          // CHANNEL_CALLS importance settings (max + DND-bypass +
+          // lockscreen public) the native plugin baked in at v3
+          // creation, so even a plain heads-up posted into this
+          // channel will pop with sound + vibration.
+        },
+      ],
+    });
+    return { posted: true };
+  } catch (e) {
+    console.warn('[capacitorNotifications] fallback call schedule failed:', e);
+    return { posted: false, reason: 'schedule-failed' };
   }
 }
 
