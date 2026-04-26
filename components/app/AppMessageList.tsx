@@ -37,6 +37,8 @@ const OVERSCAN_PX_DESKTOP = 420;
 const OVERSCAN_PX_MOBILE = 240;
 const MIN_ESTIMATED_HEIGHT = 84;
 const MAX_ESTIMATED_HEIGHT = 460;
+const BOTTOM_CLEARANCE_DESKTOP = 72;
+const BOTTOM_CLEARANCE_MOBILE = 112;
 
 // Invalidate the cached flag used by the hot paths so the next
 // `msgListIsMobile()` call re-reads `isMobileLikeRuntime()`. Invoked from
@@ -112,6 +114,30 @@ const findClosestItemIndex = (offsets: number[], targetOffset: number) => {
   }
 
   return low;
+};
+
+const parseCssPx = (value: string | null | undefined): number => {
+  if (!value) return 0;
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+
+const readBottomClearancePx = (isMobileRuntime: boolean): number => {
+  const base = isMobileRuntime ? BOTTOM_CLEARANCE_MOBILE : BOTTOM_CLEARANCE_DESKTOP;
+  if (typeof window === 'undefined' || typeof document === 'undefined') return base;
+
+  const rootStyle = window.getComputedStyle(document.documentElement);
+  const safeAreaBottom = parseCssPx(rootStyle.getPropertyValue('--sab'));
+  const keyboardInset = parseCssPx(rootStyle.getPropertyValue('--kb-inset'));
+
+  // AppMainView already uses --kb-inset to shrink the chat column above the
+  // keyboard, so we don't add the whole keyboard height again here. We only
+  // reserve enough scrollable tail space for the footer/status line and a
+  // small extra nudge while the keyboard is open.
+  return Math.ceil(Math.max(
+    base + safeAreaBottom,
+    keyboardInset > 0 ? base + 16 : base,
+  ));
 };
 
 const VirtualizedMessageRow: React.FC<VirtualizedMessageRowProps> = ({
@@ -213,6 +239,10 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
   const [viewportHeight, setViewportHeight] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [layoutVersion, setLayoutVersion] = useState(0);
+  const [bottomClearancePx, setBottomClearancePx] = useState(() =>
+    readBottomClearancePx(msgListIsMobile()),
+  );
+  const shouldStickToBottomRef = useRef(true);
 
   // Track the runtime flag so OVERSCAN_PX stays in sync when the async
   // probe flips mobile/desktop mid-session (usually followed by a reload,
@@ -253,7 +283,22 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
     return offsets;
   }, [itemHeights]);
 
-  const totalContentHeight = itemOffsets[itemOffsets.length - 1] || 0;
+  const totalMessageHeight = itemOffsets[itemOffsets.length - 1] || 0;
+  const totalContentHeight = totalMessageHeight + bottomClearancePx;
+
+  const isNearBottom = useCallback((container: HTMLDivElement) => {
+    const distance = totalContentHeight - (container.scrollTop + container.clientHeight);
+    return distance <= Math.max(160, bottomClearancePx + 48);
+  }, [bottomClearancePx, totalContentHeight]);
+
+  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
+    const container = containerRef.current;
+    if (!container) return;
+    const desiredTop = Math.max(0, totalContentHeight - container.clientHeight);
+    container.scrollTo({ top: desiredTop, behavior });
+    pendingScrollTopRef.current = desiredTop;
+    setScrollTop((current) => current === desiredTop ? current : desiredTop);
+  }, [totalContentHeight]);
 
   const { startIndex, endIndex } = useMemo(() => {
     if (visibleMessages.length === 0) {
@@ -278,8 +323,11 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
     const syncViewport = () => {
       const nextHeight = container.clientHeight;
       const nextTop = container.scrollTop;
+      const nextClearance = readBottomClearancePx(isMobileRuntime);
       setViewportHeight((current) => current === nextHeight ? current : nextHeight);
       setScrollTop((current) => current === nextTop ? current : nextTop);
+      setBottomClearancePx((current) => current === nextClearance ? current : nextClearance);
+      shouldStickToBottomRef.current = isNearBottom(container);
     };
 
     syncViewport();
@@ -296,10 +344,11 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
       observer.observe(container);
       return () => { cancelAnimationFrame(rafId); observer.disconnect(); };
     }
-  }, []);
+  }, [isMobileRuntime, isNearBottom]);
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     pendingScrollTopRef.current = event.currentTarget.scrollTop;
+    shouldStickToBottomRef.current = isNearBottom(event.currentTarget);
     if (scrollRafRef.current !== null) return;
     scrollRafRef.current = window.requestAnimationFrame(() => {
       scrollRafRef.current = null;
@@ -307,7 +356,7 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
         current === pendingScrollTopRef.current ? current : pendingScrollTopRef.current
       ));
     });
-  }, []);
+  }, [isNearBottom]);
 
   useEffect(() => {
     return () => {
@@ -352,6 +401,34 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
 
     return () => window.cancelAnimationFrame(rafId);
   }, [highlightedMessageId, itemOffsets, viewportHeight, visibleMessages]);
+
+  const lastVisibleMessage = visibleMessages[visibleMessages.length - 1] || null;
+  const lastVisibleMessageId = lastVisibleMessage?.id;
+
+  useEffect(() => {
+    if (!lastVisibleMessage) return;
+
+    const shouldAutoScroll =
+      shouldStickToBottomRef.current ||
+      lastVisibleMessage.role === 'user' ||
+      pendingMessageIds.has(lastVisibleMessage.id);
+
+    if (!shouldAutoScroll) return;
+
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = window.requestAnimationFrame(() => {
+      scrollToBottom('auto');
+      raf2 = window.requestAnimationFrame(() => {
+        scrollToBottom('auto');
+      });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(raf1);
+      window.cancelAnimationFrame(raf2);
+    };
+  }, [bottomClearancePx, lastVisibleMessage, lastVisibleMessageId, pendingMessageIds, scrollToBottom, totalContentHeight]);
 
   const renderedSlice = endIndex >= startIndex
     ? visibleMessages.slice(startIndex, endIndex + 1)
