@@ -25,46 +25,31 @@
 //   setter call so the value survives WebView reloads, but never read after
 //   the initial hydrate.
 //
-// Module load ordering (v2.14.17):
-//   This slice now imports only from cloudEmbeddingConfig.ts — a pure leaf
-//   module with no other imports. The previous v2.14.12 cycle (slice → service
-//   → store) is gone: cloudEmbeddingService.ts is the only module that imports
-//   useAppStore, and it isn't loaded at slice-construction time. This removes
-//   any module-load-time risk to React mount that the cycle could have caused
-//   on slow Capacitor WebView starts (suspected v2.14.13/14 booting cause).
+// Module load ordering note:
+//   This slice imports `EmbeddingProviderConfig`, `DEFAULT_EMBEDDING_CONFIG`,
+//   and `EMBEDDING_CONFIG_STORAGE_KEY` from cloudEmbeddingService.ts at module
+//   load. cloudEmbeddingService.ts in turn imports `useAppStore` from the root
+//   store entry — the cycle is safe because cloudEmbeddingService only
+//   *references* useAppStore inside function bodies (resolved at call time,
+//   not at module-load time), and the slice never calls back into
+//   cloudEmbeddingService during initialisation.
 
 import type { StateCreator } from 'zustand';
 import {
   DEFAULT_EMBEDDING_CONFIG,
   EMBEDDING_CONFIG_STORAGE_KEY,
   type EmbeddingProviderConfig,
-} from '../../services/cloudEmbeddingConfig';
-
-function normalizeEmbeddingConfig(raw: Partial<EmbeddingProviderConfig> | null | undefined): EmbeddingProviderConfig {
-  const merged = { ...DEFAULT_EMBEDDING_CONFIG, ...(raw || {}) };
-  // Reject corrupt persists where dimensions came back as null / 0 / NaN —
-  // those would survive a JSON.parse round trip and silently break the
-  // embedding pipeline on the next call. Also reject negative values.
-  if (
-    typeof merged.dimensions !== 'number' ||
-    !Number.isFinite(merged.dimensions) ||
-    merged.dimensions <= 0
-  ) {
-    merged.dimensions = DEFAULT_EMBEDDING_CONFIG.dimensions;
-  } else {
-    merged.dimensions = Math.round(merged.dimensions);
-  }
-  return merged;
-}
+} from '../../services/cloudEmbeddingService';
 
 function readInitialEmbeddingConfig(): EmbeddingProviderConfig {
-  if (typeof window === 'undefined') return { ...DEFAULT_EMBEDDING_CONFIG };
+  if (typeof window === 'undefined') return DEFAULT_EMBEDDING_CONFIG;
   try {
     const raw = window.localStorage.getItem(EMBEDDING_CONFIG_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_EMBEDDING_CONFIG };
-    return normalizeEmbeddingConfig(JSON.parse(raw) as Partial<EmbeddingProviderConfig>);
+    if (!raw) return DEFAULT_EMBEDDING_CONFIG;
+    const parsed = JSON.parse(raw) as Partial<EmbeddingProviderConfig>;
+    return { ...DEFAULT_EMBEDDING_CONFIG, ...parsed };
   } catch {
-    return { ...DEFAULT_EMBEDDING_CONFIG };
+    return DEFAULT_EMBEDDING_CONFIG;
   }
 }
 
@@ -85,8 +70,7 @@ export interface EmbeddingSlice {
 export const createEmbeddingSlice: StateCreator<EmbeddingSlice, [], [], EmbeddingSlice> = (set) => ({
   embeddingConfig: readInitialEmbeddingConfig(),
   setEmbeddingConfig: (cfg) => {
-    const next = normalizeEmbeddingConfig(cfg);
-    set({ embeddingConfig: next });
-    persistEmbeddingConfig(next);
+    set({ embeddingConfig: cfg });
+    persistEmbeddingConfig(cfg);
   },
 });
