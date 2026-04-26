@@ -53,6 +53,12 @@ const NOTIFICATION_ID_BASE = 1000;
 let channelsInitialized = false;
 let nextNotificationId = NOTIFICATION_ID_BASE;
 
+export interface KumikoNotificationRuntimeStatus {
+  supported: boolean;
+  channelsReady: boolean;
+  permissionGranted: boolean;
+}
+
 function deriveNotificationId(): number {
   // local-notifications wants 32-bit ints; recycle once we hit ~2 billion
   // (we never will, but defensive).
@@ -60,8 +66,10 @@ function deriveNotificationId(): number {
   return Math.max(NOTIFICATION_ID_BASE, nextNotificationId);
 }
 
-async function ensureChannelsAndPermission(): Promise<boolean> {
-  if (!isCapacitorNative()) return false;
+async function ensureChannelsAndPermission(): Promise<KumikoNotificationRuntimeStatus> {
+  if (!isCapacitorNative()) {
+    return { supported: false, channelsReady: false, permissionGranted: false };
+  }
   try {
     const { LocalNotifications } = await import('@capacitor/local-notifications');
     if (!channelsInitialized) {
@@ -96,16 +104,18 @@ async function ensureChannelsAndPermission(): Promise<boolean> {
     const perm = await LocalNotifications.checkPermissions();
     if (perm.display !== 'granted') {
       const req = await LocalNotifications.requestPermissions();
-      if (req.display !== 'granted') return false;
+      if (req.display !== 'granted') {
+        return { supported: true, channelsReady: channelsInitialized, permissionGranted: false };
+      }
     }
-    return true;
+    return { supported: true, channelsReady: channelsInitialized, permissionGranted: true };
   } catch (e) {
     console.warn('[capacitorNotifications] channel / permission setup failed:', e);
-    return false;
+    return { supported: true, channelsReady: false, permissionGranted: false };
   }
 }
 
-export async function primeKumikoNotificationRuntime(): Promise<boolean> {
+export async function primeKumikoNotificationRuntime(): Promise<KumikoNotificationRuntimeStatus> {
   // Called once after the Android app reaches APP flow so proactive messages
   // and text reminders do not discover missing channels/permission only when
   // the first background notification is already trying to fire.
@@ -119,8 +129,8 @@ export async function primeKumikoNotificationRuntime(): Promise<boolean> {
  */
 export async function postKumikoNotification(opts: PostNotificationOptions): Promise<void> {
   if (!isCapacitorNative()) return;
-  const ok = await ensureChannelsAndPermission();
-  if (!ok) return;
+  const status = await ensureChannelsAndPermission();
+  if (!status.permissionGranted) return;
 
   try {
     const { LocalNotifications } = await import('@capacitor/local-notifications');

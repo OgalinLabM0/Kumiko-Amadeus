@@ -22,10 +22,13 @@
 package com.kumiko.amadeus.app.alarms;
 
 import android.app.AlarmManager;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Build;
+import android.provider.Settings;
 import android.util.Log;
 
 import com.getcapacitor.JSObject;
@@ -172,6 +175,46 @@ public class KumikoAlarmsPlugin extends Plugin {
                 return;
             } catch (Throwable t) {
                 Log.w(TAG, "Could not open exact-alarm settings", t);
+            }
+        }
+        call.resolve();
+    }
+
+    @PluginMethod
+    public void canUseFullScreenIntent(PluginCall call) {
+        boolean can = true;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            NotificationManager nm = (NotificationManager) getContext().getSystemService(Context.NOTIFICATION_SERVICE);
+            can = nm != null && nm.canUseFullScreenIntent();
+        }
+        JSObject ret = new JSObject();
+        ret.put("canUseFullScreenIntent", can);
+        call.resolve(ret);
+    }
+
+    @PluginMethod
+    public void requestFullScreenIntentPermission(PluginCall call) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            Context context = getContext();
+            try {
+                Intent settings = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT);
+                settings.setData(Uri.parse("package:" + context.getPackageName()));
+                settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(settings);
+                call.resolve();
+                return;
+            } catch (Throwable t) {
+                Log.w(TAG, "Could not open full-screen intent settings; falling back to app notification settings", t);
+                try {
+                    Intent fallback = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                    fallback.putExtra(Settings.EXTRA_APP_PACKAGE, context.getPackageName());
+                    fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(fallback);
+                    call.resolve();
+                    return;
+                } catch (Throwable t2) {
+                    Log.w(TAG, "Could not open app notification settings", t2);
+                }
             }
         }
         call.resolve();

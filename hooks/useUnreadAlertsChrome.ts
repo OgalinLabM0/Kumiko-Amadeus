@@ -1,8 +1,17 @@
 import { useCallback, useEffect } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { isDesktopElectron } from '../services/desktopBackupService';
-import { isCapacitorNative, isMobileLikeRuntime } from '../services/environment';
+import { getCapacitorPlatform, isCapacitorNative, isMobileLikeRuntime } from '../services/environment';
 import { showBackgroundNotification } from '../components/app/chatActions';
+import {
+  EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY,
+  FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY,
+  canScheduleExactAlarms,
+  canUseFullScreenIntent,
+  requestExactAlarmPermission,
+  requestFullScreenIntentPermission,
+} from '../services/androidAlarmService';
+import { useAppStore } from '../store';
 import type { MessageAlertKind, MissedMessageAlert } from '../types';
 
 type FlowState = 'INTRO' | 'AUTH' | 'CONFIG' | 'APP';
@@ -93,12 +102,93 @@ export function useUnreadAlertsChrome(
   }, [flowState, markAllAlertsRead]);
 
   useEffect(() => {
-    if (flowState !== 'APP' || !isCapacitorNative()) return;
-    void import('../services/capacitorNotifications')
-      .then(({ primeKumikoNotificationRuntime }) => primeKumikoNotificationRuntime())
-      .catch((error) => {
-        console.warn('[UNREAD] Failed to prime Capacitor notification runtime:', error);
-      });
+    if (flowState !== 'APP' || !isCapacitorNative() || getCapacitorPlatform() !== 'android') return;
+    let cancelled = false;
+    let running = false;
+
+    const getPermissionCopy = () => {
+      const language = useAppStore.getState().language;
+      return language === 'en'
+        ? {
+          notificationDenied: 'Android notification permission is not enabled. New messages, reminders, vibration, and call alerts may stay silent until you allow notifications for Kumiko.',
+          exactPrompt: 'Opening Android Alarms & reminders permission. Please allow it so timed reminders can ring exactly while the phone is locked.',
+          exactStillMissing: 'Exact alarm permission is still off. Timed reminders may be delayed by Android; enable Alarms & reminders in system settings.',
+          fullScreenPrompt: 'Opening Android full-screen notification permission. Please allow it so reminder calls can pop over the lock screen.',
+          fullScreenStillMissing: 'Full-screen notification permission is still off. Reminder calls may fall back to a heads-up notification instead of the incoming-call screen.',
+        }
+        : {
+          notificationDenied: 'Android 通知权限尚未开启。主动消息、提醒、震动和来电弹窗可能会静默，请在系统弹窗或应用通知设置里允许 Kumiko 通知。',
+          exactPrompt: '即将打开 Android「闹钟与提醒」权限页。请允许它，这样定时提醒才能在锁屏/后台准点响。',
+          exactStillMissing: '精准闹钟权限仍未开启。Android 可能会延迟定时提醒，请在系统设置里允许「闹钟与提醒」。',
+          fullScreenPrompt: '即将打开 Android「全屏通知」权限页。请允许它，这样提醒来电才能覆盖锁屏弹出。',
+          fullScreenStillMissing: '全屏通知权限仍未开启。提醒来电可能只能降级成横幅通知，不能弹出微信式来电页。',
+        };
+    };
+
+    const setNotice = (message: string) => {
+      try {
+        useAppStore.getState().setSystemNotice(message);
+      } catch (error) {
+        console.warn('[UNREAD] Failed to set Android permission notice:', error);
+      }
+    };
+
+    const runPermissionBootstrap = async () => {
+      if (running) return;
+      running = true;
+      try {
+        const copy = getPermissionCopy();
+        const { primeKumikoNotificationRuntime } = await import('../services/capacitorNotifications');
+        const notificationStatus = await primeKumikoNotificationRuntime();
+        if (cancelled) return;
+        if (notificationStatus.supported && !notificationStatus.permissionGranted) {
+          setNotice(copy.notificationDenied);
+        }
+
+        const canExact = await canScheduleExactAlarms();
+        if (cancelled) return;
+        if (!canExact) {
+          const prompted = window.localStorage.getItem(EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY);
+          if (!prompted) {
+            window.localStorage.setItem(EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY, '1');
+            setNotice(copy.exactPrompt);
+            await requestExactAlarmPermission();
+            return;
+          }
+          setNotice(copy.exactStillMissing);
+        }
+
+        const canFullScreen = await canUseFullScreenIntent();
+        if (cancelled) return;
+        if (!canFullScreen) {
+          const prompted = window.localStorage.getItem(FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY);
+          if (!prompted) {
+            window.localStorage.setItem(FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY, '1');
+            setNotice(copy.fullScreenPrompt);
+            await requestFullScreenIntentPermission();
+            return;
+          }
+          setNotice(copy.fullScreenStillMissing);
+        }
+      } catch (error) {
+        console.warn('[UNREAD] Failed to bootstrap Android notification permissions:', error);
+      } finally {
+        running = false;
+      }
+    };
+
+    void runPermissionBootstrap();
+    const onReturnFromSettings = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      void runPermissionBootstrap();
+    };
+    window.addEventListener('focus', onReturnFromSettings);
+    document.addEventListener('visibilitychange', onReturnFromSettings);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', onReturnFromSettings);
+      document.removeEventListener('visibilitychange', onReturnFromSettings);
+    };
   }, [flowState]);
 
   useEffect(() => {

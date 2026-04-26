@@ -21,6 +21,7 @@ import { getCapacitorPlatform, isCapacitorNative } from './environment';
 //     the user every time a reminder gets re-scheduled inexactly.
 export const EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY = 'kumiko_exact_alarm_permission_prompted';
 export const EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY = 'kumiko_exact_alarm_fallback_notice_shown';
+export const FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY = 'kumiko_full_screen_intent_permission_prompted';
 
 export interface ScheduleAlarmInput {
   reminderId: string;
@@ -54,6 +55,8 @@ interface KumikoAlarmsPluginShape {
   cancel(opts: { reminderId: string }): Promise<{ cancelled: boolean }>;
   canScheduleExact(): Promise<{ canScheduleExact: boolean }>;
   requestExactAlarmPermission(): Promise<void>;
+  canUseFullScreenIntent(): Promise<{ canUseFullScreenIntent: boolean }>;
+  requestFullScreenIntentPermission(): Promise<void>;
   drainPendingActions(): Promise<{
     callAction?: { action: string; reminderId?: string; reminderEvent?: string; at?: number };
     repliesJson: string;
@@ -140,6 +143,27 @@ export async function requestExactAlarmPermission(): Promise<void> {
     await plugin.requestExactAlarmPermission();
   } catch (e) {
     console.warn('[androidAlarms] requestExactAlarmPermission failed:', e);
+  }
+}
+
+export async function canUseFullScreenIntent(): Promise<boolean> {
+  const plugin = await getPlugin();
+  if (!plugin) return false;
+  try {
+    const res = await plugin.canUseFullScreenIntent();
+    return res.canUseFullScreenIntent === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function requestFullScreenIntentPermission(): Promise<void> {
+  const plugin = await getPlugin();
+  if (!plugin) return;
+  try {
+    await plugin.requestFullScreenIntentPermission();
+  } catch (e) {
+    console.warn('[androidAlarms] requestFullScreenIntentPermission failed:', e);
   }
 }
 
