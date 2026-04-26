@@ -437,8 +437,11 @@ export interface DrainedReply {
  */
 export async function prewarmKumikoAlarmsPlugin(timeoutMs = 8_000): Promise<boolean> {
   const plugin = await getPlugin();
-  if (!plugin) return false;
-  return new Promise<boolean>((resolve) => {
+  if (!plugin) {
+    writeBridgeHealth({ kumikoAlarmsAlive: false, localNotificationsAlive: false });
+    return false;
+  }
+  const kumikoAlarmsAlive = await new Promise<boolean>((resolve) => {
     const timer = setTimeout(() => {
       console.warn(`[androidAlarms] prewarm timed out after ${timeoutMs}ms`);
       resolve(false);
@@ -471,6 +474,76 @@ export async function prewarmKumikoAlarmsPlugin(timeoutMs = 8_000): Promise<bool
         },
       );
   });
+
+  // v2.14.25: when the custom plugin times out, probe @capacitor/local-notifications
+  // (a separate Capacitor bridge call that does not share the WebView main-thread
+  // dispatch our @PluginMethod uses) so we can record whether the LocalNotifications
+  // fallback path is viable. Other modules (chatActions, AndroidPermissionsSection)
+  // read the resulting `kumiko_native_bridge_health` sessionStorage entry to
+  // decide whether to skip the KumikoAlarms path entirely.
+  if (kumikoAlarmsAlive) {
+    writeBridgeHealth({ kumikoAlarmsAlive: true, localNotificationsAlive: true });
+    return true;
+  }
+  let localNotificationsAlive = false;
+  try {
+    const { LocalNotifications } = await import('@capacitor/local-notifications');
+    // checkPermissions() is a read-only bridge call; on a healthy LocalNotifications
+    // plugin it returns within ~50ms even when our custom plugin is hung. We
+    // accept any resolution as "alive" since we only care that the bridge to the
+    // standard plugin is responsive — the actual permission state is read elsewhere.
+    await Promise.race([
+      LocalNotifications.checkPermissions().then(() => { localNotificationsAlive = true; }),
+      new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('LocalNotifications.checkPermissions timeout')), 4_000)
+      ),
+    ]).catch(() => {});
+  } catch (e) {
+    console.warn('[androidAlarms] LocalNotifications self-check failed:', e);
+  }
+  writeBridgeHealth({ kumikoAlarmsAlive: false, localNotificationsAlive });
+  return false;
+}
+
+/**
+ * v2.14.25: shared bridge-health snapshot. sessionStorage so that a manual
+ * "重启应用" reset gives a clean slate; persistence across sessions would
+ * mask transient OEM throttling that resolves itself on reboot.
+ */
+const BRIDGE_HEALTH_KEY = 'kumiko_native_bridge_health';
+
+interface BridgeHealthSnapshot {
+  kumikoAlarmsAlive: boolean;
+  localNotificationsAlive: boolean;
+  lastChecked: number;
+}
+
+function writeBridgeHealth(partial: Omit<BridgeHealthSnapshot, 'lastChecked'>): void {
+  try {
+    if (typeof sessionStorage === 'undefined') return;
+    const snapshot: BridgeHealthSnapshot = {
+      ...partial,
+      lastChecked: Date.now(),
+    };
+    sessionStorage.setItem(BRIDGE_HEALTH_KEY, JSON.stringify(snapshot));
+  } catch (e) {
+    console.warn('[androidAlarms] could not persist bridge health to sessionStorage:', e);
+  }
+}
+
+export function readKumikoBridgeHealth(): BridgeHealthSnapshot | null {
+  try {
+    if (typeof sessionStorage === 'undefined') return null;
+    const raw = sessionStorage.getItem(BRIDGE_HEALTH_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as BridgeHealthSnapshot;
+    if (typeof parsed?.kumikoAlarmsAlive !== 'boolean'
+      || typeof parsed?.localNotificationsAlive !== 'boolean'
+      || typeof parsed?.lastChecked !== 'number') return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 export async function isIgnoringBatteryOptimizations(): Promise<boolean | null> {
