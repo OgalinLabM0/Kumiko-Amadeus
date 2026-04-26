@@ -31,10 +31,14 @@ android {
         // c3 CloudEmbeddingForm 模型字段三元渲染 + custom 切换时 model=''
         // 修自定义模型 ID 被下拉框覆盖；c4 CloudEmbeddingForm mount selfheal
         // — store 是 default-shaped 但 LS 有真值时拉回，修配置不同步。
-        // 全部不动 ESM 依赖图，0 booting 风险，仍按 5 commit 拆分便于二分）。
+        // 全部不动 ESM 依赖图，0 booting 风险，仍按 5 commit 拆分便于二分），
+        // 2.14.20 → 21420（Android 输入链路 hotfix：custom embedding model
+        // DOM 兜底落盘；聊天发送改用可见 DOM 值避免纯中文按钮灰/文本截断；
+        // captureInput=false 验证蓝牙键盘中文；消息列表 bottom clearance；
+        // reminder 支持中文数字 + 主模型自然语言理解也能触发 D-fallback 创建任务）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21419
-        versionName "2.14.19"
+        versionCode 21420
+        versionName "2.14.20"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
