@@ -24,19 +24,30 @@
 //     reject as a missed-call alert is also done by the WebView via
 //     the same pending-action queue (action="reject_call").
 //
-// We deliberately don't play a ringtone here — the LocalNotification
-// channel kumiko_calls (created from JS) already has a vibration
-// pattern + system ringer, and adding a duplicate audio source from
-// native would conflict.
+// v2.14.21: the call screen is also the reliable ringtone/vibration
+// fallback. Full-screen notification routing wakes the activity from
+// background/lock screen; this activity then loops the user's selected
+// ringtone until Accept/Reject/onDestroy.
 
 package com.kumiko.amadeus.app.calls;
 
 import android.app.Activity;
+import android.app.NotificationManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.res.AssetFileDescriptor;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
+import android.media.AudioAttributes;
+import android.media.MediaPlayer;
+import android.media.RingtoneManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
 import android.view.WindowManager;
@@ -49,6 +60,9 @@ import com.kumiko.amadeus.app.alarms.KumikoAlarmReceiver;
 
 public class IncomingCallActivity extends Activity {
 
+    private static final String TAG = "IncomingCallActivity";
+    private static final long[] CALL_VIBRATION_PATTERN = new long[]{0, 650, 250, 650, 250, 900};
+
     public static final String PENDING_ACTION_ACCEPT = "accept_call";
     public static final String PENDING_ACTION_REJECT = "reject_call";
     public static final String EXTRA_PENDING_ACTION = "kumiko_pending_action";
@@ -56,6 +70,9 @@ public class IncomingCallActivity extends Activity {
     private String reminderId;
     private String reminderEvent;
     private String reminderText;
+    private String ringtoneFileId;
+    private MediaPlayer ringtonePlayer;
+    private Vibrator vibrator;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -80,10 +97,12 @@ public class IncomingCallActivity extends Activity {
         reminderId = intent.getStringExtra(KumikoAlarmReceiver.EXTRA_REMINDER_ID);
         reminderEvent = intent.getStringExtra(KumikoAlarmReceiver.EXTRA_REMINDER_EVENT);
         reminderText = intent.getStringExtra(KumikoAlarmReceiver.EXTRA_REMINDER_TEXT);
+        ringtoneFileId = intent.getStringExtra(KumikoAlarmReceiver.EXTRA_RINGTONE_FILE_ID);
         if (reminderEvent == null) reminderEvent = "提醒";
         if (reminderText == null) reminderText = reminderEvent;
 
         setContentView(buildLayout());
+        startRinging();
     }
 
     private View buildLayout() {
@@ -134,6 +153,8 @@ public class IncomingCallActivity extends Activity {
     }
 
     private void dispatch(String action) {
+        stopRinging();
+        cancelCallNotification();
         if (PENDING_ACTION_ACCEPT.equals(action)) {
             // Bring MainActivity to the foreground with the pending-action
             // payload. JS App.tsx hooks @capacitor/app's appResume event to
@@ -160,5 +181,122 @@ public class IncomingCallActivity extends Activity {
                 .apply();
         }
         finish();
+    }
+
+    @Override
+    protected void onDestroy() {
+        stopRinging();
+        cancelCallNotification();
+        super.onDestroy();
+    }
+
+    private void startRinging() {
+        startVibration();
+        try {
+            ringtonePlayer = createConfiguredRingtonePlayer();
+            if (ringtonePlayer != null) {
+                ringtonePlayer.setLooping(true);
+                ringtonePlayer.start();
+                return;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Configured ringtone failed; falling back to system ringtone", t);
+            releasePlayer();
+        }
+
+        try {
+            Uri defaultRingtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+            ringtonePlayer = MediaPlayer.create(this, defaultRingtone);
+            if (ringtonePlayer != null) {
+                ringtonePlayer.setLooping(true);
+                ringtonePlayer.start();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "System ringtone fallback failed", t);
+            releasePlayer();
+        }
+    }
+
+    private MediaPlayer createConfiguredRingtonePlayer() throws Exception {
+        String id = ringtoneFileId == null ? "" : ringtoneFileId.trim();
+        MediaPlayer player = new MediaPlayer();
+        player.setAudioAttributes(new AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build());
+
+        if (id.matches("^0[1-8]\\.mp3$")) {
+            AssetFileDescriptor afd = null;
+            try {
+                afd = getAssets().openFd("public/ringtones/" + id);
+                player.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+            } finally {
+                if (afd != null) {
+                    try { afd.close(); } catch (Throwable ignored) {}
+                }
+            }
+            player.prepare();
+            return player;
+        }
+
+        if (id.matches("^custom\\.(mp3|wav|ogg|m4a|aac|flac)$")) {
+            java.io.File file = new java.io.File(new java.io.File(getFilesDir(), "ringtones"), id);
+            if (file.exists() && file.length() > 0) {
+                player.setDataSource(file.getAbsolutePath());
+                player.prepare();
+                return player;
+            }
+        }
+
+        try { player.release(); } catch (Throwable ignored) {}
+        return null;
+    }
+
+    private void startVibration() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                VibratorManager manager = (VibratorManager) getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                vibrator = manager != null ? manager.getDefaultVibrator() : null;
+            } else {
+                //noinspection deprecation
+                vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (vibrator == null || !vibrator.hasVibrator()) return;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createWaveform(CALL_VIBRATION_PATTERN, 0));
+            } else {
+                //noinspection deprecation
+                vibrator.vibrate(CALL_VIBRATION_PATTERN, 0);
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "Call vibration failed", t);
+        }
+    }
+
+    private void stopRinging() {
+        try {
+            if (vibrator != null) vibrator.cancel();
+        } catch (Throwable ignored) {}
+        releasePlayer();
+    }
+
+    private void releasePlayer() {
+        try {
+            if (ringtonePlayer != null) {
+                if (ringtonePlayer.isPlaying()) ringtonePlayer.stop();
+                ringtonePlayer.release();
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            ringtonePlayer = null;
+        }
+    }
+
+    private void cancelCallNotification() {
+        if (reminderId == null) return;
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) nm.cancel(reminderId.hashCode());
+        } catch (Throwable ignored) {}
     }
 }

@@ -14,6 +14,7 @@ import {
   scheduleAndroidAlarm,
   type ScheduleAlarmResult,
 } from '../../services/androidAlarmService';
+import { ensureNativeRingtoneForAlarm } from '../../services/voiceFileService';
 import { useAppStore } from '../../store';
 
 type FlowState = 'INTRO' | 'AUTH' | 'CONFIG' | 'APP';
@@ -290,6 +291,9 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                   || ttsConfig.ttsBackend === 'sovits'
               );
               const ringtoneFileId = ttsConfig.ringtoneFileId || '';
+              if (wantsCall) {
+                  await ensureNativeRingtoneForAlarm(ringtoneFileId);
+              }
 
               const relatives = await getRelativeReminders();
               const dailies = await getDailyReminders();

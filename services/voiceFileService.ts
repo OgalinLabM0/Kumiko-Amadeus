@@ -12,6 +12,8 @@ import { db } from './db';
 // preferencesSync so a re-paired phone re-hydrates from the desktop's
 // userData ringtone if the user later switches back to PWA.
 const CAPACITOR_RINGTONE_KEY = 'kumiko_capacitor_custom_ringtone';
+const RINGTONE_DIR = 'ringtones';
+const CUSTOM_RINGTONE_COPY_EXTENSIONS = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac'];
 
 interface CapacitorRingtoneEntry {
   base64: string;
@@ -232,10 +234,58 @@ export const isCustomRingtoneId = (value?: string | null): value is string => (
     typeof value === 'string' && CUSTOM_RINGTONE_FILE_RE.test(value)
 );
 
+async function capacitorWriteNativeRingtoneCopy(fileName: string, buffer: ArrayBuffer): Promise<boolean> {
+    if (!isCapacitorNative()) return false;
+    if (!isCustomRingtoneId(fileName)) return false;
+    try {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        try {
+            await Filesystem.mkdir({ path: RINGTONE_DIR, directory: Directory.Data, recursive: true });
+        } catch {
+            /* Directory already exists or platform reports it noisily; writeFile will prove availability. */
+        }
+        await Filesystem.writeFile({
+            path: `${RINGTONE_DIR}/${fileName}`,
+            data: arrayBufferToBase64(buffer),
+            directory: Directory.Data,
+        });
+        return true;
+    } catch (e) {
+        console.warn('[voiceFileService] Capacitor native ringtone copy failed:', e);
+        return false;
+    }
+}
+
+async function capacitorDeleteNativeRingtoneCopies(): Promise<void> {
+    if (!isCapacitorNative()) return;
+    try {
+        const { Filesystem, Directory } = await import('@capacitor/filesystem');
+        await Promise.all(CUSTOM_RINGTONE_COPY_EXTENSIONS.map(async (ext) => {
+            try {
+                await Filesystem.deleteFile({
+                    path: `${RINGTONE_DIR}/custom.${ext}`,
+                    directory: Directory.Data,
+                });
+            } catch {
+                /* Missing old copy is expected. */
+            }
+        }));
+    } catch (e) {
+        console.warn('[voiceFileService] Capacitor native ringtone cleanup failed:', e);
+    }
+}
+
 export const getBuiltInRingtoneUrl = (ringtoneFileId: string): string | null => {
     if (!isBuiltInRingtoneId(ringtoneFileId) || typeof window === 'undefined') return null;
     return new URL(`ringtones/${ringtoneFileId}`, window.location.href).toString();
 };
+
+export async function ensureNativeRingtoneForAlarm(ringtoneFileId?: string | null): Promise<void> {
+    if (!isCapacitorNative() || !isCustomRingtoneId(ringtoneFileId)) return;
+    const loaded = await loadRingtoneFileWithName();
+    if (!loaded) return;
+    await capacitorWriteNativeRingtoneCopy(ringtoneFileId, loaded.buffer);
+}
 
 export async function saveVoiceFile(messageId: string, buffer: ArrayBuffer): Promise<boolean> {
     const ipc = getIpc();
@@ -404,6 +454,7 @@ export async function saveRingtoneFile(buffer: ArrayBuffer, ext: string, origina
                 savedAtMs: Date.now(),
             };
             await db.setVal(CAPACITOR_RINGTONE_KEY, entry);
+            await capacitorWriteNativeRingtoneCopy(`custom.${entry.ext}`, buffer);
             return true;
         } catch (e) {
             console.error('[voiceFileService] Capacitor ringtone save failed:', e);
@@ -523,6 +574,7 @@ export async function deleteRingtoneFile(): Promise<boolean> {
     if (isCapacitorNative()) {
         try {
             await db.keyval.delete(CAPACITOR_RINGTONE_KEY);
+            await capacitorDeleteNativeRingtoneCopies();
             return true;
         } catch (e) {
             console.warn('[voiceFileService] Capacitor ringtone delete failed:', e);
@@ -553,6 +605,7 @@ export async function clearRingtone(): Promise<{ success: boolean; hadRingtone: 
         if (isCapacitorNative()) {
             try {
                 await db.keyval.delete(CAPACITOR_RINGTONE_KEY);
+                await capacitorDeleteNativeRingtoneCopies();
             } catch (e) {
                 return { success: false, hadRingtone: had, error: String((e as any)?.message || e) };
             }
