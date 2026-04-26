@@ -45,9 +45,11 @@ const config: CapacitorConfig = {
     // production APK 也保留 true：debug 端口只在系统 settings > developer options
     // 打开 "USB debugging" 后才能访问，泄漏面足够小，换来用户上报问题时快速排查能力。
     webContentsDebuggingEnabled: true,
-    // 把 IME 输入完整交给 WebView，避免硬键盘 / 输入法候选栏被原生层吞掉。
-    // 默认就是 true，显式列出便于以后调整时知道这里有这个开关。
-    captureInput: true,
+    // v2.14.20: 用户实测外接蓝牙键盘在其它 Android app 可正常输入中文，
+    // 但在本 WebView 内无论怎么切换都会变英文。这里不再强制 Capacitor
+    // capture hardware input, 让系统 IME 正常接管硬键盘组合/候选栏。
+    // 独立 commit: 若软键盘输入出现回归, 可单独 revert 这一行。
+    captureInput: false,
   },
   plugins: {
     Keyboard: {
