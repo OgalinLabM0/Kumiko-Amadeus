@@ -35,10 +35,14 @@ android {
         // 2.14.20 → 21420（Android 输入链路 hotfix：custom embedding model
         // DOM 兜底落盘；聊天发送改用可见 DOM 值避免纯中文按钮灰/文本截断；
         // captureInput=false 验证蓝牙键盘中文；消息列表 bottom clearance；
-        // reminder 支持中文数字 + 主模型自然语言理解也能触发 D-fallback 创建任务）。
+        // reminder 支持中文数字 + 主模型自然语言理解也能触发 D-fallback 创建任务），
+        // 2.14.21 → 21421（Android 后台提醒 hotfix：收窄消息列表底部留白；
+        // AlarmManager call 分支改 full-screen notification；IncomingCallActivity
+        // 自己播放用户配置铃声 + 长震动；APP 入口主动创建 notification channels
+        // 并请求通知权限，避免后台主动消息静默失败）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21420
-        versionName "2.14.20"
+        versionCode 21421
+        versionName "2.14.21"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
