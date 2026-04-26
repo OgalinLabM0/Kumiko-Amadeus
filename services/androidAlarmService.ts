@@ -59,6 +59,33 @@ export interface NativeAndroidAlertPermissionStatus {
   fullScreenIntentReady: boolean;
 }
 
+export interface NativeOemDeviceInfo {
+  manufacturer: string;
+  brand: string;
+  model: string;
+  androidVersion: string;
+  /** Best-effort reflective read of Xiaomi's OP_SHOW_WHEN_LOCKED. */
+  showOnLockState: 'granted' | 'denied' | 'unknown';
+}
+
+/** Vendor-specific deep-link keys recognized by the native plugin. */
+export type VendorPermissionKey =
+  | 'xiaomi.autostart'
+  | 'xiaomi.permEditor'
+  | 'huawei.protectedApps'
+  | 'huawei.batteryOptimizations'
+  | 'samsung.batteryUsage'
+  | 'samsung.deviceCare'
+  | 'oppo.startup'
+  | 'oppo.batteryOptimizations'
+  | 'vivo.backgroundStartup'
+  | 'vivo.batteryOptimizations'
+  | 'oneplus.startup'
+  | 'realme.startup'
+  | 'honor.protectedApps'
+  | 'generic.appDetails'
+  | 'generic.ignoreBatteryOptimizations';
+
 interface KumikoAlarmsPluginShape {
   scheduleExact(opts: ScheduleAlarmInput): Promise<ScheduleAlarmResult>;
   cancel(opts: { reminderId: string }): Promise<{ cancelled: boolean }>;
@@ -68,6 +95,9 @@ interface KumikoAlarmsPluginShape {
   requestFullScreenIntentPermission(): Promise<void>;
   getAlertPermissionStatus(): Promise<NativeAndroidAlertPermissionStatus>;
   openAppNotificationSettings(): Promise<void>;
+  ensureNotificationChannels(): Promise<{ ready: boolean }>;
+  getOemDeviceInfo(): Promise<NativeOemDeviceInfo>;
+  openVendorSetting(opts: { key: VendorPermissionKey }): Promise<{ opened: boolean; usedFallback: boolean }>;
   postTestMessageNotification(opts: { title: string; body: string }): Promise<{ posted: boolean }>;
   postTestIncomingCall(opts: { title: string; body: string; ringtoneFileId?: string }): Promise<{ posted: boolean }>;
   cancelTestNotifications(): Promise<void>;
@@ -199,6 +229,49 @@ export async function openAndroidAppNotificationSettings(): Promise<void> {
     await plugin.openAppNotificationSettings();
   } catch (e) {
     console.warn('[androidAlarms] openAppNotificationSettings failed:', e);
+  }
+}
+
+/**
+ * One-shot bootstrap to create the kumiko_messages / kumiko_calls native
+ * channels. Kept separate from the read-only snapshot path so a stalled
+ * channel-creation call can never block the permission detection UI.
+ */
+export async function ensureKumikoNotificationChannelsNative(): Promise<boolean> {
+  const plugin = await getPlugin();
+  if (!plugin) return false;
+  try {
+    const result = await plugin.ensureNotificationChannels();
+    return result.ready === true;
+  } catch (e) {
+    console.warn('[androidAlarms] ensureNotificationChannels failed:', e);
+    return false;
+  }
+}
+
+export async function getOemDeviceInfo(): Promise<NativeOemDeviceInfo | null> {
+  const plugin = await getPlugin();
+  if (!plugin) return null;
+  try {
+    return await plugin.getOemDeviceInfo();
+  } catch (e) {
+    console.warn('[androidAlarms] getOemDeviceInfo failed:', e);
+    return null;
+  }
+}
+
+export async function openVendorPermissionSetting(key: VendorPermissionKey): Promise<{ opened: boolean; usedFallback: boolean }> {
+  const plugin = await getPlugin();
+  if (!plugin) return { opened: false, usedFallback: false };
+  try {
+    const result = await plugin.openVendorSetting({ key });
+    return {
+      opened: result.opened === true,
+      usedFallback: result.usedFallback === true,
+    };
+  } catch (e) {
+    console.warn('[androidAlarms] openVendorSetting failed:', e);
+    return { opened: false, usedFallback: false };
   }
 }
 

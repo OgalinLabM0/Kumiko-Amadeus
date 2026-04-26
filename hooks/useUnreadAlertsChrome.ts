@@ -8,6 +8,7 @@ import {
   FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY,
 } from '../services/androidAlarmService';
 import {
+  ensureAndroidAlertChannelsBootstrap,
   getAndroidAlertPermissionSnapshot,
   openAndroidAlertPermissionSettings,
   requestAndroidNotificationPermission,
@@ -141,6 +142,10 @@ export function useUnreadAlertsChrome(
       running = true;
       try {
         const copy = getPermissionCopy();
+        // Bootstrap notification channels FIRST (side effect, separated from
+        // the read-only snapshot path so it can never stall the detection UI).
+        await ensureAndroidAlertChannelsBootstrap();
+        if (cancelled) return;
         let snapshot = await getAndroidAlertPermissionSnapshot();
         if (cancelled) return;
         if (!snapshot.supported) return;
