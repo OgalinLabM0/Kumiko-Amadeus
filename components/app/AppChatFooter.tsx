@@ -62,6 +62,14 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
   const setReplyingToMsg = useAppStore(s => s.setReplyingToMsg);
 
   const selectedIdsCount = selectedIds.size;
+  const domInputValue = inputRef.current?.value ?? '';
+  const effectiveInputValue = domInputValue.trim().length > inputValue.trim().length
+    ? domInputValue
+    : inputValue;
+  const syncInputFromDom = (value: string) => {
+    if (value !== inputValue) setInputValue(value);
+  };
+
   return (
     <>
       {selectedImage && (
@@ -134,15 +142,21 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
               ref={inputRef}
               type="text"
               value={inputValue}
+              onInput={(e) => syncInputFromDom(e.currentTarget.value)}
               onChange={(e) => setInputValue(e.target.value)}
-              onKeyDown={onKeyDown}
+              onCompositionEnd={(e) => syncInputFromDom(e.currentTarget.value)}
+              onBlur={(e) => syncInputFromDom(e.currentTarget.value)}
+              onKeyDown={(e) => {
+                syncInputFromDom(e.currentTarget.value);
+                onKeyDown(e);
+              }}
               placeholder={sendPlaceholder}
               className={`w-full px-3 h-10 rounded outline-none ka-input-copy transition-all focus:ring-1 focus:ring-yellow-600/50 ${inputBoxBg}`}
             />
             <button
               onMouseDown={(e) => e.preventDefault()}
               onClick={onSend}
-              disabled={(!inputValue.trim() && !selectedImage) || isThinking}
+              disabled={(!effectiveInputValue.trim() && !selectedImage) || isThinking}
               className={`w-10 h-10 flex-shrink-0 rounded flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isDarkMode ? 'bg-yellow-900/20 text-yellow-500 hover:bg-yellow-900/40 hover:text-yellow-400' : 'bg-[#b8860b] text-white hover:bg-[#9a7009]'}`}
             >
               <Send size={18} />

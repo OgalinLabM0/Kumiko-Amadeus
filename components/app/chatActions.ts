@@ -2172,8 +2172,13 @@ export function handleSendAction(refs: ChatActionRefs) {
   const state = useAppStore.getState();
   const { inputValue, selectedImage, selectedImageId, isThinking, isTalking, replyingToMsg, locationConfig, language, messages } = state;
   const t = UI_TRANSLATIONS[language];
+  const domInputValue = refs.inputRef.current?.value;
+  // Android WebView + IME can leave Zustand one step behind the visible
+  // DOM value (or worse, with only the first digit of a Chinese reminder
+  // request). The visible input is the user's source of truth at send time.
+  const rawInputValue = typeof domInputValue === 'string' ? domInputValue : inputValue;
 
-  if ((!inputValue.trim() && !selectedImage) || isThinking) return;
+  if ((!rawInputValue.trim() && !selectedImage) || isThinking) return;
 
   let modelHour = 12;
   let modelMinute = 0;
@@ -2224,13 +2229,14 @@ export function handleSendAction(refs: ChatActionRefs) {
       refs.lateNightWakeTimestampRef.current = Date.now();
     } else {
       console.log('[SLEEP] User message while asleep. Auto-replying.');
-      const userText = inputValue;
+      const userText = rawInputValue;
       addMessageToStore('user', userText, selectedImage || undefined, undefined, undefined, undefined, undefined, undefined, selectedImageId || undefined);
       setTimeout(() => {
         addMessageToStore('model', t.autoReplyText, undefined, undefined, undefined, undefined, undefined, 'sleepy');
       }, 800);
       db.setVal('kumiko_pending_wakeup_context', userText);
       state.setInputValue('');
+      if (refs.inputRef.current) refs.inputRef.current.value = '';
       state.setSelectedImage(null);
       state.setSelectedImageId(null);
       state.setReplyingToMsg(null);
@@ -2241,7 +2247,7 @@ export function handleSendAction(refs: ChatActionRefs) {
   if (isTalking) state.setIsTalking(false);
   refs.generationIdRef.current += 1;
 
-  const userText = inputValue;
+  const userText = rawInputValue;
   const userImage = selectedImage;
   const userImageId = selectedImageId;
   const newMsgId = Date.now().toString() + Math.random().toString();
@@ -2252,6 +2258,7 @@ export function handleSendAction(refs: ChatActionRefs) {
   }
 
   state.setInputValue('');
+  if (refs.inputRef.current) refs.inputRef.current.value = '';
   state.setSelectedImage(null);
   state.setSelectedImageId(null);
   state.setReplyingToMsg(null);
