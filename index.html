@@ -819,6 +819,13 @@
     <script>
       (function(){
         try {
+          var t = null, mo = null;
+          var removeSplash = function(){
+            var el = document.getElementById('ka-boot-splash');
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+            if (t) { clearInterval(t); t = null; }
+            if (mo) { mo.disconnect(); mo = null; }
+          };
           // Electron desktop has no bundle-load window (file:// reads
           // finish in ms and BrowserWindow.backgroundColor already
           // paints the cream base), so the "MOBILE TERMINAL"-subtitled
@@ -827,12 +834,33 @@
           // contextIsolation or whether preload has exposed anything.
           if (typeof navigator !== 'undefined' && navigator.userAgent &&
               navigator.userAgent.indexOf('Electron') !== -1) {
-            var splashEl = document.getElementById('ka-boot-splash');
-            if (splashEl && splashEl.parentNode) {
-              splashEl.parentNode.removeChild(splashEl);
-            }
+            removeSplash();
             return;
           }
+          // v2.14.19: Capacitor Android/iOS WebView 一样跳过文字 splash
+          // — 用户希望和 PC 一样直接进入主界面,Android 原生窗口背景已改成
+          // 与 Web 首屏同色 (#f9f7f2),从原生 OS splash 一帧 → 纯色 → React
+          // mount 全程视觉无文字过渡。
+          //
+          // 检测 window.Capacitor.isNativePlatform() 跟 services/environment.ts
+          // 的 isCapacitorNative() 同一逻辑。Capacitor JS bundle 通常在 inline
+          // <script> 执行时已经注入,但为防极少数情况下时机更晚,setTimeout
+          // 0/50ms 兜底再次检测。Web/PWA preview 走原 timer + observer 路径。
+          var isCapacitor = function(){
+            try {
+              var W = (typeof window !== 'undefined') ? window : null;
+              if (!W || !W.Capacitor) return false;
+              if (typeof W.Capacitor.isNativePlatform === 'function') return W.Capacitor.isNativePlatform();
+              if (typeof W.Capacitor.getPlatform === 'function') return W.Capacitor.getPlatform() !== 'web';
+              return false;
+            } catch (_e) { return false; }
+          };
+          if (isCapacitor()) {
+            removeSplash();
+            return;
+          }
+          setTimeout(function(){ if (isCapacitor()) removeSplash(); }, 0);
+          setTimeout(function(){ if (isCapacitor()) removeSplash(); }, 50);
           var start = Date.now();
           var tick = function(){
             var el = document.getElementById('ka-boot-timer');
@@ -840,13 +868,14 @@
             var s = Math.floor((Date.now() - start) / 1000);
             el.textContent = s + 's';
           };
-          var t = setInterval(tick, 500);
+          t = setInterval(tick, 500);
           var root = document.getElementById('root');
           if (root && typeof MutationObserver === 'function') {
-            var mo = new MutationObserver(function(){
+            mo = new MutationObserver(function(){
               if (!document.getElementById('ka-boot-timer')) {
-                clearInterval(t);
+                if (t) { clearInterval(t); t = null; }
                 mo.disconnect();
+                mo = null;
               }
             });
             mo.observe(root, { childList: true, subtree: true });
