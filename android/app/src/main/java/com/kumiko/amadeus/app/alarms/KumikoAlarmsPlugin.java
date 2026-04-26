@@ -57,6 +57,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.kumiko.amadeus.app.MainActivity;
+import com.kumiko.amadeus.app.R;
 import com.kumiko.amadeus.app.calls.KumikoCallRingingService;
 import com.kumiko.amadeus.app.calls.KumikoConnectionService;
 
@@ -66,6 +67,8 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @CapacitorPlugin(name = "KumikoAlarms")
 public class KumikoAlarmsPlugin extends Plugin {
@@ -138,31 +141,81 @@ public class KumikoAlarmsPlugin extends Plugin {
     // PendingIntent request code never collides with the real alarm.
     private static final int PREWARM_REQUEST_CODE_OFFSET = 0x10000000;
 
+    // v2.14.25: dedicated worker thread for ALL @PluginMethod bodies and
+    // for load()'s channel migration. Capacitor 7's default plugin
+    // dispatch runs every method on the WebView main (UI) thread, which
+    // on MIUI/HyperOS gets aggressively throttled — five parallel JS
+    // probes from the permission snapshot consistently exhausted the
+    // 5s safeProbe budget on user devices, even though every method
+    // body is individually fast. By offloading to a single dedicated
+    // worker we:
+    //   - guarantee plugin calls are never blocked by WebView paint /
+    //     layout work;
+    //   - serialise calls so each method sees a stable view of state
+    //     (avoiding the channel-creation race that motivated v3 IDs);
+    //   - keep memory/CPU overhead trivial (one daemon thread).
+    // The thread is daemon so it doesn't block process shutdown if a
+    // method body somehow runs forever; daemon also matches Capacitor's
+    // own internal pools.
+    private static final ExecutorService PLUGIN_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "kumiko-alarms-plugin");
+        t.setDaemon(true);
+        return t;
+    });
+
+    /**
+     * v2.14.25: helper that dispatches a {@link PluginCall} body to the
+     * shared worker, with a global try/catch that converts any uncaught
+     * Throwable into a {@code call.reject(...)}. Without this catch, an
+     * exception inside the lambda would leak the PluginCall (never
+     * resolved or rejected), and the JS-side {@code safeProbe} would
+     * still time out after 5s — defeating the whole point of the
+     * executor.
+     */
+    private void onWorker(PluginCall call, String label, Runnable body) {
+        PLUGIN_EXECUTOR.execute(() -> {
+            try {
+                body.run();
+            } catch (Throwable t) {
+                Log.e(TAG, label + " native body crashed", t);
+                try {
+                    call.reject("native crash in " + label + ": " + t.getMessage());
+                } catch (Throwable ignored) {
+                    // PluginCall may already be resolved/rejected; nothing more to do.
+                }
+            }
+        });
+    }
+
     @Override
     public void load() {
         super.load();
-        // v2.14.24: one-shot delete of legacy channel IDs + eager creation
-        // of the v3 channels.
+        // v2.14.25: schedule channel migration + creation on the plugin
+        // worker so BridgeActivity.onCreate isn't held by NotificationManager
+        // calls. On healthy devices the migration completes in <50ms; on
+        // misbehaving ROMs (HyperOS WebView throttling, AOSP doze) it can
+        // stretch into seconds, which previously held up the whole bridge
+        // and caused the v2.14.24 "all probes time out at 5s" symptom.
         //
-        // Capacitor's plugin load() runs once per process when the bridge
-        // resolves the plugin descriptor (i.e. on every cold start of
-        // MainActivity). The SharedPreferences flag makes the actual delete
-        // idempotent across launches; gating on the flag also avoids
-        // touching NotificationManager unnecessarily after migration.
+        // The SharedPreferences flag (CHANNEL_MIGRATION_KEY_V3) keeps
+        // runChannelMigrationToV3 idempotent across cold starts so the
+        // worker doesn't re-delete legacy channels every launch.
         //
         // We also pre-create the v3 channels here because Capacitor's
         // LocalNotifications plugin may post by channelId before any
         // reminder fires (e.g. proactive RNG message via postKumikoNotification),
-        // and an unknown channelId would silently route to the default channel
-        // — losing our DND-bypass / lockscreen visibility settings.
-        try {
-            Context ctx = getContext();
-            runChannelMigrationToV3(ctx);
-            ensureMessagesChannel(ctx);
-            ensureCallsChannel(ctx);
-        } catch (Throwable t) {
-            Log.w(TAG, "Channel setup at load() failed (non-fatal)", t);
-        }
+        // and an unknown channelId would silently route to the default
+        // channel — losing our DND-bypass / lockscreen visibility settings.
+        Context ctx = getContext();
+        PLUGIN_EXECUTOR.execute(() -> {
+            try {
+                runChannelMigrationToV3(ctx);
+                ensureMessagesChannel(ctx);
+                ensureCallsChannel(ctx);
+            } catch (Throwable t) {
+                Log.w(TAG, "Channel setup at load() failed (non-fatal)", t);
+            }
+        });
     }
 
     public static void runChannelMigrationToV3(Context context) {
@@ -184,88 +237,90 @@ public class KumikoAlarmsPlugin extends Plugin {
 
     @PluginMethod
     public void scheduleExact(PluginCall call) {
-        String reminderId = call.getString("reminderId");
-        if (reminderId == null || reminderId.isEmpty()) {
-            call.reject("reminderId required");
-            return;
-        }
-        Long atMs = call.getLong("at");
-        if (atMs == null || atMs <= 0) {
-            call.reject("at (epoch ms) required");
-            return;
-        }
-        String reminderEvent = call.getString("event", "提醒");
-        String reminderText = call.getString("text", reminderEvent);
-        boolean wantsCall = Boolean.TRUE.equals(call.getBoolean("wantsCall", false));
-        String ringtoneFileId = call.getString("ringtoneFileId", "");
-
-        Context context = getContext();
-        AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
-        if (am == null) {
-            call.reject("AlarmManager unavailable");
-            return;
-        }
-
-        boolean exactScheduled = scheduleAlarmInternal(
-            context, am, reminderId, atMs, reminderEvent, reminderText, wantsCall, ringtoneFileId, /*isPrewarm*/ false
-        );
-
-        // v2.14.23: persist the reminder metadata to the native ledger so
-        // KumikoBootReceiver can rebuild AlarmManager state after the device
-        // reboots. AlarmManager forgets all pending alarms after every
-        // reboot (including LOCKED_BOOT_COMPLETED), so without this every
-        // reminder set before the user's nightly reboot silently misses.
-        // Side effect: cancel() also removes the row, keeping the ledger in
-        // sync with the AlarmManager view.
-        try {
-            persistLedgerEntry(context, reminderId, atMs, reminderEvent, reminderText, wantsCall, ringtoneFileId);
-        } catch (Throwable t) {
-            Log.w(TAG, "Failed to persist ledger entry; reboot recovery may not work", t);
-        }
-
-        // v2.14.23: Xiaomi/HyperOS double-alarm. MIUI's power-management
-        // layer rounds long-delay alarms to 5-minute boundaries (a
-        // documented kernel-side behaviour reproduced on every MIUI 12+
-        // device we tested). Scheduling a second "prewarm" alarm 5 minutes
-        // before the real one nudges the kernel out of deep doze ahead of
-        // time, which empirically reduces drift from ~5min to ~10s. This
-        // is a *mitigation*, not a guarantee — MIUI can still drift if the
-        // app is force-stopped or the user has aggressive battery saver on.
-        // We only do this for delays >= 10min; shorter ones don't benefit.
-        long delayMs = atMs - System.currentTimeMillis();
-        boolean prewarmScheduled = false;
-        if (isXiaomiHyperOs() && delayMs >= 10L * 60_000L) {
-            long prewarmAt = atMs - 5L * 60_000L;
-            try {
-                prewarmScheduled = scheduleAlarmInternal(
-                    context, am, reminderId + PREWARM_REMINDER_SUFFIX, prewarmAt,
-                    reminderEvent, reminderText, wantsCall, ringtoneFileId, /*isPrewarm*/ true
-                );
-                Log.i(TAG, "Xiaomi double-alarm: prewarm at " + prewarmAt + " for reminder " + reminderId);
-            } catch (Throwable t) {
-                Log.w(TAG, "Failed to schedule Xiaomi prewarm alarm; main alarm still scheduled", t);
+        onWorker(call, "scheduleExact", () -> {
+            String reminderId = call.getString("reminderId");
+            if (reminderId == null || reminderId.isEmpty()) {
+                call.reject("reminderId required");
+                return;
             }
-        }
+            Long atMs = call.getLong("at");
+            if (atMs == null || atMs <= 0) {
+                call.reject("at (epoch ms) required");
+                return;
+            }
+            String reminderEvent = call.getString("event", "提醒");
+            String reminderText = call.getString("text", reminderEvent);
+            boolean wantsCall = Boolean.TRUE.equals(call.getBoolean("wantsCall", false));
+            String ringtoneFileId = call.getString("ringtoneFileId", "");
 
-        // v2.14.23: ensure the long-running alarm guardian is up. The
-        // foreground service holds a persistent ongoing notification that
-        // visibly anchors our process priority on aggressive ROMs, dropping
-        // the "killed by Android" rate enough to materially improve
-        // delivery reliability. The service is started lazily and stopped
-        // by JS once the last reminder is consumed.
-        try {
-            startGuardianService(context, "scheduleExact");
-        } catch (Throwable t) {
-            Log.w(TAG, "Could not start alarm guardian; alarm still scheduled but priority lower", t);
-        }
+            Context context = getContext();
+            AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+            if (am == null) {
+                call.reject("AlarmManager unavailable");
+                return;
+            }
 
-        JSObject ret = new JSObject();
-        ret.put("scheduled", true);
-        ret.put("exact", exactScheduled);
-        ret.put("at", atMs);
-        ret.put("reminderId", reminderId);
-        ret.put("prewarmScheduled", prewarmScheduled);
-        call.resolve(ret);
+            boolean exactScheduled = scheduleAlarmInternal(
+                context, am, reminderId, atMs, reminderEvent, reminderText, wantsCall, ringtoneFileId, /*isPrewarm*/ false
+            );
+
+            // v2.14.23: persist the reminder metadata to the native ledger so
+            // KumikoBootReceiver can rebuild AlarmManager state after the device
+            // reboots. AlarmManager forgets all pending alarms after every
+            // reboot (including LOCKED_BOOT_COMPLETED), so without this every
+            // reminder set before the user's nightly reboot silently misses.
+            // Side effect: cancel() also removes the row, keeping the ledger in
+            // sync with the AlarmManager view.
+            try {
+                persistLedgerEntry(context, reminderId, atMs, reminderEvent, reminderText, wantsCall, ringtoneFileId);
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to persist ledger entry; reboot recovery may not work", t);
+            }
+
+            // v2.14.23: Xiaomi/HyperOS double-alarm. MIUI's power-management
+            // layer rounds long-delay alarms to 5-minute boundaries (a
+            // documented kernel-side behaviour reproduced on every MIUI 12+
+            // device we tested). Scheduling a second "prewarm" alarm 5 minutes
+            // before the real one nudges the kernel out of deep doze ahead of
+            // time, which empirically reduces drift from ~5min to ~10s. This
+            // is a *mitigation*, not a guarantee — MIUI can still drift if the
+            // app is force-stopped or the user has aggressive battery saver on.
+            // We only do this for delays >= 10min; shorter ones don't benefit.
+            long delayMs = atMs - System.currentTimeMillis();
+            boolean prewarmScheduled = false;
+            if (isXiaomiHyperOs() && delayMs >= 10L * 60_000L) {
+                long prewarmAt = atMs - 5L * 60_000L;
+                try {
+                    prewarmScheduled = scheduleAlarmInternal(
+                        context, am, reminderId + PREWARM_REMINDER_SUFFIX, prewarmAt,
+                        reminderEvent, reminderText, wantsCall, ringtoneFileId, /*isPrewarm*/ true
+                    );
+                    Log.i(TAG, "Xiaomi double-alarm: prewarm at " + prewarmAt + " for reminder " + reminderId);
+                } catch (Throwable t) {
+                    Log.w(TAG, "Failed to schedule Xiaomi prewarm alarm; main alarm still scheduled", t);
+                }
+            }
+
+            // v2.14.23: ensure the long-running alarm guardian is up. The
+            // foreground service holds a persistent ongoing notification that
+            // visibly anchors our process priority on aggressive ROMs, dropping
+            // the "killed by Android" rate enough to materially improve
+            // delivery reliability. The service is started lazily and stopped
+            // by JS once the last reminder is consumed.
+            try {
+                startGuardianService(context, "scheduleExact");
+            } catch (Throwable t) {
+                Log.w(TAG, "Could not start alarm guardian; alarm still scheduled but priority lower", t);
+            }
+
+            JSObject ret = new JSObject();
+            ret.put("scheduled", true);
+            ret.put("exact", exactScheduled);
+            ret.put("at", atMs);
+            ret.put("reminderId", reminderId);
+            ret.put("prewarmScheduled", prewarmScheduled);
+            call.resolve(ret);
+        });
     }
 
     /**
@@ -329,35 +384,37 @@ public class KumikoAlarmsPlugin extends Plugin {
 
     @PluginMethod
     public void cancel(PluginCall call) {
-        String reminderId = call.getString("reminderId");
-        if (reminderId == null || reminderId.isEmpty()) {
-            call.reject("reminderId required");
-            return;
-        }
-        Context context = getContext();
-        AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
-        if (am == null) {
-            call.reject("AlarmManager unavailable");
-            return;
-        }
+        onWorker(call, "cancel", () -> {
+            String reminderId = call.getString("reminderId");
+            if (reminderId == null || reminderId.isEmpty()) {
+                call.reject("reminderId required");
+                return;
+            }
+            Context context = getContext();
+            AlarmManager am = (AlarmManager) context.getSystemService(Context.ALARM_SERVICE);
+            if (am == null) {
+                call.reject("AlarmManager unavailable");
+                return;
+            }
 
-        boolean cancelledMain = cancelAlarmInternal(context, am, reminderId, /*isPrewarm*/ false);
-        boolean cancelledPrewarm = cancelAlarmInternal(context, am, reminderId, /*isPrewarm*/ true);
+            boolean cancelledMain = cancelAlarmInternal(context, am, reminderId, /*isPrewarm*/ false);
+            boolean cancelledPrewarm = cancelAlarmInternal(context, am, reminderId, /*isPrewarm*/ true);
 
-        // v2.14.23: also remove the ledger row so the boot receiver doesn't
-        // resurrect a cancelled reminder. We do this even when the
-        // PendingIntent lookup returned null (cancelled is best-effort);
-        // the ledger is the source of truth for reboot recovery.
-        try {
-            removeLedgerEntry(context, reminderId);
-        } catch (Throwable t) {
-            Log.w(TAG, "Failed to remove ledger entry for " + reminderId, t);
-        }
+            // v2.14.23: also remove the ledger row so the boot receiver doesn't
+            // resurrect a cancelled reminder. We do this even when the
+            // PendingIntent lookup returned null (cancelled is best-effort);
+            // the ledger is the source of truth for reboot recovery.
+            try {
+                removeLedgerEntry(context, reminderId);
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to remove ledger entry for " + reminderId, t);
+            }
 
-        JSObject ret = new JSObject();
-        ret.put("cancelled", cancelledMain);
-        ret.put("prewarmCancelled", cancelledPrewarm);
-        call.resolve(ret);
+            JSObject ret = new JSObject();
+            ret.put("cancelled", cancelledMain);
+            ret.put("prewarmCancelled", cancelledPrewarm);
+            call.resolve(ret);
+        });
     }
 
     /**
@@ -383,105 +440,117 @@ public class KumikoAlarmsPlugin extends Plugin {
 
     @PluginMethod
     public void canScheduleExact(PluginCall call) {
-        boolean can = canScheduleExactAlarmNow(getContext());
-        JSObject ret = new JSObject();
-        ret.put("canScheduleExact", can);
-        call.resolve(ret);
+        onWorker(call, "canScheduleExact", () -> {
+            boolean can = canScheduleExactAlarmNow(getContext());
+            JSObject ret = new JSObject();
+            ret.put("canScheduleExact", can);
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void requestExactAlarmPermission(PluginCall call) {
-        // Open the system settings page where the user can grant
-        // SCHEDULE_EXACT_ALARM. Best-effort — caller should re-check
-        // canScheduleExact() after the user returns.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            try {
-                Intent settings = new Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
-                settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                getContext().startActivity(settings);
-                call.resolve();
-                return;
-            } catch (Throwable t) {
-                Log.w(TAG, "Could not open exact-alarm settings", t);
+        onWorker(call, "requestExactAlarmPermission", () -> {
+            // Open the system settings page where the user can grant
+            // SCHEDULE_EXACT_ALARM. Best-effort — caller should re-check
+            // canScheduleExact() after the user returns.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    Intent settings = new Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM);
+                    settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    getContext().startActivity(settings);
+                    call.resolve();
+                    return;
+                } catch (Throwable t) {
+                    Log.w(TAG, "Could not open exact-alarm settings", t);
+                }
             }
-        }
-        call.resolve();
+            call.resolve();
+        });
     }
 
     @PluginMethod
     public void canUseFullScreenIntent(PluginCall call) {
-        boolean can = canUseFullScreenIntentNow(getContext());
-        JSObject ret = new JSObject();
-        ret.put("canUseFullScreenIntent", can);
-        call.resolve(ret);
+        onWorker(call, "canUseFullScreenIntent", () -> {
+            boolean can = canUseFullScreenIntentNow(getContext());
+            JSObject ret = new JSObject();
+            ret.put("canUseFullScreenIntent", can);
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void requestFullScreenIntentPermission(PluginCall call) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            Context context = getContext();
-            try {
-                Intent settings = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT);
-                settings.setData(Uri.parse("package:" + context.getPackageName()));
-                settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(settings);
-                call.resolve();
-                return;
-            } catch (Throwable t) {
-                Log.w(TAG, "Could not open full-screen intent settings; falling back to app notification settings", t);
+        onWorker(call, "requestFullScreenIntentPermission", () -> {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                Context context = getContext();
                 try {
-                    Intent fallback = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
-                    fallback.putExtra(Settings.EXTRA_APP_PACKAGE, context.getPackageName());
-                    fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    context.startActivity(fallback);
+                    Intent settings = new Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT);
+                    settings.setData(Uri.parse("package:" + context.getPackageName()));
+                    settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(settings);
                     call.resolve();
                     return;
-                } catch (Throwable t2) {
-                    Log.w(TAG, "Could not open app notification settings", t2);
+                } catch (Throwable t) {
+                    Log.w(TAG, "Could not open full-screen intent settings; falling back to app notification settings", t);
+                    try {
+                        Intent fallback = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                        fallback.putExtra(Settings.EXTRA_APP_PACKAGE, context.getPackageName());
+                        fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        context.startActivity(fallback);
+                        call.resolve();
+                        return;
+                    } catch (Throwable t2) {
+                        Log.w(TAG, "Could not open app notification settings", t2);
+                    }
                 }
             }
-        }
-        call.resolve();
+            call.resolve();
+        });
     }
 
     @PluginMethod
     public void getAlertPermissionStatus(PluginCall call) {
-        Context context = getContext();
-        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-        boolean notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled();
-        boolean messagesChannelReady = isChannelUsable(nm, CHANNEL_ID_MESSAGES);
-        boolean callsChannelReady = isChannelUsable(nm, CHANNEL_ID_CALLS);
+        onWorker(call, "getAlertPermissionStatus", () -> {
+            Context context = getContext();
+            NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+            boolean notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled();
+            boolean messagesChannelReady = isChannelUsable(nm, CHANNEL_ID_MESSAGES);
+            boolean callsChannelReady = isChannelUsable(nm, CHANNEL_ID_CALLS);
 
-        JSObject ret = new JSObject();
-        ret.put("sdkInt", Build.VERSION.SDK_INT);
-        ret.put("notificationsEnabled", notificationsEnabled);
-        ret.put("messagesChannelReady", messagesChannelReady);
-        ret.put("callsChannelReady", callsChannelReady);
-        ret.put("exactAlarmReady", canScheduleExactAlarmNow(context));
-        ret.put("fullScreenIntentReady", canUseFullScreenIntentNow(context));
-        call.resolve(ret);
+            JSObject ret = new JSObject();
+            ret.put("sdkInt", Build.VERSION.SDK_INT);
+            ret.put("notificationsEnabled", notificationsEnabled);
+            ret.put("messagesChannelReady", messagesChannelReady);
+            ret.put("callsChannelReady", callsChannelReady);
+            ret.put("exactAlarmReady", canScheduleExactAlarmNow(context));
+            ret.put("fullScreenIntentReady", canUseFullScreenIntentNow(context));
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void openAppNotificationSettings(PluginCall call) {
-        Context context = getContext();
-        try {
-            Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
-            intent.putExtra(Settings.EXTRA_APP_PACKAGE, context.getPackageName());
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(intent);
-        } catch (Throwable t) {
-            Log.w(TAG, "Could not open app notification settings", t);
+        onWorker(call, "openAppNotificationSettings", () -> {
+            Context context = getContext();
             try {
-                Intent fallback = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                fallback.setData(Uri.parse("package:" + context.getPackageName()));
-                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(fallback);
-            } catch (Throwable t2) {
-                Log.w(TAG, "Could not open app details settings", t2);
+                Intent intent = new Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                intent.putExtra(Settings.EXTRA_APP_PACKAGE, context.getPackageName());
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
+            } catch (Throwable t) {
+                Log.w(TAG, "Could not open app notification settings", t);
+                try {
+                    Intent fallback = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    fallback.setData(Uri.parse("package:" + context.getPackageName()));
+                    fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(fallback);
+                } catch (Throwable t2) {
+                    Log.w(TAG, "Could not open app details settings", t2);
+                }
             }
-        }
-        call.resolve();
+            call.resolve();
+        });
     }
 
     /**
@@ -493,19 +562,21 @@ public class KumikoAlarmsPlugin extends Plugin {
      */
     @PluginMethod
     public void ensureNotificationChannels(PluginCall call) {
-        try {
-            Context context = getContext();
-            ensureMessagesChannel(context);
-            ensureCallsChannel(context);
-            JSObject ret = new JSObject();
-            ret.put("ready", true);
-            call.resolve(ret);
-        } catch (Throwable t) {
-            Log.w(TAG, "ensureNotificationChannels failed", t);
-            JSObject ret = new JSObject();
-            ret.put("ready", false);
-            call.resolve(ret);
-        }
+        onWorker(call, "ensureNotificationChannels", () -> {
+            try {
+                Context context = getContext();
+                ensureMessagesChannel(context);
+                ensureCallsChannel(context);
+                JSObject ret = new JSObject();
+                ret.put("ready", true);
+                call.resolve(ret);
+            } catch (Throwable t) {
+                Log.w(TAG, "ensureNotificationChannels failed", t);
+                JSObject ret = new JSObject();
+                ret.put("ready", false);
+                call.resolve(ret);
+            }
+        });
     }
 
     /**
@@ -515,20 +586,22 @@ public class KumikoAlarmsPlugin extends Plugin {
      */
     @PluginMethod
     public void getOemDeviceInfo(PluginCall call) {
-        Context context = getContext();
-        JSObject ret = new JSObject();
-        ret.put("manufacturer", KumikoVendorPermissionHelper.manufacturer());
-        ret.put("brand", KumikoVendorPermissionHelper.brand());
-        ret.put("model", KumikoVendorPermissionHelper.model());
-        ret.put("androidVersion", KumikoVendorPermissionHelper.androidVersion());
-        KumikoVendorPermissionHelper.ShowOnLockState lockState =
-            KumikoVendorPermissionHelper.detectMiuiShowOnLock(context);
-        switch (lockState) {
-            case GRANTED: ret.put("showOnLockState", "granted"); break;
-            case DENIED: ret.put("showOnLockState", "denied"); break;
-            default: ret.put("showOnLockState", "unknown"); break;
-        }
-        call.resolve(ret);
+        onWorker(call, "getOemDeviceInfo", () -> {
+            Context context = getContext();
+            JSObject ret = new JSObject();
+            ret.put("manufacturer", KumikoVendorPermissionHelper.manufacturer());
+            ret.put("brand", KumikoVendorPermissionHelper.brand());
+            ret.put("model", KumikoVendorPermissionHelper.model());
+            ret.put("androidVersion", KumikoVendorPermissionHelper.androidVersion());
+            KumikoVendorPermissionHelper.ShowOnLockState lockState =
+                KumikoVendorPermissionHelper.detectMiuiShowOnLock(context);
+            switch (lockState) {
+                case GRANTED: ret.put("showOnLockState", "granted"); break;
+                case DENIED: ret.put("showOnLockState", "denied"); break;
+                default: ret.put("showOnLockState", "unknown"); break;
+            }
+            call.resolve(ret);
+        });
     }
 
     /**
@@ -540,118 +613,126 @@ public class KumikoAlarmsPlugin extends Plugin {
      */
     @PluginMethod
     public void openVendorSetting(PluginCall call) {
-        String key = call.getString("key", "");
-        if (key == null || key.isEmpty()) {
+        onWorker(call, "openVendorSetting", () -> {
+            String key = call.getString("key", "");
+            if (key == null || key.isEmpty()) {
+                JSObject ret = new JSObject();
+                ret.put("opened", false);
+                ret.put("usedFallback", false);
+                call.resolve(ret);
+                return;
+            }
+            KumikoVendorPermissionHelper.OpenResult result =
+                KumikoVendorPermissionHelper.openVendorSetting(getContext(), key);
             JSObject ret = new JSObject();
-            ret.put("opened", false);
-            ret.put("usedFallback", false);
+            ret.put("opened", result.opened);
+            ret.put("usedFallback", result.usedFallback);
             call.resolve(ret);
-            return;
-        }
-        KumikoVendorPermissionHelper.OpenResult result =
-            KumikoVendorPermissionHelper.openVendorSetting(getContext(), key);
-        JSObject ret = new JSObject();
-        ret.put("opened", result.opened);
-        ret.put("usedFallback", result.usedFallback);
-        call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void postTestMessageNotification(PluginCall call) {
-        Context context = getContext();
-        try {
-            ensureMessagesChannel(context);
-            String title = call.getString("title", "Kumiko·Amadeus");
-            String body = call.getString("body", "Android notification test");
+        onWorker(call, "postTestMessageNotification", () -> {
+            Context context = getContext();
+            try {
+                ensureMessagesChannel(context);
+                String title = call.getString("title", "Kumiko·Amadeus");
+                String body = call.getString("body", "Android notification test");
 
-            Intent tapIntent = new Intent(context, MainActivity.class);
-            tapIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            PendingIntent contentPi = PendingIntent.getActivity(
-                context,
-                TEST_MESSAGE_NOTIFICATION_ID,
-                tapIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-            );
+                Intent tapIntent = new Intent(context, MainActivity.class);
+                tapIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                PendingIntent contentPi = PendingIntent.getActivity(
+                    context,
+                    TEST_MESSAGE_NOTIFICATION_ID,
+                    tapIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+                );
 
-            Notification notification = new NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle(title)
-                .setContentText(body)
-                .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setContentIntent(contentPi)
-                .setAutoCancel(true)
-                .setVibrate(MESSAGE_VIBRATION_PATTERN)
-                .build();
+                Notification notification = new NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
+                    .setSmallIcon(R.drawable.ic_stat_kumiko)
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setContentIntent(contentPi)
+                    .setAutoCancel(true)
+                    .setVibrate(MESSAGE_VIBRATION_PATTERN)
+                    .build();
 
-            NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm == null) {
-                call.reject("NotificationManager unavailable");
-                return;
+                NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm == null) {
+                    call.reject("NotificationManager unavailable");
+                    return;
+                }
+                nm.notify(TEST_MESSAGE_NOTIFICATION_ID, notification);
+                vibrate(context, MESSAGE_VIBRATION_PATTERN, -1);
+                JSObject ret = new JSObject();
+                ret.put("posted", true);
+                call.resolve(ret);
+            } catch (Throwable t) {
+                Log.e(TAG, "Test message notification failed", t);
+                call.reject("Test message notification failed: " + t.getMessage());
             }
-            nm.notify(TEST_MESSAGE_NOTIFICATION_ID, notification);
-            vibrate(context, MESSAGE_VIBRATION_PATTERN, -1);
-            JSObject ret = new JSObject();
-            ret.put("posted", true);
-            call.resolve(ret);
-        } catch (Throwable t) {
-            Log.e(TAG, "Test message notification failed", t);
-            call.reject("Test message notification failed: " + t.getMessage());
-        }
+        });
     }
 
     @PluginMethod
     public void postTestIncomingCall(PluginCall call) {
-        Context context = getContext();
-        try {
-            String title = call.getString("title", "黄前久美子 来电测试");
-            String body = call.getString("body", "来电弹窗 / 铃声 / 震动测试");
-            String ringtoneFileId = call.getString("ringtoneFileId", "");
-            String testReminderId = "test-incoming-call-" + System.currentTimeMillis();
-
-            // v2.14.24: post the same heads-up the production reminder
-            // path uses, so the test really exercises the user-facing
-            // notification surface (CallStyle on API 31+, Accept/Decline
-            // actions on older). Also start the ringer FG service so the
-            // test confirms ringtone + vibration loop.
-            postIncomingCallHeadsUp(context, testReminderId, title, body, ringtoneFileId);
+        onWorker(call, "postTestIncomingCall", () -> {
+            Context context = getContext();
             try {
-                Intent ringer = new Intent(context, KumikoCallRingingService.class);
-                ringer.putExtra(KumikoCallRingingService.EXTRA_REMINDER_ID, testReminderId);
-                ringer.putExtra(KumikoCallRingingService.EXTRA_RINGTONE_FILE_ID, ringtoneFileId);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    context.startForegroundService(ringer);
-                } else {
-                    context.startService(ringer);
-                }
-            } catch (Throwable t) {
-                Log.w(TAG, "Test incoming call: ringer start failed", t);
-            }
+                String title = call.getString("title", "黄前久美子 来电测试");
+                String body = call.getString("body", "来电弹窗 / 铃声 / 震动测试");
+                String ringtoneFileId = call.getString("ringtoneFileId", "");
+                String testReminderId = "test-incoming-call-" + System.currentTimeMillis();
 
-            JSObject ret = new JSObject();
-            ret.put("posted", true);
-            call.resolve(ret);
-        } catch (Throwable t) {
-            Log.e(TAG, "Test incoming call failed", t);
-            call.reject("Test incoming call failed: " + t.getMessage());
-        }
+                // v2.14.24: post the same heads-up the production reminder
+                // path uses, so the test really exercises the user-facing
+                // notification surface (CallStyle on API 31+, Accept/Decline
+                // actions on older). Also start the ringer FG service so the
+                // test confirms ringtone + vibration loop.
+                postIncomingCallHeadsUp(context, testReminderId, title, body, ringtoneFileId);
+                try {
+                    Intent ringer = new Intent(context, KumikoCallRingingService.class);
+                    ringer.putExtra(KumikoCallRingingService.EXTRA_REMINDER_ID, testReminderId);
+                    ringer.putExtra(KumikoCallRingingService.EXTRA_RINGTONE_FILE_ID, ringtoneFileId);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        context.startForegroundService(ringer);
+                    } else {
+                        context.startService(ringer);
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "Test incoming call: ringer start failed", t);
+                }
+
+                JSObject ret = new JSObject();
+                ret.put("posted", true);
+                call.resolve(ret);
+            } catch (Throwable t) {
+                Log.e(TAG, "Test incoming call failed", t);
+                call.reject("Test incoming call failed: " + t.getMessage());
+            }
+        });
     }
 
     @PluginMethod
     public void cancelTestNotifications(PluginCall call) {
-        try {
-            NotificationManager nm = (NotificationManager) getContext().getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null) {
-                nm.cancel(TEST_MESSAGE_NOTIFICATION_ID);
-                nm.cancel(TEST_CALL_NOTIFICATION_ID);
-                nm.cancel("test-incoming-call".hashCode());
+        onWorker(call, "cancelTestNotifications", () -> {
+            try {
+                NotificationManager nm = (NotificationManager) getContext().getSystemService(Context.NOTIFICATION_SERVICE);
+                if (nm != null) {
+                    nm.cancel(TEST_MESSAGE_NOTIFICATION_ID);
+                    nm.cancel(TEST_CALL_NOTIFICATION_ID);
+                    nm.cancel("test-incoming-call".hashCode());
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "Cancel test notifications failed", t);
             }
-        } catch (Throwable t) {
-            Log.w(TAG, "Cancel test notifications failed", t);
-        }
-        call.resolve();
+            call.resolve();
+        });
     }
 
     /**
@@ -662,9 +743,11 @@ public class KumikoAlarmsPlugin extends Plugin {
      */
     @PluginMethod
     public void prewarm(PluginCall call) {
-        JSObject ret = new JSObject();
-        ret.put("ok", true);
-        call.resolve(ret);
+        onWorker(call, "prewarm", () -> {
+            JSObject ret = new JSObject();
+            ret.put("ok", true);
+            call.resolve(ret);
+        });
     }
 
     /**
@@ -677,43 +760,47 @@ public class KumikoAlarmsPlugin extends Plugin {
      */
     @PluginMethod
     public void requestIgnoreBatteryOptimization(PluginCall call) {
-        Context context = getContext();
-        boolean requested = false;
-        try {
-            Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-            intent.setData(Uri.parse("package:" + context.getPackageName()));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(intent);
-            requested = true;
-        } catch (Throwable t) {
-            Log.w(TAG, "Direct REQUEST_IGNORE_BATTERY_OPTIMIZATIONS failed; falling back to settings list", t);
+        onWorker(call, "requestIgnoreBatteryOptimization", () -> {
+            Context context = getContext();
+            boolean requested = false;
             try {
-                Intent fallback = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
-                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(fallback);
+                Intent intent = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+                intent.setData(Uri.parse("package:" + context.getPackageName()));
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
                 requested = true;
-            } catch (Throwable t2) {
-                Log.w(TAG, "Battery optimization settings list not available either", t2);
+            } catch (Throwable t) {
+                Log.w(TAG, "Direct REQUEST_IGNORE_BATTERY_OPTIMIZATIONS failed; falling back to settings list", t);
+                try {
+                    Intent fallback = new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                    fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(fallback);
+                    requested = true;
+                } catch (Throwable t2) {
+                    Log.w(TAG, "Battery optimization settings list not available either", t2);
+                }
             }
-        }
-        JSObject ret = new JSObject();
-        ret.put("requested", requested);
-        call.resolve(ret);
+            JSObject ret = new JSObject();
+            ret.put("requested", requested);
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void isIgnoringBatteryOptimizations(PluginCall call) {
-        Context context = getContext();
-        boolean ignored = false;
-        try {
-            PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-            if (pm != null) ignored = pm.isIgnoringBatteryOptimizations(context.getPackageName());
-        } catch (Throwable t) {
-            Log.w(TAG, "isIgnoringBatteryOptimizations probe failed", t);
-        }
-        JSObject ret = new JSObject();
-        ret.put("ignored", ignored);
-        call.resolve(ret);
+        onWorker(call, "isIgnoringBatteryOptimizations", () -> {
+            Context context = getContext();
+            boolean ignored = false;
+            try {
+                PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                if (pm != null) ignored = pm.isIgnoringBatteryOptimizations(context.getPackageName());
+            } catch (Throwable t) {
+                Log.w(TAG, "isIgnoringBatteryOptimizations probe failed", t);
+            }
+            JSObject ret = new JSObject();
+            ret.put("ignored", ignored);
+            call.resolve(ret);
+        });
     }
 
     /**
@@ -726,121 +813,129 @@ public class KumikoAlarmsPlugin extends Plugin {
      */
     @PluginMethod
     public void isPhoneAccountRegistered(PluginCall call) {
-        boolean registered = false;
-        boolean enabled = false;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Context context = getContext();
-            TelecomManager tm = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
-            if (tm != null) {
-                try {
-                    PhoneAccountHandle handle = buildPhoneAccountHandle(context);
-                    PhoneAccount account = tm.getPhoneAccount(handle);
-                    if (account != null) {
-                        registered = true;
-                        // PhoneAccount.isEnabled() is a CTS-tested API on M+.
-                        try { enabled = account.isEnabled(); } catch (Throwable ignored) {}
+        onWorker(call, "isPhoneAccountRegistered", () -> {
+            boolean registered = false;
+            boolean enabled = false;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Context context = getContext();
+                TelecomManager tm = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
+                if (tm != null) {
+                    try {
+                        PhoneAccountHandle handle = buildPhoneAccountHandle(context);
+                        PhoneAccount account = tm.getPhoneAccount(handle);
+                        if (account != null) {
+                            registered = true;
+                            // PhoneAccount.isEnabled() is a CTS-tested API on M+.
+                            try { enabled = account.isEnabled(); } catch (Throwable ignored) {}
+                        }
+                    } catch (Throwable t) {
+                        Log.w(TAG, "isPhoneAccountRegistered probe failed", t);
                     }
-                } catch (Throwable t) {
-                    Log.w(TAG, "isPhoneAccountRegistered probe failed", t);
                 }
             }
-        }
-        JSObject ret = new JSObject();
-        ret.put("registered", registered);
-        ret.put("enabled", enabled);
-        call.resolve(ret);
+            JSObject ret = new JSObject();
+            ret.put("registered", registered);
+            ret.put("enabled", enabled);
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void registerPhoneAccount(PluginCall call) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+        onWorker(call, "registerPhoneAccount", () -> {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+                JSObject ret = new JSObject();
+                ret.put("registered", false);
+                call.resolve(ret);
+                return;
+            }
+            Context context = getContext();
+            TelecomManager tm = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
+            if (tm == null) {
+                JSObject ret = new JSObject();
+                ret.put("registered", false);
+                call.resolve(ret);
+                return;
+            }
+            boolean ok = false;
+            try {
+                PhoneAccountHandle handle = buildPhoneAccountHandle(context);
+                PhoneAccount.Builder builder = PhoneAccount.builder(handle, "Kumiko·Amadeus")
+                    .addSupportedUriScheme(PhoneAccount.SCHEME_TEL)
+                    .addSupportedUriScheme(PhoneAccount.SCHEME_SIP)
+                    .setShortDescription("黄前久美子 · 提醒来电");
+                // CAPABILITY_SELF_MANAGED is required for the system to delegate
+                // call rendering to our ConnectionService instead of the dialer.
+                // Self-managed accounts are NOT user-enabled by default — the
+                // user has to flip it on in Settings → Apps → Default Apps →
+                // Calling accounts. We surface that toggle from the JS UI via
+                // openPhoneAccountSettings().
+                int caps = PhoneAccount.CAPABILITY_SELF_MANAGED;
+                // CAPABILITY_SUPPORTS_VIDEO_CALLING isn't strictly required but
+                // some OEMs (Xiaomi specifically) gate the visible UI on its
+                // presence; cheap to add and avoids a "this account is incomplete"
+                // grey-out in some MIUI builds.
+                caps |= PhoneAccount.CAPABILITY_VIDEO_CALLING;
+                builder.setCapabilities(caps);
+                tm.registerPhoneAccount(builder.build());
+                ok = true;
+            } catch (SecurityException se) {
+                Log.w(TAG, "registerPhoneAccount denied — MANAGE_OWN_CALLS not granted?", se);
+            } catch (Throwable t) {
+                Log.w(TAG, "registerPhoneAccount failed", t);
+            }
             JSObject ret = new JSObject();
-            ret.put("registered", false);
+            ret.put("registered", ok);
             call.resolve(ret);
-            return;
-        }
-        Context context = getContext();
-        TelecomManager tm = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
-        if (tm == null) {
-            JSObject ret = new JSObject();
-            ret.put("registered", false);
-            call.resolve(ret);
-            return;
-        }
-        boolean ok = false;
-        try {
-            PhoneAccountHandle handle = buildPhoneAccountHandle(context);
-            PhoneAccount.Builder builder = PhoneAccount.builder(handle, "Kumiko·Amadeus")
-                .addSupportedUriScheme(PhoneAccount.SCHEME_TEL)
-                .addSupportedUriScheme(PhoneAccount.SCHEME_SIP)
-                .setShortDescription("黄前久美子 · 提醒来电");
-            // CAPABILITY_SELF_MANAGED is required for the system to delegate
-            // call rendering to our ConnectionService instead of the dialer.
-            // Self-managed accounts are NOT user-enabled by default — the
-            // user has to flip it on in Settings → Apps → Default Apps →
-            // Calling accounts. We surface that toggle from the JS UI via
-            // openPhoneAccountSettings().
-            int caps = PhoneAccount.CAPABILITY_SELF_MANAGED;
-            // CAPABILITY_SUPPORTS_VIDEO_CALLING isn't strictly required but
-            // some OEMs (Xiaomi specifically) gate the visible UI on its
-            // presence; cheap to add and avoids a "this account is incomplete"
-            // grey-out in some MIUI builds.
-            caps |= PhoneAccount.CAPABILITY_VIDEO_CALLING;
-            builder.setCapabilities(caps);
-            tm.registerPhoneAccount(builder.build());
-            ok = true;
-        } catch (SecurityException se) {
-            Log.w(TAG, "registerPhoneAccount denied — MANAGE_OWN_CALLS not granted?", se);
-        } catch (Throwable t) {
-            Log.w(TAG, "registerPhoneAccount failed", t);
-        }
-        JSObject ret = new JSObject();
-        ret.put("registered", ok);
-        call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void unregisterPhoneAccount(PluginCall call) {
-        Context context = getContext();
-        TelecomManager tm = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
-        if (tm != null) {
-            try {
-                tm.unregisterPhoneAccount(buildPhoneAccountHandle(context));
-            } catch (Throwable t) {
-                Log.w(TAG, "unregisterPhoneAccount failed", t);
+        onWorker(call, "unregisterPhoneAccount", () -> {
+            Context context = getContext();
+            TelecomManager tm = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
+            if (tm != null) {
+                try {
+                    tm.unregisterPhoneAccount(buildPhoneAccountHandle(context));
+                } catch (Throwable t) {
+                    Log.w(TAG, "unregisterPhoneAccount failed", t);
+                }
             }
-        }
-        call.resolve();
+            call.resolve();
+        });
     }
 
     @PluginMethod
     public void openPhoneAccountSettings(PluginCall call) {
-        Context context = getContext();
-        try {
-            // The "official" deep link is TelecomManager.ACTION_CHANGE_PHONE_ACCOUNTS,
-            // but it doesn't exist as an Intent action constant we can target reliably
-            // across ROMs. The known-good workaround is the call settings page which
-            // every Android variant routes to the same internal screen.
-            Intent intent = new Intent("android.telecom.action.CHANGE_PHONE_ACCOUNTS");
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            context.startActivity(intent);
-        } catch (Throwable t) {
-            Log.w(TAG, "Direct phone-account settings unavailable; falling back to call settings", t);
+        onWorker(call, "openPhoneAccountSettings", () -> {
+            Context context = getContext();
             try {
-                Intent fallback = new Intent(TelecomManager.ACTION_SHOW_CALL_ACCESSIBILITY_SETTINGS);
-                fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                context.startActivity(fallback);
-            } catch (Throwable t2) {
-                Log.w(TAG, "Call settings fallback failed; opening app details", t2);
+                // The "official" deep link is TelecomManager.ACTION_CHANGE_PHONE_ACCOUNTS,
+                // but it doesn't exist as an Intent action constant we can target reliably
+                // across ROMs. The known-good workaround is the call settings page which
+                // every Android variant routes to the same internal screen.
+                Intent intent = new Intent("android.telecom.action.CHANGE_PHONE_ACCOUNTS");
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                context.startActivity(intent);
+            } catch (Throwable t) {
+                Log.w(TAG, "Direct phone-account settings unavailable; falling back to call settings", t);
                 try {
-                    Intent appDetails = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                    appDetails.setData(Uri.parse("package:" + context.getPackageName()));
-                    appDetails.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    context.startActivity(appDetails);
-                } catch (Throwable ignored) {}
+                    Intent fallback = new Intent(TelecomManager.ACTION_SHOW_CALL_ACCESSIBILITY_SETTINGS);
+                    fallback.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(fallback);
+                } catch (Throwable t2) {
+                    Log.w(TAG, "Call settings fallback failed; opening app details", t2);
+                    try {
+                        Intent appDetails = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                        appDetails.setData(Uri.parse("package:" + context.getPackageName()));
+                        appDetails.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        context.startActivity(appDetails);
+                    } catch (Throwable ignored) {}
+                }
             }
-        }
-        call.resolve();
+            call.resolve();
+        });
     }
 
     /**
@@ -852,37 +947,41 @@ public class KumikoAlarmsPlugin extends Plugin {
      */
     @PluginMethod
     public void startSelfTestProbe(PluginCall call) {
-        String reminderId = call.getString("reminderId");
-        if (reminderId == null || reminderId.isEmpty()) {
-            call.reject("reminderId required");
-            return;
-        }
-        SharedPreferences prefs = getContext()
-            .getSharedPreferences(SELF_TEST_PREFS, Context.MODE_PRIVATE);
-        prefs.edit()
-            .putString(SELF_TEST_KEY_REMINDER_ID, reminderId)
-            .putBoolean(SELF_TEST_KEY_ARMED, true)
-            .putLong(SELF_TEST_KEY_ALARM_FIRED_AT, 0L)
-            .putLong(SELF_TEST_KEY_NOTIF_POSTED_AT, 0L)
-            .putLong(SELF_TEST_KEY_FSI_LAUNCHED_AT, 0L)
-            .putLong(SELF_TEST_KEY_ACCEPT_RECEIVED_AT, 0L)
-            .apply();
-        JSObject ret = new JSObject();
-        ret.put("armed", true);
-        call.resolve(ret);
+        onWorker(call, "startSelfTestProbe", () -> {
+            String reminderId = call.getString("reminderId");
+            if (reminderId == null || reminderId.isEmpty()) {
+                call.reject("reminderId required");
+                return;
+            }
+            SharedPreferences prefs = getContext()
+                .getSharedPreferences(SELF_TEST_PREFS, Context.MODE_PRIVATE);
+            prefs.edit()
+                .putString(SELF_TEST_KEY_REMINDER_ID, reminderId)
+                .putBoolean(SELF_TEST_KEY_ARMED, true)
+                .putLong(SELF_TEST_KEY_ALARM_FIRED_AT, 0L)
+                .putLong(SELF_TEST_KEY_NOTIF_POSTED_AT, 0L)
+                .putLong(SELF_TEST_KEY_FSI_LAUNCHED_AT, 0L)
+                .putLong(SELF_TEST_KEY_ACCEPT_RECEIVED_AT, 0L)
+                .apply();
+            JSObject ret = new JSObject();
+            ret.put("armed", true);
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void collectSelfTestReport(PluginCall call) {
-        SharedPreferences prefs = getContext()
-            .getSharedPreferences(SELF_TEST_PREFS, Context.MODE_PRIVATE);
-        JSObject ret = new JSObject();
-        ret.put("armed", prefs.getBoolean(SELF_TEST_KEY_ARMED, false));
-        ret.put("alarmFiredAt", prefs.getLong(SELF_TEST_KEY_ALARM_FIRED_AT, 0L));
-        ret.put("notifPostedAt", prefs.getLong(SELF_TEST_KEY_NOTIF_POSTED_AT, 0L));
-        ret.put("fsiLaunchedAt", prefs.getLong(SELF_TEST_KEY_FSI_LAUNCHED_AT, 0L));
-        ret.put("acceptReceivedAt", prefs.getLong(SELF_TEST_KEY_ACCEPT_RECEIVED_AT, 0L));
-        call.resolve(ret);
+        onWorker(call, "collectSelfTestReport", () -> {
+            SharedPreferences prefs = getContext()
+                .getSharedPreferences(SELF_TEST_PREFS, Context.MODE_PRIVATE);
+            JSObject ret = new JSObject();
+            ret.put("armed", prefs.getBoolean(SELF_TEST_KEY_ARMED, false));
+            ret.put("alarmFiredAt", prefs.getLong(SELF_TEST_KEY_ALARM_FIRED_AT, 0L));
+            ret.put("notifPostedAt", prefs.getLong(SELF_TEST_KEY_NOTIF_POSTED_AT, 0L));
+            ret.put("fsiLaunchedAt", prefs.getLong(SELF_TEST_KEY_FSI_LAUNCHED_AT, 0L));
+            ret.put("acceptReceivedAt", prefs.getLong(SELF_TEST_KEY_ACCEPT_RECEIVED_AT, 0L));
+            call.resolve(ret);
+        });
     }
 
     /**
@@ -893,26 +992,30 @@ public class KumikoAlarmsPlugin extends Plugin {
      */
     @PluginMethod
     public void pruneExpiredLedger(PluginCall call) {
-        Context context = getContext();
-        int[] counts = pruneExpiredLedgerInternal(context);
-        JSObject ret = new JSObject();
-        ret.put("pruned", counts[0]);
-        ret.put("remaining", counts[1]);
-        call.resolve(ret);
+        onWorker(call, "pruneExpiredLedger", () -> {
+            Context context = getContext();
+            int[] counts = pruneExpiredLedgerInternal(context);
+            JSObject ret = new JSObject();
+            ret.put("pruned", counts[0]);
+            ret.put("remaining", counts[1]);
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void startAlarmGuardian(PluginCall call) {
-        boolean started = false;
-        try {
-            startGuardianService(getContext(), call.getString("reason", "manual"));
-            started = true;
-        } catch (Throwable t) {
-            Log.w(TAG, "startAlarmGuardian failed", t);
-        }
-        JSObject ret = new JSObject();
-        ret.put("started", started);
-        call.resolve(ret);
+        onWorker(call, "startAlarmGuardian", () -> {
+            boolean started = false;
+            try {
+                startGuardianService(getContext(), call.getString("reason", "manual"));
+                started = true;
+            } catch (Throwable t) {
+                Log.w(TAG, "startAlarmGuardian failed", t);
+            }
+            JSObject ret = new JSObject();
+            ret.put("started", started);
+            call.resolve(ret);
+        });
     }
 
     /**
@@ -925,70 +1028,76 @@ public class KumikoAlarmsPlugin extends Plugin {
      */
     @PluginMethod
     public void stopCallRinging(PluginCall call) {
-        boolean stopped = false;
-        try {
-            Context context = getContext();
-            Intent intent = new Intent(context, KumikoCallRingingService.class);
-            intent.setAction(KumikoCallRingingService.ACTION_STOP);
-            // Use startService so the service receives ACTION_STOP via
-            // onStartCommand; that path also runs the cleanup. Calling
-            // stopService alone races with onStartCommand if the service
-            // hasn't been promoted to foreground yet.
-            context.startService(intent);
-            stopped = true;
-        } catch (Throwable t) {
-            Log.w(TAG, "stopCallRinging failed", t);
-        }
-        JSObject ret = new JSObject();
-        ret.put("stopped", stopped);
-        call.resolve(ret);
+        onWorker(call, "stopCallRinging", () -> {
+            boolean stopped = false;
+            try {
+                Context context = getContext();
+                Intent intent = new Intent(context, KumikoCallRingingService.class);
+                intent.setAction(KumikoCallRingingService.ACTION_STOP);
+                // Use startService so the service receives ACTION_STOP via
+                // onStartCommand; that path also runs the cleanup. Calling
+                // stopService alone races with onStartCommand if the service
+                // hasn't been promoted to foreground yet.
+                context.startService(intent);
+                stopped = true;
+            } catch (Throwable t) {
+                Log.w(TAG, "stopCallRinging failed", t);
+            }
+            JSObject ret = new JSObject();
+            ret.put("stopped", stopped);
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void stopAlarmGuardian(PluginCall call) {
-        boolean stopped = false;
-        try {
-            Context context = getContext();
-            Intent intent = new Intent(context, KumikoAlarmGuardianService.class);
-            stopped = context.stopService(intent);
-        } catch (Throwable t) {
-            Log.w(TAG, "stopAlarmGuardian failed", t);
-        }
-        JSObject ret = new JSObject();
-        ret.put("stopped", stopped);
-        call.resolve(ret);
+        onWorker(call, "stopAlarmGuardian", () -> {
+            boolean stopped = false;
+            try {
+                Context context = getContext();
+                Intent intent = new Intent(context, KumikoAlarmGuardianService.class);
+                stopped = context.stopService(intent);
+            } catch (Throwable t) {
+                Log.w(TAG, "stopAlarmGuardian failed", t);
+            }
+            JSObject ret = new JSObject();
+            ret.put("stopped", stopped);
+            call.resolve(ret);
+        });
     }
 
     @PluginMethod
     public void drainPendingActions(PluginCall call) {
-        // v2.14.24: drain SharedPreferences entries that MainActivity (call
-        // open/accept/decline from heads-up tap) and RemoteReplyReceiver
-        // (Direct Reply text) wrote while the WebView was offline. Returns
-        // a snapshot to JS which replays them through the normal message
-        // pipeline. Pre-v2.14.24 the writer was IncomingCallActivity; the
-        // wire format is unchanged so existing JS drainer code works as-is.
-        JSObject result = new JSObject();
+        onWorker(call, "drainPendingActions", () -> {
+            // v2.14.24: drain SharedPreferences entries that MainActivity (call
+            // open/accept/decline from heads-up tap) and RemoteReplyReceiver
+            // (Direct Reply text) wrote while the WebView was offline. Returns
+            // a snapshot to JS which replays them through the normal message
+            // pipeline. Pre-v2.14.24 the writer was IncomingCallActivity; the
+            // wire format is unchanged so existing JS drainer code works as-is.
+            JSObject result = new JSObject();
 
-        android.content.SharedPreferences callPrefs = getContext()
-            .getSharedPreferences("kumiko_pending_actions", Context.MODE_PRIVATE);
-        String lastAction = callPrefs.getString("last_action", null);
-        if (lastAction != null) {
-            JSObject call0 = new JSObject();
-            call0.put("action", lastAction);
-            call0.put("reminderId", callPrefs.getString("last_reminder_id", null));
-            call0.put("reminderEvent", callPrefs.getString("last_reminder_event", null));
-            call0.put("at", callPrefs.getLong("last_action_at", 0));
-            result.put("callAction", call0);
-            callPrefs.edit().clear().apply();
-        }
+            android.content.SharedPreferences callPrefs = getContext()
+                .getSharedPreferences("kumiko_pending_actions", Context.MODE_PRIVATE);
+            String lastAction = callPrefs.getString("last_action", null);
+            if (lastAction != null) {
+                JSObject call0 = new JSObject();
+                call0.put("action", lastAction);
+                call0.put("reminderId", callPrefs.getString("last_reminder_id", null));
+                call0.put("reminderEvent", callPrefs.getString("last_reminder_event", null));
+                call0.put("at", callPrefs.getLong("last_action_at", 0));
+                result.put("callAction", call0);
+                callPrefs.edit().clear().apply();
+            }
 
-        android.content.SharedPreferences replyPrefs = getContext()
-            .getSharedPreferences("kumiko_pending_replies", Context.MODE_PRIVATE);
-        String queueRaw = replyPrefs.getString("queue", "[]");
-        result.put("repliesJson", queueRaw);
-        replyPrefs.edit().clear().apply();
+            android.content.SharedPreferences replyPrefs = getContext()
+                .getSharedPreferences("kumiko_pending_replies", Context.MODE_PRIVATE);
+            String queueRaw = replyPrefs.getString("queue", "[]");
+            result.put("repliesJson", queueRaw);
+            replyPrefs.edit().clear().apply();
 
-        call.resolve(result);
+            call.resolve(result);
+        });
     }
 
     private static boolean canScheduleExactAlarmNow(Context context) {
@@ -1182,7 +1291,7 @@ public class KumikoAlarmsPlugin extends Plugin {
                 Notification.CallStyle style = Notification.CallStyle
                     .forIncomingCall(caller, declinePi, acceptPi);
                 Notification.Builder builder = new Notification.Builder(context, CHANNEL_ID_CALLS)
-                    .setSmallIcon(android.R.drawable.sym_call_incoming)
+                    .setSmallIcon(R.drawable.ic_stat_kumiko)
                     .setContentTitle(reminderEvent)
                     .setContentText(reminderText)
                     .setCategory(Notification.CATEGORY_CALL)
@@ -1193,7 +1302,7 @@ public class KumikoAlarmsPlugin extends Plugin {
                 notification = builder.build();
             } else {
                 NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID_CALLS)
-                    .setSmallIcon(android.R.drawable.sym_call_incoming)
+                    .setSmallIcon(R.drawable.ic_stat_kumiko)
                     .setContentTitle(reminderEvent)
                     .setContentText(reminderText)
                     .setStyle(new NotificationCompat.BigTextStyle().bigText(reminderText))

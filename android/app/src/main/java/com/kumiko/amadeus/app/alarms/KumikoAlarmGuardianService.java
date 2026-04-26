@@ -55,6 +55,7 @@ import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 
 import com.kumiko.amadeus.app.MainActivity;
+import com.kumiko.amadeus.app.R;
 
 public class KumikoAlarmGuardianService extends Service {
 
@@ -112,7 +113,7 @@ public class KumikoAlarmGuardianService extends Service {
             PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
         );
         return new NotificationCompat.Builder(this, CHANNEL_ID_GUARDIAN)
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.drawable.ic_stat_kumiko)
             .setContentTitle("Kumiko·Amadeus")
             .setContentText("提醒守护中 · keeping reminders alive")
             .setPriority(NotificationCompat.PRIORITY_MIN)

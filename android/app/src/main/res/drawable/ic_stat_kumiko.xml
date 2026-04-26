@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  v2.14.25: Notification status-bar icon. Android required white/transparent
+  silhouettes since API 21 (Lollipop) and MIUI 14+ silently drops
+  notifications whose smallIcon is a coloured AOSP system drawable
+  (e.g. android.R.drawable.ic_dialog_info, sym_call_incoming) — that's
+  one of the two reasons v2.14.24 produced "permissions all on, still
+  no notification" reports on HyperOS.
+
+  Design: stylised capital "K" inscribed in the standard 24dp x 24dp
+  notification viewport. Pure white fill so the system tints it with
+  the channel's accent color (or app branding) automatically; no internal
+  shading because the system flattens any non-white pixels to opaque
+  white anyway when promoting a status-bar icon.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M5,4 L8,4 L8,10 L14,4 L18,4 L11,12 L18,20 L14,20 L8,14 L8,20 L5,20 Z" />
+</vector>

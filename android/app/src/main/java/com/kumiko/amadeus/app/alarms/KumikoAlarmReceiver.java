@@ -49,6 +49,7 @@ import android.util.Log;
 import androidx.core.app.NotificationCompat;
 
 import com.kumiko.amadeus.app.MainActivity;
+import com.kumiko.amadeus.app.R;
 import com.kumiko.amadeus.app.calls.KumikoCallRingingService;
 
 public class KumikoAlarmReceiver extends BroadcastReceiver {
@@ -124,7 +125,7 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
                 PendingIntent contentPi = PendingIntent.getActivity(context, reminderId.hashCode(), tapIntent, piFlags);
 
                 Notification notification = new NotificationCompat.Builder(context, KumikoAlarmsPlugin.CHANNEL_ID_MESSAGES)
-                    .setSmallIcon(android.R.drawable.ic_dialog_info)
+                    .setSmallIcon(R.drawable.ic_stat_kumiko)
                     .setContentTitle("Kumiko·Amadeus")
                     .setContentText(reminderText)
                     .setStyle(new NotificationCompat.BigTextStyle().bigText(reminderText))

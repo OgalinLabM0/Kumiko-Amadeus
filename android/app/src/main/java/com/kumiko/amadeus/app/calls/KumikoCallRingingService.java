@@ -47,6 +47,7 @@ import android.util.Log;
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
 
+import com.kumiko.amadeus.app.R;
 import com.kumiko.amadeus.app.alarms.KumikoAlarmsPlugin;
 
 import java.io.File;
@@ -115,7 +116,7 @@ public class KumikoCallRingingService extends Service {
         // already imported high-importance for ringing semantics.
         KumikoAlarmsPlugin.ensureCallsChannel(this);
         Notification notification = new NotificationCompat.Builder(this, KumikoAlarmsPlugin.CHANNEL_ID_CALLS)
-            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setSmallIcon(R.drawable.ic_stat_kumiko)
             .setContentTitle("黄前久美子 正在响铃")
             .setContentText("点击系统来电卡片接听 / 拒接")
             .setPriority(NotificationCompat.PRIORITY_LOW)
