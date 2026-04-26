@@ -38,7 +38,7 @@ const OVERSCAN_PX_MOBILE = 240;
 const MIN_ESTIMATED_HEIGHT = 84;
 const MAX_ESTIMATED_HEIGHT = 460;
 const BOTTOM_CLEARANCE_DESKTOP = 72;
-const BOTTOM_CLEARANCE_MOBILE = 112;
+const BOTTOM_CLEARANCE_MOBILE = 72;
 
 // Invalidate the cached flag used by the hot paths so the next
 // `msgListIsMobile()` call re-reads `isMobileLikeRuntime()`. Invoked from
@@ -128,16 +128,10 @@ const readBottomClearancePx = (isMobileRuntime: boolean): number => {
 
   const rootStyle = window.getComputedStyle(document.documentElement);
   const safeAreaBottom = parseCssPx(rootStyle.getPropertyValue('--sab'));
-  const keyboardInset = parseCssPx(rootStyle.getPropertyValue('--kb-inset'));
-
   // AppMainView already uses --kb-inset to shrink the chat column above the
-  // keyboard, so we don't add the whole keyboard height again here. We only
-  // reserve enough scrollable tail space for the footer/status line and a
-  // small extra nudge while the keyboard is open.
-  return Math.ceil(Math.max(
-    base + safeAreaBottom,
-    keyboardInset > 0 ? base + 16 : base,
-  ));
+  // keyboard, so do not add any keyboard-derived gap here. This clearance is
+  // only the tail room needed for the footer/status line and safe-area bottom.
+  return Math.ceil(base + safeAreaBottom);
 };
 
 const VirtualizedMessageRow: React.FC<VirtualizedMessageRowProps> = ({
