@@ -50,6 +50,15 @@ export interface ScheduleAlarmResult {
   error?: string;
 }
 
+export interface NativeAndroidAlertPermissionStatus {
+  sdkInt: number;
+  notificationsEnabled: boolean;
+  messagesChannelReady: boolean;
+  callsChannelReady: boolean;
+  exactAlarmReady: boolean;
+  fullScreenIntentReady: boolean;
+}
+
 interface KumikoAlarmsPluginShape {
   scheduleExact(opts: ScheduleAlarmInput): Promise<ScheduleAlarmResult>;
   cancel(opts: { reminderId: string }): Promise<{ cancelled: boolean }>;
@@ -57,6 +66,11 @@ interface KumikoAlarmsPluginShape {
   requestExactAlarmPermission(): Promise<void>;
   canUseFullScreenIntent(): Promise<{ canUseFullScreenIntent: boolean }>;
   requestFullScreenIntentPermission(): Promise<void>;
+  getAlertPermissionStatus(): Promise<NativeAndroidAlertPermissionStatus>;
+  openAppNotificationSettings(): Promise<void>;
+  postTestMessageNotification(opts: { title: string; body: string }): Promise<{ posted: boolean }>;
+  postTestIncomingCall(opts: { title: string; body: string; ringtoneFileId?: string }): Promise<{ posted: boolean }>;
+  cancelTestNotifications(): Promise<void>;
   drainPendingActions(): Promise<{
     callAction?: { action: string; reminderId?: string; reminderEvent?: string; at?: number };
     repliesJson: string;
@@ -164,6 +178,61 @@ export async function requestFullScreenIntentPermission(): Promise<void> {
     await plugin.requestFullScreenIntentPermission();
   } catch (e) {
     console.warn('[androidAlarms] requestFullScreenIntentPermission failed:', e);
+  }
+}
+
+export async function getNativeAndroidAlertPermissionStatus(): Promise<NativeAndroidAlertPermissionStatus | null> {
+  const plugin = await getPlugin();
+  if (!plugin) return null;
+  try {
+    return await plugin.getAlertPermissionStatus();
+  } catch (e) {
+    console.warn('[androidAlarms] getAlertPermissionStatus failed:', e);
+    return null;
+  }
+}
+
+export async function openAndroidAppNotificationSettings(): Promise<void> {
+  const plugin = await getPlugin();
+  if (!plugin) return;
+  try {
+    await plugin.openAppNotificationSettings();
+  } catch (e) {
+    console.warn('[androidAlarms] openAppNotificationSettings failed:', e);
+  }
+}
+
+export async function postAndroidTestMessageNotification(opts: { title: string; body: string }): Promise<boolean> {
+  const plugin = await getPlugin();
+  if (!plugin) return false;
+  try {
+    const result = await plugin.postTestMessageNotification(opts);
+    return result.posted === true;
+  } catch (e) {
+    console.warn('[androidAlarms] postTestMessageNotification failed:', e);
+    return false;
+  }
+}
+
+export async function postAndroidTestIncomingCall(opts: { title: string; body: string; ringtoneFileId?: string }): Promise<boolean> {
+  const plugin = await getPlugin();
+  if (!plugin) return false;
+  try {
+    const result = await plugin.postTestIncomingCall(opts);
+    return result.posted === true;
+  } catch (e) {
+    console.warn('[androidAlarms] postTestIncomingCall failed:', e);
+    return false;
+  }
+}
+
+export async function cancelAndroidTestNotifications(): Promise<void> {
+  const plugin = await getPlugin();
+  if (!plugin) return;
+  try {
+    await plugin.cancelTestNotifications();
+  } catch (e) {
+    console.warn('[androidAlarms] cancelTestNotifications failed:', e);
   }
 }
 

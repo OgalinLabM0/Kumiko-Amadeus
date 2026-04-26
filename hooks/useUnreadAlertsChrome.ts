@@ -1,16 +1,17 @@
 import { useCallback, useEffect } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { isDesktopElectron } from '../services/desktopBackupService';
-import { getCapacitorPlatform, isCapacitorNative, isMobileLikeRuntime } from '../services/environment';
+import { isMobileLikeRuntime } from '../services/environment';
 import { showBackgroundNotification } from '../components/app/chatActions';
 import {
   EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY,
   FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY,
-  canScheduleExactAlarms,
-  canUseFullScreenIntent,
-  requestExactAlarmPermission,
-  requestFullScreenIntentPermission,
 } from '../services/androidAlarmService';
+import {
+  getAndroidAlertPermissionSnapshot,
+  openAndroidAlertPermissionSettings,
+  requestAndroidNotificationPermission,
+} from '../services/androidAlertPermissionService';
 import { useAppStore } from '../store';
 import type { MessageAlertKind, MissedMessageAlert } from '../types';
 
@@ -102,7 +103,7 @@ export function useUnreadAlertsChrome(
   }, [flowState, markAllAlertsRead]);
 
   useEffect(() => {
-    if (flowState !== 'APP' || !isCapacitorNative() || getCapacitorPlatform() !== 'android') return;
+    if (flowState !== 'APP') return;
     let cancelled = false;
     let running = false;
 
@@ -111,6 +112,7 @@ export function useUnreadAlertsChrome(
       return language === 'en'
         ? {
           notificationDenied: 'Android notification permission is not enabled. New messages, reminders, vibration, and call alerts may stay silent until you allow notifications for Kumiko.',
+          channelDenied: 'Android notification channels are disabled. Open Kumiko notification settings and enable Messages and Calls.',
           exactPrompt: 'Opening Android Alarms & reminders permission. Please allow it so timed reminders can ring exactly while the phone is locked.',
           exactStillMissing: 'Exact alarm permission is still off. Timed reminders may be delayed by Android; enable Alarms & reminders in system settings.',
           fullScreenPrompt: 'Opening Android full-screen notification permission. Please allow it so reminder calls can pop over the lock screen.',
@@ -118,6 +120,7 @@ export function useUnreadAlertsChrome(
         }
         : {
           notificationDenied: 'Android 通知权限尚未开启。主动消息、提醒、震动和来电弹窗可能会静默，请在系统弹窗或应用通知设置里允许 Kumiko 通知。',
+          channelDenied: 'Android 通知渠道被关闭了。请打开 Kumiko 通知设置，允许「新消息」和「来电提醒」渠道。',
           exactPrompt: '即将打开 Android「闹钟与提醒」权限页。请允许它，这样定时提醒才能在锁屏/后台准点响。',
           exactStillMissing: '精准闹钟权限仍未开启。Android 可能会延迟定时提醒，请在系统设置里允许「闹钟与提醒」。',
           fullScreenPrompt: '即将打开 Android「全屏通知」权限页。请允许它，这样提醒来电才能覆盖锁屏弹出。',
@@ -138,34 +141,44 @@ export function useUnreadAlertsChrome(
       running = true;
       try {
         const copy = getPermissionCopy();
-        const { primeKumikoNotificationRuntime } = await import('../services/capacitorNotifications');
-        const notificationStatus = await primeKumikoNotificationRuntime();
+        let snapshot = await getAndroidAlertPermissionSnapshot();
         if (cancelled) return;
-        if (notificationStatus.supported && !notificationStatus.permissionGranted) {
-          setNotice(copy.notificationDenied);
+        if (!snapshot.supported) return;
+
+        if (snapshot.items.notifications.state !== 'granted') {
+          snapshot = await requestAndroidNotificationPermission();
+          if (cancelled) return;
+          if (snapshot.items.notifications.state !== 'granted') {
+            setNotice(copy.notificationDenied);
+            return;
+          }
         }
 
-        const canExact = await canScheduleExactAlarms();
-        if (cancelled) return;
-        if (!canExact) {
+        if (
+          snapshot.items.messagesChannel.state === 'denied'
+          || snapshot.items.callsChannel.state === 'denied'
+        ) {
+          setNotice(copy.channelDenied);
+        }
+
+        if (snapshot.items.exactAlarm.state !== 'granted') {
           const prompted = window.localStorage.getItem(EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY);
           if (!prompted) {
             window.localStorage.setItem(EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY, '1');
             setNotice(copy.exactPrompt);
-            await requestExactAlarmPermission();
+            await openAndroidAlertPermissionSettings('exactAlarm');
             return;
           }
           setNotice(copy.exactStillMissing);
         }
 
-        const canFullScreen = await canUseFullScreenIntent();
         if (cancelled) return;
-        if (!canFullScreen) {
+        if (snapshot.items.fullScreenIntent.state !== 'granted') {
           const prompted = window.localStorage.getItem(FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY);
           if (!prompted) {
             window.localStorage.setItem(FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY, '1');
             setNotice(copy.fullScreenPrompt);
-            await requestFullScreenIntentPermission();
+            await openAndroidAlertPermissionSettings('fullScreenIntent');
             return;
           }
           setNotice(copy.fullScreenStillMissing);

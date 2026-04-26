@@ -55,6 +55,7 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
     public static final String EXTRA_REMINDER_TEXT = "reminder_text";
     public static final String EXTRA_WANTS_CALL = "wants_call";
     public static final String EXTRA_RINGTONE_FILE_ID = "ringtone_file_id";
+    public static final String EXTRA_TEST_MODE = "test_mode";
 
     public static final String CHANNEL_ID_MESSAGES = "kumiko_messages";
     public static final String CHANNEL_ID_CALLS = "kumiko_calls";

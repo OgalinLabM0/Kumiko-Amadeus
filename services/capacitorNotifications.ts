@@ -66,9 +66,9 @@ function deriveNotificationId(): number {
   return Math.max(NOTIFICATION_ID_BASE, nextNotificationId);
 }
 
-async function ensureChannelsAndPermission(): Promise<KumikoNotificationRuntimeStatus> {
+export async function ensureKumikoNotificationChannels(): Promise<boolean> {
   if (!isCapacitorNative()) {
-    return { supported: false, channelsReady: false, permissionGranted: false };
+    return false;
   }
   try {
     const { LocalNotifications } = await import('@capacitor/local-notifications');
@@ -97,29 +97,45 @@ async function ensureChannelsAndPermission(): Promise<KumikoNotificationRuntimeS
       });
       channelsInitialized = true;
     }
-
-    // Ensure the user has actually granted POST_NOTIFICATIONS (Android 13+).
-    // Best-effort — we don't block the caller if the user denies, the
-    // notification simply silently fails to surface.
-    const perm = await LocalNotifications.checkPermissions();
-    if (perm.display !== 'granted') {
-      const req = await LocalNotifications.requestPermissions();
-      if (req.display !== 'granted') {
-        return { supported: true, channelsReady: channelsInitialized, permissionGranted: false };
-      }
-    }
-    return { supported: true, channelsReady: channelsInitialized, permissionGranted: true };
+    return true;
   } catch (e) {
-    console.warn('[capacitorNotifications] channel / permission setup failed:', e);
-    return { supported: true, channelsReady: false, permissionGranted: false };
+    console.warn('[capacitorNotifications] channel setup failed:', e);
+    return false;
+  }
+}
+
+export async function checkKumikoNotificationPermission(): Promise<boolean> {
+  if (!isCapacitorNative()) return false;
+  try {
+    const { LocalNotifications } = await import('@capacitor/local-notifications');
+    const perm = await LocalNotifications.checkPermissions();
+    return perm.display === 'granted';
+  } catch (e) {
+    console.warn('[capacitorNotifications] permission check failed:', e);
+    return false;
+  }
+}
+
+export async function requestKumikoNotificationPermission(): Promise<boolean> {
+  if (!isCapacitorNative()) return false;
+  try {
+    const { LocalNotifications } = await import('@capacitor/local-notifications');
+    const req = await LocalNotifications.requestPermissions();
+    return req.display === 'granted';
+  } catch (e) {
+    console.warn('[capacitorNotifications] permission request failed:', e);
+    return false;
   }
 }
 
 export async function primeKumikoNotificationRuntime(): Promise<KumikoNotificationRuntimeStatus> {
-  // Called once after the Android app reaches APP flow so proactive messages
-  // and text reminders do not discover missing channels/permission only when
-  // the first background notification is already trying to fire.
-  return ensureChannelsAndPermission();
+  const channelsReady = await ensureKumikoNotificationChannels();
+  if (!isCapacitorNative()) {
+    return { supported: false, channelsReady, permissionGranted: false };
+  }
+  const permissionGranted = await checkKumikoNotificationPermission()
+    || await requestKumikoNotificationPermission();
+  return { supported: true, channelsReady, permissionGranted };
 }
 
 /**
@@ -129,8 +145,9 @@ export async function primeKumikoNotificationRuntime(): Promise<KumikoNotificati
  */
 export async function postKumikoNotification(opts: PostNotificationOptions): Promise<void> {
   if (!isCapacitorNative()) return;
-  const status = await ensureChannelsAndPermission();
-  if (!status.permissionGranted) return;
+  const channelsReady = await ensureKumikoNotificationChannels();
+  const permissionGranted = await checkKumikoNotificationPermission();
+  if (!channelsReady || !permissionGranted) return;
 
   try {
     const { LocalNotifications } = await import('@capacitor/local-notifications');

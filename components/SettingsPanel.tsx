@@ -10,8 +10,9 @@ import { clearAllLocalRagMemory, syncRawHistoryMessagesToMain } from '../service
 import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel } from '../services/appConfig';
 import { db } from '../services/db';
 import { deleteRingtoneFile, deleteVoiceFile, isVoiceServiceAvailable, listVoiceFiles } from '../services/voiceFileService';
-import { isCapacitorNative } from '../services/environment';
+import { getCapacitorPlatform, isCapacitorNative } from '../services/environment';
 import { capacitorImageDelete, capacitorImageClearAll } from '../services/imageFileService';
+import { AndroidPermissionsSection } from './settings/AndroidPermissionsSection';
 import { DataManagementSection } from './settings/DataManagementSection';
 // F2B.4: removed `MobileAccessSection` + `MobileBrowseRootSection` imports.
 // The PC-side Tailscale-cert + Fastify mobile-bridge UI was deleted along
@@ -83,6 +84,7 @@ type SettingsSectionId =
   | 'tts'
   | 'search'
   | 'general'
+  | 'androidPermissions'
   | 'location'
   | 'memoryContext'
   | 'diaryLife'
@@ -145,6 +147,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   // legacy / preview / test builds).
   const isCapacitorMobile = typeof window !== 'undefined'
     && Boolean((window as any).Capacitor?.isNativePlatform?.());
+  const isAndroidCapacitor = isCapacitorMobile && getCapacitorPlatform() === 'android';
   
   const [isGeneralOpen, setIsGeneralOpen] = useState(true);
   const [isAccountOpen, setIsAccountOpen] = useState(true);
@@ -161,6 +164,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [isVisionOpen, setIsVisionOpen] = useState(false);
   const [isRagOpen, setIsRagOpen] = useState(false);
   const [isInternetSearchOpen, setIsInternetSearchOpen] = useState(true);
+  const [isAndroidPermissionsOpen, setIsAndroidPermissionsOpen] = useState(true);
   // A5.0: Cloud embedding config (Capacitor Android only). Section
   // hides itself on Electron / PWA via internal isCapacitorNative()
   // gate, so this state is harmless on non-mobile platforms.
@@ -877,6 +881,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       ttsConfig && onTtsConfigChange ? { id: 'tts', label: t.ttsSection, desc: t.ttsSectionDesc, icon: Volume2, active: activeSectionId === 'tts', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' } : null,
       { id: 'search', label: t.internetSearchConfig, desc: t.internetSearchDesc, icon: Globe, active: activeSectionId === 'search', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'general', label: t.generalSettings, desc: t.generalDesc, icon: Settings, active: activeSectionId === 'general', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
+      isAndroidCapacitor ? { id: 'androidPermissions', label: language === 'zh' ? 'Android 权限体检' : 'Android Permissions', desc: language === 'zh' ? '通知、闹钟与来电弹窗状态' : 'Notifications, alarms, and call UI', icon: ShieldCheck, active: activeSectionId === 'androidPermissions', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' } : null,
       { id: 'location', label: t.locationTitle, desc: t.locationDesc, icon: MapPin, active: activeSectionId === 'location', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'memoryContext', label: t.memoryContextTitle, desc: t.memoryContextDesc, icon: Brain, active: activeSectionId === 'memoryContext', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
       { id: 'diaryLife', label: t.diaryLifeTitle, desc: t.diaryLifeDesc, icon: BookOpen, active: activeSectionId === 'diaryLife', accent: isDarkMode ? 'text-yellow-300' : 'text-[#b8860b]' },
@@ -894,7 +899,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     t.ttsSection, t.ttsSectionDesc, t.internetSearchConfig, t.internetSearchDesc, t.generalSettings, t.generalDesc,
     t.locationTitle, t.locationDesc, t.backupTitle, t.backupDesc, t.dataManagementTitle, t.dataManagementDesc,
     t.updateSection, t.updateSectionDesc, t.accountSettings, t.accountDesc, t.guideTitle, t.guideDesc,
-    ttsConfig, onTtsConfigChange, activeSectionId, isDarkMode, isDesktopElectron, language
+    ttsConfig, onTtsConfigChange, activeSectionId, isDarkMode, isDesktopElectron, language, isAndroidCapacitor
   ]);
 
   const titleClass = isDarkMode ? 'text-yellow-500' : 'text-[#9c7425]';
@@ -960,6 +965,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       case 'general':
         setIsGeneralOpen(prev => !prev);
         break;
+      case 'androidPermissions':
+        setIsAndroidPermissionsOpen(prev => !prev);
+        break;
       case 'location':
         setIsLocationOpen(prev => !prev);
         break;
@@ -1006,6 +1014,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         break;
       case 'general':
         setIsGeneralOpen(true);
+        break;
+      case 'androidPermissions':
+        setIsAndroidPermissionsOpen(true);
         break;
       case 'location':
         setIsLocationOpen(true);
@@ -1453,6 +1464,20 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           proactiveDesc={language === 'zh' ? '允许接收 AI 主动发起的定时关怀与系统原生通知 (消耗 Token)' : 'Receive AI proactive scheduled messages via native notifications (Consumes tokens)'}
           enableProactive={enableProactive}
           onToggleProactive={handleToggleProactive}
+        />
+      </div>
+      )}
+
+      {isAndroidCapacitor && shouldRenderSection('androidPermissions') && (
+      <div id="settings-section-androidPermissions">
+        <AndroidPermissionsSection
+          isOpen={isAndroidPermissionsOpen}
+          onToggle={() => handleSectionToggle('androidPermissions', isAndroidPermissionsOpen)}
+          isDarkMode={isDarkMode}
+          language={language}
+          sectionBorder={sectionBorder}
+          innerCardClass={innerCardClass}
+          ringtoneFileId={ttsConfig?.ringtoneFileId}
         />
       </div>
       )}

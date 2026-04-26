@@ -71,6 +71,7 @@ public class IncomingCallActivity extends Activity {
     private String reminderEvent;
     private String reminderText;
     private String ringtoneFileId;
+    private boolean testMode;
     private MediaPlayer ringtonePlayer;
     private Vibrator vibrator;
 
@@ -98,6 +99,7 @@ public class IncomingCallActivity extends Activity {
         reminderEvent = intent.getStringExtra(KumikoAlarmReceiver.EXTRA_REMINDER_EVENT);
         reminderText = intent.getStringExtra(KumikoAlarmReceiver.EXTRA_REMINDER_TEXT);
         ringtoneFileId = intent.getStringExtra(KumikoAlarmReceiver.EXTRA_RINGTONE_FILE_ID);
+        testMode = intent.getBooleanExtra(KumikoAlarmReceiver.EXTRA_TEST_MODE, false);
         if (reminderEvent == null) reminderEvent = "提醒";
         if (reminderText == null) reminderText = reminderEvent;
 
@@ -114,7 +116,7 @@ public class IncomingCallActivity extends Activity {
         root.setPadding(48, 96, 48, 96);
 
         TextView header = new TextView(this);
-        header.setText("黄前久美子 来电");
+        header.setText(testMode ? "黄前久美子 来电测试" : "黄前久美子 来电");
         header.setTextSize(20);
         header.setGravity(Gravity.CENTER);
         header.setTextColor(Color.parseColor("#5b4732"));
@@ -134,7 +136,7 @@ public class IncomingCallActivity extends Activity {
         buttons.setGravity(Gravity.CENTER);
 
         Button reject = new Button(this);
-        reject.setText("挂断 · Reject");
+        reject.setText(testMode ? "停止测试 · Stop" : "挂断 · Reject");
         reject.setOnClickListener(v -> dispatch(PENDING_ACTION_REJECT));
         LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -144,7 +146,7 @@ public class IncomingCallActivity extends Activity {
         buttons.addView(reject, rp);
 
         Button accept = new Button(this);
-        accept.setText("接听 · Accept");
+        accept.setText(testMode ? "打开应用 · Open" : "接听 · Accept");
         accept.setOnClickListener(v -> dispatch(PENDING_ACTION_ACCEPT));
         buttons.addView(accept);
 
@@ -155,6 +157,15 @@ public class IncomingCallActivity extends Activity {
     private void dispatch(String action) {
         stopRinging();
         cancelCallNotification();
+        if (testMode) {
+            if (PENDING_ACTION_ACCEPT.equals(action)) {
+                Intent main = new Intent(this, MainActivity.class);
+                main.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                startActivity(main);
+            }
+            finish();
+            return;
+        }
         if (PENDING_ACTION_ACCEPT.equals(action)) {
             // Bring MainActivity to the foreground with the pending-action
             // payload. JS App.tsx hooks @capacitor/app's appResume event to
@@ -293,10 +304,12 @@ public class IncomingCallActivity extends Activity {
     }
 
     private void cancelCallNotification() {
-        if (reminderId == null) return;
         try {
             NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm != null) nm.cancel(reminderId.hashCode());
+            if (nm != null) {
+                if (reminderId != null) nm.cancel(reminderId.hashCode());
+                if (testMode) nm.cancel(921022);
+            }
         } catch (Throwable ignored) {}
     }
 }
