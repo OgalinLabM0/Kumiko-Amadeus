@@ -55,8 +55,11 @@ import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import android.content.SharedPreferences;
+
 import com.kumiko.amadeus.app.MainActivity;
 import com.kumiko.amadeus.app.alarms.KumikoAlarmReceiver;
+import com.kumiko.amadeus.app.alarms.KumikoAlarmsPlugin;
 
 public class IncomingCallActivity extends Activity {
 
@@ -66,6 +69,11 @@ public class IncomingCallActivity extends Activity {
     public static final String PENDING_ACTION_ACCEPT = "accept_call";
     public static final String PENDING_ACTION_REJECT = "reject_call";
     public static final String EXTRA_PENDING_ACTION = "kumiko_pending_action";
+    /** v2.14.23: when KumikoConnectionService's CallStyle decline action
+     *  routes here, we get an extra telling us the user picked reject in
+     *  the system UI before we even rendered. Activity dispatches that
+     *  immediately and finishes. */
+    public static final String EXTRA_PRESELECTED_ACTION = "kumiko_preselected_action";
 
     private String reminderId;
     private String reminderEvent;
@@ -102,6 +110,28 @@ public class IncomingCallActivity extends Activity {
         testMode = intent.getBooleanExtra(KumikoAlarmReceiver.EXTRA_TEST_MODE, false);
         if (reminderEvent == null) reminderEvent = "提醒";
         if (reminderText == null) reminderText = reminderEvent;
+
+        // v2.14.23: stamp fsiLaunchedAt on every real entry. If JS has
+        // armed the deep self-test for this reminderId, the report will
+        // show this stage as reached even if the user backgrounds or
+        // dismisses without tapping accept.
+        writeSelfTestTimestamp(KumikoAlarmsPlugin.SELF_TEST_KEY_FSI_LAUNCHED_AT);
+
+        // v2.14.23: when invoked from the system CallStyle notification's
+        // accept/decline action we skip rendering our own activity UI
+        // and dispatch immediately. Avoids the "system UI tap, then
+        // activity flashes, then user taps accept *again*" double-tap
+        // paper-cut, and matches user expectation that approving once
+        // should immediately enter the conversation playback flow.
+        String preselected = intent.getStringExtra(EXTRA_PRESELECTED_ACTION);
+        if (PENDING_ACTION_REJECT.equals(preselected)) {
+            dispatch(PENDING_ACTION_REJECT);
+            return;
+        }
+        if (PENDING_ACTION_ACCEPT.equals(preselected)) {
+            dispatch(PENDING_ACTION_ACCEPT);
+            return;
+        }
 
         setContentView(buildLayout());
         startRinging();
@@ -166,12 +196,32 @@ public class IncomingCallActivity extends Activity {
             finish();
             return;
         }
+
+        // v2.14.23: write BOTH actions into the kumiko_pending_actions
+        // queue. Pre-v2.14.23 only REJECT was persisted; ACCEPT relied
+        // entirely on MainActivity intent extras, which don't survive if
+        // the WebView happens to be torn down between the activity start
+        // and JS resume (we saw this in production when the user accepts
+        // immediately after a long lock-screen idle). The drainPendingActions
+        // path in JS now handles either source.
+        try {
+            SharedPreferences prefs = getSharedPreferences("kumiko_pending_actions", MODE_PRIVATE);
+            prefs.edit()
+                .putString("last_action", action)
+                .putString("last_reminder_id", reminderId)
+                .putString("last_reminder_event", reminderEvent)
+                .putLong("last_action_at", System.currentTimeMillis())
+                .apply();
+        } catch (Throwable t) {
+            Log.w(TAG, "Failed to persist pending action; relying on Intent extras only", t);
+        }
+
         if (PENDING_ACTION_ACCEPT.equals(action)) {
-            // Bring MainActivity to the foreground with the pending-action
-            // payload. JS App.tsx hooks @capacitor/app's appResume event to
-            // drain SharedPreferences for any pending action, then routes
-            // through the existing setVoiceCallOverlayData accept path
-            // (chatActions.triggerTimedReminderMessage's onAccept closure).
+            // v2.14.23: stamp acceptReceivedAt before the foreground
+            // hand-off so the deep self-test report still completes if
+            // the WebView happens to crash on resume.
+            writeSelfTestTimestamp(KumikoAlarmsPlugin.SELF_TEST_KEY_ACCEPT_RECEIVED_AT);
+
             Intent main = new Intent(this, MainActivity.class);
             main.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
             main.putExtra(EXTRA_PENDING_ACTION, action);
@@ -179,19 +229,21 @@ public class IncomingCallActivity extends Activity {
             main.putExtra(KumikoAlarmReceiver.EXTRA_REMINDER_EVENT, reminderEvent);
             main.putExtra(KumikoAlarmReceiver.EXTRA_REMINDER_TEXT, reminderText);
             startActivity(main);
-        } else {
-            // Reject: stash the action in SharedPreferences so the next time
-            // the user opens the app the WebView can record a "missed call"
-            // alert. Doesn't bring the app to the foreground.
-            getSharedPreferences("kumiko_pending_actions", MODE_PRIVATE)
-                .edit()
-                .putString("last_action", PENDING_ACTION_REJECT)
-                .putString("last_reminder_id", reminderId)
-                .putString("last_reminder_event", reminderEvent)
-                .putLong("last_action_at", System.currentTimeMillis())
-                .apply();
         }
         finish();
+    }
+
+    private void writeSelfTestTimestamp(String key) {
+        try {
+            SharedPreferences prefs = getSharedPreferences(
+                KumikoAlarmsPlugin.SELF_TEST_PREFS, MODE_PRIVATE);
+            if (!prefs.getBoolean(KumikoAlarmsPlugin.SELF_TEST_KEY_ARMED, false)) return;
+            String armedId = prefs.getString(KumikoAlarmsPlugin.SELF_TEST_KEY_REMINDER_ID, null);
+            if (armedId == null || !armedId.equals(reminderId)) return;
+            prefs.edit().putLong(key, System.currentTimeMillis()).apply();
+        } catch (Throwable t) {
+            Log.w(TAG, "writeSelfTestTimestamp failed", t);
+        }
     }
 
     @Override

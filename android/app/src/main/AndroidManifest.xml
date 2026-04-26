@@ -47,6 +47,25 @@
             android:name=".alarms.KumikoAlarmReceiver"
             android:exported="false" />
 
+        <!-- v2.14.23: BootReceiver 重启后从 SharedPreferences ledger 重建所有 pending alarm。
+             Android 在 BOOT_COMPLETED / LOCKED_BOOT_COMPLETED / MY_PACKAGE_REPLACED /
+             QUICKBOOT_POWERON 之后会清空所有 AlarmManager 注册，没有这个 receiver 就等于
+             用户重启手机后所有定时提醒都消失。directBootAware=true 让我们在 FBE 设备上
+             Locked Boot 阶段就能跑（早于用户解锁），唯一访问的存储是 device-protected SharedPreferences。
+             exported=true 因为这些 broadcast 来自 system 进程。 -->
+        <receiver
+            android:name=".alarms.KumikoBootReceiver"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
         <!-- B.4: Direct Reply 接收器，处理通知 RemoteInput 锁屏直回。Android 7+ RemoteInput 走
              这条路：用户在通知栏输入文字 → broadcast 到这里 → 注入到 store messages 队列 →
              WebView 收到后走 chatActions 同款回放路径（F2B.2 起 useMobileMessageSync 已删除）。
@@ -66,6 +85,35 @@
             android:name="io.capawesome.capacitorjs.plugins.foregroundservice.AndroidForegroundService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
+
+        <!-- v2.14.23: 提醒守护前台服务。foregroundServiceType="specialUse" + subtype "alarm"
+             让我们的进程优先级在用户设置过提醒时一直保持 foreground 级别，
+             激进 ROM (MIUI/HyperOS, EMUI/HarmonyOS, OneUI deep sleep) 上能显著
+             降低被杀概率。Android 14+ 强制要求这个 PROPERTY_SPECIAL_USE_FGS_SUBTYPE
+             声明 + 一段说明文本。我们承诺只在「至少一条 pending 提醒」存在时启动，
+             reminder 全部触发或被取消后由 JS 端调用 stopAlarmGuardian 关闭。 -->
+        <service
+            android:name=".alarms.KumikoAlarmGuardianService"
+            android:foregroundServiceType="specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="alarm" />
+        </service>
+
+        <!-- v2.14.23: 自管理 Telecom ConnectionService。注册 self-managed PhoneAccount 后，
+             AlarmReceiver 能通过 TelecomManager.addNewIncomingCall 把「来电式提醒」交给
+             系统的 Telecom 框架渲染，使用 Notification.CallStyle.forIncomingCall 拿到
+             更高优先级的锁屏来电 UI。BIND_TELECOM_CONNECTION_SERVICE permission 必填，
+             system Telecom 进程通过它来 bind。-->
+        <service
+            android:name=".calls.KumikoConnectionService"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -95,6 +143,15 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
+    <!-- v2.14.23 提醒守护前台服务。Android 14+ 上 specialUse 子类型必须额外声明这个 permission，
+         否则 startForeground 会抛 SecurityException。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <!-- v2.14.23 来电类前台服务。当 Telecom Connection 处于 RINGING/ACTIVE 状态时，
+         系统会期望我们持有这个 type；ConnectionService 自身已经带前台特权，但保留声明
+         可以让某些 OEM (Xiaomi MIUI 14) 不再重复弹「权限不足」横幅。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+
     <!-- B.2 通知（Android 13 起 POST_NOTIFICATIONS 是运行时权限，
          系统会弹一次授权弹窗。capacitor-local-notifications + capacitor-android-foreground-service
          都依赖这个。Android 12 及以下自动授予。 -->
@@ -113,8 +170,25 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <!-- B.1 启动屏幕开机自启动（仅在用户开了"开机自启"开关时生效）。FG service 用它在重启后
-         自动恢复，否则用户重启手机后 4h 自动备份循环就断了。 -->
+         自动恢复，否则用户重启手机后 4h 自动备份循环就断了。
+         v2.14.23: KumikoBootReceiver 也吃这个 broadcast，重启后从 ledger 重建所有 alarm。-->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- v2.14.23 自管理 Telecom：注册 self-managed PhoneAccount + addNewIncomingCall 走这条权限。
+         在 Android 9+ 上系统会把它当 normal permission 自动授予；这里申报是因为 ConnectionService
+         的 manifest 校验会 check。-->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+    <!-- READ_PHONE_STATE 仅用于 Telecom 在 ACTIVE 状态下查询 audio routing；不读手机号、
+         不读 IMEI。Android 12+ 上这是 normal-runtime split (READ_PHONE_NUMBERS / READ_BASIC_PHONE_STATE)，
+         我们只声明根权限以保留兼容；插件本身不会触发任何运行时弹窗。-->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- system Telecom 进程通过这个 permission bind 我们的 ConnectionService。-->
+    <uses-permission android:name="android.permission.BIND_TELECOM_CONNECTION_SERVICE" />
+
+    <!-- v2.14.23 电池优化白名单。REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 不是真的 grants，
+         而是允许我们调起系统的「申请加入 battery whitelist」弹窗（用户拒绝可在 Settings 改）。
+         Play Store 政策上要求声明 + 给出合理用途；本 app 是「定时提醒到点必到」类型，符合白名单豁免条件。-->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <!-- v2.14.21 OEM 权限体检：Android 11+ 引入 Package Visibility 限制，
          没有 <queries> 声明的话 PackageManager.resolveActivity() 看不到其它 App，
@@ -124,6 +198,7 @@
     <queries>
         <!-- 小米 MIUI / HyperOS 安全中心 -->
         <package android:name="com.miui.securitycenter" />
+        <package android:name="com.miui.powerkeeper" />
         <!-- 华为系统管家（含受保护应用 / 启动管理） -->
         <package android:name="com.huawei.systemmanager" />
         <!-- 荣耀系统管家 -->
@@ -131,6 +206,7 @@
         <!-- 三星 Smart Manager / Device Care -->
         <package android:name="com.samsung.android.lool" />
         <package android:name="com.samsung.android.sm" />
+        <package android:name="com.samsung.android.sm_cn" />
         <!-- OPPO ColorOS 安全中心 -->
         <package android:name="com.coloros.safecenter" />
         <package android:name="com.coloros.oppoguardelf" />
@@ -142,13 +218,23 @@
         <package android:name="com.vivo.permissionmanager" />
         <!-- OnePlus 安全中心（OxygenOS 11+ 基于 ColorOS） -->
         <package android:name="com.oneplus.security" />
-        <!-- 通用：系统设置 App，用于打开 App 详情页 / 电池优化白名单 -->
+        <!-- v2.14.23: 电池白名单 / 自启动 / 通话设置三类深链所需的 system 包 -->
         <intent>
             <action android:name="android.settings.APPLICATION_DETAILS_SETTINGS" />
             <data android:scheme="package" />
         </intent>
         <intent>
             <action android:name="android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS" />
+        </intent>
+        <intent>
+            <action android:name="android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+            <data android:scheme="package" />
+        </intent>
+        <intent>
+            <action android:name="android.telecom.action.CHANGE_PHONE_ACCOUNTS" />
+        </intent>
+        <intent>
+            <action android:name="android.telecom.action.SHOW_CALL_ACCESSIBILITY_SETTINGS" />
         </intent>
     </queries>
 </manifest>

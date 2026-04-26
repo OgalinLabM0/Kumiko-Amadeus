@@ -164,6 +164,22 @@ public final class KumikoVendorPermissionHelper {
                 out.add(altEditor);
                 break;
             }
+            case "xiaomi.batteryOptimizations": {
+                // v2.14.23: MIUI/HyperOS PowerKeeper "App battery saver" (the page
+                // where the user picks "No restrictions" — this is the actual
+                // unlock for "background pop-up" + "lock-screen show" reliability,
+                // separate from AOSP REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).
+                out.add(componentIntent(
+                    "com.miui.powerkeeper",
+                    "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"));
+                Intent powerHidden = new Intent("miui.intent.action.HIDDEN_APPS_CONFIG_ACTIVITY");
+                powerHidden.putExtra("package_name", "{pkg}");
+                powerHidden.putExtra("package_label", "Kumiko");
+                out.add(powerHidden);
+                // Fallback to AOSP battery whitelist if PowerKeeper UI isn't reachable.
+                out.add(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                break;
+            }
             case "huawei.protectedApps": {
                 out.add(componentIntent(
                     "com.huawei.systemmanager",
@@ -178,6 +194,22 @@ public final class KumikoVendorPermissionHelper {
                     "com.huawei.systemmanager",
                     "com.huawei.systemmanager.power.ui.HwPowerManagerActivity"));
                 out.add(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                break;
+            }
+            case "huawei.startup": {
+                // v2.14.23: EMUI 9+/HarmonyOS 2+ replaced "受保护应用" with
+                // "App launch" (启动管理). PowerGenie hosts the auto-launch +
+                // secondary-launch + run-in-background trio. We try the modern
+                // path first, fall back to legacy ProtectActivity.
+                out.add(componentIntent(
+                    "com.huawei.systemmanager",
+                    "com.huawei.systemmanager.startupmgr.ui.StartupNormalAppListActivity"));
+                out.add(componentIntent(
+                    "com.huawei.systemmanager",
+                    "com.huawei.systemmanager.appcontrol.activity.StartupAppControlActivity"));
+                out.add(componentIntent(
+                    "com.huawei.systemmanager",
+                    "com.huawei.systemmanager.optimize.process.ProtectActivity"));
                 break;
             }
             case "honor.protectedApps": {
@@ -205,6 +237,26 @@ public final class KumikoVendorPermissionHelper {
                 Intent batteryUsage = new Intent("com.samsung.android.sm.ACTION_OPEN_CHECKABLE_LISTACTIVITY");
                 batteryUsage.putExtra("activity_type", 2);
                 out.add(batteryUsage);
+                out.add(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+                break;
+            }
+            case "samsung.sleepingApps": {
+                // v2.14.23: One UI 4+ "Sleeping apps" / "Deep sleeping apps" UI.
+                // The class names changed across One UI 4 → 5 → 6 so we walk
+                // the historical list. Falls back to the BatteryActivity above
+                // (manual nav) and finally AOSP battery whitelist.
+                out.add(componentIntent(
+                    "com.samsung.android.lool",
+                    "com.samsung.android.sm.ui.battery.BatterySleepingAppsActivity"));
+                out.add(componentIntent(
+                    "com.samsung.android.lool",
+                    "com.samsung.android.sm.ui.battery.usage.BatteryUsageDeepSleepingAppsActivity"));
+                out.add(componentIntent(
+                    "com.samsung.android.sm",
+                    "com.samsung.android.sm.battery.ui.BatterySleepingAppsActivity"));
+                out.add(componentIntent(
+                    "com.samsung.android.lool",
+                    "com.samsung.android.sm.ui.battery.BatteryActivity"));
                 out.add(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
                 break;
             }

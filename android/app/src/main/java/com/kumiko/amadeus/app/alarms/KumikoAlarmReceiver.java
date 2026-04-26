@@ -36,11 +36,16 @@ import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.media.AudioAttributes;
 import android.media.RingtoneManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.PowerManager;
+import android.telecom.PhoneAccount;
+import android.telecom.PhoneAccountHandle;
+import android.telecom.TelecomManager;
 import android.util.Log;
 
 import androidx.core.app.NotificationCompat;
@@ -56,6 +61,10 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
     public static final String EXTRA_WANTS_CALL = "wants_call";
     public static final String EXTRA_RINGTONE_FILE_ID = "ringtone_file_id";
     public static final String EXTRA_TEST_MODE = "test_mode";
+    /** v2.14.23: marks the T-5min Xiaomi prewarm alarm. The receiver
+     *  treats it as a no-op (just consumes the wake to nudge the kernel
+     *  out of deep doze before the real alarm fires). */
+    public static final String EXTRA_IS_PREWARM = "is_prewarm";
 
     public static final String CHANNEL_ID_MESSAGES = "kumiko_messages";
     public static final String CHANNEL_ID_CALLS = "kumiko_calls";
@@ -80,65 +89,38 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
             String reminderText = intent.getStringExtra(EXTRA_REMINDER_TEXT);
             boolean wantsCall = intent.getBooleanExtra(EXTRA_WANTS_CALL, false);
             String ringtoneFileId = intent.getStringExtra(EXTRA_RINGTONE_FILE_ID);
+            boolean isPrewarm = intent.getBooleanExtra(EXTRA_IS_PREWARM, false);
 
             if (reminderId == null) reminderId = "alarm-" + System.currentTimeMillis();
             if (reminderEvent == null) reminderEvent = "提醒";
             if (reminderText == null) reminderText = reminderEvent;
 
+            // v2.14.23: Xiaomi prewarm alarm. We deliberately do nothing
+            // visible here — the kernel-side side-effect (waking us from
+            // deep doze 5min before the real alarm) is the entire point.
+            // Just log + bail.
+            if (isPrewarm) {
+                Log.i(TAG, "Prewarm alarm fired (no-op): id=" + reminderId);
+                return;
+            }
+
             Log.i(TAG, "Alarm fired: id=" + reminderId + " event=" + reminderEvent + " wantsCall=" + wantsCall);
 
+            // v2.14.23: stamp self-test alarmFiredAt before any user-visible
+            // routing happens, so even if the FSI launch fails the JS-side
+            // self-test report can show that the alarm did make it past
+            // AlarmManager.
+            writeSelfTestTimestamp(context, KumikoAlarmsPlugin.SELF_TEST_KEY_ALARM_FIRED_AT, reminderId);
+
             if (wantsCall) {
-                // Route 1: full-screen incoming call. Posting a CATEGORY_CALL
-                // full-screen notification is the Android-supported route for
-                // background/locked-screen call UI; direct startActivity is only
-                // kept as a best-effort fallback for permissive ROMs.
-                ensureCallsChannel(context);
-                Intent callIntent = new Intent(context, IncomingCallActivity.class);
-                callIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-                callIntent.putExtra(EXTRA_REMINDER_ID, reminderId);
-                callIntent.putExtra(EXTRA_REMINDER_EVENT, reminderEvent);
-                callIntent.putExtra(EXTRA_REMINDER_TEXT, reminderText);
-                callIntent.putExtra(EXTRA_RINGTONE_FILE_ID, ringtoneFileId);
-
-                int piFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
-                PendingIntent fullScreenPi = PendingIntent.getActivity(
-                    context,
-                    reminderId.hashCode(),
-                    callIntent,
-                    piFlags
+                boolean dispatchedViaTelecom = tryDispatchSelfManagedCall(
+                    context, reminderId, reminderEvent, reminderText, ringtoneFileId
                 );
-
-                Uri defaultRingtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-                Notification notification = new NotificationCompat.Builder(context, CHANNEL_ID_CALLS)
-                    .setSmallIcon(android.R.drawable.sym_call_incoming)
-                    .setContentTitle("黄前久美子 来电")
-                    .setContentText(reminderText)
-                    .setStyle(new NotificationCompat.BigTextStyle().bigText(reminderText))
-                    .setPriority(NotificationCompat.PRIORITY_MAX)
-                    .setCategory(NotificationCompat.CATEGORY_CALL)
-                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                    .setFullScreenIntent(fullScreenPi, true)
-                    .setContentIntent(fullScreenPi)
-                    .setOngoing(true)
-                    .setAutoCancel(true)
-                    .setSound(defaultRingtone)
-                    .setVibrate(CALL_VIBRATION_PATTERN)
-                    .build();
-
-                NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-                nm.notify(reminderId.hashCode(), notification);
-
-                try {
-                    context.startActivity(callIntent);
-                } catch (Throwable t) {
-                    Log.w(TAG, "Direct call activity launch blocked; full-screen notification posted", t);
+                if (!dispatchedViaTelecom) {
+                    dispatchLegacyFsi(context, reminderId, reminderEvent, reminderText, ringtoneFileId);
                 }
             } else {
                 // Route 2: text-mode reminder via a normal LocalNotification.
-                // Channel kumiko_messages was created by the JS LocalNotifications
-                // wrapper (services/capacitorNotifications.ts) on first use;
-                // we recreate it here defensively in case the receiver fires
-                // before the WebView has ever booted.
                 ensureMessagesChannel(context);
 
                 Intent tapIntent = new Intent(context, MainActivity.class);
@@ -160,11 +142,137 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
 
                 NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
                 nm.notify(reminderId.hashCode(), notification);
+                writeSelfTestTimestamp(context, KumikoAlarmsPlugin.SELF_TEST_KEY_NOTIF_POSTED_AT, reminderId);
+            }
+
+            // v2.14.23: alarm has fired; remove its ledger row so a reboot
+            // doesn't resurrect it. Do this AFTER dispatch in case
+            // posting the notification throws (we'd rather re-fire on
+            // reboot than silently drop).
+            try {
+                KumikoAlarmsPlugin.removeLedgerEntry(context, reminderId);
+            } catch (Throwable t) {
+                Log.w(TAG, "Failed to remove ledger row after fire (will resurrect on reboot)", t);
             }
         } catch (Throwable t) {
             Log.e(TAG, "Failed to dispatch alarm", t);
         } finally {
             try { wakeLock.release(); } catch (Throwable ignored) {}
+        }
+    }
+
+    /**
+     * v2.14.23: try the Telecom-managed incoming-call path. Returns true
+     * iff the framework accepted addNewIncomingCall (which transfers
+     * rendering responsibility to KumikoConnectionService); false means
+     * caller should fall through to the legacy FSI notification path.
+     */
+    private boolean tryDispatchSelfManagedCall(
+        Context context,
+        String reminderId,
+        String reminderEvent,
+        String reminderText,
+        String ringtoneFileId
+    ) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return false;
+        try {
+            TelecomManager tm = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
+            if (tm == null) return false;
+            PhoneAccountHandle handle = KumikoAlarmsPlugin.buildPhoneAccountHandle(context);
+            PhoneAccount account = tm.getPhoneAccount(handle);
+            if (account == null) return false;
+            if (!account.isEnabled()) {
+                Log.i(TAG, "PhoneAccount registered but not user-enabled; falling back to legacy FSI");
+                return false;
+            }
+
+            Bundle innerExtras = new Bundle();
+            innerExtras.putString(EXTRA_REMINDER_ID, reminderId);
+            innerExtras.putString(EXTRA_REMINDER_EVENT, reminderEvent);
+            innerExtras.putString(EXTRA_REMINDER_TEXT, reminderText);
+            innerExtras.putString(EXTRA_RINGTONE_FILE_ID, ringtoneFileId != null ? ringtoneFileId : "");
+
+            Bundle outerExtras = new Bundle();
+            outerExtras.putBundle(TelecomManager.EXTRA_INCOMING_CALL_EXTRAS, innerExtras);
+
+            tm.addNewIncomingCall(handle, outerExtras);
+            return true;
+        } catch (SecurityException se) {
+            Log.w(TAG, "tryDispatchSelfManagedCall denied (MANAGE_OWN_CALLS missing?)", se);
+            return false;
+        } catch (Throwable t) {
+            Log.w(TAG, "tryDispatchSelfManagedCall failed; falling back to legacy FSI", t);
+            return false;
+        }
+    }
+
+    /**
+     * Legacy CATEGORY_CALL + setFullScreenIntent + IncomingCallActivity
+     * direct-launch path. This is the v2.14.22 behaviour kept verbatim
+     * for ROMs that don't honour self-managed Telecom calls (some MIUI
+     * builds before 14, some EMUI 11 PowerGenie configurations).
+     */
+    private void dispatchLegacyFsi(
+        Context context,
+        String reminderId,
+        String reminderEvent,
+        String reminderText,
+        String ringtoneFileId
+    ) {
+        ensureCallsChannel(context);
+        Intent callIntent = new Intent(context, IncomingCallActivity.class);
+        callIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        callIntent.putExtra(EXTRA_REMINDER_ID, reminderId);
+        callIntent.putExtra(EXTRA_REMINDER_EVENT, reminderEvent);
+        callIntent.putExtra(EXTRA_REMINDER_TEXT, reminderText);
+        callIntent.putExtra(EXTRA_RINGTONE_FILE_ID, ringtoneFileId);
+
+        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent fullScreenPi = PendingIntent.getActivity(
+            context,
+            reminderId.hashCode(),
+            callIntent,
+            piFlags
+        );
+
+        Uri defaultRingtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+        Notification notification = new NotificationCompat.Builder(context, CHANNEL_ID_CALLS)
+            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setContentTitle("黄前久美子 来电")
+            .setContentText(reminderText)
+            .setStyle(new NotificationCompat.BigTextStyle().bigText(reminderText))
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setFullScreenIntent(fullScreenPi, true)
+            .setContentIntent(fullScreenPi)
+            .setOngoing(true)
+            .setAutoCancel(true)
+            .setSound(defaultRingtone)
+            .setVibrate(CALL_VIBRATION_PATTERN)
+            .build();
+
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) nm.notify(reminderId.hashCode(), notification);
+        writeSelfTestTimestamp(context, KumikoAlarmsPlugin.SELF_TEST_KEY_NOTIF_POSTED_AT, reminderId);
+
+        try {
+            context.startActivity(callIntent);
+        } catch (Throwable t) {
+            Log.w(TAG, "Direct call activity launch blocked; full-screen notification posted", t);
+        }
+    }
+
+    private static void writeSelfTestTimestamp(Context context, String key, String reminderId) {
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(
+                KumikoAlarmsPlugin.SELF_TEST_PREFS, Context.MODE_PRIVATE);
+            if (!prefs.getBoolean(KumikoAlarmsPlugin.SELF_TEST_KEY_ARMED, false)) return;
+            String armedId = prefs.getString(KumikoAlarmsPlugin.SELF_TEST_KEY_REMINDER_ID, null);
+            if (armedId == null || !armedId.equals(reminderId)) return;
+            prefs.edit().putLong(key, System.currentTimeMillis()).apply();
+        } catch (Throwable t) {
+            Log.w(TAG, "writeSelfTestTimestamp failed", t);
         }
     }
 
