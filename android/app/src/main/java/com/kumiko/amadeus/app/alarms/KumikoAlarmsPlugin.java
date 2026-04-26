@@ -4,7 +4,9 @@
 // to JS. Replaces useScheduledReminders' 1s setInterval polling that doesn't
 // survive Android Doze. JS calls scheduleExact / cancel / cancelAll, which
 // schedule a PendingIntent against KumikoAlarmReceiver. When the alarm fires
-// the receiver routes to either a notification or IncomingCallActivity (B.3).
+// the receiver routes to either a normal LocalNotification (text mode) or a
+// CallStyle heads-up + KumikoCallRingingService (call-mode reminder); the
+// React VoiceCallOverlay handles the actual incoming-call UI in v2.14.24+.
 //
 // Why our own plugin instead of @capawesome-team/capacitor-alarm or similar?
 //   - We need full control over the receiver's behaviour (route to call
@@ -26,6 +28,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.app.Person;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -54,7 +57,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.kumiko.amadeus.app.MainActivity;
-import com.kumiko.amadeus.app.calls.IncomingCallActivity;
+import com.kumiko.amadeus.app.calls.KumikoCallRingingService;
 import com.kumiko.amadeus.app.calls.KumikoConnectionService;
 
 import org.json.JSONException;
@@ -62,17 +65,41 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 @CapacitorPlugin(name = "KumikoAlarms")
 public class KumikoAlarmsPlugin extends Plugin {
 
     private static final String TAG = "KumikoAlarmsPlugin";
-    public static final String CHANNEL_ID_MESSAGES = "kumiko_messages";
-    public static final String CHANNEL_ID_CALLS = "kumiko_calls";
+    // v2.14.24: bumped to *_v3 to force recreation. Pre-v3 channels were
+    // created with conflicting settings by both this plugin and Capacitor's
+    // LocalNotifications wrapper depending on which path raced first; once
+    // a channel is created its importance / vibration / sound are *immutable*
+    // from the app side (only the user can change them via system settings).
+    // The only way to ship corrected channel settings is to use a new ID and
+    // delete the old one. Cost: any user-customised channel preferences on
+    // the v1/v2 channels are lost once. Worth it.
+    public static final String CHANNEL_ID_MESSAGES = "kumiko_messages_v3";
+    public static final String CHANNEL_ID_CALLS = "kumiko_calls_v3";
+    /** v2.14.24: legacy channel IDs deleted on first plugin load after upgrade. */
+    private static final String[] LEGACY_CHANNEL_IDS = new String[] {
+        "kumiko_messages",
+        "kumiko_messages_v2",
+        "kumiko_calls",
+        "kumiko_calls_v2",
+    };
+    private static final String CHANNEL_MIGRATION_PREFS = "kumiko_channel_migration";
+    private static final String CHANNEL_MIGRATION_KEY_V3 = "v3_done";
+
     private static final int TEST_MESSAGE_NOTIFICATION_ID = 921021;
     private static final int TEST_CALL_NOTIFICATION_ID = 921022;
-    private static final long[] MESSAGE_VIBRATION_PATTERN = new long[]{0, 200};
-    private static final long[] CALL_VIBRATION_PATTERN = new long[]{0, 650, 250, 650, 250, 900};
+    // v2.14.24: explicit "two short taps" vs "long persistent ring" patterns
+    // so the user can audibly distinguish a passive message notification
+    // from a reminder-call without looking at the screen. Old single-pulse
+    // pattern blended into the system default and was the #1 cause of "I
+    // didn't notice the reminder" reports in the v2.14.23 feedback.
+    public static final long[] MESSAGE_VIBRATION_PATTERN = new long[]{0, 250, 120, 250};
+    public static final long[] CALL_VIBRATION_PATTERN = new long[]{0, 800, 600, 800, 600, 800, 600, 800};
 
     // v2.14.23: native ledger keys. Each entry is a JSON blob keyed by
     // reminderId so KumikoBootReceiver can rebuild the AlarmManager state
@@ -110,6 +137,50 @@ public class KumikoAlarmsPlugin extends Plugin {
     // companion. We add a constant offset to the reminderId hash so the
     // PendingIntent request code never collides with the real alarm.
     private static final int PREWARM_REQUEST_CODE_OFFSET = 0x10000000;
+
+    @Override
+    public void load() {
+        super.load();
+        // v2.14.24: one-shot delete of legacy channel IDs + eager creation
+        // of the v3 channels.
+        //
+        // Capacitor's plugin load() runs once per process when the bridge
+        // resolves the plugin descriptor (i.e. on every cold start of
+        // MainActivity). The SharedPreferences flag makes the actual delete
+        // idempotent across launches; gating on the flag also avoids
+        // touching NotificationManager unnecessarily after migration.
+        //
+        // We also pre-create the v3 channels here because Capacitor's
+        // LocalNotifications plugin may post by channelId before any
+        // reminder fires (e.g. proactive RNG message via postKumikoNotification),
+        // and an unknown channelId would silently route to the default channel
+        // — losing our DND-bypass / lockscreen visibility settings.
+        try {
+            Context ctx = getContext();
+            runChannelMigrationToV3(ctx);
+            ensureMessagesChannel(ctx);
+            ensureCallsChannel(ctx);
+        } catch (Throwable t) {
+            Log.w(TAG, "Channel setup at load() failed (non-fatal)", t);
+        }
+    }
+
+    public static void runChannelMigrationToV3(Context context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        SharedPreferences prefs = context.getSharedPreferences(CHANNEL_MIGRATION_PREFS, Context.MODE_PRIVATE);
+        if (prefs.getBoolean(CHANNEL_MIGRATION_KEY_V3, false)) return;
+        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        for (String legacy : LEGACY_CHANNEL_IDS) {
+            try {
+                nm.deleteNotificationChannel(legacy);
+            } catch (Throwable t) {
+                Log.w(TAG, "deleteNotificationChannel(" + legacy + ") failed", t);
+            }
+        }
+        prefs.edit().putBoolean(CHANNEL_MIGRATION_KEY_V3, true).apply();
+        Log.i(TAG, "Channel migration v3 complete; legacy channels deleted");
+    }
 
     @PluginMethod
     public void scheduleExact(PluginCall call) {
@@ -535,49 +606,30 @@ public class KumikoAlarmsPlugin extends Plugin {
     public void postTestIncomingCall(PluginCall call) {
         Context context = getContext();
         try {
-            ensureCallsChannel(context);
             String title = call.getString("title", "黄前久美子 来电测试");
             String body = call.getString("body", "来电弹窗 / 铃声 / 震动测试");
             String ringtoneFileId = call.getString("ringtoneFileId", "");
+            String testReminderId = "test-incoming-call-" + System.currentTimeMillis();
 
-            Intent callIntent = new Intent(context, IncomingCallActivity.class);
-            callIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            callIntent.putExtra(KumikoAlarmReceiver.EXTRA_REMINDER_ID, "test-incoming-call");
-            callIntent.putExtra(KumikoAlarmReceiver.EXTRA_REMINDER_EVENT, title);
-            callIntent.putExtra(KumikoAlarmReceiver.EXTRA_REMINDER_TEXT, body);
-            callIntent.putExtra(KumikoAlarmReceiver.EXTRA_RINGTONE_FILE_ID, ringtoneFileId);
-            callIntent.putExtra(KumikoAlarmReceiver.EXTRA_TEST_MODE, true);
-
-            PendingIntent fullScreenPi = PendingIntent.getActivity(
-                context,
-                TEST_CALL_NOTIFICATION_ID,
-                callIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
-            );
-
-            Notification notification = new NotificationCompat.Builder(context, CHANNEL_ID_CALLS)
-                .setSmallIcon(android.R.drawable.sym_call_incoming)
-                .setContentTitle(title)
-                .setContentText(body)
-                .setStyle(new NotificationCompat.BigTextStyle().bigText(body))
-                .setPriority(NotificationCompat.PRIORITY_MAX)
-                .setCategory(NotificationCompat.CATEGORY_CALL)
-                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-                .setFullScreenIntent(fullScreenPi, true)
-                .setContentIntent(fullScreenPi)
-                .setOngoing(true)
-                .setAutoCancel(true)
-                .setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
-                .setVibrate(CALL_VIBRATION_PATTERN)
-                .build();
-
-            NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-            if (nm == null) {
-                call.reject("NotificationManager unavailable");
-                return;
+            // v2.14.24: post the same heads-up the production reminder
+            // path uses, so the test really exercises the user-facing
+            // notification surface (CallStyle on API 31+, Accept/Decline
+            // actions on older). Also start the ringer FG service so the
+            // test confirms ringtone + vibration loop.
+            postIncomingCallHeadsUp(context, testReminderId, title, body, ringtoneFileId);
+            try {
+                Intent ringer = new Intent(context, KumikoCallRingingService.class);
+                ringer.putExtra(KumikoCallRingingService.EXTRA_REMINDER_ID, testReminderId);
+                ringer.putExtra(KumikoCallRingingService.EXTRA_RINGTONE_FILE_ID, ringtoneFileId);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(ringer);
+                } else {
+                    context.startService(ringer);
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "Test incoming call: ringer start failed", t);
             }
-            nm.notify(TEST_CALL_NOTIFICATION_ID, notification);
-            context.startActivity(callIntent);
+
             JSObject ret = new JSObject();
             ret.put("posted", true);
             call.resolve(ret);
@@ -863,6 +915,35 @@ public class KumikoAlarmsPlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /**
+     * v2.14.24: stops {@link KumikoCallRingingService} from JS, e.g. when
+     * the user closes the React VoiceCallOverlay manually. The service
+     * also self-stops after MAX_RING_DURATION_MS, but we want to short-
+     * circuit that as soon as the user reaches the overlay (otherwise the
+     * ringtone keeps ringing for up to a minute despite the overlay being
+     * already on screen).
+     */
+    @PluginMethod
+    public void stopCallRinging(PluginCall call) {
+        boolean stopped = false;
+        try {
+            Context context = getContext();
+            Intent intent = new Intent(context, KumikoCallRingingService.class);
+            intent.setAction(KumikoCallRingingService.ACTION_STOP);
+            // Use startService so the service receives ACTION_STOP via
+            // onStartCommand; that path also runs the cleanup. Calling
+            // stopService alone races with onStartCommand if the service
+            // hasn't been promoted to foreground yet.
+            context.startService(intent);
+            stopped = true;
+        } catch (Throwable t) {
+            Log.w(TAG, "stopCallRinging failed", t);
+        }
+        JSObject ret = new JSObject();
+        ret.put("stopped", stopped);
+        call.resolve(ret);
+    }
+
     @PluginMethod
     public void stopAlarmGuardian(PluginCall call) {
         boolean stopped = false;
@@ -880,10 +961,12 @@ public class KumikoAlarmsPlugin extends Plugin {
 
     @PluginMethod
     public void drainPendingActions(PluginCall call) {
-        // Drain SharedPreferences entries that IncomingCallActivity (call
-        // accept/reject) and RemoteReplyReceiver (Direct Reply text) wrote
-        // while the WebView was offline. Returns a snapshot to JS, which
-        // then replays them through the normal message pipeline.
+        // v2.14.24: drain SharedPreferences entries that MainActivity (call
+        // open/accept/decline from heads-up tap) and RemoteReplyReceiver
+        // (Direct Reply text) wrote while the WebView was offline. Returns
+        // a snapshot to JS which replays them through the normal message
+        // pipeline. Pre-v2.14.24 the writer was IncomingCallActivity; the
+        // wire format is unchanged so existing JS drainer code works as-is.
         JSObject result = new JSObject();
 
         android.content.SharedPreferences callPrefs = getContext()
@@ -928,7 +1011,15 @@ public class KumikoAlarmsPlugin extends Plugin {
         return channel != null && channel.getImportance() != NotificationManager.IMPORTANCE_NONE;
     }
 
-    private static void ensureMessagesChannel(Context context) {
+    /**
+     * Idempotent. Safe to call from any native entry point that needs to
+     * post on {@link #CHANNEL_ID_MESSAGES}. v2.14.24: made {@code public}
+     * so {@link KumikoAlarmReceiver} and other native components don't
+     * duplicate the channel definition (each duplicate ran the risk of
+     * setting different importance/vibration depending on whoever raced
+     * to {@code createNotificationChannel} first).
+     */
+    public static void ensureMessagesChannel(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null || nm.getNotificationChannel(CHANNEL_ID_MESSAGES) != null) return;
@@ -937,13 +1028,31 @@ public class KumikoAlarmsPlugin extends Plugin {
             "新消息 · Messages",
             NotificationManager.IMPORTANCE_HIGH
         );
-        channel.setDescription("黄前久美子 主动联络");
+        channel.setDescription("黄前久美子 主动联络（不会唤醒整页屏幕）");
+        channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
         channel.enableVibration(true);
         channel.setVibrationPattern(MESSAGE_VIBRATION_PATTERN);
+        channel.setShowBadge(true);
         nm.createNotificationChannel(channel);
     }
 
-    private static void ensureCallsChannel(Context context) {
+    /**
+     * Idempotent. Configures the high-priority "来电提醒" channel used by
+     * both legacy fullScreenIntent and the v2.14.24 CallStyle heads-up
+     * path. v2.14.24 additions:
+     *   - {@code setBypassDnd(true)} — call-style notifications must ring
+     *     even when the device is in DND, otherwise reminders silently
+     *     drop on locked-screen evenings (which is when they matter most).
+     *     Honoured at the system level only if the user has granted the
+     *     "Do Not Disturb access" special permission, which we surface in
+     *     the onboarding wizard.
+     *   - {@code setShowBadge(true)} — keeps the launcher icon dot in sync
+     *     with missed reminders.
+     *   - long persistent vibration pattern matching {@link Notification.CallStyle}
+     *     conventions so the device buzzes continuously instead of a single
+     *     short pulse that could be missed.
+     */
+    public static void ensureCallsChannel(Context context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null || nm.getNotificationChannel(CHANNEL_ID_CALLS) != null) return;
@@ -953,16 +1062,230 @@ public class KumikoAlarmsPlugin extends Plugin {
             "来电提醒 · Calls",
             NotificationManager.IMPORTANCE_HIGH
         );
-        channel.setDescription("黄前久美子 来电式提醒");
+        channel.setDescription("黄前久美子 来电式提醒（高优先 + 全屏 + 振动）");
         channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
         channel.enableVibration(true);
         channel.setVibrationPattern(CALL_VIBRATION_PATTERN);
+        channel.setBypassDnd(true);
+        channel.setShowBadge(true);
         AudioAttributes attrs = new AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
             .build();
         channel.setSound(RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE), attrs);
         nm.createNotificationChannel(channel);
+    }
+
+    // === v2.14.24: heads-up CallStyle helper ==========================
+    //
+    // Single source of truth for "post a Notification.CallStyle.forIncomingCall
+    // heads-up that always shows the user there is an incoming reminder
+    // and routes their tap into MainActivity → React VoiceCallOverlay".
+    //
+    // Why a separate helper instead of inlining inside the receiver?
+    //   - KumikoConnectionService also needs to post the same heads-up
+    //     when Telecom asks us to render a self-managed incoming call
+    //     (`onCreateIncomingConnection`).
+    //   - Having both call sites go through this one method gives us
+    //     dedup-by-reminderId (the {@link #LAST_HEADS_UP_POSTED_AT} map),
+    //     which in turn lets us keep "post heads-up always THEN attempt
+    //     Telecom" in the receiver without double-notifying when Telecom
+    //     subsequently invokes us to display the same call.
+    //
+    // What's in the heads-up:
+    //   - API 31+: Notification.CallStyle.forIncomingCall(person, declinePi,
+    //     acceptPi). Android renders the canonical green-Accept / red-Decline
+    //     round buttons heads-up banner.
+    //   - API < 31: NotificationCompat.Builder + addAction(Decline) +
+    //     addAction(Accept). Less polished but still has tap targets.
+    //   - All builds: setCategory(CATEGORY_CALL), setOngoing(true),
+    //     setVisibility(PUBLIC), setFullScreenIntent → MainActivity, flag
+    //     FLAG_INSISTENT (so heads-up doesn't auto-dismiss after a few
+    //     seconds; user must respond).
+    //   - PendingIntents target MainActivity with EXTRA_OPEN_CALL /
+    //     EXTRA_ACCEPT_CALL / EXTRA_DECLINE_CALL. MainActivity writes the
+    //     intent into kumiko_pending_actions SharedPrefs and the JS drainer
+    //     picks it up and bridges into VoiceCallOverlay.
+    //
+    // What this helper does NOT do:
+    //   - Play ringtone audio. That is the job of {@link KumikoCallRingingService}
+    //     (FG service with MediaPlayer + Vibrator wave loop). The receiver
+    //     starts that service in parallel with the heads-up post; the
+    //     channel sound plays once at heads-up post for ROMs that don't
+    //     respect the FG service path.
+
+    public static final String EXTRA_OPEN_CALL = "kumiko_extra_open_call";
+    public static final String EXTRA_ACCEPT_CALL = "kumiko_extra_accept_call";
+    public static final String EXTRA_DECLINE_CALL = "kumiko_extra_decline_call";
+    public static final String EXTRA_REMINDER_EVENT = "kumiko_extra_reminder_event";
+    public static final String EXTRA_REMINDER_TEXT = "kumiko_extra_reminder_text";
+    public static final String EXTRA_RINGTONE_FILE_ID = "kumiko_extra_ringtone_file_id";
+
+    private static final ConcurrentHashMap<String, Long> LAST_HEADS_UP_POSTED_AT = new ConcurrentHashMap<>();
+    private static final long HEADS_UP_DEDUP_WINDOW_MS = 5_000L;
+
+    /**
+     * Idempotent within {@link #HEADS_UP_DEDUP_WINDOW_MS}. Posts the
+     * incoming-call heads-up notification. Stamps SELF_TEST_KEY_NOTIF_POSTED_AT
+     * if the reminder is the currently-armed self-test.
+     *
+     * @return true if a notification was posted, false if a recent dedup
+     *         hit caused a skip (caller can ignore the return — both cases
+     *         are "the user has been notified").
+     */
+    public static boolean postIncomingCallHeadsUp(
+        Context context,
+        String reminderId,
+        String reminderEvent,
+        String reminderText,
+        String ringtoneFileId
+    ) {
+        if (reminderId == null) reminderId = "call-" + System.currentTimeMillis();
+        if (reminderEvent == null || reminderEvent.isEmpty()) reminderEvent = "黄前久美子 来电";
+        if (reminderText == null || reminderText.isEmpty()) reminderText = reminderEvent;
+
+        long now = System.currentTimeMillis();
+        Long previous = LAST_HEADS_UP_POSTED_AT.get(reminderId);
+        if (previous != null && (now - previous) < HEADS_UP_DEDUP_WINDOW_MS) {
+            Log.i(TAG, "postIncomingCallHeadsUp dedup hit for reminderId=" + reminderId);
+            return false;
+        }
+        LAST_HEADS_UP_POSTED_AT.put(reminderId, now);
+
+        try {
+            ensureCallsChannel(context);
+
+            int piFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
+            int idHash = reminderId.hashCode();
+
+            PendingIntent contentPi = buildMainActivityPi(
+                context, reminderId, reminderEvent, reminderText, ringtoneFileId,
+                EXTRA_OPEN_CALL, idHash, piFlags
+            );
+            PendingIntent acceptPi = buildMainActivityPi(
+                context, reminderId, reminderEvent, reminderText, ringtoneFileId,
+                EXTRA_ACCEPT_CALL, idHash ^ 0x2, piFlags
+            );
+            PendingIntent declinePi = buildMainActivityPi(
+                context, reminderId, reminderEvent, reminderText, ringtoneFileId,
+                EXTRA_DECLINE_CALL, idHash ^ 0x1, piFlags
+            );
+
+            Uri ringtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
+            Notification notification;
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                Person caller = new Person.Builder()
+                    .setName(reminderEvent)
+                    .setImportant(true)
+                    .build();
+                Notification.CallStyle style = Notification.CallStyle
+                    .forIncomingCall(caller, declinePi, acceptPi);
+                Notification.Builder builder = new Notification.Builder(context, CHANNEL_ID_CALLS)
+                    .setSmallIcon(android.R.drawable.sym_call_incoming)
+                    .setContentTitle(reminderEvent)
+                    .setContentText(reminderText)
+                    .setCategory(Notification.CATEGORY_CALL)
+                    .setVisibility(Notification.VISIBILITY_PUBLIC)
+                    .setFullScreenIntent(contentPi, true)
+                    .setOngoing(true)
+                    .setStyle(style);
+                notification = builder.build();
+            } else {
+                NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID_CALLS)
+                    .setSmallIcon(android.R.drawable.sym_call_incoming)
+                    .setContentTitle(reminderEvent)
+                    .setContentText(reminderText)
+                    .setStyle(new NotificationCompat.BigTextStyle().bigText(reminderText))
+                    .setPriority(NotificationCompat.PRIORITY_MAX)
+                    .setCategory(NotificationCompat.CATEGORY_CALL)
+                    .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                    .setFullScreenIntent(contentPi, true)
+                    .setContentIntent(contentPi)
+                    .setOngoing(true)
+                    .setAutoCancel(false)
+                    .setSound(ringtone)
+                    .setVibrate(CALL_VIBRATION_PATTERN)
+                    .addAction(android.R.drawable.ic_menu_close_clear_cancel, "拒接 · Decline", declinePi)
+                    .addAction(android.R.drawable.ic_menu_call, "接听 · Accept", acceptPi);
+                notification = builder.build();
+            }
+
+            // FLAG_INSISTENT keeps ringtone + vibration looping until the
+            // user responds. Without it, OEMs auto-dismiss the heads-up
+            // banner after ~3-5 seconds and the user misses the reminder.
+            notification.flags |= Notification.FLAG_INSISTENT;
+
+            NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                nm.notify(idHash, notification);
+            }
+
+            writeSelfTestNotifPostedAt(context, reminderId);
+            Log.i(TAG, "postIncomingCallHeadsUp posted reminderId=" + reminderId);
+            return true;
+        } catch (Throwable t) {
+            Log.e(TAG, "postIncomingCallHeadsUp failed", t);
+            // Clear dedup so a subsequent retry isn't blocked.
+            LAST_HEADS_UP_POSTED_AT.remove(reminderId);
+            return false;
+        }
+    }
+
+    /**
+     * Cancel a heads-up posted by {@link #postIncomingCallHeadsUp} and
+     * also stop the ringtone service. Called by MainActivity when the
+     * user responds via the heads-up actions or taps into the activity.
+     */
+    public static void cancelIncomingCallHeadsUp(Context context, String reminderId) {
+        if (reminderId == null) return;
+        try {
+            NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
+            if (nm != null) {
+                nm.cancel(reminderId.hashCode());
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "cancelIncomingCallHeadsUp notify cancel failed", t);
+        }
+        LAST_HEADS_UP_POSTED_AT.remove(reminderId);
+        try {
+            Intent stopRing = new Intent(context, KumikoCallRingingService.class);
+            stopRing.setAction(KumikoCallRingingService.ACTION_STOP);
+            context.startService(stopRing);
+        } catch (Throwable t) {
+            Log.w(TAG, "cancelIncomingCallHeadsUp stop ringer failed", t);
+        }
+    }
+
+    private static PendingIntent buildMainActivityPi(
+        Context context,
+        String reminderId,
+        String reminderEvent,
+        String reminderText,
+        String ringtoneFileId,
+        String actionExtraKey,
+        int requestCode,
+        int piFlags
+    ) {
+        Intent intent = new Intent(context, MainActivity.class);
+        intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        intent.putExtra(actionExtraKey, reminderId);
+        intent.putExtra(EXTRA_REMINDER_EVENT, reminderEvent != null ? reminderEvent : "");
+        intent.putExtra(EXTRA_REMINDER_TEXT, reminderText != null ? reminderText : "");
+        intent.putExtra(EXTRA_RINGTONE_FILE_ID, ringtoneFileId != null ? ringtoneFileId : "");
+        return PendingIntent.getActivity(context, requestCode, intent, piFlags);
+    }
+
+    private static void writeSelfTestNotifPostedAt(Context context, String reminderId) {
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(SELF_TEST_PREFS, Context.MODE_PRIVATE);
+            if (!prefs.getBoolean(SELF_TEST_KEY_ARMED, false)) return;
+            String armedId = prefs.getString(SELF_TEST_KEY_REMINDER_ID, null);
+            if (armedId == null || !armedId.equals(reminderId)) return;
+            prefs.edit().putLong(SELF_TEST_KEY_NOTIF_POSTED_AT, System.currentTimeMillis()).apply();
+        } catch (Throwable t) {
+            Log.w(TAG, "writeSelfTestNotifPostedAt failed", t);
+        }
     }
 
     private static void vibrate(Context context, long[] pattern, int repeat) {

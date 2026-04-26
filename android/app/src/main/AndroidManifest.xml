@@ -26,23 +26,14 @@
 
         </activity>
 
-        <!-- B.3: 全屏来电 Activity。仅由 KumikoAlarmReceiver（B.2）在「定时提醒到点 + app 后台」时启动，
-             用 setShowWhenLocked / setTurnScreenOn / setFullScreenIntent 在锁屏点亮屏幕弹全屏来电，
-             跟 LINE / 微信视频通话同款。接听后 broadcast 回 WebView 触发 setVoiceCallOverlayData
-             接听路径，挂断 broadcast reject。`showOnLockScreen + turnScreenOn` 走 manifest 而不是
-             代码是 Android 8.1+ 推荐姿势（旧 API 已 deprecated）。 -->
-        <activity
-            android:name=".calls.IncomingCallActivity"
-            android:exported="false"
-            android:showOnLockScreen="true"
-            android:turnScreenOn="true"
-            android:launchMode="singleInstance"
-            android:excludeFromRecents="true"
-            android:theme="@style/AppTheme.NoActionBarLaunch" />
-
-        <!-- B.2: 闹钟接收器，由 AlarmManager.setExactAndAllowWhileIdle 在用户「定时提醒」到点时
-             触发。Receiver 内部决定走文字消息（普通 LocalNotification + WebView 唤醒）还是全屏来电
-             （IncomingCallActivity）。exported=false 因为只接收 PendingIntent 自发的 alarm，不公开。 -->
+        <!-- v2.14.24: B.2 闹钟接收器，由 AlarmManager.setExactAndAllowWhileIdle 在用户「定时提醒」
+             到点时触发。Receiver 决定走文字消息（普通 LocalNotification + WebView 唤醒）还是
+             来电式提醒（postIncomingCallHeadsUp + KumikoCallRingingService，可选叠加 Telecom
+             ConnectionService）。来电界面统一由 React VoiceCallOverlay 展示——以前的全屏
+             IncomingCallActivity 在 v2.14.24 被删除，改成 heads-up + setFullScreenIntent
+             指向 MainActivity 让 WebView 接管 UI，符合 Android 14+ FSI 的更严限制并消除
+             HyperOS 拦后台 Activity 启动导致的失败路径。
+             exported=false 因为只接收 PendingIntent 自发的 alarm，不公开。 -->
         <receiver
             android:name=".alarms.KumikoAlarmReceiver"
             android:exported="false" />
@@ -114,6 +105,18 @@
                 <action android:name="android.telecom.ConnectionService" />
             </intent-filter>
         </service>
+
+        <!-- v2.14.24: 来电响铃前台服务。AlarmReceiver fires → postIncomingCallHeadsUp
+             posts the CallStyle notification → in parallel we start this service which
+             keeps a MediaPlayer (user-configured ringtone, looping) + Vibrator wave loop
+             alive until the user accepts/declines or 60s elapses. foregroundServiceType
+             phoneCall 让 OS 把它当来电类对待，不受常规后台限制。
+             停止入口：MainActivity 收到 EXTRA_OPEN_CALL/EXTRA_ACCEPT_CALL/EXTRA_DECLINE_CALL
+             之一即调 stopService；JS 端通过 KumikoAlarms.stopCallRinging 也能停。-->
+        <service
+            android:name=".calls.KumikoCallRingingService"
+            android:foregroundServiceType="phoneCall"
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
