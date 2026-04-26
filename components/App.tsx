@@ -157,6 +157,7 @@ import { startForegroundServiceIfNeeded } from '../services/foregroundServiceCon
 import { isCapacitorNative } from '../services/environment';
 import { useAndroidPendingActionsDrainer } from '../hooks/useAndroidPendingActionsDrainer';
 import { shouldIgnoreEnterDuringImeGrace } from './common/imeGuards';
+import { PermissionOnboardingWizard, isAndroidOnboardingCompleted } from './onboarding/PermissionOnboardingWizard';
 
 
 export const App = () => {
@@ -827,6 +828,31 @@ export const App = () => {
     }
   }, [flowState]); 
 
+  // v2.14.23: first-launch Android permission wizard. Mounts as a modal
+  // overlay the first time the user hits APP state on a Capacitor build.
+  // Subsequent launches read the localStorage flag and skip — wizard is
+  // re-launchable from AndroidPermissionsSection's "重新打开授权引导"
+  // button (which sets uiSlice.forcePermissionWizardOpen=true). Desktop +
+  // PWA never show it because the permission model is different.
+  const [showPermissionWizard, setShowPermissionWizard] = useState(false);
+  const forcePermissionWizardOpen = useAppStore(s => s.forcePermissionWizardOpen);
+  const setForcePermissionWizardOpen = useAppStore(s => s.setForcePermissionWizardOpen);
+  useEffect(() => {
+    if (flowState !== 'APP') return;
+    if (!isCapacitorNative()) return;
+    if (isAndroidOnboardingCompleted()) return;
+    // Defer one tick so we don't race the AppMainView mount; users are
+    // less alarmed by a wizard that appears AFTER they see the chat
+    // shell than one that appears INSTEAD of it.
+    const t = setTimeout(() => setShowPermissionWizard(true), 800);
+    return () => clearTimeout(t);
+  }, [flowState]);
+  useEffect(() => {
+    if (!forcePermissionWizardOpen) return;
+    if (flowState !== 'APP') return;
+    if (!isCapacitorNative()) return;
+    setShowPermissionWizard(true);
+  }, [forcePermissionWizardOpen, flowState]);
 
   const {
     welcomeTriggeredRef,
@@ -1323,6 +1349,15 @@ export const App = () => {
     {flowState === 'APP' && ( <div className={`absolute inset-0 z-0 amadeus-bg-grid ${isDarkMode ? 'opacity-100' : 'opacity-30'}`}></div> )}
     {flowState === 'APP' && (
       <AppMainView {...appMainViewProps} />
+    )}
+    {showPermissionWizard && flowState === 'APP' && (
+      <PermissionOnboardingWizard
+        language={language}
+        onClose={() => {
+          setShowPermissionWizard(false);
+          if (forcePermissionWizardOpen) setForcePermissionWizardOpen(false);
+        }}
+      />
     )}
     {backfillGapInfo && backfillGapInfo.totalMissing > 0 && (
       <DiaryBackfillDialogLazy

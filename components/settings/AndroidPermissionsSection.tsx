@@ -28,7 +28,17 @@ import {
   type AndroidAlertPermissionState,
   type OemVendor,
 } from '../../services/androidAlertPermissionService';
-import type { VendorPermissionKey } from '../../services/androidAlarmService';
+import {
+  type AlarmSelfTestReport,
+  cancelAndroidAlarm,
+  collectKumikoSelfTestReport,
+  prewarmKumikoAlarmsPlugin,
+  scheduleAndroidAlarm,
+  startKumikoSelfTestProbe,
+  type VendorPermissionKey,
+} from '../../services/androidAlarmService';
+import { resetAndroidOnboardingFlag } from '../onboarding/PermissionOnboardingWizard';
+import { useAppStore } from '../../store';
 
 interface AndroidPermissionsSectionProps {
   isOpen: boolean;
@@ -46,15 +56,28 @@ const ITEM_ORDER: AndroidAlertPermissionKey[] = [
   'callsChannel',
   'exactAlarm',
   'fullScreenIntent',
+  // v2.14.23: optional reliability boosters — surfaced separately in the
+  // UI but not counted against the "core" overall pipeline state.
+  'batteryOptimizations',
+  'phoneAccount',
 ];
+
+// v2.14.23: which items are "core" (block the overall pipeline being green)
+// vs "boosters" (improve reliability but the app still works without them).
+const CORE_KEYS: ReadonlySet<AndroidAlertPermissionKey> = new Set([
+  'notifications', 'messagesChannel', 'callsChannel', 'exactAlarm', 'fullScreenIntent',
+] as const);
 
 const COPY = {
   zh: {
     title: 'Android 权限体检',
     desc: '检查通知、精准闹钟和来电弹窗是否真实可用。',
     ready: '后台提醒链路已就绪',
+    readyAdvice: '主线路通畅。建议把可靠性增强项也开启，特别是「忽略电池优化」和「Telecom 通话账户」，能让锁屏闲置后的提醒更稳。',
     needsSetup: '仍有权限需要配置',
+    needsSetupAdvice: '请逐项点击下方红色「去配置」，每开完一项回到本页会自动重新检测；全部绿色后再做测试或深度自检。',
     unknownOverall: '部分项目暂时未能确认',
+    unknownOverallAdvice: '冷启动桥握手仍未完成，等几秒后点「重新检测」；如仍然未知，直接用「测试消息通知/来电提醒」实测验证。',
     checking: '正在检测 Android 权限...',
     unsupported: '仅 Android 原生版需要此体检。',
     refresh: '重新检测',
@@ -62,6 +85,7 @@ const COPY = {
     request: '申请权限',
     testMessage: '测试消息通知',
     testCall: '测试来电提醒',
+    deepSelfTest: '深度自检（端到端）',
     clearTests: '清理测试',
     submittedMessage: '已提交测试消息通知；请确认系统通知和短震动是否真的出现。',
     submittedCall: '已启动来电测试；请确认是否弹出来电页、响当前铃声并震动。',
@@ -71,10 +95,18 @@ const COPY = {
     timeoutMessage: '检测超时，已展示已拿到的部分结果；请稍后再次检测。',
     testTimeout: '测试请求 6 秒内未收到系统回执，请重新尝试或检查 OEM 后台限制。',
     partialNotice: '部分项目无法确认（以「未知」标记），系统可能繁忙或厂商接口未公开，请重新检测。',
-    unknownHint: '当前显示「未知」时，请重新检测，或直接用下方的「真实测试」按钮验证。',
+    unknownHint: '「未知」并不等于失败，只是 native 桥还没回应；请用下方测试按钮直接验证（最权威）。',
     callTestHint: '提示：请把 App 退到后台或锁屏后再点测试，这样才能验证锁屏弹窗。',
     callCountdownHint: (sec: number) => `准备触发来电…${sec} 秒后开始；请立刻按 Home 退到后台或锁屏，否则只能验证前台横幅。`,
     messageCountdownHint: (sec: number) => `准备触发消息通知…${sec} 秒后开始；可保持当前页或退到后台。`,
+    deepSelfTestHint: '深度自检会创建一个 8 秒后的占位提醒，请马上锁屏；解锁回到 App 后会显示「闹钟到达 / 通知已发 / 全屏弹起 / 接听回放」四阶段是否到达。',
+    deepSelfTestCountdown: (sec: number) => `${sec} 秒后开始记录，请立即锁屏…`,
+    deepSelfTestRunning: '深度自检中。请保持锁屏，到点会响铃；接听后回到 App 自动展示报告。',
+    deepSelfTestReportReady: '点击「查看报告」生成端到端可达性报告。',
+    deepSelfTestSchedule: '安排自检',
+    deepSelfTestCollect: '查看报告',
+    rerunOnboarding: '重新打开授权引导',
+    rerunOnboardingHint: '从首启的 8 步引导重新走一遍（适合换设备 / 换 ROM 后做一遍完整自检）。',
     abortedHint: '已取消测试。',
     abort: '取消',
     items: {
@@ -83,7 +115,10 @@ const COPY = {
       callsChannel: ['来电通知渠道', '提醒来电使用此渠道触发铃声、震动和全屏意图。'],
       exactAlarm: ['精准闹钟', '定时提醒后台准点触发需要此权限。'],
       fullScreenIntent: ['全屏来电', 'Android 14+ 需要允许全屏通知，锁屏才能弹出来电页。'],
+      batteryOptimizations: ['忽略电池优化', '强烈建议开启。Doze 模式 / OEM 杀进程会延迟或丢失提醒；加入忽略列表能显著降低风险。'],
+      phoneAccount: ['Telecom 通话账户', '可选。注册后系统把久美子来电视作系统级通话，OEM 拦截更弱；未启用时自动 fallback 到通用全屏通知路径。'],
     },
+    unknownItemDesc: '（Native 桥未返回；请用测试按钮直接验证）',
     states: {
       granted: '已通过',
       denied: '未配置',
@@ -148,8 +183,11 @@ const COPY = {
     title: 'Android Permission Check',
     desc: 'Verify notifications, exact alarms, and incoming-call UI.',
     ready: 'Background alert pipeline is ready',
+    readyAdvice: 'Core path is healthy. We recommend turning on the optional reliability boosters too — especially Ignore battery optimization and Telecom calling account — to reduce drift after a long lock.',
     needsSetup: 'Some permissions still need setup',
+    needsSetupAdvice: 'Click each red "Configure" below; we re-check automatically when you return. Once everything is green, run the test buttons or the deep self-test.',
     unknownOverall: 'Some items could not be confirmed',
+    unknownOverallAdvice: 'The cold-start bridge handshake is still pending. Wait a few seconds and tap Refresh. If still unknown, just verify with the test buttons below.',
     checking: 'Checking Android permissions...',
     unsupported: 'Only the native Android build needs this check.',
     refresh: 'Refresh',
@@ -157,6 +195,7 @@ const COPY = {
     request: 'Request',
     testMessage: 'Test Message Notification',
     testCall: 'Test Incoming Call',
+    deepSelfTest: 'Deep self-test (end-to-end)',
     clearTests: 'Clear Tests',
     submittedMessage: 'Test message notification submitted; confirm the system notification and short vibration appeared.',
     submittedCall: 'Incoming-call test started; confirm the call screen, selected ringtone, and vibration appeared.',
@@ -166,10 +205,18 @@ const COPY = {
     timeoutMessage: 'Detection timed out; showing what we already collected. Try refreshing again.',
     testTimeout: 'No system response within 6s; please retry or check OEM background restrictions.',
     partialNotice: 'Some items could not be confirmed (shown as "Unknown"). The system may be busy or the OEM exposes no API. Please refresh.',
-    unknownHint: 'When an item shows "Unknown", refresh again or use the real-world test buttons below.',
+    unknownHint: '"Unknown" does not mean failure — only that the native bridge has not answered yet. The test buttons below give the most authoritative answer.',
     callTestHint: 'Tip: send the app to background or lock the screen first, then run the test to verify lock-screen pop-ups.',
     callCountdownHint: (sec: number) => `Triggering the call test in ${sec}s. Press Home now or lock the screen, otherwise you only test the foreground heads-up.`,
     messageCountdownHint: (sec: number) => `Triggering the message test in ${sec}s. You can stay on this page or send the app to background.`,
+    deepSelfTestHint: 'The deep self-test schedules a placeholder reminder 8s out — please lock the screen immediately. After unlocking and returning to the app, we report whether all four stages (alarm fired / notification posted / FSI launched / accept echoed) arrived.',
+    deepSelfTestCountdown: (sec: number) => `Recording in ${sec}s; lock the screen now…`,
+    deepSelfTestRunning: 'Deep self-test running. Stay locked; the call will ring on time. After accepting the test, return here for the report.',
+    deepSelfTestReportReady: 'Tap "View report" to render the end-to-end reachability summary.',
+    deepSelfTestSchedule: 'Schedule self-test',
+    deepSelfTestCollect: 'View report',
+    rerunOnboarding: 'Re-open permission wizard',
+    rerunOnboardingHint: 'Walk through the 8-step first-launch wizard again (useful after a device or ROM change).',
     abortedHint: 'Test cancelled.',
     abort: 'Cancel',
     items: {
@@ -178,7 +225,10 @@ const COPY = {
       callsChannel: ['Call Channel', 'Reminder calls use this channel for ringtone, vibration, and full-screen intent.'],
       exactAlarm: ['Exact Alarms', 'Required for scheduled reminders to fire on time in the background.'],
       fullScreenIntent: ['Full-Screen Calls', 'Required on Android 14+ for call UI over the lock screen.'],
+      batteryOptimizations: ['Ignore battery optimization', 'Strongly recommended. Doze mode and OEM background killing may delay or drop reminders; allowlisting Kumiko reduces that risk significantly.'],
+      phoneAccount: ['Telecom calling account', 'Optional. When enabled the system treats Kumiko\u2019s reminder calls as a system call, which OEMs interfere with less. Falls back to the standard FSI path when disabled.'],
     },
+    unknownItemDesc: '(Native bridge has not answered; please use the test buttons to verify directly.)',
     states: {
       granted: 'Ready',
       denied: 'Needs setup',
@@ -314,7 +364,12 @@ const VENDOR_ACTIONS: Record<OemVendor, (actions: typeof COPY.zh.oem.actions) =>
   ],
 };
 
-const REFRESH_OVERALL_TIMEOUT_MS = 4_000;
+// v2.14.23: bumped from 4s → 8s. The underlying snapshot now costs up to
+// ~10s in the absolute-worst-cold-bridge case (5s probe × retry-on-partial).
+// We're optimistic that the hook-level prewarm has already paid that tax,
+// but the settings panel can be opened from a cold-resume long after the
+// bootstrap window has elapsed, so we still need a generous ceiling.
+const REFRESH_OVERALL_TIMEOUT_MS = 8_000;
 
 export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps> = ({
   isOpen,
@@ -326,10 +381,17 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
   ringtoneFileId,
 }) => {
   const copy = COPY[language];
+  const setForcePermissionWizardOpen = useAppStore(s => s.setForcePermissionWizardOpen);
   const [snapshot, setSnapshot] = useState<AndroidAlertPermissionSnapshot | null>(null);
   const [isChecking, setIsChecking] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string>('');
+  // v2.14.23: self-test state machine. Stages:
+  //   idle → countdown (3s) → armed (waiting for user lock + accept)
+  //   → reportReady (user back; click "view report") → idle
+  const [selfTestStage, setSelfTestStage] = useState<'idle' | 'countdown' | 'armed' | 'reportReady'>('idle');
+  const selfTestReminderIdRef = useRef<string | null>(null);
+  const [selfTestReport, setSelfTestReport] = useState<AlarmSelfTestReport | null>(null);
   const isSupported = snapshot?.supported !== false;
 
   const refresh = useCallback(async () => {
@@ -360,6 +422,13 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
   useEffect(() => {
     if (!isOpen) return;
     void (async () => {
+      // v2.14.23: pay the cold-bridge tax up-front before the read-only
+      // snapshot so it doesn't get blamed on the permission probes. The
+      // useUnreadAlertsChrome hook also prewarms at app startup; calling
+      // here as well covers the case where the user opens settings from
+      // a long-paused (memory-trimmed) app where the prewarm result has
+      // gone stale.
+      await prewarmKumikoAlarmsPlugin();
       await ensureAndroidAlertChannelsBootstrap();
       void refresh();
     })();
@@ -388,6 +457,13 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
         : overallState === 'denied'
           ? copy.needsSetup
           : copy.unknownOverall;
+  const overallAdvice = isSupported
+    ? overallState === 'granted'
+      ? copy.readyAdvice
+      : overallState === 'denied'
+        ? copy.needsSetupAdvice
+        : copy.unknownOverallAdvice
+    : '';
 
   const rows = useMemo(() => (
     ITEM_ORDER.map((key) => snapshot?.items[key]).filter(Boolean) as AndroidAlertPermissionItem[]
@@ -514,6 +590,121 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
     setBusyKey(null);
   }, [cancelCountdown]);
 
+  // v2.14.23: deep self-test. End-to-end probe through the full alarm
+  // flow. Records four wall-clock timestamps natively (alarm fired,
+  // notification posted, FSI launched, accept committed) and renders a
+  // delta report. Honest about what each missing stage means.
+  const handleScheduleSelfTest = useCallback(async () => {
+    setBusyKey('self-test-schedule');
+    setMessage('');
+    setSelfTestReport(null);
+    try {
+      const reminderId = `self-test-${Date.now()}`;
+      selfTestReminderIdRef.current = reminderId;
+      setSelfTestStage('countdown');
+      const proceed = await startCountdown(5, copy.deepSelfTestCountdown);
+      if (!proceed) {
+        setSelfTestStage('idle');
+        selfTestReminderIdRef.current = null;
+        setMessage(copy.abortedHint);
+        return;
+      }
+      const armed = await startKumikoSelfTestProbe(reminderId);
+      if (!armed) {
+        setSelfTestStage('idle');
+        selfTestReminderIdRef.current = null;
+        setMessage(copy.nativeFailed);
+        return;
+      }
+      const at = Date.now() + 8_000;
+      const result = await scheduleAndroidAlarm({
+        reminderId,
+        at,
+        event: '深度自检 / Deep self-test',
+        text: '请在锁屏接听以记录全链路时间戳。',
+        wantsCall: true,
+        ringtoneFileId: ringtoneFileId || '',
+      });
+      if (!result.scheduled) {
+        setSelfTestStage('idle');
+        selfTestReminderIdRef.current = null;
+        setMessage(copy.nativeFailed);
+        return;
+      }
+      setSelfTestStage('armed');
+      setMessage(copy.deepSelfTestRunning);
+    } finally {
+      setBusyKey(null);
+    }
+  }, [copy.abortedHint, copy.deepSelfTestCountdown, copy.deepSelfTestRunning, copy.nativeFailed, ringtoneFileId, startCountdown]);
+
+  // Auto-prompt the user to view the report when the app resumes after
+  // the self-test arming. We don't auto-collect because some users may
+  // have skipped the test mid-flight; surfacing a "report ready" state
+  // gives them a chance to opt in or cancel.
+  useEffect(() => {
+    if (selfTestStage !== 'armed') return;
+    const onResume = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      setSelfTestStage('reportReady');
+      setMessage(copy.deepSelfTestReportReady);
+    };
+    window.addEventListener('focus', onResume);
+    document.addEventListener('visibilitychange', onResume);
+    return () => {
+      window.removeEventListener('focus', onResume);
+      document.removeEventListener('visibilitychange', onResume);
+    };
+  }, [copy.deepSelfTestReportReady, selfTestStage]);
+
+  const handleCollectSelfTestReport = useCallback(async () => {
+    setBusyKey('self-test-collect');
+    try {
+      const report = await collectKumikoSelfTestReport();
+      setSelfTestReport(report);
+      setSelfTestStage('idle');
+      // Best-effort cancel any leftover alarm record (no-op if already fired).
+      const id = selfTestReminderIdRef.current;
+      selfTestReminderIdRef.current = null;
+      if (id) {
+        void cancelAndroidAlarm(id).catch(() => undefined);
+      }
+    } finally {
+      setBusyKey(null);
+    }
+  }, []);
+
+  const selfTestReportLines = useMemo<string[] | null>(() => {
+    if (!selfTestReport) return null;
+    const lines: string[] = [];
+    const ok = (label: string, ts: number) =>
+      lines.push(`${ts > 0 ? '✅' : '❌'} ${label}${ts > 0 ? ` @ ${new Date(ts).toLocaleTimeString()}` : ''}`);
+    ok(language === 'en' ? 'AlarmManager fired' : '闹钟触发', selfTestReport.alarmFiredAt);
+    ok(language === 'en' ? 'Notification posted' : '通知已发出', selfTestReport.notifPostedAt);
+    ok(language === 'en' ? 'Full-screen UI launched' : '全屏来电拉起', selfTestReport.fsiLaunchedAt);
+    ok(language === 'en' ? 'Accept echoed to JS' : '接听已回放到 JS', selfTestReport.acceptReceivedAt);
+    if (selfTestReport.alarmFiredAt === 0) {
+      lines.push(language === 'en'
+        ? '→ Likely cause: AlarmManager frozen by OEM. Open Battery optimization and OEM autostart.'
+        : '→ 推断：闹钟被 OEM 冻结。请打开电池优化白名单和厂商自启动。');
+    } else if (selfTestReport.notifPostedAt === 0) {
+      lines.push(language === 'en'
+        ? '→ Likely cause: notification permission revoked. Open the notification toggle.'
+        : '→ 推断：通知权限被撤销。请重新打开通知开关。');
+    } else if (selfTestReport.fsiLaunchedAt === 0) {
+      lines.push(language === 'en'
+        ? '→ Likely cause: full-screen intent suppressed. Re-allow full-screen call permission.'
+        : '→ 推断：全屏来电被系统拦截。请重新授予全屏通知权限。');
+    } else if (selfTestReport.acceptReceivedAt === 0) {
+      lines.push(language === 'en'
+        ? '→ Stages 1-3 OK; you may have skipped accept. If you did press Accept, the bridge needs investigation — please file a report.'
+        : '→ 前三阶段成功；如果你确实点过接听但仍显示未到达，请反馈日志（接听桥需排查）。');
+    } else {
+      lines.push(language === 'en' ? '→ End-to-end pipeline healthy.' : '→ 端到端链路完好。');
+    }
+    return lines;
+  }, [language, selfTestReport]);
+
   const buttonClass = isDarkMode
     ? 'border-[#6a5239] bg-[#1b1410] text-[#ead0a0] hover:bg-[#2a2119]'
     : 'border-[#d8c7aa] bg-white text-[#7b5625] hover:bg-[#f6efe3]';
@@ -547,6 +738,11 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
                   {overallCopy}
                   {snapshot?.sdkInt ? <span className="opacity-70">SDK {snapshot.sdkInt}</span> : null}
                 </div>
+                {isSupported && overallAdvice && !isChecking && (
+                  <p className={`ka-copy-sm mt-2 max-w-[44ch] ${isDarkMode ? 'text-[#d9c1a4]' : 'text-[#785a42]'}`}>
+                    {overallAdvice}
+                  </p>
+                )}
               </div>
               <button
                 type="button"
@@ -565,6 +761,7 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
                   {rows.map((item) => {
                     const labels = copy.items[item.key];
                     const isBusy = busyKey === item.key;
+                    const isBooster = !CORE_KEYS.has(item.key);
                     return (
                       <div key={item.key} className={`rounded-2xl border p-3 ${isDarkMode ? 'border-[#4e3d2e]/55 bg-[#120e0c]/45' : 'border-[#e8dfd1] bg-[#fbf8f2]'}`}>
                         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -575,8 +772,18 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
                                 {item.state === 'granted' ? <CheckCircle2 size={12} /> : item.state === 'denied' ? <XCircle size={12} /> : <AlertTriangle size={12} />}
                                 {copy.states[item.state]}
                               </span>
+                              {isBooster && (
+                                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${isDarkMode ? 'border-[#5b4a37] bg-[#221a14] text-[#c9b395]' : 'border-[#e1d4ba] bg-[#f5ecd9] text-[#8a6a39]'}`}>
+                                  {language === 'en' ? 'Booster' : '可选增强'}
+                                </span>
+                              )}
                             </div>
                             <p className={`ka-copy-sm mt-1 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{labels[1]}</p>
+                            {item.state === 'unknown' && (
+                              <p className={`ka-copy-sm mt-1 italic ${isDarkMode ? 'text-amber-200/80' : 'text-amber-700/85'}`}>
+                                {copy.unknownItemDesc}
+                              </p>
+                            )}
                           </div>
                           {item.state !== 'granted' && item.canOpenSettings && (
                             <button
@@ -678,7 +885,7 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
                       {busyKey === 'clear-tests' ? <RefreshCw size={14} className="animate-spin" /> : <XCircle size={14} />}
                       {copy.clearTests}
                     </button>
-                    {(busyKey === 'test-message' || busyKey === 'test-call') && (
+                    {(busyKey === 'test-message' || busyKey === 'test-call' || selfTestStage === 'countdown') && (
                       <button
                         type="button"
                         onClick={handleAbortCountdown}
@@ -691,6 +898,74 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
                   </div>
                   {message && <p className={`ka-copy-sm mt-3 ${isDarkMode ? 'text-[#d9c1a4]' : 'text-[#785a42]'}`}>{message}</p>}
                 </div>
+
+                <div className={`mt-4 rounded-2xl border p-3 ${isDarkMode ? 'border-[#4e3d2e]/55 bg-[#120e0c]/45' : 'border-[#e8dfd1] bg-[#fbf8f2]'}`}>
+                  <div className="flex flex-col gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`ka-setting-item-title ${isDarkMode ? 'text-[#f1e6d7]' : 'text-[#54402d]'}`}>{copy.deepSelfTest}</span>
+                    </div>
+                    <p className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{copy.deepSelfTestHint}</p>
+                    <div className="flex flex-wrap gap-2 mt-1">
+                      <button
+                        type="button"
+                        onClick={handleScheduleSelfTest}
+                        disabled={!!busyKey || isChecking || selfTestStage !== 'idle'}
+                        className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold transition-colors disabled:opacity-60 ${primaryButtonClass}`}
+                      >
+                        {busyKey === 'self-test-schedule' || selfTestStage === 'countdown' ? <RefreshCw size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
+                        {copy.deepSelfTestSchedule}
+                      </button>
+                      {selfTestStage === 'reportReady' && (
+                        <button
+                          type="button"
+                          onClick={handleCollectSelfTestReport}
+                          disabled={busyKey === 'self-test-collect'}
+                          className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold transition-colors disabled:opacity-60 ${primaryButtonClass}`}
+                        >
+                          {busyKey === 'self-test-collect' ? <RefreshCw size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+                          {copy.deepSelfTestCollect}
+                        </button>
+                      )}
+                    </div>
+                    {selfTestReportLines && (
+                      <div className={`mt-2 rounded-xl border p-2 text-[12px] leading-relaxed ${isDarkMode ? 'border-[#5b4a37] bg-[#1a130d] text-[#ead0a0]' : 'border-[#d8c7aa] bg-[#fff8e6] text-[#7b5625]'}`}>
+                        {selfTestReportLines.map((line, idx) => (
+                          <div key={idx}>{line}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* v2.14.23: re-launch the first-launch permission wizard.
+                    The wizard caches a localStorage flag once finished; this
+                    button clears it and asks App.tsx to re-mount via uiSlice.
+                    forcePermissionWizardOpen. We auto-close the settings panel
+                    so the wizard isn't covered by the Settings backdrop. */}
+                <div className={`mt-4 rounded-2xl border p-3 ${isDarkMode ? 'border-[#4e3d2e]/55 bg-[#120e0c]/45' : 'border-[#e8dfd1] bg-[#fbf8f2]'}`}>
+                  <div className="flex flex-col gap-2">
+                    <span className={`ka-setting-item-title ${isDarkMode ? 'text-[#f1e6d7]' : 'text-[#54402d]'}`}>{copy.rerunOnboarding}</span>
+                    <p className={`ka-copy-sm ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{copy.rerunOnboardingHint}</p>
+                    <div className="mt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resetAndroidOnboardingFlag();
+                          setForcePermissionWizardOpen(true);
+                        }}
+                        className={`inline-flex items-center justify-center gap-2 rounded-xl border px-3 py-2 text-[12px] font-semibold transition-colors ${primaryButtonClass}`}
+                      >
+                        <ShieldCheck size={14} />
+                        {copy.rerunOnboarding}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <ScopeDisclosurePanel
+                  isDarkMode={isDarkMode}
+                  language={language}
+                />
               </>
             )}
           </div>
@@ -699,3 +974,100 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
     </div>
   );
 };
+
+// v2.14.23: scope disclosure ("能做 / 部分能做 / 不能做"). The user explicitly
+// requested this honesty layer after GPT-5.5 critiqued the plan for
+// over-promising message reliability. Surfaces the same content in the
+// onboarding wizard's final step.
+const SCOPE_COPY = {
+  zh: {
+    title: '这些场景能否工作（不撒谎）',
+    expand: '展开能做 / 部分能做 / 不能做的清单',
+    canDo: '能可靠工作（已配权限后）',
+    canDoItems: [
+      '用户主动设的「N 分钟/小时后提醒我」定时提醒，到点全屏来电 + 配置铃声 + 震动',
+      '到点的文字提醒通知（提醒频道）',
+      'App 在前台时的所有提醒和主动消息',
+      '设备重启后已挂的提醒会自动重挂回来（v2.14.23 新增 Native ledger）',
+      '点击接听后回到 App 进入语音通话界面（v2.14.23 修复了断桥）',
+    ],
+    partial: '部分能做（依赖守护服务存活）',
+    partialItems: [
+      '主动 RNG 消息 / 睡眠协议主动联络 / Busy 跟进等「JS 自己生成」的消息：守护通知前台时可工作；守护被强杀就停。',
+      '锁屏长时间挂机后的提醒：精准闹钟 + 忽略电池优化 + OEM 自启动全部开启时基本可靠；某项关闭则可能漂移或丢失。',
+    ],
+    cantDo: '架构限制 / 不能保证',
+    cantDoItems: [
+      '应用信息 → 强制停止 后的任何主动行为：JS 与守护服务都被杀，需要重新打开 App 才会激活',
+      '从最近任务列表上滑（部分小米/OPPO/vivo 等同强制停止）：同上',
+      '完全无网或弱网：依赖云端 LLM 的主动消息无法生成（产品边界，不是 bug）',
+      '没有服务端 push（FCM）：「App 完全不在内存里时由服务端推送的主动消息」不存在 — 我们没有服务端',
+    ],
+  },
+  en: {
+    title: 'What works (honest scope)',
+    expand: 'Expand what works / partially works / cannot work',
+    canDo: 'Reliably works (with permissions granted)',
+    canDoItems: [
+      'User-scheduled "remind me in N min/hours" reminders ringing full-screen with the configured ringtone and vibration on time',
+      'Text reminders posted via the message channel',
+      'All in-app proactive activity while Kumiko is in the foreground',
+      'Reminders survive a device reboot (v2.14.23 added a native alarm ledger)',
+      'Accepting a reminder call returns to the in-app voice call screen (v2.14.23 repaired the bridge)',
+    ],
+    partial: 'Partially works (depends on the guardian service)',
+    partialItems: [
+      'JS-generated proactive RNG / sleep / busy follow-ups: works while the guardian foreground service is alive; stops when the OEM force-kills it.',
+      'Long-locked overnight reliability: solid when exact alarms + ignore-battery-optimization + OEM autostart are all on; weakens when any are off.',
+    ],
+    cantDo: 'Architectural limits / cannot guarantee',
+    cantDoItems: [
+      'Anything proactive after App info → Force stop: JS and the guardian both die; the user must re-open Kumiko once to reactivate.',
+      'Swipe-from-recents on Xiaomi / OPPO / vivo (often equivalent to Force stop on those ROMs): same as above.',
+      'Air-plane / no-network mode: cloud LLM proactive messages cannot be generated. This is a product boundary, not a bug.',
+      'There is no server-side push (FCM). "Server-pushed proactive messages with the app entirely killed" does not exist; Kumiko has no server.',
+    ],
+  },
+} as const;
+
+const ScopeDisclosurePanel: React.FC<{ isDarkMode: boolean; language: Language }> = ({ isDarkMode, language }) => {
+  const [open, setOpen] = useState(false);
+  const copy = SCOPE_COPY[language];
+  return (
+    <div className={`mt-4 rounded-2xl border p-3 ${isDarkMode ? 'border-[#4e3d2e]/55 bg-[#120e0c]/45' : 'border-[#e8dfd1] bg-[#fbf8f2]'}`}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 text-left"
+      >
+        <span className={`ka-setting-item-title ${isDarkMode ? 'text-[#f1e6d7]' : 'text-[#54402d]'}`}>{copy.title}</span>
+        {open ? <ChevronUp size={14} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} /> : <ChevronDown size={14} className={isDarkMode ? 'text-[#d9c1a4]/70' : 'text-[#9e7c51]/75'} />}
+      </button>
+      {!open && <p className={`ka-copy-sm mt-1 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{copy.expand}</p>}
+      {open && (
+        <div className={`mt-2 grid gap-3 text-[12px] leading-relaxed ${isDarkMode ? 'text-[#d9c1a4]' : 'text-[#785a42]'}`}>
+          <ScopeBucket title={copy.canDo} tone="ok" items={copy.canDoItems} isDarkMode={isDarkMode} />
+          <ScopeBucket title={copy.partial} tone="warn" items={copy.partialItems} isDarkMode={isDarkMode} />
+          <ScopeBucket title={copy.cantDo} tone="bad" items={copy.cantDoItems} isDarkMode={isDarkMode} />
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ScopeBucket: React.FC<{ title: string; tone: 'ok' | 'warn' | 'bad'; items: readonly string[]; isDarkMode: boolean }> = ({ title, tone, items, isDarkMode }) => {
+  const palette = tone === 'ok'
+    ? (isDarkMode ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-emerald-200 bg-emerald-50 text-emerald-700')
+    : tone === 'warn'
+      ? (isDarkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-700')
+      : (isDarkMode ? 'border-rose-500/35 bg-rose-500/10 text-rose-200' : 'border-rose-200 bg-rose-50 text-rose-700');
+  return (
+    <div className={`rounded-xl border p-2 ${palette}`}>
+      <div className="font-semibold mb-1">{title}</div>
+      <ul className="list-disc pl-4 space-y-1">
+        {items.map((item, idx) => <li key={idx}>{item}</li>)}
+      </ul>
+    </div>
+  );
+};
+

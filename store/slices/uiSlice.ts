@@ -14,6 +14,11 @@ export interface UiSlice {
   isMessageCenterOpen: boolean;
   isTaskPanelOpen: boolean;
   isDiaryOpen: boolean;
+  /** v2.14.23: setting this to true reopens the first-launch Android
+   *  permission wizard regardless of localStorage flag. AndroidPermissionsSection
+   *  flips this to true via "重新打开授权引导"; App.tsx subscribes and renders
+   *  the wizard until the user closes it (which flips this back to false). */
+  forcePermissionWizardOpen: boolean;
   language: Language;
   locationConfig: LocationConfig;
   viewingImage: string | null;
@@ -27,6 +32,7 @@ export interface UiSlice {
   setIsMessageCenterOpen: (v: boolean) => void;
   setIsTaskPanelOpen: (v: boolean) => void;
   setIsDiaryOpen: (v: boolean) => void;
+  setForcePermissionWizardOpen: (v: boolean) => void;
   setLanguage: (v: Language) => void;
   setLocationConfig: (v: LocationConfig | ((prev: LocationConfig) => LocationConfig)) => void;
   setViewingImage: (v: string | null) => void;
@@ -42,6 +48,7 @@ export const createUiSlice: StateCreator<UiSlice, [], [], UiSlice> = (set) => ({
   isMessageCenterOpen: false,
   isTaskPanelOpen: false,
   isDiaryOpen: false,
+  forcePermissionWizardOpen: false,
   language: 'zh',
   locationConfig: DEFAULT_LOCATION_CONFIG,
   viewingImage: null,
@@ -55,6 +62,7 @@ export const createUiSlice: StateCreator<UiSlice, [], [], UiSlice> = (set) => ({
   setIsMessageCenterOpen: (v) => set({ isMessageCenterOpen: v }),
   setIsTaskPanelOpen: (v) => set({ isTaskPanelOpen: v }),
   setIsDiaryOpen: (v) => set({ isDiaryOpen: v }),
+  setForcePermissionWizardOpen: (v) => set({ forcePermissionWizardOpen: v }),
   setLanguage: (v) => set({ language: v }),
   setLocationConfig: (v) => set((s) => ({ locationConfig: typeof v === 'function' ? v(s.locationConfig) : v })),
   setViewingImage: (v) => set({ viewingImage: v }),
