@@ -143,9 +143,16 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   const handleProviderChange = useCallback((provider: EmbeddingProvider) => {
     const newPresets = EMBEDDING_MODEL_CATALOG[provider] || [];
     const firstModel = newPresets[0];
+    // v2.14.19 issue 1 修复: provider==='custom' 时把 model 清空,
+    // 让用户接下来自己填的模型 ID 不被任何下拉框默认值 (原本是 catalog
+    // 第一项 'custom-model' 占位) 在切到 custom 那一刻就先覆盖一次。
+    // 配合下面 model 字段的三元渲染 (custom 时只渲染 ComposableInput,
+    // 其他 provider 只渲染 ThemedSelect),彻底消除字段冲突。
     update({
       provider,
-      model: firstModel?.id || DEFAULT_EMBEDDING_CONFIG.model,
+      model: provider === 'custom'
+        ? ''
+        : (firstModel?.id || DEFAULT_EMBEDDING_CONFIG.model),
       dimensions: firstModel?.defaultDimensions || DEFAULT_EMBEDDING_CONFIG.dimensions,
     });
   }, [update]);
@@ -209,27 +216,34 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
       <div>
         <label className={fieldLabelClass}>{language === 'zh' ? '模型' : 'Model'}</label>
         <div className="mt-1">
-          <ThemedSelect
-            value={config.model}
-            onChange={handleModelChange}
-            options={modelSelectOptions}
-            isDarkMode={isDarkMode}
-            className={`${inputClass} w-full`}
-            ariaLabel={language === 'zh' ? '选择 Embedding 模型' : 'Select embedding model'}
-          />
+          {/*
+            v2.14.19 issue 1 修复: provider==='custom' 时只渲染 ComposableInput
+            文本框 (用户自填模型 ID), 其他 provider 只渲染 ThemedSelect 下拉框
+            (从 catalog 选)。原本两个并存且都绑 config.model, 导致用户输入立刻
+            被下拉框的默认 onChange 反向覆盖, 自定义模型 ID 永远存不住。
+          */}
+          {config.provider === 'custom' ? (
+            <ComposableInput
+              type="text"
+              value={config.model}
+              onChange={(e) => update({ model: e.target.value })}
+              className={`${inputClass} w-full`}
+              placeholder={language === 'zh' ? '自定义模型 ID,如 text-embedding-3-large' : 'Custom model ID, e.g. text-embedding-3-large'}
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
+            />
+          ) : (
+            <ThemedSelect
+              value={config.model}
+              onChange={handleModelChange}
+              options={modelSelectOptions}
+              isDarkMode={isDarkMode}
+              className={`${inputClass} w-full`}
+              ariaLabel={language === 'zh' ? '选择 Embedding 模型' : 'Select embedding model'}
+            />
+          )}
         </div>
-        {config.provider === 'custom' && (
-          <ComposableInput
-            type="text"
-            value={config.model}
-            onChange={(e) => update({ model: e.target.value })}
-            className={`${inputClass} w-full mt-2`}
-            placeholder={language === 'zh' ? '自定义模型 ID' : 'Custom model ID'}
-            autoComplete="off"
-            autoCapitalize="off"
-            spellCheck={false}
-          />
-        )}
       </div>
 
       <div>
