@@ -205,10 +205,10 @@ export const App = () => {
     })();
   }, []);
 
-  // B.2 + B.3 + B.4 drainer: drain native-side action queue (call
-  // accept/reject from IncomingCallActivity, Direct Reply text from
-  // RemoteReplyReceiver) on app boot + on App.appResume. Hook
-  // internally short-circuits on non-Capacitor platforms.
+  // B.2 + B.3 + B.4 + v2.14.24 drainer: drain native-side action queue
+  // (call open/accept/decline from MainActivity heads-up taps; Direct
+  // Reply text from RemoteReplyReceiver) on app boot + on App.appResume.
+  // Hook internally short-circuits on non-Capacitor platforms.
   useAndroidPendingActionsDrainer();
   const { devLogs, setDevLogs } = useDevLogs();
   const isBulkRestoreInProgressRef = useRef(false);
@@ -1353,6 +1353,7 @@ export const App = () => {
     {showPermissionWizard && flowState === 'APP' && (
       <PermissionOnboardingWizard
         language={language}
+        ringtoneFileId={ttsConfig.ringtoneFileId}
         onClose={() => {
           setShowPermissionWizard(false);
           if (forcePermissionWizardOpen) setForcePermissionWizardOpen(false);

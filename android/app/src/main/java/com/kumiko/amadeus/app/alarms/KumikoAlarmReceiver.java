@@ -1,18 +1,21 @@
 // android/app/src/main/java/com/kumiko/amadeus/app/alarms/KumikoAlarmReceiver.java
 //
 // B.2 (A6.4): the BroadcastReceiver invoked by AlarmManager when a
-// user's scheduled reminder fires. Replaces the JS-side 1-second
-// `setInterval` polling that useScheduledReminders runs on PC — on
-// Android, polling is power-killer-ish (and gets killed by Doze
-// after ~5-15 minutes of background), so we hand the timekeeping
-// over to the OS via setExactAndAllowWhileIdle.
+// user's scheduled reminder fires.
 //
-// Two routing decisions per fire:
-//   1. Voice-call mode (config.voiceMode != 'text' AND user is configured
-//      with TTS keys) → launch IncomingCallActivity to wake the screen
-//      with a full-screen LINE/微信-style call UI.
-//   2. Text mode → fall back to a normal LocalNotification using the
-//      kumiko_messages channel; user taps to open app.
+// v2.14.24 architecture switch — "notification first":
+//   1. Voice-call reminder (wantsCall=true) → ALWAYS post the heads-up
+//      CallStyle notification via KumikoAlarmsPlugin.postIncomingCallHeadsUp,
+//      AND start KumikoCallRingingService (foreground service that loops
+//      ringtone audio + persistent vibration). On API 31+ we ADDITIONALLY
+//      try Telecom.addNewIncomingCall — but this is purely additive: the
+//      heads-up + ringer are guaranteed-up regardless of whether Telecom
+//      eventually accepts the call. This eliminates the v2.14.23 silent-
+//      failure mode where Telecom queued the call asynchronously, then
+//      KumikoConnectionService.onCreateIncomingConnectionFailed got
+//      invoked with no fallback and the user saw nothing.
+//   2. Text-mode reminder → normal LocalNotification on
+//      kumiko_messages_v3 channel; user taps to open app.
 //
 // CRITICAL: the routing decision is made ENTIRELY HERE in native code,
 // because the JS WebView may not be alive when the alarm fires. We
@@ -22,24 +25,19 @@
 // fires, we read `wantsCall` from extras and act accordingly.
 //
 // Wake-lock acquired briefly so the system doesn't go back to sleep
-// while we post the notification / start the activity. Released after
-// the work is done (or after 30s as a hard ceiling, doesn't matter
-// because the started Activity / posted Notification keeps the
-// system alive on its own once dispatched).
+// while we post the notification / start the foreground ringer. Released
+// after dispatch (or 30s ceiling). Once the FG service is running it
+// keeps the system alive on its own.
 
 package com.kumiko.amadeus.app.alarms;
 
 import android.app.Notification;
-import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
-import android.media.AudioAttributes;
-import android.media.RingtoneManager;
-import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.PowerManager;
@@ -51,7 +49,7 @@ import android.util.Log;
 import androidx.core.app.NotificationCompat;
 
 import com.kumiko.amadeus.app.MainActivity;
-import com.kumiko.amadeus.app.calls.IncomingCallActivity;
+import com.kumiko.amadeus.app.calls.KumikoCallRingingService;
 
 public class KumikoAlarmReceiver extends BroadcastReceiver {
 
@@ -66,10 +64,7 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
      *  out of deep doze before the real alarm fires). */
     public static final String EXTRA_IS_PREWARM = "is_prewarm";
 
-    public static final String CHANNEL_ID_MESSAGES = "kumiko_messages";
-    public static final String CHANNEL_ID_CALLS = "kumiko_calls";
     private static final String TAG = "KumikoAlarmReceiver";
-    private static final long[] CALL_VIBRATION_PATTERN = new long[]{0, 650, 250, 650, 250, 900};
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -113,15 +108,14 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
             writeSelfTestTimestamp(context, KumikoAlarmsPlugin.SELF_TEST_KEY_ALARM_FIRED_AT, reminderId);
 
             if (wantsCall) {
-                boolean dispatchedViaTelecom = tryDispatchSelfManagedCall(
-                    context, reminderId, reminderEvent, reminderText, ringtoneFileId
-                );
-                if (!dispatchedViaTelecom) {
-                    dispatchLegacyFsi(context, reminderId, reminderEvent, reminderText, ringtoneFileId);
-                }
+                // v2.14.24: notification-first. Always post the heads-up +
+                // start the ringer. Telecom is best-effort additive and
+                // does NOT prevent us from showing the call.
+                dispatchHeadsUpReminder(context, reminderId, reminderEvent, reminderText, ringtoneFileId);
+                tryDispatchSelfManagedCall(context, reminderId, reminderEvent, reminderText, ringtoneFileId);
             } else {
                 // Route 2: text-mode reminder via a normal LocalNotification.
-                ensureMessagesChannel(context);
+                KumikoAlarmsPlugin.ensureMessagesChannel(context);
 
                 Intent tapIntent = new Intent(context, MainActivity.class);
                 tapIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -129,7 +123,7 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
                 int piFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
                 PendingIntent contentPi = PendingIntent.getActivity(context, reminderId.hashCode(), tapIntent, piFlags);
 
-                Notification notification = new NotificationCompat.Builder(context, CHANNEL_ID_MESSAGES)
+                Notification notification = new NotificationCompat.Builder(context, KumikoAlarmsPlugin.CHANNEL_ID_MESSAGES)
                     .setSmallIcon(android.R.drawable.ic_dialog_info)
                     .setContentTitle("Kumiko·Amadeus")
                     .setContentText(reminderText)
@@ -207,59 +201,36 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
     }
 
     /**
-     * Legacy CATEGORY_CALL + setFullScreenIntent + IncomingCallActivity
-     * direct-launch path. This is the v2.14.22 behaviour kept verbatim
-     * for ROMs that don't honour self-managed Telecom calls (some MIUI
-     * builds before 14, some EMUI 11 PowerGenie configurations).
+     * v2.14.24: post the heads-up CallStyle notification AND start the
+     * dedicated ringer foreground service. The heads-up handles the user-
+     * visible UI (banner / FSI on lock screen / accept-decline buttons),
+     * while {@link KumikoCallRingingService} owns the persistent ringtone
+     * audio and vibration loop. We never call {@code startActivity} from
+     * here — Android 12+ blocks background activity starts, so the heads-
+     * up's tap-into-MainActivity flow is the only reliable path.
      */
-    private void dispatchLegacyFsi(
+    private void dispatchHeadsUpReminder(
         Context context,
         String reminderId,
         String reminderEvent,
         String reminderText,
         String ringtoneFileId
     ) {
-        ensureCallsChannel(context);
-        Intent callIntent = new Intent(context, IncomingCallActivity.class);
-        callIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        callIntent.putExtra(EXTRA_REMINDER_ID, reminderId);
-        callIntent.putExtra(EXTRA_REMINDER_EVENT, reminderEvent);
-        callIntent.putExtra(EXTRA_REMINDER_TEXT, reminderText);
-        callIntent.putExtra(EXTRA_RINGTONE_FILE_ID, ringtoneFileId);
-
-        int piFlags = PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE;
-        PendingIntent fullScreenPi = PendingIntent.getActivity(
-            context,
-            reminderId.hashCode(),
-            callIntent,
-            piFlags
+        KumikoAlarmsPlugin.postIncomingCallHeadsUp(
+            context, reminderId, reminderEvent, reminderText, ringtoneFileId
         );
-
-        Uri defaultRingtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-        Notification notification = new NotificationCompat.Builder(context, CHANNEL_ID_CALLS)
-            .setSmallIcon(android.R.drawable.sym_call_incoming)
-            .setContentTitle("黄前久美子 来电")
-            .setContentText(reminderText)
-            .setStyle(new NotificationCompat.BigTextStyle().bigText(reminderText))
-            .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-            .setFullScreenIntent(fullScreenPi, true)
-            .setContentIntent(fullScreenPi)
-            .setOngoing(true)
-            .setAutoCancel(true)
-            .setSound(defaultRingtone)
-            .setVibrate(CALL_VIBRATION_PATTERN)
-            .build();
-
-        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-        if (nm != null) nm.notify(reminderId.hashCode(), notification);
-        writeSelfTestTimestamp(context, KumikoAlarmsPlugin.SELF_TEST_KEY_NOTIF_POSTED_AT, reminderId);
-
         try {
-            context.startActivity(callIntent);
+            Intent ringer = new Intent(context, KumikoCallRingingService.class);
+            ringer.putExtra(KumikoCallRingingService.EXTRA_REMINDER_ID, reminderId);
+            ringer.putExtra(KumikoCallRingingService.EXTRA_RINGTONE_FILE_ID,
+                ringtoneFileId != null ? ringtoneFileId : "");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(ringer);
+            } else {
+                context.startService(ringer);
+            }
         } catch (Throwable t) {
-            Log.w(TAG, "Direct call activity launch blocked; full-screen notification posted", t);
+            Log.w(TAG, "startForegroundService(KumikoCallRingingService) failed", t);
         }
     }
 
@@ -276,44 +247,10 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
         }
     }
 
-    private static void ensureMessagesChannel(Context context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-        NotificationChannel existing = nm.getNotificationChannel(CHANNEL_ID_MESSAGES);
-        if (existing != null) return;
-        NotificationChannel channel = new NotificationChannel(
-            CHANNEL_ID_MESSAGES,
-            "新消息 · Messages",
-            NotificationManager.IMPORTANCE_HIGH
-        );
-        channel.setDescription("黄前久美子 主动联络");
-        channel.enableVibration(true);
-        channel.setVibrationPattern(new long[]{0, 200});
-        nm.createNotificationChannel(channel);
-    }
-
-    private static void ensureCallsChannel(Context context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
-        NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-        NotificationChannel existing = nm.getNotificationChannel(CHANNEL_ID_CALLS);
-        if (existing != null) return;
-
-        NotificationChannel channel = new NotificationChannel(
-            CHANNEL_ID_CALLS,
-            "来电提醒 · Calls",
-            NotificationManager.IMPORTANCE_HIGH
-        );
-        channel.setDescription("黄前久美子 来电式提醒");
-        channel.setLockscreenVisibility(Notification.VISIBILITY_PUBLIC);
-        channel.enableVibration(true);
-        channel.setVibrationPattern(CALL_VIBRATION_PATTERN);
-
-        Uri defaultRingtone = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
-        AudioAttributes attrs = new AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .build();
-        channel.setSound(defaultRingtone, attrs);
-        nm.createNotificationChannel(channel);
-    }
+    // v2.14.24: ensureMessagesChannel / ensureCallsChannel previously
+    // duplicated here are now centralized in
+    // {@link KumikoAlarmsPlugin#ensureMessagesChannel(Context)} /
+    // {@link KumikoAlarmsPlugin#ensureCallsChannel(Context)}. Whichever
+    // call site reaches them first wins, but because they all create the
+    // same channel object the result is deterministic regardless of order.
 }

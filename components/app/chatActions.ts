@@ -821,13 +821,29 @@ export async function triggerTimedReminderMessage(
       }
 
       return new Promise<boolean>((resolve) => {
-        // v2.14.23: if the user already tapped Accept on the native
-        // lock-screen FSI / CallStyle UI before MainActivity came back
-        // to foreground, useAndroidPendingActionsDrainer has parked
-        // an auto-accept hint in the store. Consume it here; on a
-        // match we'll auto-fire the onAccept closure as soon as the
-        // overlay mounts, so the user doesn't have to tap Accept twice.
-        const autoAccept = useAppStore.getState().consumePendingAutoAcceptReminderEvent(reminder.event);
+        // v2.14.24: if the user already tapped a heads-up CallStyle
+        // notification button (or the body) on the native lock-screen
+        // before MainActivity came back to foreground, the Android
+        // drainer has parked a {@link PendingCallAction} in the store.
+        // Branch on the action kind:
+        //   - decline → user already explicitly rejected on the heads-up;
+        //               skip the in-app overlay entirely, the drainer
+        //               already wrote a missed-call alert / system toast.
+        //   - accept  → auto-fire the overlay's onAccept closure right
+        //               after it mounts so the user doesn't tap Accept
+        //               twice (v2.14.22 paper-cut).
+        //   - open    → show the ringing UI normally; user resolves the
+        //               call inside the app.
+        const pendingCallAction = useAppStore
+          .getState()
+          .consumePendingCallAction(reminder.event);
+
+        if (pendingCallAction === 'decline') {
+          resolve(true);
+          return;
+        }
+
+        const autoAccept = pendingCallAction === 'accept';
 
         useAppStore.getState().setVoiceCallOverlayData({
           reminderEvent: reminder.event,
@@ -897,14 +913,14 @@ export async function triggerTimedReminderMessage(
           },
         });
 
-        // v2.14.23: auto-accept fire — if the native FSI accept already
-        // happened, immediately invoke the onAccept closure so the user
-        // sees an "isConnecting → playback" overlay rather than a fresh
-        // ringing UI on top of an already-accepted call. Use a microtask
-        // delay (queueMicrotask) so the setVoiceCallOverlayData state
+        // v2.14.24: auto-accept fire — if the native heads-up Accept
+        // tap already happened, immediately invoke the onAccept closure
+        // so the user sees an "isConnecting → playback" overlay rather
+        // than a fresh ringing UI on top of an already-accepted call.
+        // Use a setTimeout(0) so the setVoiceCallOverlayData state
         // commit lands first; calling onAccept synchronously here would
-        // race the React render. Wrapped in setTimeout(0) to also push
-        // past any zustand subscribers reacting to the state change.
+        // race the React render and any zustand subscribers reacting
+        // to the overlay state change.
         if (autoAccept) {
           setTimeout(() => {
             const overlay = useAppStore.getState().voiceCallOverlayData;

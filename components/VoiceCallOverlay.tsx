@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Phone, PhoneOff, Loader2 } from 'lucide-react';
 import { loadVoiceFile, resolveRingtoneAudioSource } from '../services/voiceFileService';
-import { isMobileLikeRuntime } from '../services/environment';
+import { isCapacitorNative, isMobileLikeRuntime } from '../services/environment';
+import { stopAndroidCallRinging } from '../services/androidAlarmService';
 // F2B.3: dropped `getHttpVoiceUrl` + `isCapacitorNative` imports. Capacitor
 // already saved the voice clip to Directory.Data/voices/{id}.mp3 in
 // services/voiceFileService.ts, so on any mobile-like runtime we can just
@@ -67,6 +68,18 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
       if (!callStartRef.current) callStartRef.current = Date.now();
     } else setPhase('ringing');
   }, [isConnecting, isPlayingVoice, isEnded]);
+
+  // v2.14.24: when this overlay reaches the user, the native
+  // KumikoCallRingingService is still looping the heads-up ringtone +
+  // vibration (it is independent of the WebView and runs from the
+  // moment KumikoAlarmReceiver fires). Stop it so we don't have two
+  // ringtones playing on top of each other. The overlay will play its
+  // own WebView ringtone via the `phase === 'ringing'` effect below
+  // for cross-platform consistency.
+  useEffect(() => {
+    if (!isCapacitorNative()) return;
+    void stopAndroidCallRinging();
+  }, []);
 
   useEffect(() => {
     if (phase === 'ended') {

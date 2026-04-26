@@ -31,14 +31,16 @@ export interface ScheduleAlarmInput {
   event: string;
   /** Display text for the notification body if non-call route. */
   text?: string;
-  /** True → KumikoAlarmReceiver launches IncomingCallActivity (full-screen
-   *  call UI). False → posts a kumiko_messages text notification. The
-   *  caller (useScheduledReminders) makes this decision based on
-   *  ttsConfig.voiceMode + whether TTS keys are present, exactly the
-   *  same check the desktop / PWA path uses. */
+  /** v2.14.24: True → KumikoAlarmReceiver posts a CallStyle heads-up
+   *  notification + starts KumikoCallRingingService (ringtone + vibration);
+   *  the user's tap routes to MainActivity → React VoiceCallOverlay.
+   *  False → posts a normal kumiko_messages text notification. The caller
+   *  (useScheduledReminders) decides based on ttsConfig.voiceMode + TTS
+   *  key availability, the same check the desktop / PWA path uses. */
   wantsCall?: boolean;
-  /** Selected ringtone id (built-in 01.mp3..08.mp3 or custom.ext). Passed to
-   *  native so IncomingCallActivity can ring with the user's configured sound. */
+  /** Selected ringtone id (built-in 01.mp3..08.mp3 or custom.ext). Passed
+   *  to native so KumikoCallRingingService can play the user's configured
+   *  ringtone instead of the system default. */
   ringtoneFileId?: string;
 }
 
@@ -63,8 +65,9 @@ export interface NativeAndroidAlertPermissionStatus {
   /** v2.14.23: True iff the self-managed Telecom PhoneAccount has been
    *  registered via TelecomManager.registerPhoneAccount AND the user has
    *  enabled it in Settings → Apps → Default apps → Calling accounts.
-   *  When false, KumikoAlarmReceiver.wantsCall=true falls back to the
-   *  legacy CATEGORY_CALL + IncomingCallActivity direct-launch path. */
+   *  When false, the call-mode reminder still surfaces via the v2.14.24
+   *  notification-first path (CallStyle heads-up + KumikoCallRingingService);
+   *  only the bonus Telecom rendering is unavailable. */
   phoneAccountReady: boolean;
 }
 
@@ -98,20 +101,21 @@ export type VendorPermissionKey =
   | 'generic.appDetails'
   | 'generic.ignoreBatteryOptimizations';
 
-/** v2.14.23: structured self-test report. KumikoAlarms records four wall-clock
- *  timestamps as the alarm flows from AlarmManager → BroadcastReceiver →
- *  Notification → IncomingCallActivity → user accept-tap. JS calls
- *  `startSelfTestProbe()` before scheduling the placeholder reminder, the
- *  user puts the app to background or locks the screen, then on resume JS
+/** v2.14.23 / v2.14.24: structured self-test report. KumikoAlarms records four
+ *  wall-clock timestamps as the alarm flows from AlarmManager → BroadcastReceiver
+ *  → CallStyle heads-up notification → MainActivity (heads-up tap) → user accept.
+ *  JS calls `startSelfTestProbe()` before scheduling the placeholder reminder,
+ *  the user puts the app to background or locks the screen, then on resume JS
  *  calls `collectSelfTestReport()` to retrieve which stages were reached. */
 export interface AlarmSelfTestReport {
   /** Was a probe armed? false → JS forgot to call startSelfTestProbe first. */
   armed: boolean;
   /** Epoch ms at AlarmManager-fire (KumikoAlarmReceiver.onReceive). 0 if not yet. */
   alarmFiredAt: number;
-  /** Epoch ms once the FSI Notification has been posted via NotificationManager. */
+  /** Epoch ms once the heads-up Notification has been posted via NotificationManager. */
   notifPostedAt: number;
-  /** Epoch ms IncomingCallActivity (or its Telecom-backed equivalent) onCreate. */
+  /** Epoch ms when the heads-up tap launched MainActivity (or the Telecom
+   *  ConnectionService's CallStyle UI) onCreate. */
   fsiLaunchedAt: number;
   /** Epoch ms once the user taps Accept and the action is committed to ledger. */
   acceptReceivedAt: number;
@@ -172,6 +176,13 @@ interface KumikoAlarmsPluginShape {
    *  pending. */
   startAlarmGuardian(opts?: { reason?: string }): Promise<{ started: boolean }>;
   stopAlarmGuardian(): Promise<{ stopped: boolean }>;
+  /** v2.14.24: stop KumikoCallRingingService from JS. Called when the React
+   *  VoiceCallOverlay reaches the user (so the looping ringtone doesn't keep
+   *  ringing for up to 60 s after the user has already entered the in-app UI),
+   *  or when the user dismisses the overlay manually. Optional in the shape
+   *  for compatibility with older native binaries — older clients silently
+   *  fall back to the service's own 60 s self-stop. */
+  stopCallRinging?(): Promise<{ stopped: boolean }>;
 }
 
 // v2.14.3 N.7: caches both the resolved plugin handle and the in-flight
@@ -378,7 +389,18 @@ export async function cancelAndroidTestNotifications(): Promise<void> {
 
 export interface DrainedAction {
   type: 'call';
-  action: 'accept_call' | 'reject_call';
+  /** v2.14.24: the heads-up CallStyle notification produces three action
+   *  variants depending on which UI element the user tapped:
+   *   - `open_call`     — body of the heads-up (intent to "answer in app").
+   *                       Should land in the React VoiceCallOverlay's ringing
+   *                       state so the user can still pick accept/decline.
+   *   - `accept_call`   — green Accept circle (or pre-v2.14.24 IncomingCallActivity
+   *                       accept button).
+   *   - `decline_call`  — red Decline circle (preferred new spelling).
+   *   - `reject_call`   — pre-v2.14.24 IncomingCallActivity legacy spelling, kept
+   *                       in the union so any unconsumed entries from older
+   *                       installs still drain into the same reject branch. */
+  action: 'open_call' | 'accept_call' | 'decline_call' | 'reject_call';
   reminderId?: string;
   reminderEvent?: string;
   atMs?: number;
@@ -392,7 +414,8 @@ export interface DrainedReply {
 
 /**
  * Drain pending actions queued natively while the WebView was offline:
- *   - call accept / reject taps from IncomingCallActivity
+ *   - call open / accept / decline taps from MainActivity (v2.14.24+
+ *     heads-up route) or the legacy IncomingCallActivity (pre-v2.14.24)
  *   - Direct Reply text submissions from RemoteReplyReceiver
  * Called from App.tsx on cold-start AND on App.appResume so anything
  * that landed during background state gets replayed through the
@@ -565,6 +588,36 @@ export async function stopKumikoAlarmGuardian(): Promise<boolean> {
   }
 }
 
+/**
+ * v2.14.24: ask the native KumikoCallRingingService to stop. Called by
+ * VoiceCallOverlay's mount + dismiss handlers so the looping ringtone /
+ * vibration doesn't keep firing for ~60 s after the user has already
+ * reached the React UI.
+ *
+ * Older native binaries (pre-v2.14.24) don't expose this method; we
+ * detect the UNIMPLEMENTED reject and silently no-op so JS callers can
+ * still ship a single overlay implementation. The native service in
+ * older versions is also missing, so the no-op is correct: there is
+ * nothing to stop.
+ */
+export async function stopAndroidCallRinging(): Promise<boolean> {
+  const plugin = await getPlugin();
+  if (!plugin || typeof plugin.stopCallRinging !== 'function') return false;
+  try {
+    const result = await plugin.stopCallRinging();
+    return result.stopped === true;
+  } catch (e) {
+    const methodMissing = e && typeof e === 'object' && (
+      (e as { code?: string }).code === 'UNIMPLEMENTED'
+      || /not implemented|UNIMPLEMENTED/i.test(((e as Error)?.message) || '')
+    );
+    if (!methodMissing) {
+      console.warn('[androidAlarms] stopCallRinging failed:', e);
+    }
+    return false;
+  }
+}
+
 export async function drainPendingNativeActions(): Promise<{
   call?: DrainedAction;
   replies: DrainedReply[];
@@ -574,14 +627,17 @@ export async function drainPendingNativeActions(): Promise<{
   try {
     const raw = await plugin.drainPendingActions();
     const out: { call?: DrainedAction; replies: DrainedReply[] } = { replies: [] };
-    if (raw.callAction && (raw.callAction.action === 'accept_call' || raw.callAction.action === 'reject_call')) {
-      out.call = {
-        type: 'call',
-        action: raw.callAction.action,
-        reminderId: raw.callAction.reminderId,
-        reminderEvent: raw.callAction.reminderEvent,
-        atMs: raw.callAction.at,
-      };
+    if (raw.callAction) {
+      const a = raw.callAction.action;
+      if (a === 'open_call' || a === 'accept_call' || a === 'decline_call' || a === 'reject_call') {
+        out.call = {
+          type: 'call',
+          action: a,
+          reminderId: raw.callAction.reminderId,
+          reminderEvent: raw.callAction.reminderEvent,
+          atMs: raw.callAction.at,
+        };
+      }
     }
     try {
       const repliesArr = JSON.parse(raw.repliesJson || '[]') as Array<{ ts?: number; text?: string }>;

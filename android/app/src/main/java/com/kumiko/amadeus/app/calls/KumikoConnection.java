@@ -19,9 +19,11 @@
 //
 // CAUTION: this is NOT "Telegram/微信-grade must-arrive". It's just a
 // path the system recognises as a call, which gives it slightly
-// higher rendering priority than CATEGORY_CALL alone. We still need
-// the full FSI fallback path for ROMs that disable self-managed calls
-// entirely (some MIUI builds before 14, EMUI 11 with PowerGenie, …).
+// higher rendering priority than CATEGORY_CALL alone. v2.14.24 makes
+// this purely additive — the AlarmReceiver always posts the heads-up
+// notification before invoking Telecom, so on ROMs that silently drop
+// self-managed connections (some MIUI builds before 14, EMUI 11 with
+// PowerGenie, etc.) the user still sees the heads-up.
 
 package com.kumiko.amadeus.app.calls;
 
@@ -78,8 +80,10 @@ public class KumikoConnection extends Connection {
     public void onShowIncomingCallUi() {
         super.onShowIncomingCallUi();
         // The framework calls us here when it wants the app to render its
-        // own incoming-call UI. We post a Notification.CallStyle FSI; on
-        // failure we fall back to launching IncomingCallActivity directly.
+        // own incoming-call UI. We delegate to KumikoAlarmsPlugin's
+        // dedup-aware heads-up helper — typically the receiver has
+        // already posted, so this call no-ops; on the rarer pure-Telecom
+        // path it posts.
         Log.i(TAG, "onShowIncomingCallUi for " + reminderId);
         try {
             uiHandler.show(this);
@@ -95,11 +99,11 @@ public class KumikoConnection extends Connection {
         Log.i(TAG, "onAnswer for " + reminderId);
         setActive();
         uiHandler.dismiss(this);
-        // Post the accept action through the same shared queue
-        // IncomingCallActivity.dispatch uses; the WebView drains it on
-        // resume and routes through setVoiceCallOverlayData's onAccept.
-        // The actual record happens in KumikoConnectionService's caller
-        // because we need the Context.
+        // Post the accept action through the kumiko_pending_actions
+        // queue MainActivity writes; the WebView drains it on resume
+        // and routes through setVoiceCallOverlayData's onAccept. The
+        // actual record happens in KumikoConnectionService's caller
+        // (or MainActivity onNewIntent) because we need the Context.
     }
 
     @Override
@@ -128,9 +132,9 @@ public class KumikoConnection extends Connection {
 
     @Override
     public void onCallAudioStateChanged(CallAudioState state) {
-        // We don't actually route audio (TTS plays through MediaPlayer in
-        // IncomingCallActivity), but we still need to override this so
-        // the framework's strict-mode checks pass.
+        // We don't actually route audio (TTS playback is owned by
+        // KumikoCallRingingService's MediaPlayer), but we still need to
+        // override this so the framework's strict-mode checks pass.
         super.onCallAudioStateChanged(state);
     }
 }
