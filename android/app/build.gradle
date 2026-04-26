@@ -20,9 +20,13 @@ android {
         // 2.14.17 → 21417（聚合 release：v2.14.13/14 剩余的 IME / Embedding /
         // Android exact alarm 三组 + 新设计的 D 方案 LLM 兜底，按组拆 5 个独立
         // commit 便于 booting 时 git revert 二分定位）。
+        // 2.14.18 → 21418（v2.14.17 装机 booting 排查：revert c4 ac67aaf
+        // Embedding 重构 — 改 ESM 依赖图最有可能在 Capacitor cold-start 触发
+        // module-load-time 死锁。其他 4 commit c1/c2/c3/c5 全部保留。装机
+        // 仍 booting 则下次再 revert c5 60b121e Android exact alarm 二分）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21417
-        versionName "2.14.17"
+        versionCode 21418
+        versionName "2.14.18"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
