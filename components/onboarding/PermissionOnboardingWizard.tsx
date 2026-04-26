@@ -29,15 +29,18 @@
 // again" button that clears the flag + remounts.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, ExternalLink, X, AlertTriangle, Check, Clock, Info, RefreshCw } from 'lucide-react';
+import { BellRing, ChevronLeft, ChevronRight, ExternalLink, X, AlertTriangle, Check, Clock, Info, PhoneCall, RefreshCw } from 'lucide-react';
 import type { Language } from '../../types';
 import {
   getAndroidAlertPermissionSnapshot,
   openAndroidAlertPermissionSettings,
   requestAndroidNotificationPermission,
+  runAndroidIncomingCallTest,
+  runAndroidMessageNotificationTest,
   type AndroidAlertPermissionKey,
   type AndroidAlertPermissionSnapshot,
   type AndroidAlertPermissionState,
+  type AndroidAlertTestResult,
   type OemVendor,
 } from '../../services/androidAlertPermissionService';
 import {
@@ -183,9 +186,45 @@ const STEP_COPY: Record<StepKind, StepCopy> = {
 interface PermissionOnboardingWizardProps {
   language: Language;
   onClose: () => void;
+  /** v2.14.24: forwarded from App.tsx ttsConfig.ringtoneFileId so the inline
+   *  "立即推送一次测试来电" button can ring the user's configured ringtone,
+   *  matching the production reminder-call experience. */
+  ringtoneFileId?: string | null;
 }
 
-export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProps> = ({ language, onClose }) => {
+// v2.14.24: copy for the inline "立即测试" buttons added to the notifications
+// and selfTest steps. These let the user verify a notification actually
+// shows up without first walking through the entire 60-second deep self
+// test — which is the most common reason users gave up on the wizard in
+// v2.14.23 ("我不知道是不是已经能用了").
+const TEST_COPY = {
+  zh: {
+    msgButton: '立即推送一条测试通知',
+    callButton: '立即推送一次测试来电',
+    busy: '测试中…',
+    posted: '已下发,请在系统通知栏确认是否真的弹出+短震动。',
+    callPosted: '已下发,请确认是否弹出来电卡片+长震动+铃声。',
+    failed: '测试未通过,请回到上面把权限项配置好。',
+    nativeFailed: '系统拒绝了测试,请检查通知权限或厂商后台限制。',
+    timeout: '6 秒内未收到系统回执,请重试或检查 OEM 后台限制。',
+    notificationsHint: '建议先在第 1 步把通知权限打开,否则测试也不会有声音。',
+    callHint: '建议先在第 3 步把全屏来电打开,这次只测能不能弹出来电卡片。',
+  },
+  en: {
+    msgButton: 'Send a test notification now',
+    callButton: 'Trigger a test incoming call now',
+    busy: 'Testing…',
+    posted: 'Submitted — verify a heads-up + short vibration appeared in the system tray.',
+    callPosted: 'Submitted — verify the call card + long vibration + ringtone appeared.',
+    failed: 'Test failed. Fix the highlighted permission first.',
+    nativeFailed: 'Android rejected the test. Check notification permission or OEM background restrictions.',
+    timeout: 'No system response within 6s. Retry or check OEM background restrictions.',
+    notificationsHint: 'Tip: enable notification permission in step 1 first; otherwise the test will be silent.',
+    callHint: 'Tip: grant full-screen call permission in step 3 first. This only verifies the call card pops.',
+  },
+} as const;
+
+export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProps> = ({ language, onClose, ringtoneFileId }) => {
   const [snapshot, setSnapshot] = useState<AndroidAlertPermissionSnapshot | null>(null);
   const [stepIndex, setStepIndex] = useState(0);
   const [busy, setBusy] = useState(false);
@@ -193,6 +232,12 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
   const [selfTestStage, setSelfTestStage] = useState<'idle' | 'arming' | 'waiting' | 'collected'>('idle');
   const [selfTestReport, setSelfTestReport] = useState<AlarmSelfTestReport | null>(null);
   const [selfTestStartedAt, setSelfTestStartedAt] = useState<number | null>(null);
+  // v2.14.24: inline test feedback. testKind selects the most-recent button
+  // pressed; testStatus drives the visual state machine; testMessage is the
+  // human-readable result line displayed below the buttons.
+  const [testKind, setTestKind] = useState<'message' | 'call' | null>(null);
+  const [testStatus, setTestStatus] = useState<'idle' | 'busy' | 'done'>('idle');
+  const [testMessage, setTestMessage] = useState<string>('');
   const probeReminderIdRef = useRef<string | null>(null);
   const ttRef = useRef<number | null>(null);
 
@@ -327,6 +372,48 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
       probeReminderIdRef.current = null;
     }
   }, [language]);
+
+  // v2.14.24: inline message/call test triggers. Reuse the same native
+  // postTestMessageNotification / postTestIncomingCall paths as the
+  // settings panel — single source of truth, both surfaces verify the
+  // exact same channels.
+  const interpretTestResult = useCallback((result: AndroidAlertTestResult, kind: 'message' | 'call'): string => {
+    const t = TEST_COPY[language === 'zh' ? 'zh' : 'en'];
+    if (result.ok) return kind === 'message' ? t.posted : t.callPosted;
+    if (result.reason === 'timeout') return t.timeout;
+    if (result.reason === 'native-failed') return t.nativeFailed;
+    return t.failed;
+  }, [language]);
+
+  const runMessageTest = useCallback(async () => {
+    setTestKind('message');
+    setTestStatus('busy');
+    setTestMessage(TEST_COPY[language === 'zh' ? 'zh' : 'en'].busy);
+    try {
+      const result = await runAndroidMessageNotificationTest();
+      setTestMessage(interpretTestResult(result, 'message'));
+    } catch (e) {
+      console.warn('[onboardingWizard] runMessageTest failed:', e);
+      setTestMessage(TEST_COPY[language === 'zh' ? 'zh' : 'en'].nativeFailed);
+    } finally {
+      setTestStatus('done');
+    }
+  }, [interpretTestResult, language]);
+
+  const runCallTest = useCallback(async () => {
+    setTestKind('call');
+    setTestStatus('busy');
+    setTestMessage(TEST_COPY[language === 'zh' ? 'zh' : 'en'].busy);
+    try {
+      const result = await runAndroidIncomingCallTest(ringtoneFileId);
+      setTestMessage(interpretTestResult(result, 'call'));
+    } catch (e) {
+      console.warn('[onboardingWizard] runCallTest failed:', e);
+      setTestMessage(TEST_COPY[language === 'zh' ? 'zh' : 'en'].nativeFailed);
+    } finally {
+      setTestStatus('done');
+    }
+  }, [interpretTestResult, language, ringtoneFileId]);
 
   const collectReport = useCallback(async () => {
     const id = probeReminderIdRef.current;
@@ -495,7 +582,7 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
                 {selfTestReport.alarmFiredAt ? '✓' : '—'}
               </div>
               <div>{language === 'zh' ? '通知/来电卡片: ' : 'Notification / call card: '}
-                {selfTestReport.notificationPostedAt ? '✓' : '—'}
+                {selfTestReport.notifPostedAt ? '✓' : '—'}
               </div>
               <div>{language === 'zh' ? '全屏来电界面启动: ' : 'Full-screen call UI launched: '}
                 {selfTestReport.fsiLaunchedAt ? '✓' : '—'}
@@ -522,6 +609,52 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
               {busy ? <RefreshCw size={14} className="animate-spin" /> : <ExternalLink size={14} />}
               {copy.cta}
             </button>
+
+            {/* v2.14.24: inline 即时测试 buttons. The notifications step lets
+                you fire a real heads-up the moment you've granted permission;
+                the selfTest step gives a 3-second proof-of-call before the
+                heavyweight 60-second locked self-test. This shaves the
+                "我开了权限,但不知道有没有用" feedback loop from minutes to
+                seconds — the most common drop-off cause we saw in v2.14.23. */}
+            {(currentStep === 'notifications' || currentStep === 'selfTest') && (
+              <div className="mt-1 flex flex-col gap-1.5">
+                {currentStep === 'notifications' && (
+                  <button
+                    onClick={runMessageTest}
+                    disabled={testStatus === 'busy'}
+                    className="w-full px-4 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 text-zinc-100 rounded-lg flex items-center justify-center gap-2 text-sm transition-colors"
+                  >
+                    {testStatus === 'busy' && testKind === 'message' ? <RefreshCw size={14} className="animate-spin" /> : <BellRing size={14} />}
+                    {TEST_COPY[language === 'zh' ? 'zh' : 'en'].msgButton}
+                  </button>
+                )}
+                {currentStep === 'selfTest' && selfTestStage !== 'waiting' && (
+                  <button
+                    onClick={runCallTest}
+                    disabled={testStatus === 'busy'}
+                    className="w-full px-4 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-60 text-zinc-100 rounded-lg flex items-center justify-center gap-2 text-sm transition-colors"
+                  >
+                    {testStatus === 'busy' && testKind === 'call' ? <RefreshCw size={14} className="animate-spin" /> : <PhoneCall size={14} />}
+                    {TEST_COPY[language === 'zh' ? 'zh' : 'en'].callButton}
+                  </button>
+                )}
+                {testKind && testMessage && (
+                  <p className="text-xs text-zinc-400 leading-relaxed mt-1">
+                    {testMessage}
+                  </p>
+                )}
+                {currentStep === 'notifications' && stepStateFor('notifications') !== 'granted' && (
+                  <p className="text-[11px] text-amber-300/85 leading-relaxed">
+                    {TEST_COPY[language === 'zh' ? 'zh' : 'en'].notificationsHint}
+                  </p>
+                )}
+                {currentStep === 'selfTest' && stepStateFor('fullScreenIntent') !== 'granted' && (
+                  <p className="text-[11px] text-amber-300/85 leading-relaxed">
+                    {TEST_COPY[language === 'zh' ? 'zh' : 'en'].callHint}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
