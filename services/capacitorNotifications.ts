@@ -105,6 +105,13 @@ async function ensureChannelsAndPermission(): Promise<boolean> {
   }
 }
 
+export async function primeKumikoNotificationRuntime(): Promise<boolean> {
+  // Called once after the Android app reaches APP flow so proactive messages
+  // and text reminders do not discover missing channels/permission only when
+  // the first background notification is already trying to fire.
+  return ensureChannelsAndPermission();
+}
+
 /**
  * Post a system-tray notification on Android Capacitor. No-op on PWA /
  * Electron — the existing dispatch in showBackgroundNotification handles

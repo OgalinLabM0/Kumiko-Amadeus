@@ -1,7 +1,7 @@
 import { useCallback, useEffect } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { isDesktopElectron } from '../services/desktopBackupService';
-import { isMobileLikeRuntime } from '../services/environment';
+import { isCapacitorNative, isMobileLikeRuntime } from '../services/environment';
 import { showBackgroundNotification } from '../components/app/chatActions';
 import type { MessageAlertKind, MissedMessageAlert } from '../types';
 
@@ -91,6 +91,15 @@ export function useUnreadAlertsChrome(
       document.removeEventListener('visibilitychange', markVisibleAlertsRead);
     };
   }, [flowState, markAllAlertsRead]);
+
+  useEffect(() => {
+    if (flowState !== 'APP' || !isCapacitorNative()) return;
+    void import('../services/capacitorNotifications')
+      .then(({ primeKumikoNotificationRuntime }) => primeKumikoNotificationRuntime())
+      .catch((error) => {
+        console.warn('[UNREAD] Failed to prime Capacitor notification runtime:', error);
+      });
+  }, [flowState]);
 
   useEffect(() => {
     const baseTitle = 'Kumiko\u00b7Amadeus';
