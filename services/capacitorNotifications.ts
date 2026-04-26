@@ -13,16 +13,23 @@
 // Channel design (mirrors the plan's three-channel rule + the LINE/微信
 // alignment we agreed on):
 //
-//   kumiko_messages  = MessagingStyle text bubble
-//                      pattern [0, 200] (short pulse, like WeChat new msg)
-//                      Kind: proactive, reply, reminder (text-only)
-//   kumiko_calls     = FullScreenIntent + repeating long pattern
-//                      [0, 400, 200, 400, 200, 400] (LINE incoming call)
-//                      Kind: incoming-call (only the timed-reminder path
-//                      reaches here; see plan A6 routing)
+//   kumiko_messages_v3  = MessagingStyle text bubble (Android plugin owned)
+//                         pattern [0, 250, 120, 250]
+//                         Kind: proactive, reply, reminder (text-only)
+//   kumiko_calls_v3     = FullScreenIntent + CallStyle (Android plugin owned)
+//                         long persistent pattern, DND bypass, lockscreen public
+//                         Kind: incoming-call
 //   kumiko_foreground_service = persistent state notification (no vibrate)
-//                      Lives under A6.1's foreground service; we don't
-//                      post into it from this module yet.
+//                         Lives under the foreground-service plugin; we don't
+//                         post into it from this module.
+//
+// v2.14.24 IMPORTANT: channel creation is **owned by the native
+// KumikoAlarmsPlugin** (see Java load() override). Pre-v3 we created
+// channels from BOTH this file (via @capacitor/local-notifications
+// createChannel) AND from Java; whichever raced first locked in its
+// settings, which was the root cause of "messages channel has wrong
+// vibration" / "calls channel doesn't bypass DND" bugs in v2.14.22-23.
+// Now this file only references the channel IDs to schedule INTO them.
 //
 // PWA / Electron paths are unchanged — they still post via electronAPI
 // or browser Notification. Capacitor branch is gated on isCapacitorNative()
@@ -46,11 +53,11 @@ export interface PostNotificationOptions {
   messageId?: string;
 }
 
-const CHANNEL_MESSAGES = 'kumiko_messages';
-const CHANNEL_CALLS = 'kumiko_calls';
+// v2.14.24: bumped to *_v3, native plugin owns creation/migration.
+const CHANNEL_MESSAGES = 'kumiko_messages_v3';
+const CHANNEL_CALLS = 'kumiko_calls_v3';
 const NOTIFICATION_ID_BASE = 1000;
 
-let channelsInitialized = false;
 let nextNotificationId = NOTIFICATION_ID_BASE;
 
 export interface KumikoNotificationRuntimeStatus {
@@ -67,41 +74,14 @@ function deriveNotificationId(): number {
 }
 
 export async function ensureKumikoNotificationChannels(): Promise<boolean> {
-  if (!isCapacitorNative()) {
-    return false;
-  }
-  try {
-    const { LocalNotifications } = await import('@capacitor/local-notifications');
-    if (!channelsInitialized) {
-      // Create the two channels (Android 8+ requires this before any
-      // notification can post). createChannel is idempotent — calling it
-      // every boot just re-binds the same name/desc/sound config.
-      await LocalNotifications.createChannel({
-        id: CHANNEL_MESSAGES,
-        name: '新消息 · Messages',
-        description: '黄前久美子 主动联络',
-        importance: 4, // IMPORTANCE_HIGH
-        visibility: 1, // PUBLIC
-        vibration: true,
-        lights: true,
-      });
-      await LocalNotifications.createChannel({
-        id: CHANNEL_CALLS,
-        name: '来电 · Incoming calls',
-        description: '黄前久美子 来电（定时提醒触发）',
-        importance: 5, // IMPORTANCE_MAX (heads-up + full-screen)
-        visibility: 1,
-        vibration: true,
-        sound: 'ringtone', // Android falls back to default if missing
-        lights: true,
-      });
-      channelsInitialized = true;
-    }
-    return true;
-  } catch (e) {
-    console.warn('[capacitorNotifications] channel setup failed:', e);
-    return false;
-  }
+  // v2.14.24: native KumikoAlarmsPlugin.load() is now the single source of
+  // truth for kumiko_messages_v3 / kumiko_calls_v3 channel creation. This
+  // function is kept as a no-op-on-native API stub so callers
+  // (primeKumikoNotificationRuntime, postKumikoNotification, etc.) don't
+  // need conditional branches. We just trust the native plugin: by the
+  // time JS code runs, BridgeActivity.onCreate has finished and load()
+  // has run, so the channels already exist.
+  return isCapacitorNative();
 }
 
 export async function checkKumikoNotificationPermission(): Promise<boolean> {
