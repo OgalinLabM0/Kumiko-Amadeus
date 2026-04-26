@@ -16,7 +16,17 @@
     </style>
 
 
+    <!--
+        v2.14.19: windowBackground 从 @drawable/splash (位图启动图) 改成
+        @color/ic_launcher_background (#f9f7f2, 跟 Web 首屏 + index.html 的
+        ka-boot-splash 完全同色), Capacitor WebView 加载 dist/ 之前用户看到
+        的是纯色背景 → 之后 React mount 也是 #f9f7f2 背景 → 视觉无跳变,
+        和 PC 启动体验一致。
+
+        @drawable/splash 这 11 个位图资源保留 (drawable-port-/land-/...),
+        以便日后又想要带 logo 的启动图时可以一行 revert 回 @drawable/splash。
+    -->
     <style name="AppTheme.NoActionBarLaunch" parent="Theme.SplashScreen">
-        <item name="android:background">@drawable/splash</item>
+        <item name="android:background">@color/ic_launcher_background</item>
     </style>
 </resources>
