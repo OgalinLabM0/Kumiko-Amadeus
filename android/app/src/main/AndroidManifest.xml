@@ -26,13 +26,12 @@
 
         </activity>
 
-        <!-- v2.14.24: B.2 闹钟接收器，由 AlarmManager.setExactAndAllowWhileIdle 在用户「定时提醒」
-             到点时触发。Receiver 决定走文字消息（普通 LocalNotification + WebView 唤醒）还是
-             来电式提醒（postIncomingCallHeadsUp + KumikoCallRingingService，可选叠加 Telecom
-             ConnectionService）。来电界面统一由 React VoiceCallOverlay 展示——以前的全屏
-             IncomingCallActivity 在 v2.14.24 被删除，改成 heads-up + setFullScreenIntent
-             指向 MainActivity 让 WebView 接管 UI，符合 Android 14+ FSI 的更严限制并消除
-             HyperOS 拦后台 Activity 启动导致的失败路径。
+        <!-- v2.14.27: 闹钟接收器，由 AlarmManager.setExactAndAllowWhileIdle 在用户「定时提醒」
+             到点时触发。Receiver 不再直接 post 通知或拉起来电界面 (v2.14.24-26 那一套已删)，
+             改成 silent activity 唤醒 + startForegroundService(KumikoAlarmGuardianService,
+             ACTION_REMINDER_DISPATCH)。MainActivity 收到 EXTRA_REMINDER_FIRED 后通过
+             KumikoAlarmsPlugin.notifyAlarmFired bridge 到 JS 端 kumikoAlarmFired 事件，
+             JS 端 useScheduledReminders 跑 LLM 生成 + 通过 LocalNotifications 发最终通知。
              exported=false 因为只接收 PendingIntent 自发的 alarm，不公开。 -->
         <receiver
             android:name=".alarms.KumikoAlarmReceiver"
@@ -59,7 +58,7 @@
 
         <!-- B.4: Direct Reply 接收器，处理通知 RemoteInput 锁屏直回。Android 7+ RemoteInput 走
              这条路：用户在通知栏输入文字 → broadcast 到这里 → 注入到 store messages 队列 →
-             WebView 收到后走 chatActions 同款回放路径（F2B.2 起 useMobileMessageSync 已删除）。
+             WebView 收到后走 chatActions 同款回放路径。
              exported=true 因为 NotificationManager 从 system 进程发 PendingIntent 进来。 -->
         <receiver
             android:name=".replies.RemoteReplyReceiver"
@@ -78,11 +77,12 @@
             android:exported="false" />
 
         <!-- v2.14.23: 提醒守护前台服务。foregroundServiceType="specialUse" + subtype "alarm"
-             让我们的进程优先级在用户设置过提醒时一直保持 foreground 级别，
-             激进 ROM (MIUI/HyperOS, EMUI/HarmonyOS, OneUI deep sleep) 上能显著
-             降低被杀概率。Android 14+ 强制要求这个 PROPERTY_SPECIAL_USE_FGS_SUBTYPE
-             声明 + 一段说明文本。我们承诺只在「至少一条 pending 提醒」存在时启动，
-             reminder 全部触发或被取消后由 JS 端调用 stopAlarmGuardian 关闭。 -->
+             让我们的进程优先级在用户设置过提醒时一直保持 foreground 级别，激进 ROM
+             (MIUI/HyperOS, EMUI/HarmonyOS, OneUI deep sleep) 上能显著降低被杀概率。
+             v2.14.27 起还承担「短时 reminder dispatch 保活」职责：receiver 收到 alarm 后
+             会以 ACTION_REMINDER_DISPATCH 启动本服务，临时升级通知文案为「正在准备提醒…」
+             并保活 30 s，让 JS 端 LLM 生成跑完。Android 14+ 强制要求 PROPERTY_SPECIAL_USE_FGS_SUBTYPE
+             声明 + 一段说明文本。 -->
         <service
             android:name=".alarms.KumikoAlarmGuardianService"
             android:foregroundServiceType="specialUse"
@@ -91,32 +91,6 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="alarm" />
         </service>
-
-        <!-- v2.14.23: 自管理 Telecom ConnectionService。注册 self-managed PhoneAccount 后，
-             AlarmReceiver 能通过 TelecomManager.addNewIncomingCall 把「来电式提醒」交给
-             系统的 Telecom 框架渲染，使用 Notification.CallStyle.forIncomingCall 拿到
-             更高优先级的锁屏来电 UI。BIND_TELECOM_CONNECTION_SERVICE permission 必填，
-             system Telecom 进程通过它来 bind。-->
-        <service
-            android:name=".calls.KumikoConnectionService"
-            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.telecom.ConnectionService" />
-            </intent-filter>
-        </service>
-
-        <!-- v2.14.24: 来电响铃前台服务。AlarmReceiver fires → postIncomingCallHeadsUp
-             posts the CallStyle notification → in parallel we start this service which
-             keeps a MediaPlayer (user-configured ringtone, looping) + Vibrator wave loop
-             alive until the user accepts/declines or 60s elapses. foregroundServiceType
-             phoneCall 让 OS 把它当来电类对待，不受常规后台限制。
-             停止入口：MainActivity 收到 EXTRA_OPEN_CALL/EXTRA_ACCEPT_CALL/EXTRA_DECLINE_CALL
-             之一即调 stopService；JS 端通过 KumikoAlarms.stopCallRinging 也能停。-->
-        <service
-            android:name=".calls.KumikoCallRingingService"
-            android:foregroundServiceType="phoneCall"
-            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
@@ -138,7 +112,8 @@
 
     <!-- WAKE_LOCK：语音播放 / 通话期间防止 CPU 休眠（与 useAppViewport 里的 wakeLock 同源；
          Foreground Service 也需要它在 Doze 模式下完成短暂的 CPU 工作，AlarmReceiver 在被
-         alarm 唤醒后用 PowerManager.WakeLock 短锁住 CPU 直到我们调度完通知 / 拉起来电界面）。 -->
+         alarm 唤醒后用 PowerManager.WakeLock 短锁住 CPU 直到我们把 silent activity wake
+         + FGS 启动完成。 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!-- B.1 Foreground Service（A6.1）。Android 14 起需要声明 type；我们用 dataSync 因为
@@ -149,11 +124,6 @@
     <!-- v2.14.23 提醒守护前台服务。Android 14+ 上 specialUse 子类型必须额外声明这个 permission，
          否则 startForeground 会抛 SecurityException。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-
-    <!-- v2.14.23 来电类前台服务。当 Telecom Connection 处于 RINGING/ACTIVE 状态时，
-         系统会期望我们持有这个 type；ConnectionService 自身已经带前台特权，但保留声明
-         可以让某些 OEM (Xiaomi MIUI 14) 不再重复弹「权限不足」横幅。 -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
 
     <!-- B.2 通知（Android 13 起 POST_NOTIFICATIONS 是运行时权限，
          系统会弹一次授权弹窗。capacitor-local-notifications + capacitor-android-foreground-service
@@ -167,9 +137,9 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
-    <!-- B.3 全屏来电。Android 14+ 必须申报（且只在 system call 类 app 上系统才允许全屏弹起；
-         普通 app 第一次会弹一个授权请求把通知降级为 heads-up）。我们的「定时提醒到点拉起的
-         AI 来电」是合理使用场景之一。 -->
+    <!-- B.3 全屏来电。Android 14+ 必须申报；普通 app 第一次会弹一个授权请求把通知降级为
+         heads-up。我们的「定时提醒到点拉起的 AI 来电」是合理使用场景之一。v2.14.27 起
+         由 LocalNotifications 在 JS 侧 schedule 时使用，本地不再直接 post CallStyle。 -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <!-- B.1 启动屏幕开机自启动（仅在用户开了"开机自启"开关时生效）。FG service 用它在重启后
@@ -177,67 +147,9 @@
          v2.14.23: KumikoBootReceiver 也吃这个 broadcast，重启后从 ledger 重建所有 alarm。-->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-    <!-- v2.14.23 自管理 Telecom：注册 self-managed PhoneAccount + addNewIncomingCall 走这条权限。
-         在 Android 9+ 上系统会把它当 normal permission 自动授予；这里申报是因为 ConnectionService
-         的 manifest 校验会 check。-->
-    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
-    <!-- READ_PHONE_STATE 仅用于 Telecom 在 ACTIVE 状态下查询 audio routing；不读手机号、
-         不读 IMEI。Android 12+ 上这是 normal-runtime split (READ_PHONE_NUMBERS / READ_BASIC_PHONE_STATE)，
-         我们只声明根权限以保留兼容；插件本身不会触发任何运行时弹窗。-->
-    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
-    <!-- system Telecom 进程通过这个 permission bind 我们的 ConnectionService。-->
-    <uses-permission android:name="android.permission.BIND_TELECOM_CONNECTION_SERVICE" />
-
-    <!-- v2.14.23 电池优化白名单。REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 不是真的 grants，
-         而是允许我们调起系统的「申请加入 battery whitelist」弹窗（用户拒绝可在 Settings 改）。
-         Play Store 政策上要求声明 + 给出合理用途；本 app 是「定时提醒到点必到」类型，符合白名单豁免条件。-->
+    <!-- v2.14.27: 电池优化白名单。REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 不是真的 grant，
+         而是允许我们调起系统的「申请加入 battery whitelist」弹窗。AndroidPermissionsSection 通过
+         KumikoAlarmsPlugin.openSettings({key:'batteryOptimization'}) 调用它。 -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <!-- v2.14.21 OEM 权限体检：Android 11+ 引入 Package Visibility 限制，
-         没有 <queries> 声明的话 PackageManager.resolveActivity() 看不到其它 App，
-         导致我们 deep-link 到小米 / 华为 / 三星 / OPPO / vivo 各家自家「自启动」「锁屏」
-         「受保护应用」设置页之前无法判断目标 Activity 是否存在。这里把已知的厂商
-         设置 Activity 都列出来，让 resolveActivity 能返回可用结果。 -->
-    <queries>
-        <!-- 小米 MIUI / HyperOS 安全中心 -->
-        <package android:name="com.miui.securitycenter" />
-        <package android:name="com.miui.powerkeeper" />
-        <!-- 华为系统管家（含受保护应用 / 启动管理） -->
-        <package android:name="com.huawei.systemmanager" />
-        <!-- 荣耀系统管家 -->
-        <package android:name="com.hihonor.systemmanager" />
-        <!-- 三星 Smart Manager / Device Care -->
-        <package android:name="com.samsung.android.lool" />
-        <package android:name="com.samsung.android.sm" />
-        <package android:name="com.samsung.android.sm_cn" />
-        <!-- OPPO ColorOS 安全中心 -->
-        <package android:name="com.coloros.safecenter" />
-        <package android:name="com.coloros.oppoguardelf" />
-        <package android:name="com.oppo.safe" />
-        <!-- realme 安全中心 -->
-        <package android:name="com.realme.securitycheck" />
-        <!-- vivo iManager -->
-        <package android:name="com.iqoo.secure" />
-        <package android:name="com.vivo.permissionmanager" />
-        <!-- OnePlus 安全中心（OxygenOS 11+ 基于 ColorOS） -->
-        <package android:name="com.oneplus.security" />
-        <!-- v2.14.23: 电池白名单 / 自启动 / 通话设置三类深链所需的 system 包 -->
-        <intent>
-            <action android:name="android.settings.APPLICATION_DETAILS_SETTINGS" />
-            <data android:scheme="package" />
-        </intent>
-        <intent>
-            <action android:name="android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS" />
-        </intent>
-        <intent>
-            <action android:name="android.settings.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-            <data android:scheme="package" />
-        </intent>
-        <intent>
-            <action android:name="android.telecom.action.CHANGE_PHONE_ACCOUNTS" />
-        </intent>
-        <intent>
-            <action android:name="android.telecom.action.SHOW_CALL_ACCESSIBILITY_SETTINGS" />
-        </intent>
-    </queries>
 </manifest>
