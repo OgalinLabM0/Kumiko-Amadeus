@@ -766,9 +766,39 @@ export async function triggerTimedReminderMessage(
     if (currentTtsCfg.voiceMode !== 'text' && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'sovits' || (currentTtsCfg.ttsBackend === 'vocu' && !!currentTtsCfg.vocuApiKey && !!currentTtsCfg.vocuVoiceId)) && isVoiceServiceAvailable()) {
       useAppStore.getState().setIsThinking(false);
 
+      // v2.14.26: hoist the pending notification-tap action above the
+      // foreground check. The user's intent (tap-to-open, accept, or
+      // decline) is the source of truth; the JS-side foreground flag
+      // only controls whether we *additionally* fire a system
+      // notification, not whether the overlay is shown.
+      //
+      //   pendingCallAction:
+      //     - 'decline' → user already rejected on the heads-up,
+      //                   suppress overlay entirely.
+      //     - 'accept'  → mount overlay + auto-fire onAccept after one
+      //                   tick so the user doesn't tap Accept twice.
+      //     - 'open'    → user tapped the notification body to bring
+      //                   MainActivity forward; force the overlay even
+      //                   if isInForeground happens to be true (the
+      //                   ResumeActivity event always lands while we're
+      //                   foreground, which v2.14.25's pre-check
+      //                   short-circuited via the inline silent path,
+      //                   bypassing the overlay entirely).
+      //     - null      → routine timer fire, no notification tap; in
+      //                   foreground we keep the silent inline path.
+      const pendingCallAction = useAppStore
+        .getState()
+        .consumePendingCallAction(reminder.event);
+
+      if (pendingCallAction === 'decline') {
+        return true;
+      }
+
+      const forceOverlay = pendingCallAction === 'open' || pendingCallAction === 'accept';
+      const autoAccept = pendingCallAction === 'accept';
       const isInForeground = !document.hidden && document.hasFocus();
 
-      if (isInForeground) {
+      if (isInForeground && !forceOverlay) {
         useAppStore.getState().setIsTalking(true);
         const voiceResult = await helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion);
         if (voiceResult.success) {
@@ -784,67 +814,49 @@ export async function triggerTimedReminderMessage(
 
       let voiceResultPromise = helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion);
 
-      const notifBody = combinedReminderText ? combinedReminderText.slice(0, 50) : reminder.event;
-      const notifTitle = language === 'zh' ? '黄前久美子 来电...' : 'Incoming Call: Kumiko Oumae';
-      if (isDesktopElectron()) {
-        window.electronAPI?.send('app:send-call-notification', {
-          title: notifTitle,
-          body: notifBody,
-        });
-      } else if ((window as any).Capacitor?.isNativePlatform?.()) {
-        // v2.14.1 H.3: previously the Capacitor branch fell through to the
-        // browser `new Notification(...)` path below. That path requires
-        // `Notification.requestPermission()` + the WebView's HTML5
-        // notification service, neither of which Android Capacitor wires
-        // up consistently — the call would silently no-op when the user
-        // had switched to another app, defeating the whole "user knows
-        // Kumiko is calling" guarantee.
-        //
-        // Route through the native LocalNotifications channel
-        // (kumiko_calls, IMPORTANCE_MAX, FullScreenIntent + ringtone +
-        // long vibrate pattern) that capacitorNotifications.ts already
-        // sets up for the background AlarmManager path. End result:
-        // foreground reminder calls now surface in the system tray
-        // (and as heads-up + vibration) the same way the locked-screen
-        // KumikoAlarmReceiver path does.
-        try {
-          const { postKumikoNotification, vibrateForKind } = await import('../../services/capacitorNotifications');
-          await postKumikoNotification({ title: notifTitle, body: notifBody, kind: 'incoming-call' });
-          await vibrateForKind('incoming-call');
-        } catch (e) {
-          console.warn('[chatActions] capacitor incoming-call notification failed:', e);
+      // v2.14.26: only fire a system notification when MainActivity
+      // is actually backgrounded. If forceOverlay was set because the
+      // user just tapped a notification, posting another notification
+      // here would dupe the heads-up and looks broken.
+      if (!isInForeground) {
+        const notifBody = combinedReminderText ? combinedReminderText.slice(0, 50) : reminder.event;
+        const notifTitle = language === 'zh' ? '黄前久美子 来电...' : 'Incoming Call: Kumiko Oumae';
+        if (isDesktopElectron()) {
+          window.electronAPI?.send('app:send-call-notification', {
+            title: notifTitle,
+            body: notifBody,
+          });
+        } else if ((window as any).Capacitor?.isNativePlatform?.()) {
+          // v2.14.1 H.3: previously the Capacitor branch fell through to the
+          // browser `new Notification(...)` path below. That path requires
+          // `Notification.requestPermission()` + the WebView's HTML5
+          // notification service, neither of which Android Capacitor wires
+          // up consistently — the call would silently no-op when the user
+          // had switched to another app, defeating the whole "user knows
+          // Kumiko is calling" guarantee.
+          //
+          // Route through the native LocalNotifications channel
+          // (kumiko_calls, IMPORTANCE_MAX, FullScreenIntent + ringtone +
+          // long vibrate pattern) that capacitorNotifications.ts already
+          // sets up for the background AlarmManager path. End result:
+          // foreground reminder calls now surface in the system tray
+          // (and as heads-up + vibration) the same way the locked-screen
+          // KumikoAlarmReceiver path does.
+          try {
+            const { postKumikoNotification, vibrateForKind } = await import('../../services/capacitorNotifications');
+            await postKumikoNotification({ title: notifTitle, body: notifBody, kind: 'incoming-call' });
+            await vibrateForKind('incoming-call');
+          } catch (e) {
+            console.warn('[chatActions] capacitor incoming-call notification failed:', e);
+          }
+        } else if ('Notification' in window && Notification.permission === 'granted') {
+          new Notification(notifTitle, {
+            body: notifBody,
+          });
         }
-      } else if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification(notifTitle, {
-          body: notifBody,
-        });
       }
 
       return new Promise<boolean>((resolve) => {
-        // v2.14.24: if the user already tapped a heads-up CallStyle
-        // notification button (or the body) on the native lock-screen
-        // before MainActivity came back to foreground, the Android
-        // drainer has parked a {@link PendingCallAction} in the store.
-        // Branch on the action kind:
-        //   - decline → user already explicitly rejected on the heads-up;
-        //               skip the in-app overlay entirely, the drainer
-        //               already wrote a missed-call alert / system toast.
-        //   - accept  → auto-fire the overlay's onAccept closure right
-        //               after it mounts so the user doesn't tap Accept
-        //               twice (v2.14.22 paper-cut).
-        //   - open    → show the ringing UI normally; user resolves the
-        //               call inside the app.
-        const pendingCallAction = useAppStore
-          .getState()
-          .consumePendingCallAction(reminder.event);
-
-        if (pendingCallAction === 'decline') {
-          resolve(true);
-          return;
-        }
-
-        const autoAccept = pendingCallAction === 'accept';
-
         useAppStore.getState().setVoiceCallOverlayData({
           reminderEvent: reminder.event,
           reminderText: combinedReminderText,
@@ -1257,10 +1269,30 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
 
         if (decision === 'block_first') {
           const replyText = pickBusyReply();
-          // Tiny typing beat so it doesn't feel teleported.
+          // v2.14.26: tiny typing beat so the busy short-reply doesn't
+          // feel teleported. Wrapped in try/finally so the indicator
+          // can never get stuck. Also poll for fresh user messages
+          // every 200ms — if the user sends another line while we're
+          // pretending to type, drop the simulate immediately so the
+          // typing indicator doesn't sit on top of their fresh send.
           useAppStore.getState().setIsThinking(true);
-          await new Promise(r => setTimeout(r, 1400 + Math.random() * 1800));
-          useAppStore.getState().setIsThinking(false);
+          try {
+            const baselineMsgCount = ctx.getMessagesSnapshot().length;
+            const totalDelay = 1400 + Math.random() * 1800;
+            const sliceMs = 200;
+            const slices = Math.max(1, Math.ceil(totalDelay / sliceMs));
+            for (let i = 0; i < slices; i++) {
+              await new Promise(r => setTimeout(r, Math.min(sliceMs, totalDelay - i * sliceMs)));
+              if (ctx.isCancelled()) break;
+              const liveMsgCount = ctx.getMessagesSnapshot().length;
+              if (liveMsgCount > baselineMsgCount) {
+                // user typed something new → abort the simulate.
+                break;
+              }
+            }
+          } finally {
+            useAppStore.getState().setIsThinking(false);
+          }
           const msgId = addMessageToStore('model', replyText, undefined, undefined, undefined, undefined, undefined, 'serious');
           showBackgroundNotification(replyText, 'reply', msgId);
           if (trackedUserMsgId) {
@@ -2290,7 +2322,20 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       const failMsg = err.message || 'Unknown error';
       ctx.markPendingFailed(failMsg);
       s4.setIsDisconnected(true);
+    } else {
+      // v2.14.26: even when the turn was cancelled (user navigated
+      // away / turn cancellation token), still force the thinking
+      // indicator off. Otherwise the next chat surface mount sees a
+      // stale "对方正在输入..." with no model reply behind it.
+      useAppStore.getState().setIsThinking(false);
     }
+  } finally {
+    // v2.14.26: belt-and-suspenders. Some throw paths (RATE_LIMIT
+    // → ctx.onRetry) early-return without touching isThinking, and
+    // a few await points between catch and finally can be raced by
+    // a fresh user send. A single setIsThinking(false) here is
+    // idempotent and guarantees the typing indicator never sticks.
+    try { useAppStore.getState().setIsThinking(false); } catch { /* ignore */ }
   }
 }
 
