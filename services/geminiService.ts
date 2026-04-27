@@ -2140,6 +2140,28 @@ ${extraSystemPrompt ?? ''}`;
     }
 
     // --- LEAK CLEANUP SAFETY NET (Run always) ---
+    // v2.14.26: strip reasoning/thinking blocks from any model that
+    // emits them inline (DeepSeek-R1, Qwen-QwQ, GPT-5 family with
+    // thinking exposed, Anthropic Claude with show-thinking, Gemini
+    // 2.5 reasoning models when their <thinking> wrappers leak).
+    // Many OpenAI-compatible 中转 servers don't strip these, so the
+    // raw `<think>...</think>` text lands in `content` / `text` and
+    // bleeds into the chat bubble.
+    //
+    // Order matters:
+    //   1. balanced pairs first (the 99% case)
+    //   2. orphan opening (model truncated mid-thought) → drop tail
+    //   3. orphan closing (most common: model emitted `</think>` as
+    //      content header, real reply follows it) → drop everything
+    //      before the closing tag
+    //   4. any leftover stray opening/closing tag
+    fullText = fullText.replace(/<think[^>]*>[\s\S]*?<\/think\s*>/gi, '');
+    fullText = fullText.replace(/<thinking[^>]*>[\s\S]*?<\/thinking\s*>/gi, '');
+    fullText = fullText.replace(/<think[^>]*>[\s\S]*$/gi, '');
+    fullText = fullText.replace(/<thinking[^>]*>[\s\S]*$/gi, '');
+    fullText = fullText.replace(/^[\s\S]*?<\/think\s*>\s*/gi, '');
+    fullText = fullText.replace(/^[\s\S]*?<\/thinking\s*>\s*/gi, '');
+    fullText = fullText.replace(/<\/?think(?:ing)?[^>]*\/?\s*>/gi, '');
     // Remove leaked tags even if System_Log was not detected
     fullText = fullText.replace(/\[Emotion\s*[:=].*?\]/gi, '');
     fullText = fullText.replace(/\[Voice\s*[:=].*?\]/gi, '');

@@ -9,6 +9,27 @@ export interface ProviderResponse {
     rawToolCall?: any;
 }
 
+// v2.14.26: many OpenAI-compatible 中转 vendors (DeepSeek-R1 / Qwen-QwQ /
+// some GPT-5 wrappers) and Anthropic show-thinking responses leak the
+// raw `<think>...</think>` / `<thinking>...</thinking>` block right
+// inside `message.content` / `content[].text`. The Gemini path's
+// LEAK CLEANUP block already strips these, but OpenAI/Anthropic
+// responses go through a different code path that previously trusted
+// the provider to give us "final answer only". Apply the same five
+// regex passes here so the chat bubble never sees a `</think>`.
+const stripThinkingTags = (raw: string): string => {
+    if (!raw) return raw;
+    let s = raw;
+    s = s.replace(/<think[^>]*>[\s\S]*?<\/think\s*>/gi, '');
+    s = s.replace(/<thinking[^>]*>[\s\S]*?<\/thinking\s*>/gi, '');
+    s = s.replace(/<think[^>]*>[\s\S]*$/gi, '');
+    s = s.replace(/<thinking[^>]*>[\s\S]*$/gi, '');
+    s = s.replace(/^[\s\S]*?<\/think\s*>\s*/gi, '');
+    s = s.replace(/^[\s\S]*?<\/thinking\s*>\s*/gi, '');
+    s = s.replace(/<\/?think(?:ing)?[^>]*\/?\s*>/gi, '');
+    return s.trim();
+};
+
 type AnthropicContentBlock =
     | { type: 'text'; text: string }
     | {
@@ -182,7 +203,7 @@ export const callOpenAI = async (
     const responseMessage = data.choices?.[0]?.message;
     
     const result: ProviderResponse = {
-        text: responseMessage?.content || ""
+        text: stripThinkingTags(responseMessage?.content || "")
     };
 
     if (responseMessage?.tool_calls && responseMessage.tool_calls.length > 0) {
@@ -286,7 +307,7 @@ export const callAnthropic = async (
     
     const result: ProviderResponse = { text: "" };
     const textBlocks = data.content?.filter((c: any) => c.type === 'text') || [];
-    result.text = textBlocks.map((b: any) => b.text).join('\n');
+    result.text = stripThinkingTags(textBlocks.map((b: any) => b.text).join('\n'));
 
     const toolBlocks = data.content?.filter((c: any) => c.type === 'tool_use') || [];
     if (toolBlocks.length > 0) {
