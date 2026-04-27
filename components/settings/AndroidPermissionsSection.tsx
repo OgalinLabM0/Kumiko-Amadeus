@@ -99,7 +99,14 @@ const COPY = {
     bridgeDeadTitle: '原生桥接 5 秒无响应',
     bridgeDeadDesc: '我们已经把所有桥接调用换到后台线程，但本设备（多见于小米 / HyperOS）的 WebView 仍可能阻塞自定义插件，导致测试超时；请尝试「立即重启应用」，重启后所有自检和测试会自动恢复正常路径。',
     bridgeDeadRestart: '立即重启应用',
-    fallbackUsedHint: '原生桥接超时 - 已尝试备用 LocalNotifications，请检查通知栏。',
+    bridgeBadgeAlive: '原生桥：正常',
+    bridgeBadgeDead: '原生桥：不响应（已切备用路径）',
+    testResultSuccess: '✓ 已推送原生通知 — 请检查通知栏。',
+    testResultSuccessFallback: '✓ 已通过备用路径送达 — 请检查通知栏（系统通知已发出，但原生桥失败）。',
+    testResultFailFallbackTried: '✗ 原生桥与备用路径都失败 — 请重启应用后重试，或确认通知权限。',
+    testResultFailGeneric: '✗ 测试失败：',
+    callResultSuccess: '✓ 来电测试已发起 — 请确认弹出来电页 / 铃声 / 震动。',
+    callResultSuccessFallback: '✓ 备用路径已发出来电通知 — 请检查通知栏（原生桥失败时来电全屏页可能无法弹出）。',
     callTestHint: '提示：请把 App 退到后台或锁屏后再点测试，这样才能验证锁屏弹窗。',
     callCountdownHint: (sec: number) => `准备触发来电…${sec} 秒后开始；请立刻按 Home 退到后台或锁屏，否则只能验证前台横幅。`,
     messageCountdownHint: (sec: number) => `准备触发消息通知…${sec} 秒后开始；可保持当前页或退到后台。`,
@@ -213,7 +220,14 @@ const COPY = {
     bridgeDeadTitle: 'Native bridge unresponsive after 5s',
     bridgeDeadDesc: 'All plugin calls now run on a background thread, but this device (often Xiaomi / HyperOS) may still block our custom plugin so test buttons time out. Try Restart now — all self-tests will return to the normal path on the next launch.',
     bridgeDeadRestart: 'Restart app now',
-    fallbackUsedHint: 'Native bridge timed out — falling back to LocalNotifications. Please check the notification tray.',
+    bridgeBadgeAlive: 'Native bridge: healthy',
+    bridgeBadgeDead: 'Native bridge: unresponsive (fallback active)',
+    testResultSuccess: '✓ Native notification posted — check the notification tray.',
+    testResultSuccessFallback: '✓ Delivered via fallback — check the notification tray (system notification arrived but the native bridge failed).',
+    testResultFailFallbackTried: '✗ Both native and fallback paths failed — restart the app and try again, or verify notification permissions.',
+    testResultFailGeneric: '✗ Test failed: ',
+    callResultSuccess: '✓ Incoming-call test started — confirm the call screen, ringtone, and vibration.',
+    callResultSuccessFallback: '✓ Fallback path posted a call notification — check the tray (the in-app full-screen call page may not appear when the native bridge is dead).',
     callTestHint: 'Tip: send the app to background or lock the screen first, then run the test to verify lock-screen pop-ups.',
     callCountdownHint: (sec: number) => `Triggering the call test in ${sec}s. Press Home now or lock the screen, otherwise you only test the foreground heads-up.`,
     messageCountdownHint: (sec: number) => `Triggering the message test in ${sec}s. You can stay on this page or send the app to background.`,
@@ -394,6 +408,12 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
   const [isChecking, setIsChecking] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [message, setMessage] = useState<string>('');
+  // v2.14.26: tone for the result message line. 'success' renders green
+  // (✓), 'fail' renders red (✗), 'neutral' is the default brown info
+  // colour used for hints/countdowns. Replaces the v2.14.25 dual-line
+  // \n-separated layout that confused the user about whether the test
+  // actually passed.
+  const [messageTone, setMessageTone] = useState<'success' | 'fail' | 'neutral'>('neutral');
   // v2.14.23: self-test state machine. Stages:
   //   idle → countdown (3s) → armed (waiting for user lock + accept)
   //   → reportReady (user back; click "view report") → idle
@@ -409,6 +429,7 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
       timedOut = true;
       setIsChecking(false);
       setMessage(copy.timeoutMessage);
+      setMessageTone('neutral');
     }, REFRESH_OVERALL_TIMEOUT_MS);
     try {
       const next = await getAndroidAlertPermissionSnapshot();
@@ -417,10 +438,16 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
         return;
       }
       setSnapshot(next);
-      if (next.partial) setMessage(copy.partialNotice);
+      if (next.partial) {
+        setMessage(copy.partialNotice);
+        setMessageTone('neutral');
+      }
     } catch (e) {
       console.warn('[AndroidPermissions] refresh failed:', e);
-      if (!timedOut) setMessage(copy.timeoutMessage);
+      if (!timedOut) {
+        setMessage(copy.timeoutMessage);
+        setMessageTone('neutral');
+      }
     } finally {
       clearTimeout(overallTimer);
       if (!timedOut) setIsChecking(false);
@@ -487,6 +514,7 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
   const handleConfigure = useCallback(async (item: AndroidAlertPermissionItem) => {
     setBusyKey(item.key);
     setMessage('');
+    setMessageTone('neutral');
     try {
       if (item.key === 'notifications') {
         await requestAndroidNotificationPermission();
@@ -502,6 +530,7 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
   const handleVendorAction = useCallback(async (action: VendorAction) => {
     setBusyKey(`vendor:${action.id}`);
     setMessage('');
+    setMessageTone('neutral');
     try {
       const result = await openAndroidVendorPermissionSetting(action.vendorKey);
       if (!result.opened) setMessage(copy.oem.vendorAction.failed);
@@ -548,54 +577,69 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
     return true;
   }, []);
 
+  // v2.14.26: collapse the four-state matrix (ok×fallback) into a
+  // single, typed verdict so the UI can render one short line + one
+  // tone (green / red) instead of the v2.14.25 two-line "submitted +
+  // fallback used" prose that the user found indecipherable.
+  const interpretMessageResult = useCallback((
+    result: { ok: boolean; reason?: string; fallbackUsed?: boolean }
+  ): { text: string; tone: 'success' | 'fail' } => {
+    if (result.ok && result.fallbackUsed) return { text: copy.testResultSuccessFallback, tone: 'success' };
+    if (result.ok) return { text: copy.testResultSuccess, tone: 'success' };
+    if (result.fallbackUsed) return { text: copy.testResultFailFallbackTried, tone: 'fail' };
+    return { text: `${copy.testResultFailGeneric}${reasonText(result.reason)}`, tone: 'fail' };
+  }, [copy.testResultFailFallbackTried, copy.testResultFailGeneric, copy.testResultSuccess, copy.testResultSuccessFallback, reasonText]);
+
+  const interpretCallResult = useCallback((
+    result: { ok: boolean; reason?: string; fallbackUsed?: boolean }
+  ): { text: string; tone: 'success' | 'fail' } => {
+    if (result.ok && result.fallbackUsed) return { text: copy.callResultSuccessFallback, tone: 'success' };
+    if (result.ok) return { text: copy.callResultSuccess, tone: 'success' };
+    if (result.fallbackUsed) return { text: copy.testResultFailFallbackTried, tone: 'fail' };
+    return { text: `${copy.testResultFailGeneric}${reasonText(result.reason)}`, tone: 'fail' };
+  }, [copy.callResultSuccess, copy.callResultSuccessFallback, copy.testResultFailFallbackTried, copy.testResultFailGeneric, reasonText]);
+
   const handleTestMessage = useCallback(async () => {
     setBusyKey('test-message');
     setMessage('');
+    setMessageTone('neutral');
     try {
       const proceed = await startCountdown(3, copy.messageCountdownHint);
       if (!proceed) {
         setMessage(copy.abortedHint);
+        setMessageTone('neutral');
         return;
       }
       const result = await runAndroidMessageNotificationTest();
-      // v2.14.25: when KumikoAlarms times out we fall back to LocalNotifications;
-      // surface that explicitly so the user knows where the notification came from
-      // and that the bridge issue is real (not a permission problem).
-      if (result.ok && result.fallbackUsed) {
-        setMessage(`${copy.submittedMessage}\n${copy.fallbackUsedHint}`);
-      } else if (!result.ok && result.fallbackUsed) {
-        setMessage(`${reasonText(result.reason)}\n${copy.fallbackUsedHint}`);
-      } else {
-        setMessage(result.ok ? copy.submittedMessage : reasonText(result.reason));
-      }
+      const verdict = interpretMessageResult(result);
+      setMessage(verdict.text);
+      setMessageTone(verdict.tone);
       await refresh();
     } finally {
       setBusyKey(null);
     }
-  }, [copy.abortedHint, copy.fallbackUsedHint, copy.messageCountdownHint, copy.submittedMessage, reasonText, refresh, startCountdown]);
+  }, [copy.abortedHint, copy.messageCountdownHint, interpretMessageResult, refresh, startCountdown]);
 
   const handleTestCall = useCallback(async () => {
     setBusyKey('test-call');
     setMessage(copy.callTestHint);
+    setMessageTone('neutral');
     try {
       const proceed = await startCountdown(5, copy.callCountdownHint);
       if (!proceed) {
         setMessage(copy.abortedHint);
+        setMessageTone('neutral');
         return;
       }
       const result = await runAndroidIncomingCallTest(ringtoneFileId);
-      if (result.ok && result.fallbackUsed) {
-        setMessage(`${copy.submittedCall}\n${copy.fallbackUsedHint}`);
-      } else if (!result.ok && result.fallbackUsed) {
-        setMessage(`${reasonText(result.reason)}\n${copy.fallbackUsedHint}`);
-      } else {
-        setMessage(result.ok ? copy.submittedCall : reasonText(result.reason));
-      }
+      const verdict = interpretCallResult(result);
+      setMessage(verdict.text);
+      setMessageTone(verdict.tone);
       await refresh();
     } finally {
       setBusyKey(null);
     }
-  }, [copy.abortedHint, copy.callCountdownHint, copy.callTestHint, copy.fallbackUsedHint, copy.submittedCall, reasonText, refresh, ringtoneFileId, startCountdown]);
+  }, [copy.abortedHint, copy.callCountdownHint, copy.callTestHint, interpretCallResult, refresh, ringtoneFileId, startCountdown]);
 
   const handleClearTests = useCallback(async () => {
     cancelCountdown();
@@ -603,6 +647,7 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
     try {
       await clearAndroidAlertTests();
       setMessage(copy.cleared);
+      setMessageTone('neutral');
     } finally {
       setBusyKey(null);
     }
@@ -923,6 +968,24 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
                 )}
 
                 <div className={`mt-4 rounded-2xl border p-3 ${isDarkMode ? 'border-[#4e3d2e]/55 bg-[#120e0c]/45' : 'border-[#e8dfd1] bg-[#fbf8f2]'}`}>
+                  {/* v2.14.26: bridge-status badge above the test buttons.
+                      `showBridgeDeadBanner` is the same condition that drives
+                      the bigger red banner above the permission rows; surfacing
+                      it here too tells the user *why* a fallback verdict
+                      appears — they're using the LocalNotifications path
+                      because the native bridge is wedged. */}
+                  <div className="flex flex-wrap items-center gap-2 mb-2">
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                        showBridgeDeadBanner
+                          ? (isDarkMode ? 'border-amber-500/40 bg-amber-500/15 text-amber-200' : 'border-amber-300 bg-amber-50 text-amber-700')
+                          : (isDarkMode ? 'border-[#5b4a37] bg-[#221a14] text-[#c9b395]' : 'border-[#e1d4ba] bg-[#f5ecd9] text-[#8a6a39]')
+                      }`}
+                    >
+                      {showBridgeDeadBanner ? <AlertTriangle size={12} /> : <CheckCircle2 size={12} />}
+                      {showBridgeDeadBanner ? copy.bridgeBadgeDead : copy.bridgeBadgeAlive}
+                    </span>
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
@@ -962,7 +1025,19 @@ export const AndroidPermissionsSection: React.FC<AndroidPermissionsSectionProps>
                       </button>
                     )}
                   </div>
-                  {message && <p className={`ka-copy-sm mt-3 whitespace-pre-line ${isDarkMode ? 'text-[#d9c1a4]' : 'text-[#785a42]'}`}>{message}</p>}
+                  {message && (
+                    <p
+                      className={`ka-copy-sm mt-3 whitespace-pre-line ${
+                        messageTone === 'success'
+                          ? (isDarkMode ? 'text-emerald-200' : 'text-emerald-700')
+                          : messageTone === 'fail'
+                            ? (isDarkMode ? 'text-rose-200' : 'text-rose-700')
+                            : (isDarkMode ? 'text-[#d9c1a4]' : 'text-[#785a42]')
+                      }`}
+                    >
+                      {message}
+                    </p>
+                  )}
                 </div>
 
                 <div className={`mt-4 rounded-2xl border p-3 ${isDarkMode ? 'border-[#4e3d2e]/55 bg-[#120e0c]/45' : 'border-[#e8dfd1] bg-[#fbf8f2]'}`}>

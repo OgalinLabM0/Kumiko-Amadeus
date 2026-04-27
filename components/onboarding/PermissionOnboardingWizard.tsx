@@ -202,14 +202,19 @@ const TEST_COPY = {
     msgButton: '立即推送一条测试通知',
     callButton: '立即推送一次测试来电',
     busy: '测试中…',
-    posted: '已下发,请在系统通知栏确认是否真的弹出+短震动。',
-    callPosted: '已下发,请确认是否弹出来电卡片+长震动+铃声。',
+    successMsgNative: '✓ 已推送原生消息通知 — 请检查通知栏 + 短震动。',
+    successMsgFallback: '✓ 已通过备用路径送出消息通知 — 请检查通知栏（原生桥未响应）。',
+    successCallNative: '✓ 已发起原生来电测试 — 请确认来电卡片 + 长震动 + 铃声。',
+    successCallFallback: '✓ 已通过备用路径送出来电通知 — 请检查通知栏（原生桥未响应，全屏页可能不弹）。',
+    failBoth: '✗ 原生桥与备用路径都失败 — 请重启应用后重试，或确认通知权限。',
+    failPrefix: '✗ 测试失败：',
     failed: '测试未通过,请回到上面把权限项配置好。',
     nativeFailed: '系统拒绝了测试,请检查通知权限或厂商后台限制。',
     timeout: '6 秒内未收到系统回执,请重试或检查 OEM 后台限制。',
     notificationsHint: '建议先在第 1 步把通知权限打开,否则测试也不会有声音。',
     callHint: '建议先在第 3 步把全屏来电打开,这次只测能不能弹出来电卡片。',
-    fallbackUsedHint: '原生桥接超时 - 已尝试备用 LocalNotifications,请检查通知栏。',
+    bridgeBadgeAlive: '原生桥：正常',
+    bridgeBadgeDead: '原生桥：不响应（已切备用路径）',
     bridgeDeadTitle: '原生桥接 5 秒无响应',
     bridgeDeadDesc: '我们已经把所有桥接调用换到后台线程,但本设备(多见于小米 / HyperOS)的 WebView 仍可能阻塞自定义插件,导致测试超时;请尝试「立即重启应用」,重启后所有自检和测试会自动恢复正常路径。',
     bridgeDeadRestart: '立即重启应用',
@@ -218,14 +223,19 @@ const TEST_COPY = {
     msgButton: 'Send a test notification now',
     callButton: 'Trigger a test incoming call now',
     busy: 'Testing…',
-    posted: 'Submitted — verify a heads-up + short vibration appeared in the system tray.',
-    callPosted: 'Submitted — verify the call card + long vibration + ringtone appeared.',
+    successMsgNative: '✓ Native message notification posted — check the tray + short vibration.',
+    successMsgFallback: '✓ Delivered via fallback path — check the tray (native bridge did not answer).',
+    successCallNative: '✓ Native incoming-call test started — confirm call card + long vibration + ringtone.',
+    successCallFallback: '✓ Fallback path posted a call notification — check the tray (native bridge dead, full-screen call page may not appear).',
+    failBoth: '✗ Both native and fallback paths failed — restart the app and try again, or verify notification permissions.',
+    failPrefix: '✗ Test failed: ',
     failed: 'Test failed. Fix the highlighted permission first.',
     nativeFailed: 'Android rejected the test. Check notification permission or OEM background restrictions.',
     timeout: 'No system response within 6s. Retry or check OEM background restrictions.',
     notificationsHint: 'Tip: enable notification permission in step 1 first; otherwise the test will be silent.',
     callHint: 'Tip: grant full-screen call permission in step 3 first. This only verifies the call card pops.',
-    fallbackUsedHint: 'Native bridge timed out — falling back to LocalNotifications. Please check the notification tray.',
+    bridgeBadgeAlive: 'Native bridge: healthy',
+    bridgeBadgeDead: 'Native bridge: unresponsive (fallback active)',
     bridgeDeadTitle: 'Native bridge unresponsive after 5s',
     bridgeDeadDesc: 'All plugin calls now run on a background thread, but this device (often Xiaomi / HyperOS) may still block our custom plugin so test buttons time out. Try Restart now — all self-tests will return to the normal path on the next launch.',
     bridgeDeadRestart: 'Restart app now',
@@ -246,6 +256,10 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
   const [testKind, setTestKind] = useState<'message' | 'call' | null>(null);
   const [testStatus, setTestStatus] = useState<'idle' | 'busy' | 'done'>('idle');
   const [testMessage, setTestMessage] = useState<string>('');
+  // v2.14.26: tone-coloured single-line test verdict. Replaces the
+  // v2.14.25 \n-separated "submitted + fallback used" prose that left
+  // the user unsure whether the test actually passed.
+  const [testTone, setTestTone] = useState<'success' | 'fail' | 'neutral'>('neutral');
   const probeReminderIdRef = useRef<string | null>(null);
   const ttRef = useRef<number | null>(null);
 
@@ -385,30 +399,49 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
   // postTestMessageNotification / postTestIncomingCall paths as the
   // settings panel — single source of truth, both surfaces verify the
   // exact same channels.
-  const interpretTestResult = useCallback((result: AndroidAlertTestResult, kind: 'message' | 'call'): string => {
+  // v2.14.26: collapse the four-state matrix (ok×fallback) into a single
+  // typed verdict so the UI renders one short line + one tone instead
+  // of the v2.14.25 two-line prose.
+  const interpretTestResult = useCallback((
+    result: AndroidAlertTestResult,
+    kind: 'message' | 'call',
+  ): { text: string; tone: 'success' | 'fail' } => {
     const t = TEST_COPY[language === 'zh' ? 'zh' : 'en'];
-    let base: string;
-    if (result.ok) base = kind === 'message' ? t.posted : t.callPosted;
-    else if (result.reason === 'timeout') base = t.timeout;
-    else if (result.reason === 'native-failed') base = t.nativeFailed;
-    else base = t.failed;
-    // v2.14.25: when the native KumikoAlarmsPlugin path failed and we
-    // fell through to LocalNotifications, surface that explicitly so the
-    // user knows where to look (and that the bridge issue is real).
-    if (result.fallbackUsed) return `${base}\n${t.fallbackUsedHint}`;
-    return base;
+    if (result.ok && result.fallbackUsed) {
+      return {
+        text: kind === 'message' ? t.successMsgFallback : t.successCallFallback,
+        tone: 'success',
+      };
+    }
+    if (result.ok) {
+      return {
+        text: kind === 'message' ? t.successMsgNative : t.successCallNative,
+        tone: 'success',
+      };
+    }
+    if (result.fallbackUsed) {
+      return { text: t.failBoth, tone: 'fail' };
+    }
+    let reasonStr: string = t.failed;
+    if (result.reason === 'timeout') reasonStr = t.timeout;
+    else if (result.reason === 'native-failed') reasonStr = t.nativeFailed;
+    return { text: `${t.failPrefix}${reasonStr}`, tone: 'fail' };
   }, [language]);
 
   const runMessageTest = useCallback(async () => {
     setTestKind('message');
     setTestStatus('busy');
     setTestMessage(TEST_COPY[language === 'zh' ? 'zh' : 'en'].busy);
+    setTestTone('neutral');
     try {
       const result = await runAndroidMessageNotificationTest();
-      setTestMessage(interpretTestResult(result, 'message'));
+      const verdict = interpretTestResult(result, 'message');
+      setTestMessage(verdict.text);
+      setTestTone(verdict.tone);
     } catch (e) {
       console.warn('[onboardingWizard] runMessageTest failed:', e);
-      setTestMessage(TEST_COPY[language === 'zh' ? 'zh' : 'en'].nativeFailed);
+      setTestMessage(`${TEST_COPY[language === 'zh' ? 'zh' : 'en'].failPrefix}${TEST_COPY[language === 'zh' ? 'zh' : 'en'].nativeFailed}`);
+      setTestTone('fail');
     } finally {
       setTestStatus('done');
     }
@@ -418,12 +451,16 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
     setTestKind('call');
     setTestStatus('busy');
     setTestMessage(TEST_COPY[language === 'zh' ? 'zh' : 'en'].busy);
+    setTestTone('neutral');
     try {
       const result = await runAndroidIncomingCallTest(ringtoneFileId);
-      setTestMessage(interpretTestResult(result, 'call'));
+      const verdict = interpretTestResult(result, 'call');
+      setTestMessage(verdict.text);
+      setTestTone(verdict.tone);
     } catch (e) {
       console.warn('[onboardingWizard] runCallTest failed:', e);
-      setTestMessage(TEST_COPY[language === 'zh' ? 'zh' : 'en'].nativeFailed);
+      setTestMessage(`${TEST_COPY[language === 'zh' ? 'zh' : 'en'].failPrefix}${TEST_COPY[language === 'zh' ? 'zh' : 'en'].nativeFailed}`);
+      setTestTone('fail');
     } finally {
       setTestStatus('done');
     }
@@ -663,6 +700,26 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
                 seconds — the most common drop-off cause we saw in v2.14.23. */}
             {(currentStep === 'notifications' || currentStep === 'selfTest') && (
               <div className="mt-1 flex flex-col gap-1.5">
+                {/* v2.14.26: bridge-status pill above the inline test
+                    buttons. Same trigger as the bigger red banner
+                    (`showBridgeDeadBanner`) so when the user sees an
+                    amber "fallback" verdict below, the pill above
+                    explains *why* — the native plugin is wedged and
+                    we're using LocalNotifications for delivery. */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
+                      showBridgeDeadBanner
+                        ? 'border-amber-400/45 bg-amber-500/15 text-amber-200'
+                        : 'border-zinc-700 bg-zinc-800/70 text-zinc-300'
+                    }`}
+                  >
+                    {showBridgeDeadBanner ? <AlertTriangle size={12} /> : <Check size={12} />}
+                    {showBridgeDeadBanner
+                      ? TEST_COPY[language === 'zh' ? 'zh' : 'en'].bridgeBadgeDead
+                      : TEST_COPY[language === 'zh' ? 'zh' : 'en'].bridgeBadgeAlive}
+                  </span>
+                </div>
                 {currentStep === 'notifications' && (
                   <button
                     onClick={runMessageTest}
@@ -684,7 +741,15 @@ export const PermissionOnboardingWizard: React.FC<PermissionOnboardingWizardProp
                   </button>
                 )}
                 {testKind && testMessage && (
-                  <p className="text-xs text-zinc-400 leading-relaxed mt-1 whitespace-pre-line">
+                  <p
+                    className={`text-xs leading-relaxed mt-1 whitespace-pre-line ${
+                      testTone === 'success'
+                        ? 'text-emerald-300'
+                        : testTone === 'fail'
+                          ? 'text-rose-300'
+                          : 'text-zinc-400'
+                    }`}
+                  >
                     {testMessage}
                   </p>
                 )}
