@@ -1033,9 +1033,18 @@ export async function executeSend(
     deriveSummaryTopicLabel: helpers.deriveSummaryTopicLabel,
     ttsConfig: refs.ttsConfigRef.current,
     clearPendingBuffers: () => { /* desktop already cleared buffers above */ },
+    // v2.14.28 H18 (first cut): semantically renamed from "mark as sending" to
+    // "mark as delivered / 未读". The 9s yellow countdown footer ("发送中 9...1s") in
+    // AppMessageList already covers the visual "sending" status during the
+    // pre-executeSend window. Once executeSendCore actually starts, writing
+    // sendStatus='sending' to the bubble used to keep the small status line
+    // pinned to "发送中" through the entire LLM round-trip — there was no "未读"
+    // window. Now we just clear sendStatus (default undefined) so ChatBubble
+    // renders the bare {message.isRead ? '已读' : '未读'} branch instead.
+    // 第二刀 markPendingRead 时机前移在 H18-read-timing 中处理。
     markPendingSending: () => {
       useAppStore.getState().setMessages((prev: Message[]) => prev.map(msg =>
-        currentPendingIds.has(msg.id) ? { ...msg, sendStatus: 'sending' as const } : msg,
+        currentPendingIds.has(msg.id) ? { ...msg, sendStatus: undefined, failReason: undefined } : msg,
       ));
     },
     markPendingRead: () => {
@@ -2804,9 +2813,11 @@ export async function sendUserMessageFromMobile(
     deriveSummaryTopicLabel,
     ttsConfig: ttsConfigSnapshot,
     clearPendingBuffers: () => { /* mobile has no pending buffers */ },
+    // v2.14.28 H18 (first cut, mobile): same semantic shift as the desktop
+    // adapter above. See the long comment there for rationale.
     markPendingSending: () => {
       useAppStore.getState().setMessages((prev) => prev.map(m =>
-        m.id === userMessageId ? { ...m, sendStatus: 'sending' as const } : m,
+        m.id === userMessageId ? { ...m, sendStatus: undefined, failReason: undefined } : m,
       ));
     },
     markPendingRead: () => {
