@@ -66,9 +66,14 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @CapacitorPlugin(name = "KumikoAlarms")
 public class KumikoAlarmsPlugin extends Plugin {
@@ -141,27 +146,76 @@ public class KumikoAlarmsPlugin extends Plugin {
     // PendingIntent request code never collides with the real alarm.
     private static final int PREWARM_REQUEST_CODE_OFFSET = 0x10000000;
 
-    // v2.14.25: dedicated worker thread for ALL @PluginMethod bodies and
-    // for load()'s channel migration. Capacitor 7's default plugin
-    // dispatch runs every method on the WebView main (UI) thread, which
-    // on MIUI/HyperOS gets aggressively throttled — five parallel JS
-    // probes from the permission snapshot consistently exhausted the
-    // 5s safeProbe budget on user devices, even though every method
-    // body is individually fast. By offloading to a single dedicated
-    // worker we:
-    //   - guarantee plugin calls are never blocked by WebView paint /
-    //     layout work;
-    //   - serialise calls so each method sees a stable view of state
-    //     (avoiding the channel-creation race that motivated v3 IDs);
-    //   - keep memory/CPU overhead trivial (one daemon thread).
-    // The thread is daemon so it doesn't block process shutdown if a
-    // method body somehow runs forever; daemon also matches Capacitor's
-    // own internal pools.
-    private static final ExecutorService PLUGIN_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "kumiko-alarms-plugin");
+    // v2.14.26: 4-thread fixed pool for @PluginMethod bodies. v2.14.25
+    // introduced a single-thread executor to keep plugin calls off the
+    // WebView main thread, but with JS-side Promise.all dispatching 5
+    // probes in parallel and a single Binder IPC (e.g. TelecomManager
+    // .getPhoneAccount on HyperOS) occasionally hanging, every other
+    // probe queued behind it would also time out at 5s — symptom seen
+    // in v2.14.25 logs as four-in-a-row "timed out after 5000ms" lines.
+    //
+    // 4 threads is enough headroom for the worst observed parallel
+    // burst (5 snapshot probes + a couple of test methods) without
+    // bloating memory; further widening risks Capacitor handler
+    // contention without practical benefit.
+    private static final AtomicInteger PLUGIN_THREAD_SEQ = new AtomicInteger(0);
+    private static final ExecutorService PLUGIN_EXECUTOR = Executors.newFixedThreadPool(4, r -> {
+        Thread t = new Thread(r, "kumiko-alarms-pool-" + PLUGIN_THREAD_SEQ.incrementAndGet());
         t.setDaemon(true);
         return t;
     });
+
+    // v2.14.26: load()'s channel migration runs on its own single-thread
+    // executor so a slow (or stuck) one-time migration / channel create
+    // never starves the @PluginMethod pool. Migration is idempotent
+    // (CHANNEL_MIGRATION_KEY_V3) so a single thread is plenty.
+    private static final ExecutorService LOAD_EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "kumiko-alarms-load");
+        t.setDaemon(true);
+        return t;
+    });
+
+    // v2.14.26: cached pool used exclusively by withIpcTimeout. Each
+    // wrapped IPC submits a tiny Callable here so its Future.get(ms)
+    // can fire even if the underlying Binder is hung; cached pool grows
+    // and reuses threads on demand and is bounded in practice by the
+    // number of in-flight @PluginMethod calls (which is itself bounded
+    // by the 4-thread PLUGIN_EXECUTOR above).
+    private static final ExecutorService IPC_TIMER = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "kumiko-alarms-ipc-" + PLUGIN_THREAD_SEQ.incrementAndGet());
+        t.setDaemon(true);
+        return t;
+    });
+
+    /**
+     * v2.14.26: per-IPC short timeout. Wrap a single Binder/system-IPC
+     * call so any one hang (TelecomManager / PowerManager / AppOps /
+     * NotificationManager on misbehaving ROMs) returns the supplied
+     * fallback instead of blocking the calling worker thread to the
+     * point that the JS safeProbe times out. The Future is cancelled
+     * with mayInterruptIfRunning=true so the IPC thread eventually
+     * yields when the underlying RPC unblocks.
+     */
+    private static <T> T withIpcTimeout(String tag, Callable<T> task, long timeoutMs, T fallback) {
+        Future<T> future;
+        try {
+            future = IPC_TIMER.submit(task);
+        } catch (Throwable t) {
+            Log.w(TAG, "withIpcTimeout(" + tag + ") submit failed", t);
+            return fallback;
+        }
+        try {
+            return future.get(timeoutMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException te) {
+            future.cancel(true);
+            Log.w(TAG, "withIpcTimeout(" + tag + ") ipc-timeout after " + timeoutMs + "ms");
+            return fallback;
+        } catch (Throwable t) {
+            future.cancel(true);
+            Log.w(TAG, "withIpcTimeout(" + tag + ") ipc-fail", t);
+            return fallback;
+        }
+    }
 
     /**
      * v2.14.25: helper that dispatches a {@link PluginCall} body to the
@@ -190,12 +244,14 @@ public class KumikoAlarmsPlugin extends Plugin {
     @Override
     public void load() {
         super.load();
-        // v2.14.25: schedule channel migration + creation on the plugin
-        // worker so BridgeActivity.onCreate isn't held by NotificationManager
-        // calls. On healthy devices the migration completes in <50ms; on
-        // misbehaving ROMs (HyperOS WebView throttling, AOSP doze) it can
-        // stretch into seconds, which previously held up the whole bridge
-        // and caused the v2.14.24 "all probes time out at 5s" symptom.
+        // v2.14.26: schedule channel migration + creation on a dedicated
+        // LOAD_EXECUTOR so it can never starve the @PluginMethod pool.
+        // Previously (v2.14.25) load() shared the single-thread plugin
+        // executor; if the channel migration was slow (or sat behind a
+        // hung Binder during cold-start DND queries on HyperOS) every
+        // subsequent JS-driven snapshot probe queued behind it would
+        // exceed the 5s safeProbe budget — exactly the symptom that
+        // v2.14.25 was supposed to eliminate.
         //
         // The SharedPreferences flag (CHANNEL_MIGRATION_KEY_V3) keeps
         // runChannelMigrationToV3 idempotent across cold starts so the
@@ -207,7 +263,7 @@ public class KumikoAlarmsPlugin extends Plugin {
         // and an unknown channelId would silently route to the default
         // channel — losing our DND-bypass / lockscreen visibility settings.
         Context ctx = getContext();
-        PLUGIN_EXECUTOR.execute(() -> {
+        LOAD_EXECUTOR.execute(() -> {
             try {
                 runChannelMigrationToV3(ctx);
                 ensureMessagesChannel(ctx);
@@ -514,17 +570,48 @@ public class KumikoAlarmsPlugin extends Plugin {
         onWorker(call, "getAlertPermissionStatus", () -> {
             Context context = getContext();
             NotificationManager nm = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-            boolean notificationsEnabled = NotificationManagerCompat.from(context).areNotificationsEnabled();
-            boolean messagesChannelReady = isChannelUsable(nm, CHANNEL_ID_MESSAGES);
-            boolean callsChannelReady = isChannelUsable(nm, CHANNEL_ID_CALLS);
+            // v2.14.26: every IPC below is wrapped with a 3s per-call
+            // timeout so a single hung Binder (NotificationManager
+            // areNotificationsEnabled, AlarmManager.canScheduleExactAlarms,
+            // canUseFullScreenIntent) cannot starve the snapshot path.
+            boolean notificationsEnabled = withIpcTimeout(
+                "areNotificationsEnabled",
+                () -> NotificationManagerCompat.from(context).areNotificationsEnabled(),
+                3_000L,
+                false
+            );
+            boolean messagesChannelReady = withIpcTimeout(
+                "isChannelUsable(messages)",
+                () -> isChannelUsable(nm, CHANNEL_ID_MESSAGES),
+                3_000L,
+                false
+            );
+            boolean callsChannelReady = withIpcTimeout(
+                "isChannelUsable(calls)",
+                () -> isChannelUsable(nm, CHANNEL_ID_CALLS),
+                3_000L,
+                false
+            );
+            boolean exactAlarmReady = withIpcTimeout(
+                "canScheduleExactAlarmNow",
+                () -> canScheduleExactAlarmNow(context),
+                3_000L,
+                false
+            );
+            boolean fullScreenIntentReady = withIpcTimeout(
+                "canUseFullScreenIntentNow",
+                () -> canUseFullScreenIntentNow(context),
+                3_000L,
+                false
+            );
 
             JSObject ret = new JSObject();
             ret.put("sdkInt", Build.VERSION.SDK_INT);
             ret.put("notificationsEnabled", notificationsEnabled);
             ret.put("messagesChannelReady", messagesChannelReady);
             ret.put("callsChannelReady", callsChannelReady);
-            ret.put("exactAlarmReady", canScheduleExactAlarmNow(context));
-            ret.put("fullScreenIntentReady", canUseFullScreenIntentNow(context));
+            ret.put("exactAlarmReady", exactAlarmReady);
+            ret.put("fullScreenIntentReady", fullScreenIntentReady);
             call.resolve(ret);
         });
     }
@@ -593,8 +680,16 @@ public class KumikoAlarmsPlugin extends Plugin {
             ret.put("brand", KumikoVendorPermissionHelper.brand());
             ret.put("model", KumikoVendorPermissionHelper.model());
             ret.put("androidVersion", KumikoVendorPermissionHelper.androidVersion());
-            KumikoVendorPermissionHelper.ShowOnLockState lockState =
-                KumikoVendorPermissionHelper.detectMiuiShowOnLock(context);
+            // v2.14.26: detectMiuiShowOnLock uses AppOpsManager.checkOpNoThrow
+            // via reflection — on some MIUI builds the underlying Binder can
+            // sit unresponsive. Wrap with a 3s timeout so a stuck AppOps call
+            // never holds up the OEM info probe.
+            KumikoVendorPermissionHelper.ShowOnLockState lockState = withIpcTimeout(
+                "detectMiuiShowOnLock",
+                () -> KumikoVendorPermissionHelper.detectMiuiShowOnLock(context),
+                3_000L,
+                KumikoVendorPermissionHelper.ShowOnLockState.UNKNOWN
+            );
             switch (lockState) {
                 case GRANTED: ret.put("showOnLockState", "granted"); break;
                 case DENIED: ret.put("showOnLockState", "denied"); break;
@@ -790,13 +885,20 @@ public class KumikoAlarmsPlugin extends Plugin {
     public void isIgnoringBatteryOptimizations(PluginCall call) {
         onWorker(call, "isIgnoringBatteryOptimizations", () -> {
             Context context = getContext();
-            boolean ignored = false;
-            try {
-                PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
-                if (pm != null) ignored = pm.isIgnoringBatteryOptimizations(context.getPackageName());
-            } catch (Throwable t) {
-                Log.w(TAG, "isIgnoringBatteryOptimizations probe failed", t);
-            }
+            // v2.14.26: pm.isIgnoringBatteryOptimizations is a Binder call
+            // into the power manager; on some ROMs (notably HyperOS in
+            // doze) it can sit unresponsive. Wrap with a 3s timeout so
+            // the probe never blocks the worker for the full safeProbe
+            // budget.
+            boolean ignored = withIpcTimeout(
+                "isIgnoringBatteryOptimizations",
+                () -> {
+                    PowerManager pm = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
+                    return pm != null && pm.isIgnoringBatteryOptimizations(context.getPackageName());
+                },
+                3_000L,
+                false
+            );
             JSObject ret = new JSObject();
             ret.put("ignored", ignored);
             call.resolve(ret);
@@ -814,28 +916,35 @@ public class KumikoAlarmsPlugin extends Plugin {
     @PluginMethod
     public void isPhoneAccountRegistered(PluginCall call) {
         onWorker(call, "isPhoneAccountRegistered", () -> {
-            boolean registered = false;
-            boolean enabled = false;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                Context context = getContext();
-                TelecomManager tm = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
-                if (tm != null) {
-                    try {
-                        PhoneAccountHandle handle = buildPhoneAccountHandle(context);
-                        PhoneAccount account = tm.getPhoneAccount(handle);
-                        if (account != null) {
-                            registered = true;
-                            // PhoneAccount.isEnabled() is a CTS-tested API on M+.
-                            try { enabled = account.isEnabled(); } catch (Throwable ignored) {}
-                        }
-                    } catch (Throwable t) {
-                        Log.w(TAG, "isPhoneAccountRegistered probe failed", t);
+            // v2.14.26: TelecomManager.getPhoneAccount is the single most
+            // common hang in v2.14.25 logs on HyperOS/MIUI — system_server
+            // sometimes deadlocks the call when self-managed accounts are
+            // registered but the dialer hasn't fully indexed them. Wrap
+            // the entire Telecom interaction (including PhoneAccount.isEnabled)
+            // in a 3s timeout so the probe degrades to "not registered"
+            // instead of starving every other queued probe.
+            boolean[] result = withIpcTimeout(
+                "telecom.getPhoneAccount",
+                () -> {
+                    boolean[] state = new boolean[]{ false, false };
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return state;
+                    Context context = getContext();
+                    TelecomManager tm = (TelecomManager) context.getSystemService(Context.TELECOM_SERVICE);
+                    if (tm == null) return state;
+                    PhoneAccountHandle handle = buildPhoneAccountHandle(context);
+                    PhoneAccount account = tm.getPhoneAccount(handle);
+                    if (account != null) {
+                        state[0] = true;
+                        try { state[1] = account.isEnabled(); } catch (Throwable ignored) {}
                     }
-                }
-            }
+                    return state;
+                },
+                3_000L,
+                new boolean[]{ false, false }
+            );
             JSObject ret = new JSObject();
-            ret.put("registered", registered);
-            ret.put("enabled", enabled);
+            ret.put("registered", result[0]);
+            ret.put("enabled", result[1]);
             call.resolve(ret);
         });
     }
@@ -1297,6 +1406,13 @@ public class KumikoAlarmsPlugin extends Plugin {
                     .setCategory(Notification.CATEGORY_CALL)
                     .setVisibility(Notification.VISIBILITY_PUBLIC)
                     .setFullScreenIntent(contentPi, true)
+                    // v2.14.26: explicit setContentIntent on API 31+ CallStyle.
+                    // Without this, HyperOS/MIUI tap-on-notification routes
+                    // only the FullScreenIntent (which is gated to lockscreen)
+                    // and the foreground tap drops the EXTRA_OPEN_CALL extras.
+                    // setContentIntent guarantees the same intent fires for
+                    // both lockscreen and pull-down-shade taps.
+                    .setContentIntent(contentPi)
                     .setOngoing(true)
                     .setStyle(style);
                 notification = builder.build();
