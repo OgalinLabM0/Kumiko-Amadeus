@@ -10,6 +10,7 @@ import { getTimePartsInTimezone } from './backupHelpers';
 import { getCapacitorPlatform, isCapacitorNative } from '../../services/environment';
 import {
   EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY,
+  addAlarmFiredListener,
   cancelAndroidAlarm,
   scheduleAndroidAlarm,
   type ScheduleAlarmResult,
@@ -120,6 +121,11 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
   } = params;
 
   const reminderDispatchingRef = useRef<boolean>(false);
+  // v2.14.27: latest checkScheduledReminders reference. Stored in a ref so
+  // the kumikoAlarmFired native-bridge listener (registered in a separate
+  // useEffect with stable deps) can force a dispatch tick without
+  // re-subscribing every time the polling closure rebuilds.
+  const checkScheduledRemindersRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   const triggerTimedReminderMessage = useCallback(async (reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>): Promise<boolean> => {
     return triggerTimedReminderMessageAction(
@@ -181,6 +187,13 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
               reminderDispatchingRef.current = false;
           }
       };
+
+      // v2.14.27: keep the latest closure available to the
+      // kumikoAlarmFired native bridge listener. The listener lives in a
+      // separate useEffect with stable deps (so it doesn't re-subscribe
+      // on every render); calling through this ref gives it the same
+      // dispatch path the polling interval uses.
+      checkScheduledRemindersRef.current = checkScheduledReminders;
 
       // v2.14.1 H.4: previously the JS poller fired every 1s
       // unconditionally — fine when the tab is active, wasteful when
@@ -370,4 +383,48 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
       const syncInterval = setInterval(() => { void reconcile(); }, 30_000);
       return () => clearInterval(syncInterval);
   }, [flowState, getRelativeReminders, getDailyReminders, ttsConfigRef, notifyExactAlarmFallbackOnce]);
+
+  // v2.14.27: subscribe to the native `kumikoAlarmFired` event. When the
+  // KumikoAlarmReceiver fires it silently launches MainActivity with
+  // EXTRA_REMINDER_FIRED; MainActivity bridges the payload into this JS
+  // event via KumikoAlarmsPlugin.notifyAlarmFired. The 30 s
+  // KumikoAlarmGuardianService FGS upgrade keeps the process alive long
+  // enough for the LLM round-trip + LocalNotifications post that
+  // checkScheduledReminders → triggerTimedReminderMessage performs. This
+  // is the "background generation" path the user explicitly asked for in
+  // the v2.14.27 hand-off ("我希望后台能生成，不然定时任务相当于没用").
+  //
+  // Force-tick semantics:
+  //   - The dispatcher is the same one the 1s/60s poller uses; running
+  //     it here is cheap (idempotent under reminderDispatchingRef).
+  //   - We deliberately don't filter by reminderId — the dispatcher reads
+  //     `now` and walks the store-sorted reminder list, so a wakeup for
+  //     a slightly off-by-one reminder still surfaces the correct one.
+  useEffect(() => {
+      if (!isCapacitorNative()) return;
+      if (getCapacitorPlatform() !== 'android') return;
+      if (flowState !== 'APP') return;
+      let dispose: (() => void) | undefined;
+      let cancelled = false;
+      void addAlarmFiredListener(() => {
+          // Fire the dispatcher on the next microtask so the listener
+          // callback returns quickly. The dispatcher itself is async and
+          // self-guarded against re-entry.
+          void Promise.resolve().then(() => checkScheduledRemindersRef.current());
+      })
+        .then((dispatch) => {
+            if (cancelled) {
+                try { dispatch(); } catch { /* noop */ }
+                return;
+            }
+            dispose = dispatch;
+        })
+        .catch((e) => {
+            console.warn('[useScheduledReminders] addAlarmFiredListener failed:', e);
+        });
+      return () => {
+          cancelled = true;
+          try { dispose?.(); } catch { /* noop */ }
+      };
+  }, [flowState]);
 };

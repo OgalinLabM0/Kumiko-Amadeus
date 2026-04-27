@@ -13,10 +13,9 @@
 //   - On App.appResume from @capacitor/app (warm start: backgrounded WebView
 //     comes back and we want to scoop any new replies)
 //
-// Side effect: when a call action is drained we also call
-// stopAndroidCallRinging() to silence KumikoCallRingingService — the user
-// is now on screen with the React VoiceCallOverlay and the loop ringtone
-// shouldn't keep ringing for the remaining 60 s window.
+// v2.14.27: KumikoCallRingingService removed; LocalNotifications calls
+// channel + the React VoiceCallOverlay's own ringtone playback handle
+// audio, so no native side-effect cleanup is needed when draining.
 //
 // PWA / Electron never call into here.
 
@@ -26,7 +25,6 @@ import { useAppStore } from '../store';
 import { isCapacitorNative } from '../services/environment';
 import {
   drainPendingNativeActions,
-  stopAndroidCallRinging,
 } from '../services/androidAlarmService';
 import { addMessageToStore } from '../components/app/chatActions';
 
@@ -43,13 +41,6 @@ export const useAndroidPendingActionsDrainer = (): void => {
       const callEvent = drained.call?.reminderEvent;
       const callAction = drained.call?.action;
       if (drained.call && callEvent && callAction) {
-        // v2.14.24: silence the looping ringtone foreground service the
-        // moment any heads-up tap reaches us. Without this, the ringtone
-        // would keep playing for ~60 s after the user has already entered
-        // the React UI — exactly the regression the v2.14.21 plan called
-        // out as "rings forever even after I tapped accept".
-        void stopAndroidCallRinging();
-
         const lang = useAppStore.getState().language;
         const eventForUi = callEvent || '提醒';
         const writeMissedAlert = (kind: 'declined' | 'auto-missed') => {

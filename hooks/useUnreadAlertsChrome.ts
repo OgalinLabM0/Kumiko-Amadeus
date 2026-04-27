@@ -7,11 +7,9 @@ import {
   EXACT_ALARM_PERMISSION_PROMPTED_STORAGE_KEY,
   FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY,
   prewarmKumikoAlarmsPlugin,
-  pruneExpiredAlarmLedger,
 } from '../services/androidAlarmService';
 import {
-  ensureAndroidAlertChannelsBootstrap,
-  getAndroidAlertPermissionSnapshot,
+  getPermissionStatusSnapshot,
   openAndroidAlertPermissionSettings,
   requestAndroidNotificationPermission,
 } from '../services/androidAlertPermissionService';
@@ -115,7 +113,6 @@ export function useUnreadAlertsChrome(
       return language === 'en'
         ? {
           notificationDenied: 'Android notification permission is not enabled. New messages, reminders, vibration, and call alerts may stay silent until you allow notifications for Kumiko.',
-          channelDenied: 'Android notification channels are disabled. Open Kumiko notification settings and enable Messages and Calls.',
           exactPrompt: 'Opening Android Alarms & reminders permission. Please allow it so timed reminders can ring exactly while the phone is locked.',
           exactStillMissing: 'Exact alarm permission is still off. Timed reminders may be delayed by Android; enable Alarms & reminders in system settings.',
           fullScreenPrompt: 'Opening Android full-screen notification permission. Please allow it so reminder calls can pop over the lock screen.',
@@ -123,7 +120,6 @@ export function useUnreadAlertsChrome(
         }
         : {
           notificationDenied: 'Android 通知权限尚未开启。主动消息、提醒、震动和来电弹窗可能会静默，请在系统弹窗或应用通知设置里允许 Kumiko 通知。',
-          channelDenied: 'Android 通知渠道被关闭了。请打开 Kumiko 通知设置，允许「新消息」和「来电提醒」渠道。',
           exactPrompt: '即将打开 Android「闹钟与提醒」权限页。请允许它，这样定时提醒才能在锁屏/后台准点响。',
           exactStillMissing: '精准闹钟权限仍未开启。Android 可能会延迟定时提醒，请在系统设置里允许「闹钟与提醒」。',
           fullScreenPrompt: '即将打开 Android「全屏通知」权限页。请允许它，这样提醒来电才能覆盖锁屏弹出。',
@@ -144,25 +140,13 @@ export function useUnreadAlertsChrome(
       running = true;
       try {
         const copy = getPermissionCopy();
-        // v2.14.23: serial start — first warm the Capacitor↔native bridge
-        // (the first call after WebView startup pays a 2-5s descriptor-resolution
-        // tax that, in v2.14.22, was being absorbed by the permission probe and
-        // collapsing every item into "Unknown"). Then create the notification
-        // channels (side effect kept OUT of the read-only snapshot path so a
-        // misbehaving ROM can't stall the UI). Only then take the actual
-        // permission snapshot. Total budget ~10s on cold start, ~1s on hot.
+        // v2.14.27: lightweight bootstrap — warm the slim native bridge
+        // (4 s budget) then take a 5-item permission snapshot. Channel
+        // creation lives in KumikoAlarmsPlugin.load() so JS no longer
+        // needs an explicit ensureChannels call.
         await prewarmKumikoAlarmsPlugin();
         if (cancelled) return;
-        await ensureAndroidAlertChannelsBootstrap();
-        if (cancelled) return;
-        // v2.14.23: prune the native alarm ledger of any reminderId whose
-        // scheduled `at` is already in the past. The BootReceiver does this
-        // inline on device reboot; we also call it on every cold start so
-        // a long-paused app (sleep mode, etc.) doesn't reschedule stale
-        // reminders. Guarded against being called on platforms that don't
-        // expose this method yet (older binaries) — failure is silent.
-        void pruneExpiredAlarmLedger().catch(() => undefined);
-        let snapshot = await getAndroidAlertPermissionSnapshot();
+        let snapshot = await getPermissionStatusSnapshot();
         if (cancelled) return;
         if (!snapshot.supported) return;
 
@@ -173,13 +157,6 @@ export function useUnreadAlertsChrome(
             setNotice(copy.notificationDenied);
             return;
           }
-        }
-
-        if (
-          snapshot.items.messagesChannel.state === 'denied'
-          || snapshot.items.callsChannel.state === 'denied'
-        ) {
-          setNotice(copy.channelDenied);
         }
 
         if (snapshot.items.exactAlarm.state !== 'granted') {
