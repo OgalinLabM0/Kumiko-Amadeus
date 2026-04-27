@@ -1583,10 +1583,31 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
           )}
 
           <div>
-            <label className={fieldLabelClass}>{t.ttsSpeed}: {ttsConfig.speed.toFixed(1)}x</label>
+            <div className="flex items-center justify-between gap-3">
+              <label className={fieldLabelClass}>{t.ttsSpeed}: {ttsConfig.speed.toFixed(1)}x</label>
+              {Math.abs(ttsConfig.speed - 1.0) > 0.001 && (
+                <button
+                  type="button"
+                  onClick={() => update({ speed: 1.0 })}
+                  className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] transition ${
+                    isDarkMode
+                      ? 'border-[#4e3d2e]/55 bg-[#241a12] text-[#d4c1a3] hover:bg-[#2c2118]'
+                      : 'border-[#e8dfd1] bg-white/90 text-[#7a5d3a] hover:bg-[#fbf6ec]'
+                  }`}
+                >
+                  <RotateCcw size={12} />
+                  {(t as any).ttsSpeedRestore}
+                </button>
+              )}
+            </div>
             <input type="range" min="0.5" max="2.0" step="0.1" value={ttsConfig.speed}
               onChange={e => update({ speed: parseFloat(e.target.value) })}
               className="w-full mt-1 accent-[#c79a2f]" />
+            {(ttsConfig.speed < 0.7 || ttsConfig.speed > 1.5) && (
+              <p className={`${helperClass} mt-1.5`}>
+                {(t as any).ttsSpeedOutOfRangeHint}
+              </p>
+            )}
           </div>
           <div className={`${innerCardClass} p-4 rounded-[1.15rem]`}>
             <div className="flex items-center justify-between gap-3">
