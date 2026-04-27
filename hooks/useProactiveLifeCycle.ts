@@ -253,13 +253,27 @@ export function useProactiveLifeCycle(
               return;
           }
 
-          const lastMsg = messages[messages.length - 1];
-          if (!lastMsg) return;
+          // v2.14.28 H9: gapHours must be measured against the user's last
+          // message, not the last message of any role. The old `messages[length-1]`
+          // implementation was reset every time Kumiko sent a proactive message
+          // or a busy-followup, which meant the 3-hour silence requirement could
+          // be cleared by Kumiko herself. Walk backwards from the tail and pick
+          // the first `role === 'user'` entry; if the user has never spoken
+          // (welcome state), skip the proactive trigger entirely.
+          let lastUserMsg: typeof messages[number] | undefined;
+          for (let i = messages.length - 1; i >= 0; i--) {
+              if (messages[i].role === 'user') {
+                  lastUserMsg = messages[i];
+                  break;
+              }
+          }
+          if (!lastUserMsg) return;
 
           const currentTime = Date.now();
-          const gapHours = (currentTime - lastMsg.timestamp) / (1000 * 60 * 60);
-          
-          // COOL DOWN: Require at least 3 hours of silence before proactively messaging
+          const gapHours = (currentTime - lastUserMsg.timestamp) / (1000 * 60 * 60);
+
+          // COOL DOWN: Require at least 3 hours of silence since the user's last
+          // message before proactively messaging.
           if (gapHours < 3) return;
 
           // --- STATE MACHINE DRIVEN PROACTIVE ---
