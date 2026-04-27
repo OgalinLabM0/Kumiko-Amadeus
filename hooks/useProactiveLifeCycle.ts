@@ -81,10 +81,18 @@ export function useProactiveLifeCycle(
   // --- SESSION LOCK (ANTI-RACE CONDITION) ---
   const welcomeTriggeredRef = useRef<boolean>(false);
 
-  const triggerNativeProactiveMessage = useCallback(async (gapHours: number, eventDescription: string) => {
+  // v2.14.28 B2: pass explicit mode so the underlying primitive does not stomp sleep
+  // refs. 'sleep_command' for Phase 1/2 and late-night-wake warnings; 'proactive_life'
+  // for the normal gap≥3h RNG path. Both modes leave sleep refs untouched, but the
+  // explicit label keeps call-site intent unambiguous and matches the audit plan.
+  const triggerNativeProactiveMessage = useCallback(async (
+    gapHours: number,
+    eventDescription: string,
+    mode: 'proactive_life' | 'sleep_command' = 'proactive_life',
+  ) => {
     return triggerNativeProactiveMessageAction(
       { welcomeTriggeredRef, hasGoneToSleepRef, sleepWarningTimestampRef, sleepFarewellSentRef, lateNightWakeRolledRef, lateNightWakeResultRef, lateNightWakeTimestampRef },
-      gapHours, eventDescription,
+      gapHours, eventDescription, mode,
     );
   }, [messages, coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, isTalking, isThinking, language, backupConfig, addMessage, showBackgroundMessageNotification]);
 
@@ -189,7 +197,8 @@ export function useProactiveLifeCycle(
               sleepWarningTimestampRef.current = Date.now();
               triggerNativeProactiveMessage(0, language === 'zh'
                 ? '[系统指令]你现在已经非常困了，必须告诉用户你真的要睡了，不能再聊了。语气自然但坚定，明确表达「我真的要去睡了」。'
-                : "[System] You are very sleepy now. Tell the user firmly but naturally that you really need to sleep and can't chat anymore.");
+                : "[System] You are very sleepy now. Tell the user firmly but naturally that you really need to sleep and can't chat anymore.",
+                'sleep_command');
             }
 
             // Scene A Phase 3: warning + 10min → final goodnight
@@ -204,7 +213,8 @@ export function useProactiveLifeCycle(
                 sleepFarewellSentRef.current = true;
                 triggerNativeProactiveMessage(0, language === 'zh'
                   ? '[系统指令]这是你今晚最后一条消息。自然地承接上文说晚安，明确告诉用户「再发也不会回了哦，晚安」。说完之后你将进入睡眠，不再回复任何消息。'
-                  : "[System] This is your final message tonight. Say goodnight naturally, make it clear you won't reply anymore. After this, you will be fully asleep.");
+                  : "[System] This is your final message tonight. Say goodnight naturally, make it clear you won't reply anymore. After this, you will be fully asleep.",
+                  'sleep_command');
                 setTimeout(() => {
                   hasGoneToSleepRef.current = true;
                   setCurrentEmotion('sleepy');
@@ -221,7 +231,8 @@ export function useProactiveLifeCycle(
                 sleepWarningTimestampRef.current = Date.now();
                 triggerNativeProactiveMessage(0, language === 'zh'
                   ? '[系统指令]你深夜被吵醒已经聊了一会了，现在真的撑不住了，必须告诉用户你要睡了。语气自然但坚定。'
-                  : "[System] You were woken up late at night and chatted for a bit. Now you really can't stay awake. Tell the user you need to sleep.");
+                  : "[System] You were woken up late at night and chatted for a bit. Now you really can't stay awake. Tell the user you need to sleep.",
+                  'sleep_command');
               }
             }
 

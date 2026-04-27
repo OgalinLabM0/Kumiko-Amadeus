@@ -392,6 +392,15 @@ export async function triggerNativeProactiveMessage(
   refs: Pick<ChatActionRefs, 'welcomeTriggeredRef' | 'hasGoneToSleepRef' | 'sleepWarningTimestampRef' | 'sleepFarewellSentRef' | 'lateNightWakeRolledRef' | 'lateNightWakeResultRef' | 'lateNightWakeTimestampRef'>,
   gapHours: number,
   eventDescription: string,
+  // v2.14.28 B2 (BLOCKER fix): explicit mode so callers declare intent. Phase 1/2 sleep
+  // warnings, late-night wake, and busy follow-ups all share this primitive — but the old
+  // code unconditionally cleared every sleep ref here, which stomped on the values
+  // Phase 1/2/late-wake callers had just set right before calling. That broke the
+  // gradual-sleep + late-night-wake protocol entirely (晚安没说人就消失了).
+  // Now sleep refs are NEVER reset inside this function; sleep_command callers manage their
+  // own refs (set before calling), and the 06:00 daily reset / handleSendAction reset paths
+  // continue to own the cleanup lifecycle.
+  mode: 'proactive_life' | 'sleep_command' = 'proactive_life',
 ) {
   const state = useAppStore.getState();
   const { isTalking, isThinking, messages, coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, language } = state;
@@ -399,17 +408,15 @@ export async function triggerNativeProactiveMessage(
   // Cloud-sync gate removed (cloud feature dropped).
 
   if (refs.welcomeTriggeredRef.current || isTalking || isThinking) {
-    console.log('[Native Proactive] Blocked: Already triggered or currently active.');
+    console.log(`[Native Proactive] Blocked (mode=${mode}): Already triggered or currently active.`);
     return;
   }
 
+  // Session lock claim. Released after 3 min via setTimeout below (or immediately on error).
   refs.welcomeTriggeredRef.current = true;
-  refs.hasGoneToSleepRef.current = false;
-  refs.sleepWarningTimestampRef.current = null;
-  refs.sleepFarewellSentRef.current = false;
-  refs.lateNightWakeRolledRef.current = false;
-  refs.lateNightWakeResultRef.current = false;
-  refs.lateNightWakeTimestampRef.current = null;
+  // v2.14.28 B2: removed the 6 sleep-ref clears that used to live here. They were the
+  // root cause of the gradual-sleep loop never closing. See the comment on the `mode`
+  // parameter above for the full rationale.
 
   const timeOptions: Intl.DateTimeFormatOptions = {
     timeZone: locationConfig.modelTimezone,
@@ -1048,7 +1055,7 @@ export async function executeSend(
       refs.pendingSendRef.current = resolve;
     }),
     triggerBusyFollowUp: (event) => {
-      triggerNativeProactiveMessage(refs, 0, event);
+      triggerNativeProactiveMessage(refs, 0, event, 'proactive_life');
     },
     onRetry: () => { void executeSend(refs, helpers); },
   };
@@ -2855,7 +2862,7 @@ export async function sendUserMessageFromMobile(
             } as React.MutableRefObject<Map<string, Float32Array>>,
             inputRef: registration.inputRef,
           };
-          triggerNativeProactiveMessage(fakeRefs, 0, event);
+          triggerNativeProactiveMessage(fakeRefs, 0, event, 'proactive_life');
         }
       : undefined,
     onRetry: () => { void sendUserMessageFromMobile(text, options); },
