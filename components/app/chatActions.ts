@@ -1004,8 +1004,14 @@ export async function executeSend(
   state.setTimeLeft(0);
   state.setIsListening(false);
 
+  // v2.14.28 H18 (second cut, executeSend entry): mirror the ctx-adapter change
+  // — no longer write sendStatus='sending' here. The 9s yellow countdown footer in
+  // AppMessageList already covered the "sending" visual; once executeSend actually
+  // runs, the user bubble should immediately enter the "未读" state (sendStatus
+  // undefined + isRead false). The next status flip ("已读") happens at A-11
+  // delivery start, just before isThinking lights up.
   state.setMessages((prev: Message[]) => prev.map(msg =>
-    currentPendingIds.has(msg.id) ? { ...msg, sendStatus: 'sending' as const } : msg,
+    currentPendingIds.has(msg.id) ? { ...msg, sendStatus: undefined, failReason: undefined } : msg,
   ));
 
   const savedGenId = refs.generationIdRef.current;
@@ -1791,7 +1797,13 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     }
 
     const s2 = useAppStore.getState();
-    ctx.markPendingRead();
+    // v2.14.28 H18 (second cut): the post-model markPendingRead() call used to
+    // live here, which made the user bubble flip to "已读" immediately when the
+    // model returned — and only AFTER that did "对方正在输入" (isThinking) fire
+    // for the segment-delivery typing animation. The user-facing order felt
+    // backwards: "已读" came first, "对方正在输入" came second. The mark is now
+    // moved down to the A-11 delivery start, so "对方正在输入" lights up first
+    // and the small status text flips to "已读" at the same moment.
 
     // --- Teaching-slot round counter bookkeeping ---
     // Each successful allow-mode AI reply in a teaching slot counts as
@@ -2023,6 +2035,17 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     }
 
     // --- A-11 VOICE / TEXT DELIVERY ---
+    // v2.14.28 H18 (second cut): mark "已读" right before delivery branches.
+    // Both the voice path (line ~2044) and the text segment path (line ~2084)
+    // immediately call setIsThinking(true) — this is when "对方正在输入"
+    // actually lights up in the chat footer. Pairing markPendingRead with that
+    // moment gives the user-perceived sequence:
+    //   未读 (during A-1..A-10 + sendMessageToGemini)
+    //   → 对方正在输入 + 已读 (delivery typing animation begins)
+    //   → 已读 (kept after delivery completes)
+    // See p2.2 commit message for the full state-machine table.
+    ctx.markPendingRead();
+
     const currentTtsCfg = ctx.ttsConfig;
     const isVoiceTurn = currentTtsCfg.voiceMode === 'full'
       || (currentTtsCfg.voiceMode === 'hybrid' && response.voiceMode === true);
