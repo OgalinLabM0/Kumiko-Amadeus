@@ -319,14 +319,28 @@ export const useMessageHistoryOperations = (
 
   const handleWithdrawMessage = useCallback((messageId: string) => {
     const msg = messagesRef.current.find(m => m.id === messageId);
-    // v2.14.26: also allow withdraw when the bubble is stuck in
-    // 'sending'. Mobile users hit the resend → "Sending" → 30s
-    // hang flow on flaky networks and had no escape hatch; opening
-    // up `sending` lets them roll the text back to the input box
-    // and edit/abort on their own terms. The pendingMessageIdsRef
-    // entry (if any) is removed below so executeSend's eventual
-    // catch path doesn't fight the user.
-    if (!msg || (msg.sendStatus !== 'failed' && msg.sendStatus !== 'sending')) return;
+    if (!msg || msg.role !== 'user') return;
+
+    // v2.14.26: also allow withdraw when the bubble is stuck in 'sending'.
+    // v2.14.28 H5 (post-H18 reframe): after the H18 read-state rework,
+    // sendStatus is no longer written to 'sending' — instead the user bubble
+    // sits in the "未读" state (sendStatus undefined + isRead false) for the
+    // entire LLM round-trip. Stuck-flaky-network case from v2.14.26 now
+    // manifests as "未读 forever". Permit withdraw on:
+    //   - sendStatus === 'failed'  (real failure)
+    //   - sendStatus === 'sending' (legacy state, kept for safety)
+    //   - isRead === false        (post-H18 stuck 未读)
+    // i.e. anything except a fully-acknowledged ("已读") user message.
+    const isStuckUnread = msg.sendStatus === undefined && msg.isRead === false;
+    if (msg.sendStatus !== 'failed' && msg.sendStatus !== 'sending' && !isStuckUnread) return;
+
+    // v2.14.28 H5: if the turn is currently in flight (stuck 未读), bump the
+    // generation id so executeSendCore's isCancelled() guard fires on the
+    // next checkpoint. This prevents a Kumiko reply from landing for a
+    // user message that has just been withdrawn.
+    if (isStuckUnread) {
+      try { generationIdRef.current = (generationIdRef.current ?? 0) + 1; } catch { /* noop */ }
+    }
 
     setMessages(prev => prev.filter(m => m.id !== messageId));
     setInputValue(prev => prev ? prev + '\n' + msg.text : msg.text);

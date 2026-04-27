@@ -1,7 +1,7 @@
 
 import React, { memo, useState, useRef, useEffect } from 'react';
 import { Message, Language } from '../types';
-import { Circle, CheckCircle, Undo2, Reply, Quote, Link as LinkIcon, ImageOff, AlertCircle, RotateCcw, PenLine } from 'lucide-react';
+import { Circle, CheckCircle, Undo2, Reply, Quote, Link as LinkIcon, ImageOff, AlertCircle, RotateCcw, PenLine, Loader2 } from 'lucide-react';
 import { UI_TRANSLATIONS } from '../constants';
 import { VoiceBubble } from './VoiceBubble';
 import { useMessageImage } from './app/useMessageImage';
@@ -199,6 +199,18 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   const displayContent = messageText;
   const isFailed = isUser && message.sendStatus === 'failed';
   const isSending = isUser && message.sendStatus === 'sending';
+  // v2.14.28 H5 (post-H18 reframe): the bubble is "stuck-未读" when the
+  // user message has finished its 9s pre-send window (isPending=false) and
+  // executeSendCore has flipped sendStatus to undefined, but Kumiko hasn't
+  // read it yet (isRead=false). Without an escape, a hung LLM call leaves
+  // the user trapped — this gate enables the same withdraw popover used by
+  // the failed-state path.
+  const isStuckUnread = isUser
+    && !isPending
+    && !isFailed
+    && !isSending
+    && message.sendStatus === undefined
+    && message.isRead === false;
 
   const longPressHandlers = useLongPress({
     threshold: 500,
@@ -281,8 +293,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                   </div>
                 )}
 
-                {/* Failed / Sending indicator */}
-                {isFailed && (
+                {/* Failed / Stuck-未读 popover trigger.
+                    v2.14.28 H5 (post-H18 reframe): the popover surface now also
+                    appears for the "stuck-未读" case — the user sent a message,
+                    9s pre-send timer ran out, executeSendCore is in flight,
+                    Kumiko hasn't read it yet (sendStatus undefined + isRead
+                    false). On a hung LLM call the user used to be trapped;
+                    now they get the same withdraw popover (no Resend, since
+                    the original turn is still in flight — handleWithdrawMessage
+                    bumps generationId to abort it cleanly). */}
+                {(isFailed || isStuckUnread) && (
                   <div className="relative" ref={failPopoverRef}>
                     <button
                       ref={failBtnRef}
@@ -294,10 +314,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                         }
                         setShowFailPopover(prev => !prev);
                       }}
-                      className="p-0.5 animate-pulse"
-                      title={message.failReason || (language === 'zh' ? '发送失败' : 'Send failed')}
+                      className={isFailed ? 'p-0.5 animate-pulse' : 'p-0.5 opacity-70 hover:opacity-100 transition-opacity'}
+                      title={isFailed
+                        ? (message.failReason || (language === 'zh' ? '发送失败' : 'Send failed'))
+                        : (language === 'zh' ? '撤回 / 编辑' : 'Withdraw / edit')}
                     >
-                      <AlertCircle size={20} className="text-red-500 drop-shadow-sm" />
+                      {isFailed ? (
+                        <AlertCircle size={20} className="text-red-500 drop-shadow-sm" />
+                      ) : (
+                        <Loader2 size={18} className={`${isDarkMode ? 'text-yellow-500/70' : 'text-yellow-700/70'} animate-spin`} />
+                      )}
                     </button>
                     {showFailPopover && (
                       <div className={`
@@ -305,29 +331,33 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                         ${popoverDir === 'down' ? 'top-full mt-1.5' : 'bottom-full mb-1.5'}
                         ${isDarkMode ? 'bg-gray-900/95 border-gray-700 backdrop-blur-md' : 'bg-white/95 border-gray-200 backdrop-blur-md shadow-lg'}
                       `}>
-                        <button
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            if (resendBusy || withdrawBusy) return;
-                            setResendBusy(true);
-                            try {
-                              await onResend?.(message.id);
-                            } finally {
-                              setResendBusy(false);
-                              setShowFailPopover(false);
-                            }
-                          }}
-                          disabled={resendBusy || withdrawBusy}
-                          aria-busy={resendBusy}
-                          className={`flex items-center gap-2 w-full px-3 py-2.5 ka-copy-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-wait
-                            ${isDarkMode ? 'text-gray-200 hover:bg-white/10' : 'text-gray-700 hover:bg-gray-50'}`}
-                        >
-                          <RotateCcw size={13} className={resendBusy ? 'animate-spin' : ''} />
-                          {resendBusy
-                            ? (language === 'zh' ? '正在重发…' : 'Resending…')
-                            : (language === 'zh' ? '重新发送' : 'Resend')}
-                        </button>
-                        <div className={`h-px ${isDarkMode ? 'bg-gray-700/50' : 'bg-gray-200'}`} />
+                        {isFailed && (
+                          <>
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                if (resendBusy || withdrawBusy) return;
+                                setResendBusy(true);
+                                try {
+                                  await onResend?.(message.id);
+                                } finally {
+                                  setResendBusy(false);
+                                  setShowFailPopover(false);
+                                }
+                              }}
+                              disabled={resendBusy || withdrawBusy}
+                              aria-busy={resendBusy}
+                              className={`flex items-center gap-2 w-full px-3 py-2.5 ka-copy-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-wait
+                                ${isDarkMode ? 'text-gray-200 hover:bg-white/10' : 'text-gray-700 hover:bg-gray-50'}`}
+                            >
+                              <RotateCcw size={13} className={resendBusy ? 'animate-spin' : ''} />
+                              {resendBusy
+                                ? (language === 'zh' ? '正在重发…' : 'Resending…')
+                                : (language === 'zh' ? '重新发送' : 'Resend')}
+                            </button>
+                            <div className={`h-px ${isDarkMode ? 'bg-gray-700/50' : 'bg-gray-200'}`} />
+                          </>
+                        )}
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
