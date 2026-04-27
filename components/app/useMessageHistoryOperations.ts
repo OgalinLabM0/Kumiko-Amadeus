@@ -2,11 +2,12 @@ import { useCallback, type MutableRefObject } from 'react';
 import type { Message, Language, BackupConfig, TtsConfig, MemoryQuerySession, SummaryArchiveState } from '../../types';
 import { recalculateTurnCountFromMessages } from './backupHelpers';
 import { normalizeSummaryArchiveState } from './summaryCycle';
-import { getCurrentAIConfig, validateAIConnection } from '../../services/geminiService';
+import { getCurrentAIConfig } from '../../services/geminiService';
 import { getImageBase64 } from '../../services/imageService';
 import { synthesizeSpeech } from '../../services/fishAudioService';
 import { saveVoiceFile } from '../../services/voiceFileService';
 import { dialogService } from '../../services/dialogService';
+import { useAppStore } from '../../store';
 
 export interface UseMessageHistoryOperationsParams {
   // Refs
@@ -270,31 +271,23 @@ export const useMessageHistoryOperations = (
     // moment they tap, and revert to 'failed' if the validate proves
     // the connection is still down. This matches every other modern
     // chat client (Telegram/微信 both flip optimistically).
+    //
+    // v2.14.26: also wipe any sticky "Kumiko 正在输入..." indicator and
+    // surface an immediate "正在重新发送..." system notice. Without the
+    // notice, mobile users staring at the bubble couldn't tell whether
+    // the resend tap actually registered (typing dots looked identical
+    // to the post-tap state). Drop the upfront `validateAIConnection`
+    // call entirely — resending is by definition "try again", and the
+    // real network/API errors that come back from `executeSend` will
+    // re-flip the bubble to failed via `revertToFailed` anyway. The
+    // only effect of validateAIConnection was a 1–3s artificial lag.
     const previousFailReason = msg.failReason;
     setIsDisconnected(false);
+    useAppStore.getState().setIsThinking(false);
     setMessages(prev => prev.map(m =>
       m.id === messageId ? { ...m, sendStatus: 'sending' as const, failReason: undefined } : m
     ));
-
-    const revertToFailed = (reason?: string) => {
-      setMessages(prev => prev.map(m =>
-        m.id === messageId ? { ...m, sendStatus: 'failed' as const, failReason: reason ?? previousFailReason } : m
-      ));
-      setSystemNotice(language === 'zh' ? '连接仍不可用，请检查 API 配置' : 'Connection still unavailable, check API config');
-    };
-
-    const config = getCurrentAIConfig();
-    try {
-      const isValid = await validateAIConnection(config);
-      if (!isValid) {
-        revertToFailed('连接验证失败');
-        return;
-      }
-    } catch (err) {
-      console.warn('[handleResend] validateAIConnection threw, treating as failure:', err);
-      revertToFailed('连接验证异常');
-      return;
-    }
+    setSystemNotice(language === 'zh' ? '正在重新发送...' : 'Resending...');
 
     pendingTextRef.current = msg.text;
     // Hydrate the resend payload from `imageId` via IPC. Inline `msg.image`
@@ -312,28 +305,53 @@ export const useMessageHistoryOperations = (
     }
     pendingMessageIdsRef.current.add(msg.id);
     generationIdRef.current += 1;
-    executeSend();
+    try {
+      executeSend();
+    } catch (err) {
+      console.warn('[handleResend] executeSend threw synchronously:', err);
+      setMessages(prev => prev.map(m =>
+        m.id === messageId ? { ...m, sendStatus: 'failed' as const, failReason: previousFailReason ?? '重发失败' } : m
+      ));
+      setSystemNotice(language === 'zh' ? '重新发送失败，请稍后再试' : 'Resend failed, please try again later');
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- preserve original deps [executeSend, language]
   }, [executeSend, language]);
 
   const handleWithdrawMessage = useCallback((messageId: string) => {
     const msg = messagesRef.current.find(m => m.id === messageId);
-    if (!msg || msg.sendStatus !== 'failed') return;
+    // v2.14.26: also allow withdraw when the bubble is stuck in
+    // 'sending'. Mobile users hit the resend → "Sending" → 30s
+    // hang flow on flaky networks and had no escape hatch; opening
+    // up `sending` lets them roll the text back to the input box
+    // and edit/abort on their own terms. The pendingMessageIdsRef
+    // entry (if any) is removed below so executeSend's eventual
+    // catch path doesn't fight the user.
+    if (!msg || (msg.sendStatus !== 'failed' && msg.sendStatus !== 'sending')) return;
 
     setMessages(prev => prev.filter(m => m.id !== messageId));
     setInputValue(prev => prev ? prev + '\n' + msg.text : msg.text);
+    if (pendingMessageIdsRef.current.has(messageId)) {
+      pendingMessageIdsRef.current.delete(messageId);
+    }
+    if (pendingImageMessageIdRef.current === messageId) {
+      pendingImageRef.current = null;
+      pendingImageMessageIdRef.current = null;
+    }
 
-    const remaining = messagesRef.current.filter(m => m.id !== messageId && m.sendStatus === 'failed');
+    const remaining = messagesRef.current.filter(m =>
+      m.id !== messageId && m.sendStatus === 'failed'
+    );
     if (remaining.length === 0) setIsDisconnected(false);
 
-    // v2.14.23: visible feedback for "撤回并编辑". Before this, the user
-    // tapped the button and only saw the failed bubble disappear; the
-    // text reappeared in the input but on small screens that input is
-    // off-screen, and the user concluded the button "didn't work". We
-    // now: (a) focus the input on the next frame so the system keyboard
-    // re-opens, (b) place the caret at end so they can immediately edit,
-    // (c) scroll the input into view in case it was occluded by the
-    // virtual keyboard, (d) flash a 1.6s toast confirming the action.
+    // v2.14.26: surface the system notice IMMEDIATELY so the user
+    // knows the tap registered, even if the subsequent `inputRef.focus`
+    // silently fails (common on Android WebView when the soft keyboard
+    // wasn't already open or the input is in a closed Collapse). The
+    // 0ms setTimeout below is then "best-effort focus" — its outcome
+    // doesn't gate the user's confirmation feedback.
+    setSystemNotice(language === 'zh' ? '已撤回到输入框，可编辑后重发' : 'Restored to the input box, edit and resend');
+
+    // v2.14.23: focus + caret-at-end + scroll-into-view best-effort.
     // The setTimeout 0 lets React commit setInputValue before we read
     // the DOM; without it, the input still shows the old (empty) value
     // and the caret position is wrong.
@@ -350,7 +368,6 @@ export const useMessageHistoryOperations = (
         }
         try { input.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch {}
       }
-      setSystemNotice(language === 'zh' ? '已恢复到输入框，可继续编辑' : 'Restored to the input box for editing');
     }, 0);
   // eslint-disable-next-line react-hooks/exhaustive-deps -- preserve original empty deps
   }, [language]);

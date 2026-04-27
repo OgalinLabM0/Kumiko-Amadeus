@@ -363,7 +363,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                        {language === 'zh' ? '发送失败' : 'Failed'}
                      </span>
                    ) : isSending ? (
-                     <span>{t.unread}</span>
+                     <span className="opacity-80">{t.sending}</span>
                    ) : isPending ? (
                      <span className="opacity-0">.</span>
                    ) : (
