@@ -531,6 +531,21 @@ function writeBridgeHealth(partial: Omit<BridgeHealthSnapshot, 'lastChecked'>): 
   }
 }
 
+/**
+ * v2.14.26: external hook for snapshot/test paths to record that a real
+ * KumikoAlarmsPlugin probe just succeeded — flips a previously-dead bridge
+ * back to alive so subsequent calls don't keep fast-skipping. Mirrors
+ * `prewarmKumikoAlarmsPlugin`'s on-success write but lets non-prewarm
+ * call sites self-heal too.
+ */
+export function markKumikoBridgeAlive(): void {
+  writeBridgeHealth({ kumikoAlarmsAlive: true, localNotificationsAlive: true });
+}
+
+export function markKumikoBridgeDead(localNotificationsAlive: boolean = true): void {
+  writeBridgeHealth({ kumikoAlarmsAlive: false, localNotificationsAlive });
+}
+
 export function readKumikoBridgeHealth(): BridgeHealthSnapshot | null {
   try {
     if (typeof sessionStorage === 'undefined') return null;

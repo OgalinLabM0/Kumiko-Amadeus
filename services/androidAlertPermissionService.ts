@@ -6,10 +6,13 @@ import {
   getOemDeviceInfo,
   isIgnoringBatteryOptimizations,
   isPhoneAccountRegistered,
+  markKumikoBridgeAlive,
+  markKumikoBridgeDead,
   openAndroidAppNotificationSettings,
   openVendorPermissionSetting,
   postAndroidTestIncomingCall,
   postAndroidTestMessageNotification,
+  readKumikoBridgeHealth,
   requestExactAlarmPermission,
   requestFullScreenIntentPermission,
   type NativeAndroidAlertPermissionStatus,
@@ -101,6 +104,16 @@ export interface AndroidAlertTestResult {
 // probe is ~10s, still inside the 8s+buffer overall UI timeout.
 const SNAPSHOT_PROBE_TIMEOUT_MS = 5_000;
 const TEST_ACTION_TIMEOUT_MS = 6_000;
+// v2.14.26: how long a "bridge dead" verdict is honoured before we'll
+// retry the native plugin. Keeps each session from spamming 25s of
+// safeProbe timeouts on every settings refresh while still letting the
+// bridge self-heal if it recovers (e.g. user reopens the app after a
+// MIUI throttle window passes).
+const BRIDGE_HEALTH_TTL_MS = 30_000;
+// v2.14.26: per-test timeout when bridge is known-dead. We still attempt
+// the native path once because it might have just recovered; this short
+// budget keeps the user waiting <2s for the fallback transition.
+const BRIDGE_DEAD_NATIVE_PROBE_MS = 1_500;
 
 class TimeoutError extends Error {
   constructor(label: string) {
@@ -240,6 +253,46 @@ const unsupportedSnapshot = (): AndroidAlertPermissionSnapshot => {
 };
 
 /**
+ * v2.14.26: cheap snapshot returned when the bridge is known dead and
+ * we want to skip the 25s-of-Promise.all-timeouts ritual. Items are all
+ * `unknown` (not `denied`) so we don't lie to the user about state we
+ * couldn't measure; `partial: true` signals the UI to surface the
+ * "原生桥接 5 秒无响应" banner.
+ */
+const bridgeDeadSnapshot = (): AndroidAlertPermissionSnapshot => {
+  const items = {
+    notifications: itemFromState('notifications', 'unknown'),
+    exactAlarm: itemFromState('exactAlarm', 'unknown'),
+    fullScreenIntent: itemFromState('fullScreenIntent', 'unknown'),
+    messagesChannel: itemFromState('messagesChannel', 'unknown'),
+    callsChannel: itemFromState('callsChannel', 'unknown'),
+    batteryOptimizations: itemFromState('batteryOptimizations', 'unknown'),
+    phoneAccount: itemFromState('phoneAccount', 'unknown'),
+  };
+  return {
+    supported: true,
+    overall: 'unknown',
+    items,
+    nativeStatus: null,
+    oem: null,
+    partial: true,
+  };
+};
+
+/**
+ * v2.14.26: returns true when the JS bridge to KumikoAlarmsPlugin was
+ * recently confirmed dead and we should fast-skip native probing this
+ * call. Keep the read tolerant of malformed sessionStorage data.
+ */
+function isBridgeKnownDead(): boolean {
+  const health = readKumikoBridgeHealth();
+  if (!health) return false;
+  if (health.kumikoAlarmsAlive) return false;
+  if (Date.now() - health.lastChecked > BRIDGE_HEALTH_TTL_MS) return false;
+  return true;
+}
+
+/**
  * Read-only snapshot. Critical guarantees:
  *   - never calls a side-effecting plugin method (channel creation lives in
  *     `ensureKumikoNotificationChannelsForBootstrap` and the native `MainActivity`).
@@ -256,6 +309,16 @@ async function buildAlertPermissionSnapshotOnce(): Promise<AndroidAlertPermissio
     return unsupportedSnapshot();
   }
 
+  // v2.14.26: when the bridge was recently confirmed dead, skip the 5×
+  // safeProbe ritual (which would otherwise log five "timed out after
+  // 5000ms" lines in the developer log every time the user opens the
+  // settings panel). The fast-skip path returns within ~5ms instead of
+  // waiting 25 seconds. Bridge self-heals on the next prewarm cycle.
+  if (isBridgeKnownDead()) {
+    console.info('[androidAlertPermission] bridge known dead; fast-skipping snapshot probes');
+    return bridgeDeadSnapshot();
+  }
+
   const [permResult, nativeResult, oemResult, batteryResult, phoneAccountResult] = await Promise.all([
     safeProbe('checkKumikoNotificationPermission', () => checkKumikoNotificationPermission(), false),
     safeProbe<NativeAndroidAlertPermissionStatus | null>('getAlertPermissionStatus', () => getNativeAndroidAlertPermissionStatus(), null),
@@ -263,6 +326,20 @@ async function buildAlertPermissionSnapshotOnce(): Promise<AndroidAlertPermissio
     safeProbe<boolean | null>('isIgnoringBatteryOptimizations', () => isIgnoringBatteryOptimizations(), null),
     safeProbe<{ registered: boolean; enabled: boolean } | null>('isPhoneAccountRegistered', () => isPhoneAccountRegistered(), null),
   ]);
+
+  // v2.14.26: if at least the alert-status probe came back, the native
+  // bridge is responsive — flip kumiko_native_bridge_health back to
+  // alive so the next snapshot uses the real (non fast-skip) path. We
+  // intentionally only check `nativeResult.ok` (not `permResult.ok`)
+  // since checkKumikoNotificationPermission goes through @capacitor/
+  // local-notifications which has its own bridge.
+  if (nativeResult.ok) {
+    markKumikoBridgeAlive();
+  } else if (!oemResult.ok && !batteryResult.ok && !phoneAccountResult.ok) {
+    // Every Kumiko-bridge probe failed in one round → bridge is wedged.
+    // Update sessionStorage so subsequent calls fast-skip immediately.
+    markKumikoBridgeDead();
+  }
 
   const nativeStatus = nativeResult.value;
   const oem = buildOemSnapshot(oemResult.value);
@@ -431,9 +508,10 @@ async function runTimedTest<T>(
   label: string,
   run: () => Promise<T>,
   predicate: (value: T) => boolean,
+  timeoutMs: number = TEST_ACTION_TIMEOUT_MS,
 ): Promise<AndroidAlertTestResult> {
   try {
-    const value = await withTimeout(label, run(), TEST_ACTION_TIMEOUT_MS);
+    const value = await withTimeout(label, run(), timeoutMs);
     return predicate(value) ? { ok: true } : { ok: false, reason: 'native-failed' };
   } catch (e) {
     if (e instanceof TimeoutError) return { ok: false, reason: 'timeout' };
@@ -448,12 +526,14 @@ export async function runAndroidMessageNotificationTest(): Promise<AndroidAlertT
   if (snapshot.items.notifications.state === 'denied') return { ok: false, reason: 'notifications' };
   if (snapshot.items.messagesChannel.state === 'denied') return { ok: false, reason: 'messagesChannel' };
 
-  // v2.14.25: try the native KumikoAlarms path first. If it times out
-  // (HyperOS WebView throttling, custom plugin hung) or rejects, we
-  // route the test through the LocalNotifications fallback so the user
-  // still sees a real notification in the tray. The fallback uses the
-  // already-created v3 channels so MIUI's per-channel importance and
-  // lockscreen visibility settings still apply.
+  // v2.14.26: when bridge is known dead, drop the native attempt to
+  // 1.5s so the user gets a fallback notification almost immediately
+  // instead of waiting 6 full seconds for the timeout. The native
+  // path still runs once so a recovered bridge can self-heal — but
+  // its 1.5s budget mirrors the per-IPC native timeout we added to
+  // KumikoAlarmsPlugin in v2.14.26.
+  const bridgeDead = isBridgeKnownDead();
+  const nativeProbeBudget = bridgeDead ? BRIDGE_DEAD_NATIVE_PROBE_MS : TEST_ACTION_TIMEOUT_MS;
   const TEST_TITLE = 'Kumiko·Amadeus';
   const TEST_BODY = 'Android message notification test';
   const nativeResult = await runTimedTest(
@@ -463,8 +543,15 @@ export async function runAndroidMessageNotificationTest(): Promise<AndroidAlertT
       body: TEST_BODY,
     }),
     (posted) => posted === true,
+    nativeProbeBudget,
   );
-  if (nativeResult.ok) return nativeResult;
+  if (nativeResult.ok) {
+    markKumikoBridgeAlive();
+    return nativeResult;
+  }
+  if (bridgeDead || nativeResult.reason === 'timeout') {
+    markKumikoBridgeDead();
+  }
 
   const fallback = await postKumikoFallbackMessageNotification({
     title: TEST_TITLE,
@@ -486,12 +573,9 @@ export async function runAndroidIncomingCallTest(ringtoneFileId?: string | null)
 
   await safeProbe('ensureNativeRingtoneForAlarm', () => ensureNativeRingtoneForAlarm(ringtoneFileId), undefined);
 
-  // v2.14.25: same fallback policy as message test — KumikoAlarms first,
-  // LocalNotifications second. The fallback can't fire CallStyle or a
-  // FullScreenIntent (LocalNotifications doesn't expose those APIs), but
-  // it WILL post into kumiko_calls_v3 which is already at IMPORTANCE_MAX
-  // with DND-bypass + lockscreen public, so the user still gets a
-  // ringing heads-up.
+  // v2.14.26: same bridge-dead fast-fallback as the message test.
+  const bridgeDead = isBridgeKnownDead();
+  const nativeProbeBudget = bridgeDead ? BRIDGE_DEAD_NATIVE_PROBE_MS : TEST_ACTION_TIMEOUT_MS;
   const TEST_TITLE = '黄前久美子 来电测试';
   const TEST_BODY = '来电弹窗 / 铃声 / 震动测试';
   const nativeResult = await runTimedTest(
@@ -502,8 +586,15 @@ export async function runAndroidIncomingCallTest(ringtoneFileId?: string | null)
       ringtoneFileId: ringtoneFileId || '',
     }),
     (posted) => posted === true,
+    nativeProbeBudget,
   );
-  if (nativeResult.ok) return nativeResult;
+  if (nativeResult.ok) {
+    markKumikoBridgeAlive();
+    return nativeResult;
+  }
+  if (bridgeDead || nativeResult.reason === 'timeout') {
+    markKumikoBridgeDead();
+  }
 
   const fallback = await postKumikoFallbackCallNotification({
     title: TEST_TITLE,
