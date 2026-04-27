@@ -1,12 +1,8 @@
-import React, { useEffect, useState } from 'react';
-import { BellRing, BrainCircuit, CheckSquare, Clock3, Maximize, Minimize, Moon, ShieldCheck, Settings, Sun, Trash2, User, BookOpen } from 'lucide-react';
+import React from 'react';
+import { BellRing, BrainCircuit, CheckSquare, Clock3, Maximize, Minimize, Moon, Settings, Sun, Trash2, User, BookOpen } from 'lucide-react';
 import { ExtendedSyncStatus, RagStatusIndicator, SyncStatusIndicator } from '../SyncStatus';
 import { useAppStore } from '../../store';
-import { isCapacitorNative, isMobileLikeRuntime } from '../../services/environment';
-import {
-  getAndroidAlertPermissionSnapshot,
-  type AndroidAlertPermissionSnapshot,
-} from '../../services/androidAlertPermissionService';
+import { isMobileLikeRuntime } from '../../services/environment';
 
 // Mobile perf: cache the mobile-runtime flag at module load so hot paths
 // (ResizeObserver callbacks, per-frame rAF loops) don't re-probe the
@@ -21,105 +17,6 @@ const chatHeaderIsMobile = (): boolean => {
     try { _chatHeaderIsMobile = isMobileLikeRuntime(); } catch { _chatHeaderIsMobile = false; }
   }
   return _chatHeaderIsMobile;
-};
-
-/**
- * v2.14.23: tiny reliability indicator. Shows a green / amber / red dot
- * next to the title on Capacitor Android only, computed from the cached
- * permission snapshot. Click → opens the system settings panel scrolled
- * to the Android 权限体检 section.
- *
- * - Green: all 5 AOSP core permissions granted
- *   (notifications + exactAlarm + fullScreenIntent + messagesChannel + callsChannel).
- *   batteryOptimizations + phoneAccount are advisory and never downgrade
- *   from green — they're the difference between "works" and "works under
- *   stress", not "works" vs "broken".
- * - Amber: ≥1 of the above is denied/unknown but at least notifications
- *   is granted, OR battery/phoneAccount is denied while core is fine.
- * - Red: notifications denied — the app cannot reach the user at all.
- *
- * Refresh: on mount + on @capacitor/app appResume + every 30s while the
- * indicator is visible. The snapshot fetch goes through the native
- * plugin which has a 5s per-probe timeout, so worst-case wall clock is
- * ~10s before we'd accept a stale value.
- */
-const ReliabilityIndicator: React.FC<{ language: 'zh' | 'en' }> = ({ language }) => {
-  const [snapshot, setSnapshot] = useState<AndroidAlertPermissionSnapshot | null>(null);
-  const setIsSettingsOpen = useAppStore(s => s.setIsSettingsOpen);
-
-  useEffect(() => {
-    if (!isCapacitorNative()) return;
-    let cancelled = false;
-    let detach: (() => void) | null = null;
-    let interval: number | null = null;
-
-    const probe = async () => {
-      try {
-        const next = await getAndroidAlertPermissionSnapshot();
-        if (!cancelled) setSnapshot(next);
-      } catch (e) {
-        console.warn('[reliabilityIndicator] probe failed:', e);
-      }
-    };
-
-    void probe();
-    interval = window.setInterval(() => { void probe(); }, 30_000);
-
-    void (async () => {
-      try {
-        const { App } = await import('@capacitor/app');
-        const sub = await App.addListener('appStateChange', (s) => {
-          if (s.isActive) void probe();
-        });
-        detach = () => sub.remove();
-      } catch (e) {
-        console.warn('[reliabilityIndicator] App listener failed:', e);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      if (interval !== null) window.clearInterval(interval);
-      try { detach?.(); } catch { /* ignore */ }
-    };
-  }, []);
-
-  if (!isCapacitorNative()) return null;
-  if (!snapshot || !snapshot.supported) return null;
-
-  const items = snapshot.items;
-  const isCoreGranted = (
-    items.notifications.state === 'granted'
-    && items.exactAlarm.state === 'granted'
-    && items.fullScreenIntent.state === 'granted'
-    && items.messagesChannel.state !== 'denied'
-    && items.callsChannel.state !== 'denied'
-  );
-  const isNotifBlocked = items.notifications.state === 'denied';
-
-  let color: string;
-  let title: string;
-  if (isNotifBlocked) {
-    color = 'text-red-500';
-    title = language === 'zh' ? '通知权限被拒,提醒无法触达' : 'Notifications denied — reminders cannot reach you';
-  } else if (isCoreGranted) {
-    color = 'text-emerald-500';
-    title = language === 'zh' ? '核心权限齐备' : 'Core permissions ready';
-  } else {
-    color = 'text-amber-500';
-    title = language === 'zh' ? '部分权限未确认,点击查看' : 'Some permissions unverified — tap to review';
-  }
-
-  return (
-    <button
-      onClick={() => setIsSettingsOpen(true)}
-      className={`inline-flex transition-colors ${color}`}
-      title={title}
-      aria-label={title}
-    >
-      <ShieldCheck size={17} />
-    </button>
-  );
 };
 
 interface AppChatHeaderProps {
@@ -320,8 +217,6 @@ export const AppChatHeader: React.FC<AppChatHeaderProps> = ({
             </button>
 
             <RagStatusIndicator status={ragStatus} isDarkMode={isDarkMode} language={language} />
-
-            <ReliabilityIndicator language={language} />
 
             <SyncStatusIndicator
               status={syncStatus}
