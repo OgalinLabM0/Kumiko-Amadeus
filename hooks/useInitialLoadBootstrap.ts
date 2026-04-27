@@ -193,7 +193,40 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
         setSummaryArchiveState(loadedSummaryArchiveState);
         setAnchors(await db.getVal('kumiko_anchors', []));
         setCurrentEmotion(await db.getVal('kumiko_current_emotion', 'neutral'));
-        setRelativeReminders((await db.getVal(RELATIVE_REMINDER_STORAGE_KEY, [])).map(sanitizeRelativeReminderRecord).filter(Boolean) as RelativeReminder[]);
+        // v2.14.28 H10: rescue missed one-shot reminders. The strict sanitizer
+        // drops any record with `dueAt <= now`, which silently swallowed every
+        // one-shot reminder that came due while the app was closed. Combined
+        // with H4 (PC fully-quit silence), users could lose important pings
+        // forever and have no UX path to know it happened.
+        // Boot-time rescue: walk the raw records once. Live reminders go through
+        // the strict sanitizer; expired ones are re-armed to `now + 1ms` so
+        // the running scheduler fires them on its first tick — the user sees
+        // the missed reminder as a delayed but visible message rather than
+        // silent loss. Backups from old saves still go through the strict
+        // sanitize path in backupActions.ts (we don't want a year-old backup
+        // restoration to spam old reminders).
+        const rawRelativeReminders = (await db.getVal(RELATIVE_REMINDER_STORAGE_KEY, [])) as any[];
+        const bootNow = Date.now();
+        const liveAndRescuedRelative: RelativeReminder[] = [];
+        const RESCUE_REMINDER_GRACE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days; older expired ones still drop
+        for (const raw of rawRelativeReminders) {
+            const live = sanitizeRelativeReminderRecord(raw);
+            if (live) {
+                liveAndRescuedRelative.push(live);
+                continue;
+            }
+            // Possibly expired but otherwise valid — try to rescue.
+            if (raw && typeof raw.event === 'string' && typeof raw.dueAt === 'number'
+                && typeof raw.createdAt === 'number' && Number.isFinite(raw.dueAt)
+                && raw.dueAt <= bootNow && raw.dueAt > bootNow - RESCUE_REMINDER_GRACE_MS) {
+                const rescued = sanitizeRelativeReminderRecord({ ...raw, dueAt: bootNow + 1 });
+                if (rescued) {
+                    console.info(`[BOOT] Rescuing missed one-shot reminder: ${rescued.event} (was due ${new Date(raw.dueAt).toISOString()})`);
+                    liveAndRescuedRelative.push(rescued);
+                }
+            }
+        }
+        setRelativeReminders(liveAndRescuedRelative);
         setDailyReminders((await db.getVal(DAILY_REMINDER_STORAGE_KEY, [])).map(sanitizeDailyReminderRecord).filter(Boolean) as DailyReminder[]);
         setMessageAlerts((await db.getVal(MESSAGE_ALERTS_STORAGE_KEY, [])).map(sanitizeMessageAlertRecord).filter(Boolean).slice(0, 50) as MissedMessageAlert[]);
         setWorldCharacterStatus(sanitizeWorldCharacterStatusRecord(await db.getVal('world_character_status', INITIAL_WORLD_CHARACTER_STATUS)));
