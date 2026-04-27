@@ -1793,6 +1793,15 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     );
 
     if (ctx.isCancelled()) {
+      // v2.14.28 H11: when a turn is cancelled mid-flight (user navigated away,
+      // generationId rotated, etc.), the user bubble was previously left in the
+      // "未读" state forever — H18 cleared sendStatus on entry, and this early
+      // return never set it back. Mark the bubble as failed so the user has a
+      // visible "send failed" / withdraw popover (H5) escape hatch.
+      const cancelReason = 'turn-cancelled';
+      try { ctx.markPendingFailed(cancelReason); } catch (e) {
+        console.warn('[chatActions] markPendingFailed on cancelled path failed:', e);
+      }
       return;
     }
 
