@@ -49,6 +49,13 @@ import {
   isDesktopElectron,
 } from '../../services/desktopBackupService';
 import {
+  consumeReminderPrewarm,
+  startReminderPrewarm,
+  cancelReminderPrewarm,
+  type ReminderPrewarmEntry,
+  type ReminderPrewarmVoicePayload,
+} from '../../services/reminderPrewarmService';
+import {
   saveLocalRagMemory,
   searchLocalRagMemoryDetailed,
   generateEmbedding,
@@ -708,23 +715,21 @@ ${highlightLines}
 }
 
 // ---------------------------------------------------------------------------
-// triggerTimedReminderMessage
+// buildTimedReminderSystemPrompt
 // ---------------------------------------------------------------------------
-
-export async function triggerTimedReminderMessage(
-  refs: Pick<ChatActionRefs, 'messagesRef' | 'ttsConfigRef'>,
-  helpers: Pick<ExecuteSendHelpers, 'runVoicePipeline'>,
+// Shared prompt builder used by both the live trigger path and the T-60s
+// prewarm path (H17.A). Keeping it in one place ensures the prewarmed LLM
+// response is byte-identical to what a live trigger would have produced.
+function buildTimedReminderSystemPrompt(
   reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>,
-): Promise<boolean> {
-  const state = useAppStore.getState();
-  const { language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook } = state;
-
+  language: Language,
+  userTimezone: string,
+): string {
   const userTimeStr = new Date().toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
-    timeZone: locationConfig.userTimezone,
+    timeZone: userTimezone,
     weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
-
-  const systemPrompt = language === 'zh' ? `[SYSTEM_ACTIVATION_PROTOCOL: 约好时间的提醒]
+  return language === 'zh' ? `[SYSTEM_ACTIVATION_PROTOCOL: 约好时间的提醒]
       之前用户拜托过你到时间提醒这件事，现在已经到点了。
       要提醒的事：${reminder.event}
       ${reminder.sourceText ? `用户当时大意是：${reminder.sourceText}` : ''}
@@ -744,10 +749,42 @@ export async function triggerTimedReminderMessage(
       2. Use direct imperative phrases like "Go do laundry!" "Time to eat!" rather than descriptive phrases like "remind user to do X".
       3. Keep it short, just 1-2 natural lines, with maybe a light nudge or tiny complaint.
       4. Do not mention systems, timers, countdowns, automation, background tasks, or modules.`;
+}
 
-  state.setIsThinking(true);
+// ---------------------------------------------------------------------------
+// prewarmTimedReminderMessage (H17.A — desktop T-60s prewarm)
+// ---------------------------------------------------------------------------
+//
+// Runs the full reminder pipeline (LLM + optional TTS) ahead of the
+// trigger moment and stores the result in
+// services/reminderPrewarmService so the dispatcher at T=0 can deliver
+// instantly. Caller is the polling loop in useScheduledReminders, gated
+// on document.visibilityState === 'hidden' so a foreground user does
+// not pay for prewarms they will not benefit from.
+//
+// Errors are swallowed and surfaced as cache `status='failed'`; the
+// dispatcher's just-in-time path (live LLM + TTS at T=0) handles
+// everything regardless. Failure here is purely a missed-optimization,
+// not a user-visible regression.
+export async function prewarmTimedReminderMessage(
+  refs: Pick<ChatActionRefs, 'messagesRef' | 'ttsConfigRef'>,
+  helpers: Pick<ExecuteSendHelpers, 'runVoicePipeline'>,
+  reminder: { id: string; event: string; sourceText?: string; dueAt: number },
+): Promise<void> {
+  const entry = startReminderPrewarm(reminder.id, reminder.event, reminder.dueAt);
+  // The sentinel returns the EXISTING entry if a prewarm is already in flight or
+  // finished — bail out so we don't double-fire the LLM.
+  if (entry.status !== 'pending') return;
+
+  const state = useAppStore.getState();
+  const { language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook } = state;
 
   try {
+    const systemPrompt = buildTimedReminderSystemPrompt(
+      { event: reminder.event, sourceText: reminder.sourceText },
+      language,
+      locationConfig.userTimezone,
+    );
     const recentMessages = refs.messagesRef.current.slice(-contextLimit);
     const response = await sendMessageToGemini(
       systemPrompt,
@@ -759,6 +796,101 @@ export async function triggerTimedReminderMessage(
       undefined,
       language,
     );
+    if (entry.abort.signal.aborted) return;
+    entry.response = response;
+    entry.llmDoneAt = Date.now();
+    entry.status = 'llm-ready';
+
+    const combinedReminderText = response.textParts.join(' ');
+    const ttsCfg = refs.ttsConfigRef.current;
+    const wantsVoice = ttsCfg.voiceMode !== 'text' && (
+      !!ttsCfg.fishAudioApiKey
+      || ttsCfg.ttsBackend === 'sovits'
+      || (ttsCfg.ttsBackend === 'vocu' && !!ttsCfg.vocuApiKey && !!ttsCfg.vocuVoiceId)
+    ) && isVoiceServiceAvailable();
+    if (!wantsVoice) {
+      // Text-only reminder — LLM result is enough.
+      entry.status = 'ready';
+      return;
+    }
+
+    const voiceResult = await helpers.runVoicePipeline(
+      'reminder-prewarm-' + reminder.id,
+      combinedReminderText,
+      response.emotion,
+    );
+    if (entry.abort.signal.aborted) return;
+    if (voiceResult.success) {
+      entry.voice = {
+        voiceFileId: voiceResult.voiceFileId!,
+        voiceDuration: voiceResult.voiceDuration,
+        japaneseText: voiceResult.japaneseText,
+      };
+      entry.ttsDoneAt = Date.now();
+      entry.status = 'ready';
+    } else {
+      // Voice synthesis failed but we still have the LLM text — keep status
+      // as 'llm-ready' so the dispatcher reuses the response and only the
+      // TTS step runs live at T=0.
+      entry.status = 'llm-ready';
+    }
+  } catch (err) {
+    if (!entry.abort.signal.aborted) {
+      console.warn('[REMINDER PREWARM] failed:', err);
+      entry.status = 'failed';
+      entry.failureReason = err instanceof Error ? err.message : String(err);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// triggerTimedReminderMessage
+// ---------------------------------------------------------------------------
+
+export async function triggerTimedReminderMessage(
+  refs: Pick<ChatActionRefs, 'messagesRef' | 'ttsConfigRef'>,
+  helpers: Pick<ExecuteSendHelpers, 'runVoicePipeline'>,
+  reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>,
+  // v2.14.28 H17.A: optional reminder id so we can pull a prewarmed payload from
+  // services/reminderPrewarmService. When the polling loop kicked a prewarm at
+  // T-60s and the LLM (and possibly TTS) finished before T=0, this dispatch
+  // skips the live model + TTS calls and reuses the cached result. If the cache
+  // hit holds only the LLM response (status === 'llm-ready'), TTS still runs
+  // here — but the model round-trip is saved.
+  reminderId?: string,
+): Promise<boolean> {
+  const state = useAppStore.getState();
+  const { language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook } = state;
+  const prewarmHit = reminderId ? consumeReminderPrewarm(reminderId) : null;
+
+  const systemPrompt = buildTimedReminderSystemPrompt(reminder, language, locationConfig.userTimezone);
+
+  state.setIsThinking(true);
+
+  try {
+    let response: ChatResponse;
+    let prewarmedVoice: ReminderPrewarmVoicePayload | undefined;
+    if (prewarmHit && prewarmHit.response) {
+      // v2.14.28 H17.A: prewarmed payload from T-60s pipeline. Skip the live
+      // LLM call entirely and reuse the response. If TTS was also prewarmed
+      // (status was 'ready'), `voice` is non-null and the delivery branch
+      // below short-circuits the runVoicePipeline call too.
+      response = prewarmHit.response;
+      prewarmedVoice = prewarmHit.voice;
+      console.log(`[REMINDER PREWARM] Cache hit for ${reminderId} (status=${prewarmHit.status}, voice=${prewarmedVoice ? 'cached' : 'fresh'})`);
+    } else {
+      const recentMessages = refs.messagesRef.current.slice(-contextLimit);
+      response = await sendMessageToGemini(
+        systemPrompt,
+        coreMemory,
+        [...worldBook, ...getKumikoLocalRag(language)],
+        recentMessages,
+        locationConfig,
+        undefined, undefined, 0, undefined, [], undefined, [], anchors, kumikoNotebook,
+        undefined,
+        language,
+      );
+    }
 
     const s = useAppStore.getState();
     s.setCurrentEmotion(response.emotion);
@@ -807,7 +939,11 @@ export async function triggerTimedReminderMessage(
 
       if (isInForeground && !forceOverlay) {
         useAppStore.getState().setIsTalking(true);
-        const voiceResult = await helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion);
+        // v2.14.28 H17.A: skip live TTS if the prewarm already produced an
+        // audio payload at T-60s.
+        const voiceResult = prewarmedVoice
+          ? { success: true as const, voiceFileId: prewarmedVoice.voiceFileId, voiceDuration: prewarmedVoice.voiceDuration, japaneseText: prewarmedVoice.japaneseText }
+          : await helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion);
         if (voiceResult.success) {
           addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion, undefined, {
             isVoiceMessage: true, voiceFileId: voiceResult.voiceFileId, voiceDuration: voiceResult.voiceDuration, japaneseText: voiceResult.japaneseText,
@@ -819,7 +955,12 @@ export async function triggerTimedReminderMessage(
         return true;
       }
 
-      let voiceResultPromise = helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion);
+      // v2.14.28 H17.A: same shortcut for the background path. If the prewarm
+      // delivered a voice payload at T-60s, wrap it in a resolved Promise so
+      // the rest of the function (which awaits voiceResultPromise) is unchanged.
+      let voiceResultPromise = prewarmedVoice
+        ? Promise.resolve({ success: true as const, voiceFileId: prewarmedVoice.voiceFileId, voiceDuration: prewarmedVoice.voiceDuration, japaneseText: prewarmedVoice.japaneseText })
+        : helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion);
 
       // v2.14.26: only fire a system notification when MainActivity
       // is actually backgrounded. If forceOverlay was set because the

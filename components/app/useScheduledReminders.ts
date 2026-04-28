@@ -3,9 +3,15 @@ import type { Message, Language, LocationConfig, WorldBookEntry, AnchorEntry, Tt
 import type { RelativeReminder, DailyReminder } from '../../store/slices/reminderSlice';
 import {
   triggerTimedReminderMessage as triggerTimedReminderMessageAction,
+  prewarmTimedReminderMessage as prewarmTimedReminderMessageAction,
   type ChatActionRefs,
   type ExecuteSendHelpers,
 } from './chatActions';
+import {
+  shouldKickReminderPrewarm,
+  readReminderPrewarm,
+  cancelReminderPrewarm,
+} from '../../services/reminderPrewarmService';
 import { getTimePartsInTimezone } from './backupHelpers';
 import { getCapacitorPlatform, isCapacitorNative } from '../../services/environment';
 import {
@@ -127,13 +133,36 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
   // re-subscribing every time the polling closure rebuilds.
   const checkScheduledRemindersRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
-  const triggerTimedReminderMessage = useCallback(async (reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>): Promise<boolean> => {
+  const triggerTimedReminderMessage = useCallback(async (
+    reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>,
+    reminderId?: string,
+  ): Promise<boolean> => {
     return triggerTimedReminderMessageAction(
       { messagesRef, ttsConfigRef } as Pick<ChatActionRefs, 'messagesRef' | 'ttsConfigRef'>,
       { runVoicePipeline },
       reminder,
+      reminderId,
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 1:1 preserve pre-extraction deps; body only uses refs + runVoicePipeline but action reads store live
+  }, [language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook, addMessage, showBackgroundMessageNotification]);
+
+  // v2.14.28 H17.A: kick a T-60s prewarm for upcoming relative reminders so
+  // the LLM (and TTS, if voice mode permits) finishes before the trigger
+  // moment. Only fires when the app is backgrounded / minimized / locked
+  // (document.visibilityState === 'hidden') — foreground users don't need
+  // the speed-up since the dispatcher's just-in-time path is already
+  // visible to them. Idempotent: startReminderPrewarm bails if a prewarm
+  // is already in flight or finished for the same reminder id.
+  const triggerPrewarm = useCallback((reminder: RelativeReminder) => {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'hidden') return;
+    const existing = readReminderPrewarm(reminder.id);
+    if (existing && (existing.status === 'pending' || existing.status === 'llm-ready' || existing.status === 'ready')) return;
+    void prewarmTimedReminderMessageAction(
+      { messagesRef, ttsConfigRef } as Pick<ChatActionRefs, 'messagesRef' | 'ttsConfigRef'>,
+      { runVoicePipeline },
+      { id: reminder.id, event: reminder.event, sourceText: reminder.sourceText, dueAt: reminder.dueAt },
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mirrors triggerTimedReminderMessage deps so identity churns at the same cadence
   }, [language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook, addMessage, showBackgroundMessageNotification]);
 
   useEffect(() => {
@@ -145,14 +174,33 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
           reminderDispatchingRef.current = true;
           try {
               const now = Date.now();
-              const relativeReminder = (await getRelativeReminders())
+              const relatives = await getRelativeReminders();
+
+              // v2.14.28 H17.A: kick T-60s prewarm for any relative reminder
+              // entering its [dueAt-60s, dueAt-50s] window. Runs alongside the
+              // dispatcher tick — no extra timer needed, the existing 1s/60s
+              // poll cadence covers the detection window. Backgrounded check
+              // happens inside triggerPrewarm itself.
+              for (const r of relatives) {
+                  if (r && r.id && shouldKickReminderPrewarm(r.dueAt, now)) {
+                      triggerPrewarm(r);
+                  }
+              }
+
+              const relativeReminder = relatives
                   .filter(reminder => reminder.dueAt <= now && (!reminder.retryAt || reminder.retryAt <= now))
                   .sort((a, b) => a.dueAt - b.dueAt)[0];
 
               if (relativeReminder) {
-                  const delivered = await triggerTimedReminderMessage(relativeReminder);
+                  const delivered = await triggerTimedReminderMessage(relativeReminder, relativeReminder.id);
                   if (delivered) {
                       await removeRelativeReminder(relativeReminder.id);
+                      // v2.14.28 H17.A: drop any leftover prewarm cache slot
+                      // (consumeReminderPrewarm already removed it on hit, but
+                      // a status='failed' or stale entry would otherwise
+                      // linger. cancelReminderPrewarm is a no-op on a
+                      // missing key.).
+                      cancelReminderPrewarm(relativeReminder.id, 'fired');
                   } else {
                       await markRelativeReminderRetry(relativeReminder.id);
                   }
@@ -176,7 +224,12 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
 
               if (!dueDailyReminder) return;
 
-              const delivered = await triggerTimedReminderMessage(dueDailyReminder);
+              // Daily reminders don't get prewarmed today — their dueAt is implicit
+              // (today's hh:mm in the reminder timezone) so the T-60s detection
+              // in shouldKickReminderPrewarm doesn't have a stable value to
+              // compare against. Acceptable: daily reminders fire once a day at a
+              // known wall-clock minute and the user is usually expecting them.
+              const delivered = await triggerTimedReminderMessage(dueDailyReminder, dueDailyReminder.id);
               if (delivered) {
                   const timeParts = getTimePartsInTimezone(new Date(now), dueDailyReminder.timeZone || 'Asia/Tokyo');
                   await markDailyReminderTriggered(dueDailyReminder.id, timeParts.dateKey);
