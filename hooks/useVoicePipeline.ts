@@ -6,6 +6,32 @@ import { isVoiceServiceAvailable, saveVoiceFile } from '../services/voiceFileSer
 import { useAppStore } from '../store';
 import type { EmotionType, TtsConfig } from '../types';
 
+// v2.14.28 M28: a single-process mutex that serializes runVoicePipeline so
+// two near-simultaneous reminders / chat replies don't double-spend the TTS
+// quota and step on each other's audio output. The lock is shared across
+// every consumer of useVoicePipeline because the underlying TTS HTTP service
+// is the same global resource (Fish Audio key, SoVITS server, Vocu account).
+//
+// Approach: each call appends a thunk to a tail Promise. While one thunk is
+// running, the next sits in the queue; when the current one finishes, the
+// next thunk starts. AbortSignal short-circuits: if the queued caller
+// aborts before its turn, we never run the body — useful when the user
+// rejects an incoming-call overlay during a flurry.
+let voicePipelineQueueTail: Promise<unknown> = Promise.resolve();
+const enqueueVoicePipelineWork = <T>(
+  body: () => Promise<T>,
+  abortReason: T,
+  signal?: AbortSignal,
+): Promise<T> => {
+  const next = voicePipelineQueueTail.then(async () => {
+    if (signal?.aborted) return abortReason;
+    return body();
+  });
+  // Don't let one rejecting body break the chain for everyone behind it.
+  voicePipelineQueueTail = next.catch(() => undefined);
+  return next;
+};
+
 export interface UseVoicePipelineParams {
   ttsConfigRef: MutableRefObject<TtsConfig>;
 }
@@ -194,6 +220,18 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
   };
 
   const runVoicePipeline: RunVoicePipelineFn = async (
+    messageId,
+    sourceText,
+    emotion,
+    voiceVariant,
+    signal,
+  ) => {
+    return enqueueVoicePipelineWork(async () => runVoicePipelineImpl(messageId, sourceText, emotion, voiceVariant, signal), { success: false }, signal);
+  };
+
+  // v2.14.28 M28: actual pipeline body. Wrapped above so concurrent callers
+  // queue rather than racing the same TTS HTTP service.
+  const runVoicePipelineImpl: RunVoicePipelineFn = async (
     messageId,
     sourceText,
     emotion,

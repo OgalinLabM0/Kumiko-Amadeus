@@ -147,8 +147,15 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
     [],
   );
 
+  // v2.14.28 M27: bring the UI back into sync with TtsConfig['latency']'s
+  // declared union ('low' | 'balanced' | 'normal'). The previous list omitted
+  // 'low', so users with a previously-saved 'low' value couldn't see what was
+  // active and couldn't restore it after switching away. The 'low' option
+  // routes to Fish Audio's 100ms-headroom setting; documented as best-effort
+  // rather than hard latency contract.
   const fishLatencyOptions = useMemo<ThemedSelectOption[]>(
     () => [
+      { value: 'low', label: 'Low (best-effort)' },
       { value: 'normal', label: 'Normal' },
       { value: 'balanced', label: 'Balanced' },
     ],
@@ -1334,7 +1341,7 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
               <label className={fieldLabelClass}>{t.ttsLatency}</label>
               <ThemedSelect
                 value={ttsConfig.latency}
-                onChange={(val) => update({ latency: val as 'balanced' | 'normal' })}
+                onChange={(val) => update({ latency: val as 'low' | 'balanced' | 'normal' })}
                 options={fishLatencyOptions}
                 isDarkMode={isDarkMode}
                 className={`${inputClass} mt-1`}
