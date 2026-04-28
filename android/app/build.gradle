@@ -58,8 +58,8 @@ android {
         // PermissionOnboardingWizard 8 步引导 + 60 秒锁屏深度自检；
         // AppChatHeader 加可靠性体检小灯）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21427
-        versionName "2.14.27"
+        versionCode 21428
+        versionName "2.14.28"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
