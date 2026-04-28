@@ -252,47 +252,59 @@ export async function persistNormalizedBackupData(
   refs.forceRawHistoryResyncRef.current = false;
   await yieldToMainThread();
 
-  if (normalizedData.kumikoDiary !== undefined) {
-    await db.kumikoDiary.clear();
-    if (normalizedData.kumikoDiary.length > 0) {
-      await db.kumikoDiary.bulkPut(normalizedData.kumikoDiary);
+  // v2.14.28 M16: wrap the rest of the backup-restore writes in one
+  // Dexie transaction so a partial failure (e.g. quota exhaustion mid-
+  // bulkPut) rolls back instead of leaving the keyval row updated but
+  // diary/psyche tables half-cleared. The earlier syncRawHistoryMessages
+  // / syncTemporalEpisodes calls live outside this transaction because
+  // they manage their own internal sync state and would deadlock if
+  // nested.
+  await db.transaction('rw', db.kumikoDiary, db.dailyFragments, db.psycheState, db.keyval, async () => {
+    if (normalizedData.kumikoDiary !== undefined) {
+      await db.kumikoDiary.clear();
+      if (normalizedData.kumikoDiary.length > 0) {
+        await db.kumikoDiary.bulkPut(normalizedData.kumikoDiary);
+      }
     }
-  }
 
-  if (normalizedData.dailyFragments !== undefined) {
-    await db.dailyFragments.clear();
-    if (normalizedData.dailyFragments.length > 0) {
-      await db.dailyFragments.bulkPut(normalizedData.dailyFragments);
+    if (normalizedData.dailyFragments !== undefined) {
+      await db.dailyFragments.clear();
+      if (normalizedData.dailyFragments.length > 0) {
+        await db.dailyFragments.bulkPut(normalizedData.dailyFragments);
+      }
     }
-  }
 
-  if (normalizedData.psycheState !== undefined) {
-    await db.psycheState.clear();
-    if (normalizedData.psycheState) {
-      await db.psycheState.put(normalizedData.psycheState);
+    if (normalizedData.psycheState !== undefined) {
+      await db.psycheState.clear();
+      if (normalizedData.psycheState) {
+        await db.psycheState.put(normalizedData.psycheState);
+      }
     }
-  }
 
-  const writes: Promise<unknown>[] = [
-    db.setVal('kumiko_core_memory', normalizedCoreMemory),
-    db.setVal('kumiko_world_book', normalizedData.worldBook),
-    db.setVal('kumiko_context_limit', normalizedData.contextLimit),
-    db.setVal('kumiko_turn_count', recalculatedTurnCount),
-    db.setVal(SUMMARY_ARCHIVE_STATE_STORAGE_KEY, normalizedSummaryState),
-    db.setVal('kumiko_current_emotion', normalizedData.currentEmotion),
-    db.setVal('kumiko_location_config', normalizedData.locationConfig),
-    db.setVal('kumiko_language', normalizedData.language),
-    db.setVal('kumiko_anchors', normalizedData.anchors),
-    db.setVal('kumiko_notebook', normalizedData.kumikoNotebook),
-    db.setVal(RELATIVE_REMINDER_STORAGE_KEY, normalizedData.relativeReminders || []),
-    db.setVal(DAILY_REMINDER_STORAGE_KEY, normalizedData.dailyReminders || []),
-  ];
+    // Keyval writes inside the same transaction. We use db.keyval.put
+    // directly (instead of db.setVal which itself opens a tiny rw
+    // transaction) so Dexie merges everything into a single commit.
+    const keyvalRows: Array<{ key: string; value: any }> = [
+      { key: 'kumiko_core_memory', value: normalizedCoreMemory },
+      { key: 'kumiko_world_book', value: normalizedData.worldBook },
+      { key: 'kumiko_context_limit', value: normalizedData.contextLimit },
+      { key: 'kumiko_turn_count', value: recalculatedTurnCount },
+      { key: SUMMARY_ARCHIVE_STATE_STORAGE_KEY, value: normalizedSummaryState },
+      { key: 'kumiko_current_emotion', value: normalizedData.currentEmotion },
+      { key: 'kumiko_location_config', value: normalizedData.locationConfig },
+      { key: 'kumiko_language', value: normalizedData.language },
+      { key: 'kumiko_anchors', value: normalizedData.anchors },
+      { key: 'kumiko_notebook', value: normalizedData.kumikoNotebook },
+      { key: RELATIVE_REMINDER_STORAGE_KEY, value: normalizedData.relativeReminders || [] },
+      { key: DAILY_REMINDER_STORAGE_KEY, value: normalizedData.dailyReminders || [] },
+    ];
 
-  if (normalizedData.worldCharacterStatus !== undefined) {
-    writes.push(db.setVal('world_character_status', normalizedData.worldCharacterStatus));
-  }
+    if (normalizedData.worldCharacterStatus !== undefined) {
+      keyvalRows.push({ key: 'world_character_status', value: normalizedData.worldCharacterStatus });
+    }
 
-  await Promise.all(writes);
+    await db.keyval.bulkPut(keyvalRows);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -577,6 +589,40 @@ export async function handleImportBackup(
   const language = state.language;
   const flowState = state.flowState;
   const backupConfig = state.backupConfig;
+
+  // v2.14.28 M15: confirm with the user before overwriting live data.
+  // Previously the file picker fed straight into the parser and a single
+  // mistaken click could replace the entire conversation history. The
+  // confirm dialog is suppressed in INTRO/CONFIG screens (true first-run
+  // import) where there's no live data at risk yet.
+  if (flowState === 'APP') {
+    const confirmCopy = language === 'zh'
+      ? {
+          title: '导入备份会覆盖当前所有数据',
+          body: `将从 \"${file.name}\" 导入消息、图片、记忆与世界书等本地状态。这会**完全替换**目前的对话与笔记本，无法恢复。\n\n继续吗？`,
+          confirmLabel: '导入并覆盖',
+          cancelLabel: '取消',
+        }
+      : {
+          title: 'Importing a backup will replace all current data',
+          body: `This will import messages, images, memory and world-book state from "${file.name}", **completely replacing** your current chat history and notebook. The change cannot be undone.\n\nContinue?`,
+          confirmLabel: 'Import & replace',
+          cancelLabel: 'Cancel',
+        };
+    let confirmed = false;
+    try {
+      confirmed = await dialogService.confirm({
+        title: confirmCopy.title,
+        message: confirmCopy.body,
+        confirmText: confirmCopy.confirmLabel,
+        cancelText: confirmCopy.cancelLabel,
+      });
+    } catch (e) {
+      console.warn('[IMPORT] confirm dialog rejected unexpectedly:', e);
+      return false;
+    }
+    if (!confirmed) return false;
+  }
 
   try {
     let jsonStr = '';

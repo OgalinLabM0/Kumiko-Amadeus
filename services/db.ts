@@ -275,15 +275,25 @@ export const getWorldCharacterStatus = async (): Promise<WorldCharacterStatusMap
   return await db.getVal<WorldCharacterStatusMap>('world_character_status', INITIAL_WORLD_CHARACTER_STATUS);
 };
 
+// v2.14.28 M2: read-modify-write on a single keyval row used to be split
+// across two awaits — the diary pipeline + a user-facing edit could
+// interleave and the second await would clobber the first one's merged
+// fields. Wrap the whole sequence in a single Dexie `rw` transaction
+// against the keyval table so either both writers serialize cleanly OR
+// the underlying IndexedDB transaction-scope contract surfaces any
+// conflict (we'd rather see the conflict than silently lose deltas).
 export const updateWorldCharacterStatus = async (updates: Partial<WorldCharacterStatusMap>): Promise<void> => {
-  const current = await getWorldCharacterStatus();
-  const merged = { ...current };
-  for (const [key, val] of Object.entries(updates)) {
-    if (merged[key]) {
-      merged[key] = { ...merged[key], ...val };
-    } else {
-      merged[key] = val as CharacterStatus;
+  await db.transaction('rw', db.keyval, async () => {
+    const stored = await db.keyval.get('world_character_status');
+    const current = (stored?.value as WorldCharacterStatusMap | undefined) ?? INITIAL_WORLD_CHARACTER_STATUS;
+    const merged = { ...current };
+    for (const [key, val] of Object.entries(updates)) {
+      if (merged[key]) {
+        merged[key] = { ...merged[key], ...val };
+      } else {
+        merged[key] = val as CharacterStatus;
+      }
     }
-  }
-  await db.setVal('world_character_status', merged);
+    await db.keyval.put({ key: 'world_character_status', value: merged });
+  });
 };

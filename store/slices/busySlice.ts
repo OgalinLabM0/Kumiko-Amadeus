@@ -326,8 +326,15 @@ export const createBusySlice: StateCreator<BusySlice, [], [], BusySlice> = (set,
           sources: [source],
         };
     set({ pendingApology: nextApology, busyFollowUp: null });
-    await db.setVal(PENDING_APOLOGY_STORAGE_KEY, nextApology);
-    await db.keyval.delete(BUSY_FOLLOWUP_STORAGE_KEY);
+    // v2.14.28 M19: combine the two keyval writes into a single rw
+    // transaction so a crash / quota-exhaustion in between cannot
+    // leave behind a stale BUSY_FOLLOWUP row paired with a freshly
+    // promoted PENDING_APOLOGY (or vice versa). With the transaction
+    // either both writes commit OR Dexie rolls both back.
+    await db.transaction('rw', db.keyval, async () => {
+      await db.keyval.put({ key: PENDING_APOLOGY_STORAGE_KEY, value: nextApology });
+      await db.keyval.delete(BUSY_FOLLOWUP_STORAGE_KEY);
+    });
   },
 
   clearPendingApology: async () => {
