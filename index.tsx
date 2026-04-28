@@ -1,6 +1,12 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { App } from './components/App';
+// v2.14.28 H6.a: pull Tailwind utilities in via the build-time pipeline
+// (PostCSS plugin in postcss.config.js). Replaces the runtime CDN script
+// that used to live in index.html, so the production app no longer loads
+// JS from cdn.tailwindcss.com on boot. Effects: works offline / behind a
+// strict CSP / inside Capacitor APK without external network access.
+import './styles/tailwind.css';
 // F2B.3: dropped `isElectron`/`waitForRuntimeDetection` — the runtime probe
 // existed to detect the legacy PWA-served-by-PC mode. Electron and
 // Capacitor each set their own globals synchronously, so we mount React

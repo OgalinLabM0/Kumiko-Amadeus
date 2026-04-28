@@ -1,0 +1,6 @@
+/* v2.14.28 H6.a — single Tailwind entry consumed by Vite / PostCSS.
+   Imported once from index.tsx so the dev server hot-reloads utility
+   class changes and the build emits a single hashed CSS file. */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

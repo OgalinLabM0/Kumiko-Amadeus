@@ -35,7 +35,11 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon-180.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180.png" />
     <title>Kumiko·Amadeus</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- v2.14.28 H6.a: removed `<script src="https://cdn.tailwindcss.com">`.
+         Tailwind utilities are now compiled at build time via PostCSS
+         (tailwind.config.js + postcss.config.js + styles/tailwind.css
+         imported from index.tsx). The compiled CSS lands in dist/assets
+         alongside the Vite bundle — no runtime CDN dependency. -->
     <style>
       @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Cormorant+Garamond:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@500;600;700&display=swap');
       
