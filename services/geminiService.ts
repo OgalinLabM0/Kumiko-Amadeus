@@ -2148,19 +2148,34 @@ ${extraSystemPrompt ?? ''}`;
     // raw `<think>...</think>` text lands in `content` / `text` and
     // bleeds into the chat bubble.
     //
+    // v2.14.28 H13: step 3 (orphan closing tag) was previously
+    // /^[\s\S]*?<\/think\s*>\s*/gi which deletes everything from the
+    // very start of the reply up to the FIRST `</think>` it sees. If
+    // the model emits a single stray `</think>` inside genuine prose
+    // (e.g. quoting the tag, discussing it, or after an unbalanced
+    // open that step 2 already handled), the entire real reply gets
+    // eaten. Narrow the rule: only strip the orphan closing when (a)
+    // it appears within the first few hundred characters of the
+    // reply (typical "think header" position) AND (b) only whitespace
+    // / newlines come before it (i.e. it really is at the head, not
+    // buried in body text).
+    //
     // Order matters:
     //   1. balanced pairs first (the 99% case)
     //   2. orphan opening (model truncated mid-thought) → drop tail
-    //   3. orphan closing (most common: model emitted `</think>` as
-    //      content header, real reply follows it) → drop everything
-    //      before the closing tag
+    //   3. orphan closing — narrowed: only when it sits at the start
+    //      of the reply preceded by whitespace only
     //   4. any leftover stray opening/closing tag
     fullText = fullText.replace(/<think[^>]*>[\s\S]*?<\/think\s*>/gi, '');
     fullText = fullText.replace(/<thinking[^>]*>[\s\S]*?<\/thinking\s*>/gi, '');
     fullText = fullText.replace(/<think[^>]*>[\s\S]*$/gi, '');
     fullText = fullText.replace(/<thinking[^>]*>[\s\S]*$/gi, '');
-    fullText = fullText.replace(/^[\s\S]*?<\/think\s*>\s*/gi, '');
-    fullText = fullText.replace(/^[\s\S]*?<\/thinking\s*>\s*/gi, '');
+    // v2.14.28 H13: replace `^[\s\S]*?</think>` (which could span the entire
+    // reply) with `^\s*</think\s*>\s*` — only consumes leading whitespace
+    // followed by an immediate orphan closing tag. Real prose with an
+    // embedded `</think>` further down is now preserved.
+    fullText = fullText.replace(/^\s*<\/think\s*>\s*/gi, '');
+    fullText = fullText.replace(/^\s*<\/thinking\s*>\s*/gi, '');
     fullText = fullText.replace(/<\/?think(?:ing)?[^>]*\/?\s*>/gi, '');
     // Remove leaked tags even if System_Log was not detected
     fullText = fullText.replace(/\[Emotion\s*[:=].*?\]/gi, '');
