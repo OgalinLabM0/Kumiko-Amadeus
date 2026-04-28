@@ -22,6 +22,36 @@
       compensates — which keeps the IntroScreen's top ornaments
       visible under the notch.
     -->
+    <!-- v2.14.28 L5: Content-Security-Policy locking the renderer down to
+         self-served assets only. Pairs with the renderer sandbox added
+         in window-manager.cjs (L4). The connect-src list intentionally
+         covers the API providers the app actually talks to — adding a
+         provider via the settings panel that is not in this list will
+         require a CSP update; we accept that operational cost in
+         exchange for blocking arbitrary outbound from a compromised
+         renderer string.
+           - default-src 'self'           — same-origin baseline
+           - script-src 'self' 'unsafe-inline' — inline boot script in
+             this file is intentional; no remote scripts after H6.a
+           - style-src 'self' 'unsafe-inline' — Tailwind-compiled CSS
+             plus a few inline `style="..."` attributes the Lucide
+             icons set; never remote stylesheets after H6.b
+           - font-src 'self' data:       — self-hosted via @fontsource;
+             data: URIs allowed for the rare inline font fallback
+           - img-src 'self' data: blob: kumiko-image: — local message
+             images go through the kumiko-image:// protocol; data: /
+             blob: cover image previews + voice waveform thumbnails
+           - media-src 'self' blob: kumiko-media: — voice messages
+             play through kumiko-media:// or Object URLs
+           - connect-src 'self' https://* wss://*  http://localhost:*
+             ws://localhost:* — all upstream API calls are HTTPS or
+             local dev ports (Vite, GPT-SoVITS dev server). Wildcard
+             https/wss is the practical compromise for "user can plug
+             in any custom OpenAI-compatible / Anthropic / Gemini /
+             SoVITS endpoint" — narrowing further would break the
+             custom-endpoint UX. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: kumiko-image:; media-src 'self' blob: kumiko-media:; connect-src 'self' https://* wss://* http://localhost:* ws://localhost:*; object-src 'none'; base-uri 'self'; frame-ancestors 'none';" />
     <meta name="theme-color" content="#f9f7f2" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />

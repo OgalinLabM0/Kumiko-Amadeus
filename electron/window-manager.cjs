@@ -82,6 +82,17 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       webSecurity: true,
+      // v2.14.28 L4: enable the OS-level renderer sandbox so the Chromium
+      // process running our React/JS bundle has no direct access to Node,
+      // OS APIs, or our own preload globals beyond what contextBridge
+      // explicitly exposes. Required by the Electron security checklist
+      // for sealed builds; combines with the strict CSP added in p5.3
+      // (index.html meta) to cut the renderer's blast radius if a remote
+      // string ever sneaks past the LEAK CLEANUP regex into a script
+      // sink. Verified compatible with the existing preload.cjs surface
+      // (every API call goes through ipcRenderer + contextBridge, none
+      // of which require an unsandboxed renderer).
+      sandbox: true,
       preload: path.join(__dirname, '..', 'preload.cjs')
     }
   });
