@@ -164,11 +164,20 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
     }
     return language === 'zh' ? '即将发送' : 'About to send';
   })();
+  // v2.14.28 M14: when displayAt has already passed but the busyFollowUp is
+  // still on the schedule (waiting for isThinking/isTalking to clear, or
+  // for the next available send window), the previous formatCountdown(now)
+  // rendered "0s" / "00:00" and made it look like the message was about
+  // to fire any second. That confused users who waited and waited. Now we
+  // surface an explicit "已逾期 / overdue" label so the state of "waiting
+  // for a free send window" is visible.
   const busyCountdownLabel = (() => {
     if (!busyFollowUp) return '';
     const now = Date.now();
-    const target = now < busyFollowUp.displayAt ? busyFollowUp.displayAt : now;
-    return formatCountdown(target, language);
+    if (now >= busyFollowUp.displayAt) {
+      return language === 'zh' ? '已逾期 · 等待发送窗口' : 'Overdue · waiting for send window';
+    }
+    return formatCountdown(busyFollowUp.displayAt, language);
   })();
   // Dark-mode frosted glass: drop the near-opaque `/96` wash and let
   // `backdrop-blur-md` smear whatever chat bubble sits underneath. 80%

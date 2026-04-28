@@ -212,9 +212,22 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                       !reminder.paused &&
                       (() => {
                           const timeParts = getTimePartsInTimezone(new Date(now), reminder.timeZone || 'Asia/Tokyo');
+                          // v2.14.28 M11: a 5-minute grace window after the
+                          // configured hour:minute. The previous strict
+                          // single-minute match would silently drop a daily
+                          // reminder if the polling tick skipped its exact
+                          // minute (60s heartbeat in the background, or
+                          // setInterval drift on a busy machine). The grace
+                          // window covers all realistic skew while still
+                          // staying inside the same hour and not bleeding
+                          // into the next day's reminder. lastTriggeredDate
+                          // dedup guarantees we only fire once per local day.
+                          const reminderTotalMinutes = reminder.hour * 60 + reminder.minute;
+                          const nowTotalMinutes = timeParts.hour * 60 + timeParts.minute;
+                          const insideGraceWindow = nowTotalMinutes >= reminderTotalMinutes
+                              && nowTotalMinutes <= reminderTotalMinutes + 5;
                           return (
-                              reminder.hour === timeParts.hour &&
-                              reminder.minute === timeParts.minute &&
+                              insideGraceWindow &&
                               reminder.lastTriggeredDate !== timeParts.dateKey &&
                               (!reminder.retryAt || reminder.retryAt <= now)
                           );

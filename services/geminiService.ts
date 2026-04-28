@@ -2198,7 +2198,18 @@ ${extraSystemPrompt ?? ''}`;
     fullText = fullText.replace(/\[Psyche_Delta\s*[:=].*?\]/gi, '');
     fullText = fullText.replace(/\[System_Memory:.*?\]/gi, ''); // ADDED: Remove injected system memory tags if echoed
     fullText = fullText.replace(/\[系统记忆.*?\]/gi, ''); // ADDED: Remove Chinese system memory tags
-    fullText = fullText.replace(/\[\d{2}\/\d{2}.*?\d{2}:\d{2}\]\s*/g, ''); // ADDED: Remove echoed time tags like [03/22周日 10:43]
+    // v2.14.28 M24: the echoed time tag regex used to be
+    //   /\[\d{2}\/\d{2}.*?\d{2}:\d{2}\]/
+    // which only caught `[03/22周日 10:43]` — but the actual userTimeStr the
+    // system prompt injects is built from `Intl.DateTimeFormat` with year
+    // included, so the model often echoes e.g. `[2026/4/27 周日 14:30 GMT+8]`
+    // or the corresponding en-US `[Sat, 04/27/2026 14:30 GMT+8]`. Neither
+    // matched the old pattern. Broaden to two passes that cover both
+    // locale outputs (year-first / weekday-first), still bracket-wrapped
+    // and still ending in HH:MM[ TZ].
+    fullText = fullText.replace(/\[\d{4}\/\d{1,2}\/\d{1,2}[\s\S]*?\d{1,2}:\d{1,2}(?:\s*[A-Z]{2,4}[+-]?\d*)?\]\s*/g, ''); // year-first locales (zh-CN / en-CA / etc.)
+    fullText = fullText.replace(/\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[,，][\s\S]*?\d{1,2}:\d{1,2}(?:\s*[A-Z]{2,4}[+-]?\d*)?\]\s*/g, ''); // en-US `[Sat, 04/27/2026 14:30 GMT+8]`
+    fullText = fullText.replace(/\[\d{2}\/\d{2}.*?\d{2}:\d{2}\]\s*/g, ''); // legacy short-form fallback
     // Catch stray double bracket tags except for System_Log if it somehow survived
     fullText = fullText.replace(/\[\[(?!System_Log).*?\]\]/g, ''); 
     // Remove leaked reply-prefix lines that belong to prompt/history formatting, not visible dialog content.
@@ -2206,13 +2217,57 @@ ${extraSystemPrompt ?? ''}`;
     fullText = fullText.replace(/^\s*\[语音消息\]\s*/i, '');
     fullText = fullText.replace(/\s*[（(]翻[译譯][：:][\s\S]*?[)）]\s*$/i, '');
 
-    const scheduleGlobalRegex = /\[Schedule_Trigger:\s*(\{[\s\S]*?\})\]/i;
-    const sMatch = fullText.match(scheduleGlobalRegex) || (rawLog ? rawLog.match(scheduleGlobalRegex) : null);
-    
-    if (sMatch) {
+    // v2.14.28 M22: brace-depth scanner replaces the previous non-greedy
+    // regex `\{[\s\S]*?\}` which broke on Schedule_Trigger payloads that
+    // contained a `}` inside a string value (e.g. `event: "open the }
+    // suite"`). The scanner walks character-by-character starting at
+    // `[Schedule_Trigger:`, tracks string-literal state (single + double
+    // quotes, with backslash escapes), and closes the JSON span only when
+    // the depth counter hits zero outside any string. Falls through to
+    // the legacy regex on a hard failure so older / malformed payloads
+    // still get a chance.
+    const extractScheduleTriggerSpan = (s: string): { jsonText: string; full: string } | null => {
+        const head = s.search(/\[Schedule_Trigger\s*:/i);
+        if (head < 0) return null;
+        const prefixEnd = s.indexOf(':', head);
+        if (prefixEnd < 0) return null;
+        let i = prefixEnd + 1;
+        while (i < s.length && /\s/.test(s.charAt(i))) i += 1;
+        if (s.charAt(i) !== '{') return null;
+        const jsonStart = i;
+        let depth = 0;
+        let inString: '"' | "'" | null = null;
+        let escapeNext = false;
+        for (; i < s.length; i += 1) {
+            const ch = s.charAt(i);
+            if (escapeNext) { escapeNext = false; continue; }
+            if (inString) {
+                if (ch === '\\') { escapeNext = true; continue; }
+                if (ch === inString) inString = null;
+                continue;
+            }
+            if (ch === '"' || ch === "'") { inString = ch; continue; }
+            if (ch === '{') depth += 1;
+            else if (ch === '}') {
+                depth -= 1;
+                if (depth === 0) {
+                    const jsonText = s.substring(jsonStart, i + 1);
+                    const closingBracket = s.indexOf(']', i + 1);
+                    const fullEnd = closingBracket > i ? closingBracket + 1 : i + 1;
+                    return { jsonText, full: s.substring(head, fullEnd) };
+                }
+            }
+        }
+        return null;
+    };
+
+    const scheduleSpan = extractScheduleTriggerSpan(fullText) || (rawLog ? extractScheduleTriggerSpan(rawLog) : null);
+    if (scheduleSpan) {
         try {
-            scheduleTrigger = JSON.parse(sMatch[1]);
-            fullText = fullText.replace(scheduleGlobalRegex, '');
+            scheduleTrigger = JSON.parse(scheduleSpan.jsonText);
+            // Strip both the discovered span (in fullText) and the legacy
+            // regex sweep below so any malformed echoes still get cleaned.
+            fullText = fullText.replace(scheduleSpan.full, '');
         } catch (e) {
             console.warn("[SCHEDULE PARSE FAIL]", e);
         }
