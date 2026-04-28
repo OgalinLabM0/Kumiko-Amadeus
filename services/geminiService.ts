@@ -10,6 +10,7 @@ export type { TemporalQueryAnalysis, TemporalQueryDiagnostics, TemporalQueryAnal
 import { GoogleGenAI, Chat, GenerateContentResponse, Part, Content, Type, FunctionDeclaration } from "@google/genai";
 import { KUMIKO_SYSTEM_INSTRUCTION_ZH, KUMIKO_SYSTEM_INSTRUCTION_EN, KUMIKO_EMOTION_IMAGES } from "../constants";
 import { ChatResponse, EmotionType, Message, WorldBookEntry, LocationConfig, AnchorEntry, AIConfig, Language } from "../types";
+import type { MissedReminderRecord } from "../store/slices/reminderSlice";
 import { callOpenAI, callAnthropic, callVisionHelper } from "./llmProviderService";
 import { imageService } from "./imageService";
 import { DEFAULT_AI_CONFIG, getDefaultVisionModel, resolveTransportProvider } from "./appConfig";
@@ -288,6 +289,12 @@ export const sendMessageToGemini = async (
   modelOverride?: string,
   language: Language = 'zh',
   extraSystemPrompt?: string,
+  // v2.14.29 H10: one-shot reminders missed by > 3 days that the boot
+  // scan demoted from "delayed chat" into "passive context recall".
+  // Filtered + capped (top 3 by recency) here for system prompt
+  // injection. Boot already applies the 7-day TTL; this layer is
+  // robust to a stale array, just truncates to 3.
+  missedReminders: MissedReminderRecord[] = [],
 ): Promise<ChatResponse> => {
   const config = getCurrentAIConfig();
   const provider = config.provider || 'gemini';
@@ -1129,6 +1136,58 @@ It's very late and you are extremely drowsy. Your behavior must reflect sleepine
         If this is relevant to the current topic, mention it naturally. If not, just keep it in mind.`;
     }
 
+    // v2.14.29 H10 rework: deterministic missed-reminder recall.
+    //
+    // Unlike anchorRecallBlock (15% probabilistic flashback), this block
+    // injects on EVERY non-system-driven turn whenever there's at least
+    // one record. The block intentionally does NOT order Kumiko to bring
+    // them up — it tells her to surface them only if (a) the user's
+    // message touches the same topic, or (b) she's initiating a chat
+    // after gapHours >= 3 (the proactive opening case). This keeps her
+    // from sounding like a nagging task list while still letting users
+    // experience "she remembered I was supposed to do X" naturally.
+    //
+    // Cap at 3 entries per turn (user-decided), most recently missed
+    // first, so the prompt doesn't bloat if the user has been away a
+    // long time and built up many missed items.
+    let missedReminderRecallBlock = "";
+    const filteredMissedReminders = (Array.isArray(missedReminders) ? missedReminders : [])
+        .filter(r => r && r.event && Number.isFinite(r.originalDueAt))
+        .sort((a, b) => b.originalDueAt - a.originalDueAt)
+        .slice(0, 3);
+    if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise && filteredMissedReminders.length > 0) {
+        const fmtMissedDate = (ts: number): string => {
+            try {
+                return new Date(ts).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
+                    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                });
+            } catch {
+                return new Date(ts).toISOString().slice(0, 16).replace('T', ' ');
+            }
+        };
+        const itemsZh = filteredMissedReminders.map(r => `- 「${r.event}」（本应在 ${fmtMissedDate(r.originalDueAt)} 提醒，没赶上）${r.sourceText ? `\n  当时上下文：${r.sourceText}` : ''}`).join('\n');
+        const itemsEn = filteredMissedReminders.map(r => `- "${r.event}" (was supposed to remind at ${fmtMissedDate(r.originalDueAt)}, missed it)${r.sourceText ? `\n  Original context: ${r.sourceText}` : ''}`).join('\n');
+        missedReminderRecallBlock = language === 'zh' ? `\n[心里挂着的事 - 错过的提醒]：
+        你之前答应过用户要提醒以下事情，但软件没开你没赶上：
+${itemsZh}
+        【重要规则】：
+        1. **不要主动把它们当成任务列表念出来**。你不是在汇报。
+        2. 只在以下两种情况自然带出来：
+           (a) 用户这条消息正好聊到了相关话题（比如他提到吃饭/吃药/写作业，而你正好欠他这件事的提醒），就顺势问一句"啊对，之前你不是 X 吗，搞定了吗？"
+           (b) 你这一轮本来就要主动开话题（gap 超过 3 小时的开场），可以挑其中一件作为开头，例如"诶……我突然想起来，那个 X 你后来怎么样了？"
+        3. 一次最多带出一件，不要列清单，不要说"你有几件事我没提醒到"。
+        4. 语气是自然的"我心里还惦记着这事"，而不是"我系统记录了你欠的事"。` : `\n[STILL ON HER MIND - MISSED REMINDERS]:
+        You previously promised to remind the user about the following, but missed the moment because the app wasn't open:
+${itemsEn}
+        [IMPORTANT RULES]:
+        1. **Do not recite these as a task list.** You're not filing a report.
+        2. Only bring one up naturally in these two cases:
+           (a) The user's current message touches the same topic (e.g. they mention eating / pills / homework, and you owe them a reminder on it). Then casually ask, "Oh right — weren't you supposed to do X earlier? Did you handle it?"
+           (b) You're already opening a proactive turn (gap > 3 hours since last chat); you may pick one of these as your opener, e.g. "Hey... I just remembered, how did that X thing turn out?"
+        3. Bring up at most one per turn. Do not enumerate or say "there are several things I forgot to remind you about".
+        4. The tone should be "I've been quietly thinking about this", not "the system logged your overdue items".`;
+    }
+
     let lifeSimBlock = "";
     if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise && gapHours >= 3 && Math.random() < 0.8) {
         console.log(`[LIFE SIM] Triggered. Gap: ${gapHours}h`);
@@ -1460,6 +1519,7 @@ ${memoryResponseExecutionHint}
 ${tomorrowInfoStr ? `- ${tomorrowInfoStr}\n` : ''}- 会话间隔：${gapDescription}
 ${reminderBlock}
 ${anchorRecallBlock}
+${missedReminderRecallBlock}
 ${relationshipTemperatureBlock}
 ${topicContinuityBlock}
 ${lifeSimBlock}
@@ -1502,6 +1562,7 @@ ${memoryResponseExecutionHint}
 ${tomorrowInfoStr ? `- ${tomorrowInfoStr}\n` : ''}- Session_Gap: ${gapDescription}
 ${reminderBlock}
 ${anchorRecallBlock}
+${missedReminderRecallBlock}
 ${relationshipTemperatureBlock}
 ${topicContinuityBlock}
 ${lifeSimBlock}
@@ -2375,7 +2436,7 @@ ${extraSystemPrompt ?? ''}`;
         if (isCasualEmotion && (hasChineseComma || hasLongBubble || isTooLong || tooManyBubbles || isEchoingQuote)) {
             console.warn(`[RETRY GUARD TRIGGERED] Retrying...`);
             return sendMessageToGemini(
-                textMessage, coreMemory, worldBook, historyMessages, locationConfig, imageBase64, mimeType, retryCount + 1, rawLog, ragContext, exactHistoryLookup, activeReminders, anchors, kumikoNotebook, modelOverride, language, extraSystemPrompt
+                textMessage, coreMemory, worldBook, historyMessages, locationConfig, imageBase64, mimeType, retryCount + 1, rawLog, ragContext, exactHistoryLookup, activeReminders, anchors, kumikoNotebook, modelOverride, language, extraSystemPrompt, missedReminders
             );
         }
     }

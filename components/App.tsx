@@ -402,6 +402,15 @@ export const App = () => {
   const setRelativeReminders = useAppStore(s => s.setRelativeReminders);
   const dailyReminders = useAppStore(s => s.dailyReminders);
   const setDailyReminders = useAppStore(s => s.setDailyReminders);
+  // v2.14.29 H10: missedReminders state is read live from the store
+  // inside services/geminiService.ts (via useAppStore.getState() in
+  // executeSendCore + triggerNativeProactiveMessage + busyFollowUp),
+  // so App.tsx itself only needs the writers. setMissedReminders is
+  // wired into useInitialLoadBootstrap for the boot scan; the dismiss
+  // handlers below use removeMissedReminder + persistMissedReminders.
+  const setMissedReminders = useAppStore(s => s.setMissedReminders);
+  const removeMissedReminder = useAppStore(s => s.removeMissedReminder);
+  const persistMissedReminders = useAppStore(s => s.persistMissedReminders);
   const getRelativeReminders = useAppStore(s => s.getRelativeReminders);
   const saveRelativeReminder = useAppStore(s => s.saveRelativeReminder);
   const markRelativeReminderRetry = useAppStore(s => s.markRelativeReminderRetry);
@@ -661,6 +670,7 @@ export const App = () => {
     setCurrentEmotion,
     setRelativeReminders,
     setDailyReminders,
+    setMissedReminders,
     setMessageAlerts,
     setWorldCharacterStatus,
     setAutoSavedKumikoDiary,
@@ -1172,10 +1182,28 @@ export const App = () => {
   }, [setIsMessageCenterOpen, handleJumpToMessage, markAllAlertsRead]);
   const handleDismissMessageAlert = useCallback((id: string) => {
     setMessageAlerts(prev => prev.filter(alert => alert.id !== id));
-  }, [setMessageAlerts]);
+    // v2.14.29 H10: a missed-reminder inbox alert and its
+    // MissedReminderRecord share the same id (see useInitialLoadBootstrap
+    // buildMissedReminderAlert / buildMissedReminderRecord — both build
+    // from the same `missed-${raw.id ?? raw.dueAt}` seed, with the alert
+    // using the seed directly and the record using `missed-${seed}`).
+    // When the user dismisses the inbox card we also drop the matching
+    // context record so Kumiko stops bringing the item up in chat. Other
+    // alert kinds (`reply` / `proactive`) just no-op through here since
+    // their ids never collide with the missed-reminder namespace.
+    void removeMissedReminder(`missed-${id}`).catch(e => {
+      console.warn('[H10] removeMissedReminder failed:', e);
+    });
+  }, [setMessageAlerts, removeMissedReminder]);
   const handleClearMessageAlerts = useCallback(() => {
     setMessageAlerts([]);
-  }, [setMessageAlerts]);
+    // v2.14.29 H10: clear-all also drops every persistent missed
+    // reminder record. The user explicitly hit "clear inbox" — they
+    // shouldn't then have Kumiko keep bringing the same items up.
+    void persistMissedReminders([]).catch(e => {
+      console.warn('[H10] persistMissedReminders([]) failed:', e);
+    });
+  }, [setMessageAlerts, persistMissedReminders]);
 
   // v2.14.9 W.1.C: removed the v2.14.8 V.2.B `useMemo` wrapper. In current
   // code `handleKeyDown` and `toggleTheme` are recreated every render, so

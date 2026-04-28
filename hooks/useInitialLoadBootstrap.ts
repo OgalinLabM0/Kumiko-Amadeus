@@ -1,6 +1,6 @@
 import { useEffect, type MutableRefObject } from 'react';
 import { loadRawHistoryMessages } from '../components/app/rawHistorySync';
-import { recalculateTurnCountFromMessages, sanitizeRelativeReminderRecord, sanitizeDailyReminderRecord, sanitizeMessageAlertRecord, sanitizeWorldCharacterStatusRecord, sanitizeKumikoDiaryRecord, sanitizeDailyFragmentRecord, sanitizePsycheStateRecord } from '../components/app/backupHelpers';
+import { recalculateTurnCountFromMessages, sanitizeRelativeReminderRecord, sanitizeDailyReminderRecord, sanitizeMessageAlertRecord, sanitizeMissedReminderRecord, sanitizeWorldCharacterStatusRecord, sanitizeKumikoDiaryRecord, sanitizeDailyFragmentRecord, sanitizePsycheStateRecord } from '../components/app/backupHelpers';
 import { normalizeSummaryArchiveState, resolveCoreMemoryFromSummaryArchive } from '../components/app/summaryCycle';
 import { normalizeMemoryQuerySession } from '../components/app/ragRecallHelpers';
 import {
@@ -18,7 +18,7 @@ import {
 } from '../services/db';
 import { DEFAULT_BACKUP_CONFIG, normalizeBackupConfig } from '../services/appConfig';
 import { DEFAULT_LOCATION_CONFIG, LOCALIZED_WORLD_BOOK } from '../constants';
-import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, type RelativeReminder, type DailyReminder } from '../store/slices/reminderSlice';
+import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY, KUMIKO_MISSED_REMINDERS_STORAGE_KEY, type RelativeReminder, type DailyReminder, type MissedReminderRecord } from '../store/slices/reminderSlice';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
 import {
   BUSY_SLOT_RUNTIME_STORAGE_KEY,
@@ -40,6 +40,90 @@ import type {
   MemoryQuerySession,
   MissedMessageAlert,
 } from '../types';
+
+// v2.14.29 H10 rework helpers ------------------------------------------------
+// These build the inbox alert + persistent context record for one-shot
+// reminders that boot scan classifies as "Branch 2: > 3 days late, do
+// not chat". Keeping them at module scope (vs. inside the hook closure)
+// because they're pure and easy to unit-test in DevTools by re-importing
+// without spinning up React. Both return null if the input record is
+// malformed past the point where building a useful surface text is
+// possible — caller filters those out.
+
+const formatMissedSinceLabel = (lateBy: number, language: Language): string => {
+  const days = Math.floor(lateBy / 86_400_000);
+  if (language === 'en') {
+    if (days <= 1) return 'about a day ago';
+    if (days < 7) return `${days} days ago`;
+    if (days < 14) return 'about a week ago';
+    return `${Math.floor(days / 7)} weeks ago`;
+  }
+  if (days <= 1) return '大约一天前';
+  if (days < 7) return `${days} 天前`;
+  if (days < 14) return '差不多一周前';
+  return `${Math.floor(days / 7)} 周前`;
+};
+
+const buildMissedReminderAlert = (
+  raw: any,
+  language: Language,
+  bootNow: number,
+): MissedMessageAlert | null => {
+  if (!raw || typeof raw.event !== 'string' || typeof raw.dueAt !== 'number' || !Number.isFinite(raw.dueAt)) {
+    return null;
+  }
+  const lateLabel = formatMissedSinceLabel(bootNow - raw.dueAt, language);
+  const eventTrimmed = raw.event.trim();
+  const preview = language === 'en'
+    ? `Missed reminder · should have happened ${lateLabel}: ${eventTrimmed}`
+    : `错过的提醒 · 本应在${lateLabel}发生：${eventTrimmed}`;
+  // Synthetic message id — no real chat message exists for this case.
+  // IMPORTANT: must be deterministic per raw reminder, NOT salted with
+  // bootNow. Otherwise we'd append a brand-new alert on every cold boot
+  // for the same overdue reminder (until cleanup drops the source row),
+  // pushing the inbox toward its 50-cap with duplicates.
+  const messageId = `missed-reminder-${raw.id ?? raw.dueAt}`;
+  return {
+    id: messageId,
+    messageId,
+    preview,
+    timestamp: bootNow,
+    kind: 'reminder',
+    isRead: false,
+  };
+};
+
+const buildMissedReminderRecord = (
+  raw: any,
+  bootNow: number,
+): MissedReminderRecord | null => {
+  if (!raw || typeof raw.event !== 'string' || typeof raw.dueAt !== 'number' || !Number.isFinite(raw.dueAt)) {
+    return null;
+  }
+  return sanitizeMissedReminderRecord({
+    id: typeof raw.id === 'string' ? `missed-${raw.id}` : `missed-${raw.dueAt}-${Math.random().toString(36).slice(2, 8)}`,
+    event: raw.event,
+    sourceText: typeof raw.sourceText === 'string' ? raw.sourceText : undefined,
+    originalDueAt: raw.dueAt,
+    recordedAt: bootNow,
+  });
+};
+
+// Drop entries with the same `event + originalDueAt` pair, keeping the
+// oldest `recordedAt` (so we don't spam the LLM if the user reopens the
+// app multiple times before dismissing).
+const dedupeMissedReminderRecords = (records: MissedReminderRecord[]): MissedReminderRecord[] => {
+  const seen = new Map<string, MissedReminderRecord>();
+  for (const r of records) {
+    const key = `${r.event}::${r.originalDueAt}`;
+    const prev = seen.get(key);
+    if (!prev || r.recordedAt < prev.recordedAt) {
+      seen.set(key, r);
+    }
+  }
+  return Array.from(seen.values()).sort((a, b) => b.originalDueAt - a.originalDueAt);
+};
+// ----------------------------------------------------------------------------
 
 export interface UseInitialLoadBootstrapParams {
   // Refs that survive across renders, written during load.
@@ -68,7 +152,8 @@ export interface UseInitialLoadBootstrapParams {
   setCurrentEmotion: (v: EmotionType) => void;
   setRelativeReminders: (v: RelativeReminder[]) => void;
   setDailyReminders: (v: DailyReminder[]) => void;
-  setMessageAlerts: (v: MissedMessageAlert[]) => void;
+  setMissedReminders: (v: MissedReminderRecord[] | ((prev: MissedReminderRecord[]) => MissedReminderRecord[])) => void;
+  setMessageAlerts: (v: MissedMessageAlert[] | ((prev: MissedMessageAlert[]) => MissedMessageAlert[])) => void;
   setWorldCharacterStatus: (v: WorldCharacterStatusMap) => void;
   setAutoSavedKumikoDiary: (v: KumikoDiaryEntity[]) => void;
   setAutoSavedDailyFragments: (v: DailyFragmentEntity[]) => void;
@@ -121,6 +206,7 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
     setCurrentEmotion,
     setRelativeReminders,
     setDailyReminders,
+    setMissedReminders,
     setMessageAlerts,
     setWorldCharacterStatus,
     setAutoSavedKumikoDiary,
@@ -193,42 +279,103 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
         setSummaryArchiveState(loadedSummaryArchiveState);
         setAnchors(await db.getVal('kumiko_anchors', []));
         setCurrentEmotion(await db.getVal('kumiko_current_emotion', 'neutral'));
-        // v2.14.28 H10: rescue missed one-shot reminders. The strict sanitizer
-        // drops any record with `dueAt <= now`, which silently swallowed every
-        // one-shot reminder that came due while the app was closed. Combined
-        // with H4 (PC fully-quit silence), users could lose important pings
-        // forever and have no UX path to know it happened.
-        // Boot-time rescue: walk the raw records once. Live reminders go through
-        // the strict sanitizer; expired ones are re-armed to `now + 1ms` so
-        // the running scheduler fires them on its first tick — the user sees
-        // the missed reminder as a delayed but visible message rather than
-        // silent loss. Backups from old saves still go through the strict
-        // sanitize path in backupActions.ts (we don't want a year-old backup
-        // restoration to spam old reminders).
+        // v2.14.29 H10 rework: dual-branch boot scan for missed one-shot reminders.
+        //
+        // Background: the v2.14.28 first cut blanket re-armed any expired
+        // one-shot reminder to `dueAt = now + 1ms`, which made the scheduler
+        // fire the original on-time prompt ("现在已经到点了，快去吃药！")
+        // even when the original time was hours or days ago. That nag-on-boot
+        // behavior is what the user pushed back on: "都过期了，立刻提醒又是
+        // 什么意义". The new design splits by lateness:
+        //
+        //   ≤ 3 days late: still re-arm, but stamp `originalDueAt` so the
+        //     trigger path (chatActions.buildTimedReminderSystemPrompt) picks
+        //     the "late acknowledgement" prompt instead of pretending it's
+        //     on-time. Kumiko admits she missed it and asks if the user
+        //     already handled it.
+        //
+        //   > 3 days late: don't fire any chat. Push a MissedMessageAlert to
+        //     the inbox so the user can see it was logged, and push a
+        //     MissedReminderRecord into kumiko_missed_reminders so the
+        //     system prompt surfaces it deterministically — Kumiko brings
+        //     it up only when (a) the user mentions a related topic or
+        //     (b) she's initiating a chat after gapHours >= 3. See
+        //     services/geminiService.ts missedReminderRecallBlock.
+        //
+        // The MissedReminderRecord array also gets a 7-day TTL sweep here so
+        // entries don't accumulate indefinitely; the inbox itself caps at 50.
+        const RESCUE_LATE_CHAT_GRACE_MS = 3 * 24 * 60 * 60 * 1000;       // ≤ 3d → Branch 1 (chat)
+        const MISSED_REMINDER_CONTEXT_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // 7d  → drop from prompt context
+
+        const loadedLanguage = (await db.getVal('kumiko_language', 'zh')) as Language;
         const rawRelativeReminders = (await db.getVal(RELATIVE_REMINDER_STORAGE_KEY, [])) as any[];
         const bootNow = Date.now();
         const liveAndRescuedRelative: RelativeReminder[] = [];
-        const RESCUE_REMINDER_GRACE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days; older expired ones still drop
+        const pendingMissedAlerts: MissedMessageAlert[] = [];
+        const pendingMissedRecords: MissedReminderRecord[] = [];
+
         for (const raw of rawRelativeReminders) {
             const live = sanitizeRelativeReminderRecord(raw);
             if (live) {
                 liveAndRescuedRelative.push(live);
                 continue;
             }
-            // Possibly expired but otherwise valid — try to rescue.
+            // Possibly expired — split by lateness.
             if (raw && typeof raw.event === 'string' && typeof raw.dueAt === 'number'
                 && typeof raw.createdAt === 'number' && Number.isFinite(raw.dueAt)
-                && raw.dueAt <= bootNow && raw.dueAt > bootNow - RESCUE_REMINDER_GRACE_MS) {
-                const rescued = sanitizeRelativeReminderRecord({ ...raw, dueAt: bootNow + 1 });
-                if (rescued) {
-                    console.info(`[BOOT] Rescuing missed one-shot reminder: ${rescued.event} (was due ${new Date(raw.dueAt).toISOString()})`);
-                    liveAndRescuedRelative.push(rescued);
+                && raw.dueAt <= bootNow) {
+                const lateBy = bootNow - raw.dueAt;
+                if (lateBy <= RESCUE_LATE_CHAT_GRACE_MS) {
+                    // Branch 1: late chat, prompt template will acknowledge the lag.
+                    const rescued = sanitizeRelativeReminderRecord({
+                        ...raw,
+                        dueAt: bootNow + 1,
+                        originalDueAt: raw.dueAt,
+                    });
+                    if (rescued) {
+                        console.info(`[BOOT H10] Late-chat rescue: ${rescued.event} (was due ${new Date(raw.dueAt).toISOString()}, ${Math.round(lateBy / 60000)}min late)`);
+                        liveAndRescuedRelative.push(rescued);
+                    }
+                } else {
+                    // Branch 2: passive — inbox alert + missed-reminder context, no chat.
+                    const alert = buildMissedReminderAlert(raw, loadedLanguage, bootNow);
+                    const record = buildMissedReminderRecord(raw, bootNow);
+                    if (alert) pendingMissedAlerts.push(alert);
+                    if (record) pendingMissedRecords.push(record);
+                    console.info(`[BOOT H10] Passive missed reminder: ${raw.event} (was due ${new Date(raw.dueAt).toISOString()}, ${Math.round(lateBy / 86400000)}d late)`);
                 }
             }
         }
+
+        // Apply TTL sweep on existing missedReminders + merge in any new ones from this boot.
+        const existingMissedRaw = (await db.getVal(KUMIKO_MISSED_REMINDERS_STORAGE_KEY, [])) as any[];
+        const existingMissed = (existingMissedRaw.map(sanitizeMissedReminderRecord).filter(Boolean) as MissedReminderRecord[])
+            .filter(r => bootNow - r.recordedAt < MISSED_REMINDER_CONTEXT_TTL_MS);
+        const mergedMissed = dedupeMissedReminderRecords([...pendingMissedRecords, ...existingMissed]);
+        setMissedReminders(mergedMissed);
+        // Persist back so the TTL drop and de-dup survive across restarts
+        // even if the user never opens MessageCenterPanel to dismiss.
+        await db.setVal(KUMIKO_MISSED_REMINDERS_STORAGE_KEY, mergedMissed);
+
         setRelativeReminders(liveAndRescuedRelative);
+        // v2.14.29 H10: persist the rescued/cleaned list so the raw store
+        // no longer carries the > 3-day-late entries we just demoted to
+        // missed-reminder context. Without this, every cold boot would
+        // re-scan the same expired rows, regenerate the same context
+        // record, and push another inbox alert (the messageId is stable
+        // so dedup catches it, but it still wastes a write each boot).
+        await db.setVal(RELATIVE_REMINDER_STORAGE_KEY, liveAndRescuedRelative);
         setDailyReminders((await db.getVal(DAILY_REMINDER_STORAGE_KEY, [])).map(sanitizeDailyReminderRecord).filter(Boolean) as DailyReminder[]);
-        setMessageAlerts((await db.getVal(MESSAGE_ALERTS_STORAGE_KEY, [])).map(sanitizeMessageAlertRecord).filter(Boolean).slice(0, 50) as MissedMessageAlert[]);
+
+        // v2.14.29 H10: prepend pendingMissedAlerts so the user sees the
+        // freshly-discovered missed reminders at the top of the inbox; cap
+        // at 50 to match MESSAGE_ALERTS_STORAGE_KEY's policy elsewhere.
+        const existingAlerts = ((await db.getVal(MESSAGE_ALERTS_STORAGE_KEY, [])) as any[])
+            .map(sanitizeMessageAlertRecord)
+            .filter(Boolean) as MissedMessageAlert[];
+        const mergedAlerts = [...pendingMissedAlerts, ...existingAlerts.filter(a => !pendingMissedAlerts.some(p => p.id === a.id))]
+            .slice(0, 50);
+        setMessageAlerts(mergedAlerts);
         setWorldCharacterStatus(sanitizeWorldCharacterStatusRecord(await db.getVal('world_character_status', INITIAL_WORLD_CHARACTER_STATUS)));
         setAutoSavedKumikoDiary((await db.kumikoDiary.orderBy('date').toArray()).map(sanitizeKumikoDiaryRecord).filter(Boolean) as KumikoDiaryEntity[]);
         setAutoSavedDailyFragments((await db.dailyFragments.orderBy('timestamp').toArray()).map(sanitizeDailyFragmentRecord).filter(Boolean) as DailyFragmentEntity[]);

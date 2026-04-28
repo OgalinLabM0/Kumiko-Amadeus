@@ -410,7 +410,7 @@ export async function triggerNativeProactiveMessage(
   mode: 'proactive_life' | 'sleep_command' = 'proactive_life',
 ) {
   const state = useAppStore.getState();
-  const { isTalking, isThinking, messages, coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, language } = state;
+  const { isTalking, isThinking, messages, coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, language, missedReminders } = state;
 
   // Cloud-sync gate removed (cloud feature dropped).
 
@@ -462,6 +462,11 @@ export async function triggerNativeProactiveMessage(
       undefined, undefined, 0, undefined, [], undefined, [], anchors, kumikoNotebook,
       undefined,
       language,
+      undefined,
+      // v2.14.29 H10: proactive opening is exactly the case the recall
+      // block was designed for — Kumiko spontaneously checking in after
+      // a gap. Pass the records through so she may pick one up.
+      missedReminders,
     );
 
     useAppStore.getState().setIsThinking(false);
@@ -505,7 +510,7 @@ export async function prepareBusyFollowUpResponse(
   followUp: BusyFollowUp,
 ): Promise<{ textParts: string[]; emotion: EmotionType } | null> {
   const state = useAppStore.getState();
-  const { coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, language, messages } = state;
+  const { coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, language, messages, missedReminders } = state;
 
   const unreadIds = new Set(followUp.unreadUserMessageIds);
   const unreadMessages = messages.filter(m => unreadIds.has(m.id));
@@ -577,6 +582,11 @@ export async function prepareBusyFollowUpResponse(
       undefined, undefined, 0, undefined, [], undefined, [], anchors, kumikoNotebook,
       undefined,
       language,
+      undefined,
+      // v2.14.29 H10: post-busy follow-up is also a "she's catching back
+      // up after being away" moment — natural place to surface a missed
+      // reminder if it fits the unread thread.
+      missedReminders,
     );
     const cleanedParts = (response.textParts || [])
       .map(t => (t || '').trim())
@@ -720,15 +730,51 @@ ${highlightLines}
 // Shared prompt builder used by both the live trigger path and the T-60s
 // prewarm path (H17.A). Keeping it in one place ensures the prewarmed LLM
 // response is byte-identical to what a live trigger would have produced.
+//
+// v2.14.29 H10 rework: routes between two templates based on `originalDueAt`.
+//   - undefined / unset (normal path)         → on-time prompt: "现在已经到点了"
+//   - present (≤ 3-day boot rescue Branch 1)  → late prompt: acknowledge the
+//                                                miss, ask if user already
+//                                                handled it, do NOT pretend
+//                                                the original time just hit.
+// The trigger and prewarm callers both pass `originalDueAt` through; if a
+// caller forgets to thread it, behavior degrades gracefully back to on-time.
 function buildTimedReminderSystemPrompt(
   reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>,
   language: Language,
   userTimezone: string,
+  originalDueAt?: number,
 ): string {
   const userTimeStr = new Date().toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
     timeZone: userTimezone,
     weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
   });
+
+  if (typeof originalDueAt === 'number' && Number.isFinite(originalDueAt) && originalDueAt < Date.now()) {
+    const originalTimeStr = new Date(originalDueAt).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
+      timeZone: userTimezone,
+      weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+    return language === 'zh' ? `[SYSTEM_ACTIVATION_PROTOCOL: 迟到的提醒 — 错过原定时间]
+      之前你答应过用户：到 ${originalTimeStr} 提醒他「${reminder.event}」，
+      但因为软件没开着、你没赶上，现在用户的时间是 ${userTimeStr}。
+      ${reminder.sourceText ? `用户当时大意是：${reminder.sourceText}` : ''}
+      规则：
+      1. 像黄前久美子刚刚才反应过来"哦……我应该早点说的"，主动承认自己迟了，不要装作刚到点。
+      2. 简短问一句用户是不是已经处理了，例如"我应该 ${originalTimeStr} 提醒你「${reminder.event}」的，没赶上，你做了吗？"
+      3. 不要催促"快去做"，因为已经过了；语气稍带歉意但保持自然，1-2 句话即可。
+      4. 不要提系统、定时器、倒计时、自动触发、后台、模块、"应用没开"之类的解释，听起来要像她自己忘了或顾着别的事。`
+    : `[SYSTEM_ACTIVATION_PROTOCOL: LATE REMINDER — ORIGINAL TIME MISSED]
+      You earlier promised to remind the user about "${reminder.event}" at ${originalTimeStr},
+      but you missed the moment, and now the user's local time is ${userTimeStr}.
+      ${reminder.sourceText ? `Original request context: ${reminder.sourceText}` : ''}
+      Rules:
+      1. Sound like Kumiko just realized she forgot — admit it instead of pretending the time just arrived.
+      2. Briefly check whether the user already handled it, e.g. "I was supposed to remind you about ${reminder.event} at ${originalTimeStr} — I missed it. Did you take care of it?"
+      3. Don't push them to do it now; the moment has passed. A small apology in passing is fine, 1-2 lines max.
+      4. Do not mention systems, timers, countdowns, automation, the app being closed, modules, etc. — it should sound like she got distracted or just forgot.`;
+  }
+
   return language === 'zh' ? `[SYSTEM_ACTIVATION_PROTOCOL: 约好时间的提醒]
       之前用户拜托过你到时间提醒这件事，现在已经到点了。
       要提醒的事：${reminder.event}
@@ -769,7 +815,13 @@ function buildTimedReminderSystemPrompt(
 export async function prewarmTimedReminderMessage(
   refs: Pick<ChatActionRefs, 'messagesRef' | 'ttsConfigRef'>,
   helpers: Pick<ExecuteSendHelpers, 'runVoicePipeline'>,
-  reminder: { id: string; event: string; sourceText?: string; dueAt: number },
+  // v2.14.29 H10: caller threads `originalDueAt` so the prewarmed
+  // prompt matches what the live trigger will use. If the boot rescue
+  // marked this reminder as ≤ 3-day late, both prewarm and trigger
+  // produce the "late acknowledgement" template; otherwise both stick
+  // with the on-time template. Important that they agree, otherwise
+  // the prewarmed cache would be used with a mismatched trigger prompt.
+  reminder: { id: string; event: string; sourceText?: string; dueAt: number; originalDueAt?: number },
 ): Promise<void> {
   const entry = startReminderPrewarm(reminder.id, reminder.event, reminder.dueAt);
   // The sentinel returns the EXISTING entry if a prewarm is already in flight or
@@ -784,6 +836,7 @@ export async function prewarmTimedReminderMessage(
       { event: reminder.event, sourceText: reminder.sourceText },
       language,
       locationConfig.userTimezone,
+      reminder.originalDueAt,
     );
     const recentMessages = refs.messagesRef.current.slice(-contextLimit);
     const response = await sendMessageToGemini(
@@ -850,7 +903,13 @@ export async function prewarmTimedReminderMessage(
 export async function triggerTimedReminderMessage(
   refs: Pick<ChatActionRefs, 'messagesRef' | 'ttsConfigRef'>,
   helpers: Pick<ExecuteSendHelpers, 'runVoicePipeline'>,
-  reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>,
+  // v2.14.29 H10: accept either the historical narrow shape OR the full
+  // RelativeReminder so callers can pass `originalDueAt` for the late
+  // template. DailyReminder doesn't have `originalDueAt` (recurring), so
+  // its branch always picks the on-time template.
+  reminder:
+    | (Pick<RelativeReminder, 'event' | 'sourceText'> & { originalDueAt?: number })
+    | Pick<DailyReminder, 'event' | 'sourceText'>,
   // v2.14.28 H17.A: optional reminder id so we can pull a prewarmed payload from
   // services/reminderPrewarmService. When the polling loop kicked a prewarm at
   // T-60s and the LLM (and possibly TTS) finished before T=0, this dispatch
@@ -863,7 +922,13 @@ export async function triggerTimedReminderMessage(
   const { language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook } = state;
   const prewarmHit = reminderId ? consumeReminderPrewarm(reminderId) : null;
 
-  const systemPrompt = buildTimedReminderSystemPrompt(reminder, language, locationConfig.userTimezone);
+  const reminderOriginalDueAt = (reminder as { originalDueAt?: number }).originalDueAt;
+  const systemPrompt = buildTimedReminderSystemPrompt(
+    reminder,
+    language,
+    locationConfig.userTimezone,
+    reminderOriginalDueAt,
+  );
 
   state.setIsThinking(true);
 
@@ -1256,7 +1321,7 @@ export async function executeSend(
 
 async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
   const state = useAppStore.getState();
-  const { coreMemory, worldBook, contextLimit, locationConfig, backupConfig, anchors, kumikoNotebook, turnCount, language, summaryArchiveState } = state;
+  const { coreMemory, worldBook, contextLimit, locationConfig, backupConfig, anchors, kumikoNotebook, turnCount, language, summaryArchiveState, missedReminders } = state;
 
   const {
     combinedText,
@@ -1827,6 +1892,10 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     const modelActiveReminders = strictEvidenceTurn ? [] : activeReminders;
     const modelAnchors = strictEvidenceTurn ? [] : anchors;
     const modelNotebook = strictEvidenceTurn ? '' : kumikoNotebook;
+    // v2.14.29 H10: same suppression as anchors — strict-memory-lookup
+    // turns get a clean focused prompt with only evidence + plan,
+    // no ambient recall blocks.
+    const modelMissedReminders = strictEvidenceTurn ? [] : missedReminders;
     const modelExactHistoryLookup = historyLookup?.promptBlock
       ? (strictEvidenceTurn && memoryResponsePlanBlock
         ? `${memoryResponsePlanBlock}\n${historyLookup.promptBlock}`
@@ -1944,6 +2013,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       undefined,
       language,
       hybridVoicePrompt || undefined,
+      modelMissedReminders,
     );
 
     if (ctx.isCancelled()) {

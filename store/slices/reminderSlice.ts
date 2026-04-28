@@ -3,6 +3,13 @@ import { db } from '../../services/db';
 
 export const RELATIVE_REMINDER_STORAGE_KEY = 'kumiko_relative_reminders';
 export const DAILY_REMINDER_STORAGE_KEY = 'kumiko_daily_reminders';
+// v2.14.29 H10 rework: separate keyval for "things she promised to
+// remind me of but missed by > 3 days". Decoupled from `kumiko_anchors`
+// because the two are different mechanisms: anchors are 15%-probability
+// random flashbacks for ambient continuity, while these records are a
+// deterministic "still on her mind, surface naturally when relevant"
+// list. See plan h10_missed_reminder_rework for the design.
+export const KUMIKO_MISSED_REMINDERS_STORAGE_KEY = 'kumiko_missed_reminders';
 const REMINDER_RETRY_DELAY_MS = 30000;
 
 export type RelativeReminder = {
@@ -12,6 +19,14 @@ export type RelativeReminder = {
   createdAt: number;
   sourceText?: string;
   retryAt?: number;
+  // v2.14.29 H10 rework: only set when boot rescue re-armed `dueAt`
+  // for a reminder that was missed while the app was closed but is
+  // still within the 3-day late-chat grace window. The trigger path
+  // reads this to pick the "late acknowledgement" prompt template
+  // (chatActions.buildTimedReminderSystemPrompt) instead of the
+  // on-time "[現在已经到点了]" template, so Kumiko admits she was
+  // late instead of pretending the original time just arrived.
+  originalDueAt?: number;
 };
 
 export type DailyReminder = {
@@ -27,6 +42,23 @@ export type DailyReminder = {
   retryAt?: number;
 };
 
+// v2.14.29 H10 rework: one-shot reminders missed by > 3 days don't
+// fire a delayed chat (that would feel weird — Kumiko nagging you to
+// take 8am pills at 14:00). Instead they land here and get folded into
+// her system prompt every turn so she can naturally bring them up when
+// (a) the user mentions a related topic, or (b) she's initiating a
+// proactive chat after gapHours >= 3. TTL is 7 days from recordedAt
+// (matches the user's "after a week she stops actively bringing it up"
+// instinct); after that, boot-time cleanup drops them. Inbox alerts
+// stay on their own 50-cap clock.
+export type MissedReminderRecord = {
+  id: string;
+  event: string;
+  sourceText?: string;
+  originalDueAt: number;
+  recordedAt: number;
+};
+
 export const normalizeReminderEvent = (rawEvent: string): string => {
   return rawEvent
     .replace(/(?:我怕忘(?:了)?|怕忘(?:了)?|怕我忘(?:了)?|免得忘(?:了)?|别忘(?:了)?|我怕自己忘(?:了)?).*$/u, '')
@@ -39,13 +71,22 @@ export const normalizeReminderEvent = (rawEvent: string): string => {
 export interface ReminderSlice {
   relativeReminders: RelativeReminder[];
   dailyReminders: DailyReminder[];
+  // v2.14.29 H10: things she promised to remind the user about but
+  // missed by > 3 days. Read by services/geminiService when building
+  // the system prompt (missedReminderRecallBlock); written by
+  // useInitialLoadBootstrap on boot scan and by MessageCenterPanel
+  // when the user dismisses the matching inbox alert.
+  missedReminders: MissedReminderRecord[];
 
   setRelativeReminders: (v: RelativeReminder[]) => void;
   setDailyReminders: (v: DailyReminder[]) => void;
+  setMissedReminders: (v: MissedReminderRecord[] | ((prev: MissedReminderRecord[]) => MissedReminderRecord[])) => void;
   getRelativeReminders: () => RelativeReminder[];
   getDailyReminders: () => DailyReminder[];
+  getMissedReminders: () => MissedReminderRecord[];
   persistRelativeReminders: (reminders: RelativeReminder[]) => Promise<void>;
   persistDailyReminders: (reminders: DailyReminder[]) => Promise<void>;
+  persistMissedReminders: (records: MissedReminderRecord[]) => Promise<void>;
   saveRelativeReminder: (event: string, delaySeconds: number, sourceText?: string) => Promise<void>;
   markRelativeReminderRetry: (reminderId: string) => Promise<void>;
   removeRelativeReminder: (reminderId: string) => Promise<void>;
@@ -54,6 +95,7 @@ export interface ReminderSlice {
   toggleDailyReminderPaused: (reminderId: string) => Promise<void>;
   markDailyReminderTriggered: (reminderId: string, dateKey: string) => Promise<void>;
   markDailyReminderRetry: (reminderId: string) => Promise<void>;
+  removeMissedReminder: (recordId: string) => Promise<void>;
 }
 
 type ReminderSliceDeps = {
@@ -68,12 +110,17 @@ export const createReminderSlice: StateCreator<
 > = (set, get) => ({
   relativeReminders: [],
   dailyReminders: [],
+  missedReminders: [],
 
   setRelativeReminders: (v) => set({ relativeReminders: v }),
   setDailyReminders: (v) => set({ dailyReminders: v }),
+  setMissedReminders: (v) => set((s) => ({
+    missedReminders: typeof v === 'function' ? v(s.missedReminders) : v,
+  })),
 
   getRelativeReminders: () => get().relativeReminders,
   getDailyReminders: () => get().dailyReminders,
+  getMissedReminders: () => get().missedReminders,
 
   persistRelativeReminders: async (reminders) => {
     set({ relativeReminders: reminders });
@@ -83,6 +130,16 @@ export const createReminderSlice: StateCreator<
   persistDailyReminders: async (reminders) => {
     set({ dailyReminders: reminders });
     await db.setVal(DAILY_REMINDER_STORAGE_KEY, reminders);
+  },
+
+  persistMissedReminders: async (records) => {
+    set({ missedReminders: records });
+    await db.setVal(KUMIKO_MISSED_REMINDERS_STORAGE_KEY, records);
+  },
+
+  removeMissedReminder: async (recordId) => {
+    const next = get().missedReminders.filter(r => r.id !== recordId);
+    await get().persistMissedReminders(next);
   },
 
   saveRelativeReminder: async (event, delaySeconds, sourceText) => {

@@ -7,7 +7,7 @@ import {
   type PsycheStateEntity,
   type WorldCharacterStatusMap,
 } from '../../services/db';
-import { normalizeReminderEvent, type RelativeReminder, type DailyReminder } from '../../store/slices/reminderSlice';
+import { normalizeReminderEvent, type RelativeReminder, type DailyReminder, type MissedReminderRecord } from '../../store/slices/reminderSlice';
 import { DEV_LOG_MAX_OBJECT_KEYS } from './appConstants';
 
 export const recalculateTurnCountFromMessages = (messages: Message[]) => {
@@ -270,6 +270,41 @@ export const sanitizeRelativeReminderRecord = (record: any): RelativeReminder | 
     createdAt: record.createdAt,
     sourceText: typeof record.sourceText === 'string' ? record.sourceText : undefined,
     retryAt: typeof record.retryAt === 'number' ? record.retryAt : undefined,
+    // v2.14.29 H10: passthrough originalDueAt when the boot rescue
+    // re-armed `dueAt`. Validate it's a finite past timestamp; bogus
+    // values fall back to undefined (= treat as on-time fire).
+    originalDueAt: (typeof record.originalDueAt === 'number' && Number.isFinite(record.originalDueAt) && record.originalDueAt > 0)
+      ? record.originalDueAt
+      : undefined,
+  };
+};
+
+// v2.14.29 H10 rework: same shape as MissedReminderRecord; rejects any
+// record missing `event`, `originalDueAt`, or `recordedAt`. Backups
+// from older builds (which never wrote this key) yield an empty array
+// after `.map(sanitize).filter(Boolean)`, which is the correct migration
+// behavior — the user simply has no past missed reminders to recall.
+export const sanitizeMissedReminderRecord = (record: any): MissedReminderRecord | null => {
+  if (!record
+      || typeof record.event !== 'string'
+      || typeof record.originalDueAt !== 'number'
+      || typeof record.recordedAt !== 'number') {
+    return null;
+  }
+  const event = normalizeReminderEvent(record.event);
+  if (!event
+      || !Number.isFinite(record.originalDueAt)
+      || !Number.isFinite(record.recordedAt)) {
+    return null;
+  }
+  return {
+    id: typeof record.id === 'string'
+      ? record.id
+      : `missed-${record.originalDueAt}-${Math.random().toString(36).slice(2, 8)}`,
+    event,
+    sourceText: typeof record.sourceText === 'string' ? record.sourceText : undefined,
+    originalDueAt: record.originalDueAt,
+    recordedAt: record.recordedAt,
   };
 };
 

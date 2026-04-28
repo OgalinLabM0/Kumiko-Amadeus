@@ -14,8 +14,10 @@ import {
 import {
   RELATIVE_REMINDER_STORAGE_KEY,
   DAILY_REMINDER_STORAGE_KEY,
+  KUMIKO_MISSED_REMINDERS_STORAGE_KEY,
   type DailyReminder,
   type RelativeReminder,
+  type MissedReminderRecord,
 } from '../store/slices/reminderSlice';
 import {
   BUSY_FOLLOWUP_STORAGE_KEY,
@@ -29,6 +31,7 @@ import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
 import {
   sanitizeDailyReminderRecord,
   sanitizeMessageAlertRecord,
+  sanitizeMissedReminderRecord,
   sanitizeRelativeReminderRecord,
   sanitizeWorldCharacterStatusRecord,
 } from '../components/app/backupHelpers';
@@ -72,6 +75,7 @@ export const SYNCED_KEYVAL_KEYS = new Set<string>([
   SUMMARY_ARCHIVE_STATE_STORAGE_KEY,
   RELATIVE_REMINDER_STORAGE_KEY,
   DAILY_REMINDER_STORAGE_KEY,
+  KUMIKO_MISSED_REMINDERS_STORAGE_KEY,
   'kumiko_anchors',
   MESSAGE_ALERTS_STORAGE_KEY,
   'kumiko_current_emotion',
@@ -305,6 +309,13 @@ function applyKeyvalToRuntime(key: string, value: unknown, turnCountHint?: numbe
         (Array.isArray(value) ? value : [])
           .map(sanitizeDailyReminderRecord)
           .filter(Boolean) as DailyReminder[],
+      );
+      return;
+    case KUMIKO_MISSED_REMINDERS_STORAGE_KEY:
+      store.setMissedReminders(
+        (Array.isArray(value) ? value : [])
+          .map(sanitizeMissedReminderRecord)
+          .filter(Boolean) as MissedReminderRecord[],
       );
       return;
     case 'kumiko_anchors':

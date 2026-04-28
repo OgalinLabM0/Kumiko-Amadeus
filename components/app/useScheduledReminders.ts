@@ -134,7 +134,12 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
   const checkScheduledRemindersRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   const triggerTimedReminderMessage = useCallback(async (
-    reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>,
+    // v2.14.29 H10: widen to accept `originalDueAt` so the boot-rescued
+    // late-chat path can route to the late prompt template. Daily branch
+    // doesn't carry it (recurring reminders never get rescued).
+    reminder:
+      | (Pick<RelativeReminder, 'event' | 'sourceText'> & { originalDueAt?: number })
+      | Pick<DailyReminder, 'event' | 'sourceText'>,
     reminderId?: string,
   ): Promise<boolean> => {
     return triggerTimedReminderMessageAction(
@@ -160,7 +165,16 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
     void prewarmTimedReminderMessageAction(
       { messagesRef, ttsConfigRef } as Pick<ChatActionRefs, 'messagesRef' | 'ttsConfigRef'>,
       { runVoicePipeline },
-      { id: reminder.id, event: reminder.event, sourceText: reminder.sourceText, dueAt: reminder.dueAt },
+      // v2.14.29 H10: pass `originalDueAt` so the prewarmed prompt
+      // matches what the live trigger path will use; otherwise the cache
+      // hit at T=0 would deliver an on-time reply for a late reminder.
+      {
+        id: reminder.id,
+        event: reminder.event,
+        sourceText: reminder.sourceText,
+        dueAt: reminder.dueAt,
+        originalDueAt: reminder.originalDueAt,
+      },
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps -- mirrors triggerTimedReminderMessage deps so identity churns at the same cadence
   }, [language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook, addMessage, showBackgroundMessageNotification]);
