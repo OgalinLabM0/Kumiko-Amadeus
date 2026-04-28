@@ -1821,7 +1821,19 @@ ${extraSystemPrompt ?? ''}`;
                 promptToSend.push({ text: `[Vision Helper Description of user image]: ${description}` });
             } catch (e) {
                 console.error("Vision Helper failed for user image:", e);
-                promptToSend.push({ inlineData: { mimeType: mimeType, data: imageBase64 } });
+                // v2.14.28 H14: do NOT fall back to inlineData when the user
+                // explicitly enabled Vision Helper. The whole point of the
+                // toggle is "the main model has no vision capability", so
+                // shipping the raw image bytes anyway gets the API to reject
+                // the turn entirely (or worse, half-process it). Push a short
+                // text placeholder instead — the conversation continues in
+                // text mode and the user just sees "[image description failed,
+                // proceeding with text-only this turn]".
+                promptToSend.push({
+                    text: language === 'zh'
+                        ? `[Vision Helper Description of user image]: 图像描述失败，本回合按文字处理。`
+                        : `[Vision Helper Description of user image]: Image description failed; processing this turn as text only.`,
+                });
             }
         } else {
             promptToSend.push({ inlineData: { mimeType: mimeType, data: imageBase64 } });
