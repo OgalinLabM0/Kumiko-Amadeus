@@ -378,6 +378,38 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                       ringtoneFileId,
                   });
                   notifyExactAlarmFallbackOnce(result);
+
+                  // v2.14.28 H17.A Android: schedule a sibling "prewarm" alarm
+                  // 60 s before dueAt so the AlarmManager wakes the WebView
+                  // ahead of time, runs the same prewarmTimedReminderMessage
+                  // pipeline used by the desktop H17.A path, and stores the
+                  // result in services/reminderPrewarmService. The main alarm
+                  // at dueAt then dispatches via consumeReminderPrewarm and
+                  // the call screen / notification surfaces immediately.
+                  // Skip when there isn't a meaningful 60 s lead (reminder is
+                  // < 70 s away — we only schedule prewarm when there's
+                  // headroom for it to actually finish before T=0).
+                  const prewarmAt = r.dueAt - 60_000;
+                  if (prewarmAt > Date.now() + 10_000) {
+                      const prewarmId = `${r.id}__prewarm`;
+                      seenIds.add(prewarmId);
+                      const prewarmResult = await scheduleAndroidAlarm({
+                          reminderId: prewarmId,
+                          at: prewarmAt,
+                          // Mark `wantsCall=false` for the prewarm — when the
+                          // alarm fires we don't want to launch the
+                          // IncomingCallActivity, just nudge JS to start the
+                          // background generation. The JS listener detects the
+                          // `__prewarm` suffix and routes accordingly.
+                          event: r.event,
+                          text: r.event,
+                          wantsCall: false,
+                          ringtoneFileId: '',
+                      });
+                      // Don't toast the inexact-fallback notice for the
+                      // prewarm too — it would dupe the main alarm's notice.
+                      void prewarmResult;
+                  }
               }
               for (const d of dailies) {
                   if (!d || !d.id || d.paused) continue;
@@ -459,10 +491,31 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
       if (flowState !== 'APP') return;
       let dispose: (() => void) | undefined;
       let cancelled = false;
-      void addAlarmFiredListener(() => {
-          // Fire the dispatcher on the next microtask so the listener
-          // callback returns quickly. The dispatcher itself is async and
-          // self-guarded against re-entry.
+      // v2.14.28 H17.A Android: payload-aware listener. Sibling `__prewarm`
+      // alarms scheduled in the reconcile loop above route here too — when
+      // the suffix is present we run prewarmTimedReminderMessage instead of
+      // force-ticking the dispatcher. The original alarm at dueAt will fire
+      // 60 s later and consume the prewarm cache via triggerTimedReminderMessage.
+      void addAlarmFiredListener(async (payload) => {
+          const fired = payload?.reminderId || '';
+          if (fired.endsWith('__prewarm')) {
+              const originalId = fired.slice(0, -'__prewarm'.length);
+              try {
+                  const list = await getRelativeReminders();
+                  const reminder = (Array.isArray(list) ? list : []).find(r => r.id === originalId);
+                  if (!reminder) {
+                      console.log(`[ALARM PREWARM] no matching reminder for ${originalId} — already fired or removed`);
+                      return;
+                  }
+                  triggerPrewarm(reminder);
+              } catch (e) {
+                  console.warn('[useScheduledReminders] prewarm dispatch failed:', e);
+              }
+              return;
+          }
+          // Default path (main alarm): fire the dispatcher on the next
+          // microtask so the listener callback returns quickly. The
+          // dispatcher itself is async and self-guarded against re-entry.
           void Promise.resolve().then(() => checkScheduledRemindersRef.current());
       })
         .then((dispatch) => {
@@ -479,5 +532,6 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
           cancelled = true;
           try { dispose?.(); } catch { /* noop */ }
       };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- triggerPrewarm/getRelativeReminders intentionally omitted from deps so the listener registers once per APP mount; both are read live via closure
   }, [flowState]);
 };
