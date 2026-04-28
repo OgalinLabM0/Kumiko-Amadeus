@@ -1,0 +1,31 @@
+/* v2.14.28 H6.b — self-hosted Google Fonts via @fontsource(-variable).
+ *
+ * Replaces the runtime `@import url('https://fonts.googleapis.com/...')`
+ * that lived in index.html. The five families the design system uses
+ * are now bundled in via npm packages from @fontsource:
+ *
+ *   - @fontsource-variable/plus-jakarta-sans  (variable, all weights)
+ *   - @fontsource-variable/cormorant-garamond (variable, all weights)
+ *   - @fontsource-variable/noto-sans-sc       (variable, CJK; auto unicode-range slicing)
+ *   - @fontsource-variable/noto-serif-sc      (variable, CJK)
+ *   - @fontsource/ibm-plex-mono               (static, weights 400/500/600 imported below)
+ *
+ * Variable-font packages ship a single `index.css` that declares the
+ * full weight axis, so we only need one import per family. IBM Plex
+ * Mono has no variable variant on @fontsource — pull the three weights
+ * the previous Google Fonts request asked for.
+ *
+ * Vite copies the bundled woff2 files from node_modules into
+ * dist/assets at build time. Net effect: production app fully
+ * offline-capable, CSP can drop https://fonts.googleapis.com /
+ * https://fonts.gstatic.com from font-src.
+ */
+
+@import '@fontsource-variable/plus-jakarta-sans/index.css';
+@import '@fontsource-variable/cormorant-garamond/index.css';
+@import '@fontsource-variable/noto-sans-sc/index.css';
+@import '@fontsource-variable/noto-serif-sc/index.css';
+
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';

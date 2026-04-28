@@ -41,7 +41,13 @@
          imported from index.tsx). The compiled CSS lands in dist/assets
          alongside the Vite bundle — no runtime CDN dependency. -->
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&family=Cormorant+Garamond:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@500;600;700&display=swap');
+      /* v2.14.28 H6.b: removed `@import url('https://fonts.googleapis.com/...')`.
+         Five families (Plus Jakarta Sans / IBM Plex Mono / Cormorant Garamond /
+         Noto Sans SC / Noto Serif SC) are now self-hosted via @fontsource(-variable)
+         and imported from index.tsx through styles/fonts.css. No runtime CDN
+         dependency. CJK families ship as variable fonts with Vite's automatic
+         unicode-range slicing so the bundle only contains the subsets actually
+         referenced in the app. */
       
       :root {
         /* Phase 7 regression fix (iOS PWA viewport collapse):
