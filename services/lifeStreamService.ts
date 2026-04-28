@@ -1373,8 +1373,26 @@ export interface EmbedDiaryResult {
 export const embedDiaryToRAG = async (diary: KumikoDiaryEntity): Promise<EmbedDiaryResult> => {
   try {
     const textToEmbed = `[久美子的日记 - ${diary.date}]\n${diary.content}`;
+    // v2.14.28 H12: the vector id used to be `diary-${diary.id}` — row-UUID
+    // based — while canonicalKey was date based. Deleting a diary row and
+    // regenerating it gave the new row a fresh UUID, so the vector id
+    // changed but canonicalKey stayed the same. The RAG dedup check
+    // (shouldSkipCanonicalDuplicate, electron-rag.cjs:1195+) then sees an
+    // existing row with the same canonical_key but a *different* id and
+    // returns "skip" → the new diary never gets indexed, while the old
+    // vector lives on. RAG ends up recalling the OLD diary text for that
+    // date forever.
+    //
+    // Fix: anchor the vector id to the date as well. Both the primary key
+    // (id) and the canonical_key now collide on regenerate, so SQLite's
+    // INSERT OR REPLACE (electron-rag.cjs:2338) and the dedup's
+    // ignoreId branch correctly perform an update.
+    //
+    // Note: any existing rows in the wild with the old `diary-${UUID}`
+    // shape become orphans until the next manual RAG rebuild clears them.
+    // Acceptable for v2.14.28 — settings → RAG → Rebuild handles it.
     const payload = {
-      id: `diary-${diary.id}`,
+      id: `diary-${diary.date}`,
       text: textToEmbed,
       timestamp: diary.timestamp,
       tier: 'core' as const,
