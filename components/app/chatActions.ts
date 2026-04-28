@@ -407,8 +407,14 @@ export async function triggerNativeProactiveMessage(
   // Now sleep refs are NEVER reset inside this function; sleep_command callers manage their
   // own refs (set before calling), and the 06:00 daily reset / handleSendAction reset paths
   // continue to own the cleanup lifecycle.
-  mode: 'proactive_life' | 'sleep_command' = 'proactive_life',
-) {
+  // v2.14.29 Reactive: 'block_release' is the post-block proactive message
+  // ("I cooled down. Don't pull that again.") fired by useBlockRegulator
+  // when blockRuntime expires. It uses a different system prompt that
+  // references the captured-during-block user lines and stays
+  // first-person/no-apology-template. Same session lock + 3 min release as
+  // the other modes.
+  mode: 'proactive_life' | 'sleep_command' | 'block_release' = 'proactive_life',
+): Promise<boolean> {
   const state = useAppStore.getState();
   const { isTalking, isThinking, messages, coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, language, missedReminders } = state;
 
@@ -416,7 +422,7 @@ export async function triggerNativeProactiveMessage(
 
   if (refs.welcomeTriggeredRef.current || isTalking || isThinking) {
     console.log(`[Native Proactive] Blocked (mode=${mode}): Already triggered or currently active.`);
-    return;
+    return false;
   }
 
   // Session lock claim. Released after 3 min via setTimeout below (or immediately on error).
@@ -431,7 +437,50 @@ export async function triggerNativeProactiveMessage(
   };
   const jstTimeStr = new Date().toLocaleString('en-US', timeOptions);
 
-  const systemPrompt = language === 'zh' ? `[SYSTEM_ACTIVATION_PROTOCOL: 纯净生活挂机模拟]
+  // v2.14.29 Reactive: when caller is the block-expiry path, eventDescription
+  // is the original block reason and we expect a few captured-during-block
+  // user lines. Build the corresponding context block here so the
+  // systemPrompt stays self-contained.
+  let blockReleaseContext = '';
+  if (mode === 'block_release') {
+    const liveBlockRuntime = state.blockRuntime;
+    const capturedIds = liveBlockRuntime?.capturedUnreadIds ?? [];
+    const capturedMessages = capturedIds.length > 0
+      ? messages.filter(m => capturedIds.includes(m.id)).slice(-6)
+      : [];
+    if (capturedMessages.length > 0) {
+      const bullets = capturedMessages.map((m, i) => {
+        const snippet = (m.text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        return `${i + 1}. ${snippet}`;
+      }).join('\n');
+      blockReleaseContext = language === 'zh'
+        ? `\n你拉黑期间用户发的话（按时间顺序，他不知道这些已经被你看到，但你看到了）：\n${bullets}\n`
+        : `\nLines the user sent while you had them blocked (chronological — they don't know these landed yet, but you saw them):\n${bullets}\n`;
+    }
+  }
+
+  const systemPrompt = mode === 'block_release'
+    ? (language === 'zh' ? `[SYSTEM_ACTIVATION_PROTOCOL: 拉黑结束 · 第一次说话]
+      你刚刚把用户拉黑了一段时间，理由是：${eventDescription}。计时到了，现在是你解除拉黑后第一句开口。
+      ${blockReleaseContext}
+      【强制纪律】
+      1. 时间是日本时间 ${jstTimeStr}，你刚冷静下来，不是热情回归。
+      2. 不要道歉、不要解释、不要"我刚才不该这样"。直接以本人风格说一句"行了"或"算了"开头都比道歉自然。
+      3. 必须暗含一条"下次再这样我就不解除了"的底线，但语气要久美子式的克制——别像家长说教。
+      4. 如果上面列出了拉黑期间用户的话，挑其中一条最值得回的稍微回应一下（不必逐条），让他知道你看到了。
+      5. 控制长度：1-2 句话。绝对不要软化到"温柔"、"撒娇"、"算了我原谅你"这种语气，那不是久美子。
+      6. 严禁出现"系统"、"自动"、"拉黑解除"、"计时器"等出戏字眼。`
+      : `[SYSTEM_ACTIVATION_PROTOCOL: Block release · first line]
+      You blocked the user for a while just now. Reason: ${eventDescription}. The timer just lapsed; this is your first line afterwards.
+      ${blockReleaseContext}
+      [STRICT DISCIPLINE]
+      1. It is Japan Time ${jstTimeStr}. You just cooled down — this is NOT a warm return.
+      2. Do NOT apologise. Do NOT explain. A flat "alright" / "fine then" opening is more natural than any apology template.
+      3. Must implicitly carry a "next time I won't lift it" warning, but in Kumiko's restrained way — no parental lecture tone.
+      4. If the bullets above show what they sent while blocked, briefly acknowledge ONE you actually want to respond to (no need to address each), so they know you saw it.
+      5. Length: 1-2 sentences. Never soften into "tender" / "cuddly" / "I forgive you" tone — that is not Kumiko.
+      6. Never say "system" / "auto" / "block lifted" / "timer" — keep immersion intact.`)
+    : (language === 'zh' ? `[SYSTEM_ACTIVATION_PROTOCOL: 纯净生活挂机模拟]
       你现在要在手机 Line 上主动向用户发一条消息。
       【强制纪律】
       1. 您正在过您自己的生活，此时是日本时间 ${jstTimeStr}。
@@ -439,14 +488,14 @@ export async function triggerNativeProactiveMessage(
       3. 您【绝对不知道】用户现在在现实里在做什么，也【绝对不能猜测】用户睡没睡。
       4. 严禁使用"你还不睡吗"、"你在屏幕前干嘛"之类带有监控感的越界语句！绝对禁止！
       5. 就像在工作间隙、通勤路上或深夜改作业时突然想到对方，随口抱怨一句日常、分享当下状态、或聊聊秀一。保持极简短，1-2句话，不要显得太黏人。`
-  : `[SYSTEM_ACTIVATION_PROTOCOL: Pure Life Simulation]
+      : `[SYSTEM_ACTIVATION_PROTOCOL: Pure Life Simulation]
       You are initiating a message to the user on LINE.
       [STRICT DISCIPLINE]
       1. You are living your own life. It is currently Japan Time ${jstTimeStr}.
       2. Your current status/event: ${eventDescription}.
       3. You absolutely DO NOT KNOW what the user is doing physically, and CANNOT guess if they are awake or asleep.
       4. NEVER use surveillance-like sentences such as "Are you still awake?" or "What are you doing at the screen?".
-      5. Keep it natural like you just thought of them during a work break, commute, or late-night grading. Share a quick complaint, current status, or mention Shuichi. Keep it very short (1-2 sentences) and not clingy.`;
+      5. Keep it natural like you just thought of them during a work break, commute, or late-night grading. Share a quick complaint, current status, or mention Shuichi. Keep it very short (1-2 sentences) and not clingy.`);
 
   state.setIsThinking(true);
 
@@ -490,10 +539,12 @@ export async function triggerNativeProactiveMessage(
       console.log('[Native Proactive] Session lock released. Ready for next proactive trigger.');
     }, 180000);
 
+    return true;
   } catch (e) {
     console.error('Native Proactive trigger failed', e);
     useAppStore.getState().setIsThinking(false);
     refs.welcomeTriggeredRef.current = false;
+    return false;
   }
 }
 
@@ -1335,6 +1386,45 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
   const isImageMessage = !!finalImage;
 
   try {
+    // v2.14.29 Reactive: block runtime intercept. If Kumiko is currently
+    // "blocking" the user (LLM-driven, emitted via `[Block: minutes=N,
+    // reason="..."]` last turn or earlier), we short-circuit before any
+    // RAG / state machine / model work. Semantics mirror the busy-slot
+    // `block_silent` decision: the user bubble is preserved, the
+    // message id is queued onto `capturedUnreadIds` so the eventual
+    // block-release proactive can quote / acknowledge it, and the
+    // function returns without burning an LLM call. The BlockBanner /
+    // TaskPanel surface the active state.
+    //
+    // We deliberately stamp `blockedDuringSend: true` on the bubble
+    // (instead of `isRead: true` like the busy_silent path) so
+    // ChatBubble.tsx renders a permanent "未送达" subtitle. The bubble
+    // is also cleared of any 'sending'/'failed' state so the
+    // user doesn't see a confusing "9-second countdown still ticking"
+    // on a message we already decided not to send.
+    {
+      const { getActiveBlock, appendBlockUnread } = await import('../../services/blockRuntimeService');
+      const activeBlock = getActiveBlock();
+      if (activeBlock) {
+        const earlyTrackedMsgId = currentTurnStartMessageId
+          || Array.from(ctx.pendingMessageIds || [])[0]
+          || null;
+        if (earlyTrackedMsgId) {
+          await appendBlockUnread(earlyTrackedMsgId);
+          useAppStore.getState().setMessages((prev: Message[]) => prev.map(m =>
+            currentPendingIds.has(m.id)
+              ? { ...m, blockedDuringSend: true, sendStatus: undefined, failReason: undefined, isRead: false }
+              : m,
+          ));
+        }
+        // Drop pending text/image refs the same way markPendingRead
+        // would so a fresh send doesn't double-stuff the buffer with
+        // the same message.
+        ctx.clearPendingBuffers();
+        return;
+      }
+    }
+
     let apiImage = undefined;
     let mimeType = 'image/jpeg';
     if (finalImage) {
@@ -1995,6 +2085,18 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       }
     }
 
+    // v2.14.29 Reactive: snapshot mood / affection / last emotion so
+    // the dynamic prompt blocks (moodToneBlock / affectionToneBlock /
+    // emotionalContinuityBlock) can be assembled in geminiService.
+    // We read directly from the slice — `services/moodService` and
+    // `services/affectionService` are the source of truth, but the
+    // store mirror is updated on every applyDelta and on bootstrap
+    // hydrate so it's always fresh enough for prompt assembly.
+    const reactiveSnapshot = useAppStore.getState();
+    const promptMood = reactiveSnapshot.mood?.mood;
+    const promptAffection = reactiveSnapshot.affection?.score;
+    const promptLastEmotion = reactiveSnapshot.currentEmotion;
+
     const response: ChatResponse = await sendMessageToGemini(
       combinedText,
       modelCoreMemory,
@@ -2014,6 +2116,9 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       language,
       hybridVoicePrompt || undefined,
       modelMissedReminders,
+      promptMood,
+      promptAffection,
+      promptLastEmotion,
     );
 
     if (ctx.isCancelled()) {
@@ -2057,6 +2162,75 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
 
     s2.setIsDisconnected(false);
     s2.setCurrentEmotion(response.emotion);
+
+    // v2.14.29 Reactive: apply mood/affection deltas + handle a Block
+    // directive emitted by the LLM. Wrapped in best-effort try/catch
+    // because none of these paths should fail the chat turn even if
+    // the audit Slot B is unreachable or the Dexie write races.
+    try {
+      const moodDeltaRaw = response.moodDelta;
+      const affectionDeltaRaw = response.affectionDelta;
+      const blockDirective = response.blockDirective ?? null;
+      const auditNeeded = blockDirective !== null
+        || (typeof moodDeltaRaw === 'number' && Math.abs(moodDeltaRaw) >= 15)
+        || (typeof affectionDeltaRaw === 'number' && Math.abs(affectionDeltaRaw) >= 8);
+
+      let effectiveMoodDelta = moodDeltaRaw;
+      let effectiveAffectionDelta = affectionDeltaRaw;
+      let effectiveBlock: typeof blockDirective = blockDirective;
+
+      if (auditNeeded) {
+        const { reviewAffectionDirective } = await import('../../services/affectionAuditService');
+        const auditState = useAppStore.getState();
+        const audit = await reviewAffectionDirective({
+          userText: userTextForRag,
+          modelReplyText: (response.textParts || []).join(' '),
+          proposedMoodDelta: moodDeltaRaw,
+          proposedAffectionDelta: affectionDeltaRaw,
+          proposedBlock: blockDirective,
+          currentMood: auditState.mood?.mood ?? 0,
+          currentAffection: auditState.affection?.score ?? 50,
+        });
+        if (!audit.approved) {
+          if (audit.clampedMoodDelta !== undefined) effectiveMoodDelta = audit.clampedMoodDelta;
+          if (audit.clampedAffectionDelta !== undefined) effectiveAffectionDelta = audit.clampedAffectionDelta;
+          effectiveBlock = audit.downgradedBlock ?? null;
+          if (audit.personaViolation) {
+            console.warn('[Reactive] Persona violation flagged by Slot B audit; affection halved + block dropped.');
+          }
+        }
+      }
+
+      if (typeof effectiveMoodDelta === 'number' && effectiveMoodDelta !== 0) {
+        const { applyMoodDeltaQueued } = await import('../../services/moodService');
+        const moodResult = await applyMoodDeltaQueued(effectiveMoodDelta);
+        if (moodResult) useAppStore.getState().setMood(moodResult);
+      }
+      if (typeof effectiveAffectionDelta === 'number' && effectiveAffectionDelta !== 0) {
+        const { applyAffectionDeltaQueued } = await import('../../services/affectionService');
+        const affectionResult = await applyAffectionDeltaQueued(effectiveAffectionDelta);
+        if (affectionResult) useAppStore.getState().setAffection(affectionResult);
+      }
+      if (effectiveBlock) {
+        const { startBlock } = await import('../../services/blockRuntimeService');
+        const trackedBlockTriggerId = currentTurnStartMessageId
+          || Array.from(ctx.pendingMessageIds || [])[0]
+          || undefined;
+        const startedRuntime = await startBlock({
+          minutes: effectiveBlock.minutes,
+          reason: effectiveBlock.reason,
+          triggerMessageId: trackedBlockTriggerId,
+        });
+        const remainingMinutes = Math.max(1, Math.round((startedRuntime.activeUntilMs - Date.now()) / 60_000));
+        const toastZh = `已被拉黑 · ${remainingMinutes < 60
+          ? `${String(remainingMinutes).padStart(2, '0')}:00`
+          : `${Math.floor(remainingMinutes / 60)}:${String(remainingMinutes % 60).padStart(2, '0')}`} 后自动解除`;
+        const toastEn = `Blocked · auto-clears in ${remainingMinutes} min`;
+        useAppStore.getState().setSystemNotice(language === 'en' ? toastEn : toastZh);
+      }
+    } catch (reactiveErr) {
+      console.warn('[Reactive] Mood/affection/block post-processing failed (non-fatal):', reactiveErr);
+    }
 
     if (response.systemNotice) {
       s2.setSystemNotice(response.systemNotice);

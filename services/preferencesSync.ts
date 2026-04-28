@@ -27,9 +27,11 @@ import {
   type BusySlotRuntime,
   type PendingApology,
 } from '../store/slices/busySlice';
+import { KUMIKO_BLOCK_RUNTIME_STORAGE_KEY } from '../store/slices/affectionSlice';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../store/slices/ragSlice';
 import {
   sanitizeDailyReminderRecord,
+  sanitizeKumikoBlockRuntime,
   sanitizeMessageAlertRecord,
   sanitizeMissedReminderRecord,
   sanitizeRelativeReminderRecord,
@@ -85,6 +87,7 @@ export const SYNCED_KEYVAL_KEYS = new Set<string>([
   BUSY_SLOT_RUNTIME_STORAGE_KEY,
   BUSY_FOLLOWUP_STORAGE_KEY,
   PENDING_APOLOGY_STORAGE_KEY,
+  KUMIKO_BLOCK_RUNTIME_STORAGE_KEY,
 ]);
 
 export interface PreferencesPatch {
@@ -353,6 +356,17 @@ function applyKeyvalToRuntime(key: string, value: unknown, turnCountHint?: numbe
     case PENDING_APOLOGY_STORAGE_KEY:
       store.setPendingApology(
         value && typeof value === 'object' ? (value as PendingApology) : null,
+      );
+      return;
+    case KUMIKO_BLOCK_RUNTIME_STORAGE_KEY:
+      // v2.14.29 Reactive: hydrate the active-block runtime from a
+      // backup or cross-device sync. We don't *trigger* the expiry
+      // pathway here — that's the bootstrap's job (so it can call
+      // triggerNativeProactiveMessage if the block expired during
+      // downtime). Sanitiser drops obviously-corrupt rows; the boot
+      // path also re-validates `activeUntilMs` semantically.
+      store.setBlockRuntime(
+        value && typeof value === 'object' ? sanitizeKumikoBlockRuntime(value) : null,
       );
       return;
     case 'world_character_status':

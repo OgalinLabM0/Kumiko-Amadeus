@@ -60,6 +60,15 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
   const setInputValue = useAppStore(s => s.setInputValue);
   const setSelectedImage = useAppStore(s => s.setSelectedImage);
   const setReplyingToMsg = useAppStore(s => s.setReplyingToMsg);
+  // v2.14.29 Reactive: tooltip + slight desaturation when blocked.
+  // Important: send button is NOT disabled (the user might want to type
+  // out their full feelings), the message just gets captured silently.
+  const blockRuntime = useAppStore(s => s.blockRuntime);
+  const language = useAppStore(s => s.language);
+  const isBlocked = blockRuntime !== null && blockRuntime.activeUntilMs > Date.now();
+  const sendButtonTooltip = isBlocked
+    ? (language === 'en' ? 'Blocked · message will be logged' : '拉黑中，消息会被记下来')
+    : undefined;
 
   const selectedIdsCount = selectedIds.size;
   const domInputValue = inputRef.current?.value ?? '';
@@ -157,7 +166,9 @@ export const AppChatFooter: React.FC<AppChatFooterProps> = ({
               onMouseDown={(e) => e.preventDefault()}
               onClick={onSend}
               disabled={(!effectiveInputValue.trim() && !selectedImage) || isThinking}
-              className={`w-10 h-10 flex-shrink-0 rounded flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isDarkMode ? 'bg-yellow-900/20 text-yellow-500 hover:bg-yellow-900/40 hover:text-yellow-400' : 'bg-[#b8860b] text-white hover:bg-[#9a7009]'}`}
+              title={sendButtonTooltip}
+              aria-label={sendButtonTooltip}
+              className={`w-10 h-10 flex-shrink-0 rounded flex items-center justify-center transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isDarkMode ? 'bg-yellow-900/20 text-yellow-500 hover:bg-yellow-900/40 hover:text-yellow-400' : 'bg-[#b8860b] text-white hover:bg-[#9a7009]'} ${isBlocked ? 'opacity-75' : ''}`}
             >
               <Send size={18} />
             </button>

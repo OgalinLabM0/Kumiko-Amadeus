@@ -1,6 +1,6 @@
 import { useEffect, type MutableRefObject } from 'react';
 import { loadRawHistoryMessages } from '../components/app/rawHistorySync';
-import { recalculateTurnCountFromMessages, sanitizeRelativeReminderRecord, sanitizeDailyReminderRecord, sanitizeMessageAlertRecord, sanitizeMissedReminderRecord, sanitizeWorldCharacterStatusRecord, sanitizeKumikoDiaryRecord, sanitizeDailyFragmentRecord, sanitizePsycheStateRecord } from '../components/app/backupHelpers';
+import { recalculateTurnCountFromMessages, sanitizeRelativeReminderRecord, sanitizeDailyReminderRecord, sanitizeMessageAlertRecord, sanitizeMissedReminderRecord, sanitizeWorldCharacterStatusRecord, sanitizeKumikoDiaryRecord, sanitizeDailyFragmentRecord, sanitizePsycheStateRecord, sanitizeKumikoMoodRecord, sanitizeKumikoAffectionRecord, sanitizeKumikoBlockRuntime } from '../components/app/backupHelpers';
 import { normalizeSummaryArchiveState, resolveCoreMemoryFromSummaryArchive } from '../components/app/summaryCycle';
 import { normalizeMemoryQuerySession } from '../components/app/ragRecallHelpers';
 import {
@@ -13,6 +13,8 @@ import {
   INITIAL_WORLD_CHARACTER_STATUS,
   type DailyFragmentEntity,
   type KumikoDiaryEntity,
+  type KumikoAffectionEntity,
+  type KumikoMoodEntity,
   type PsycheStateEntity,
   type WorldCharacterStatusMap,
 } from '../services/db';
@@ -28,6 +30,7 @@ import {
   type BusyFollowUp,
   type PendingApology,
 } from '../store/slices/busySlice';
+import { KUMIKO_BLOCK_RUNTIME_STORAGE_KEY } from '../store/slices/affectionSlice';
 import type {
   Message,
   Language,
@@ -39,6 +42,7 @@ import type {
   SummaryArchiveState,
   MemoryQuerySession,
   MissedMessageAlert,
+  KumikoBlockRuntime,
 } from '../types';
 
 // v2.14.29 H10 rework helpers ------------------------------------------------
@@ -166,6 +170,16 @@ export interface UseInitialLoadBootstrapParams {
   setBusySlotRuntime: (v: BusySlotRuntime | null) => void;
   setBusyFollowUp: (v: BusyFollowUp | null) => void;
   setPendingApology: (v: PendingApology | null) => void;
+  // v2.14.29 Reactive: hydration setters for the mood / affection /
+  // block-runtime slice. mood + affection have full Dexie tables (single
+  // 'current' row); blockRuntime lives in keyval at
+  // KUMIKO_BLOCK_RUNTIME_STORAGE_KEY. The boot rescue path also needs
+  // persistBlockRuntime so we can clear an expired runtime row before
+  // firing the proactive (otherwise the regulator would re-enter a tick
+  // mid-fire and double-trigger).
+  setMood: (v: KumikoMoodEntity | null) => void;
+  setAffection: (v: KumikoAffectionEntity | null) => void;
+  setBlockRuntime: (v: KumikoBlockRuntime | null) => void;
 }
 
 /**
@@ -220,6 +234,9 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
     setBusySlotRuntime,
     setBusyFollowUp,
     setPendingApology,
+    setMood,
+    setAffection,
+    setBlockRuntime,
   } = params;
 
   useEffect(() => {
@@ -419,6 +436,78 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
           }
         } catch {
           setPendingApology(null);
+        }
+
+        // v2.14.29 Reactive: hydrate mood / affection / blockRuntime.
+        //
+        //   - mood + affection live in dedicated Dexie tables with a
+        //     single 'current' row each. They can never be "expired";
+        //     we just defensively sanitize the loaded shape and feed
+        //     it into the store. The store mirror is what every UI
+        //     panel reads at render time; the Dexie row stays the
+        //     source of truth for persistence.
+        //
+        //   - blockRuntime is keyval-backed (mirror of busy state).
+        //     Three boot decisions:
+        //       (a) no row              → setBlockRuntime(null)
+        //       (b) row, not yet expired → setBlockRuntime(row), the
+        //           regulator will pick it up on the first tick and
+        //           native AlarmManager (Android) is rescheduled now;
+        //       (c) row, already expired → setBlockRuntime(row) so the
+        //           regulator's next tick fires `block_release`
+        //           immediately (mirrors H10 ≤3-day rescue path).
+        try {
+          const savedMood = await db.kumikoMood.get('current');
+          setMood(sanitizeKumikoMoodRecord(savedMood));
+        } catch {
+          setMood(null);
+        }
+        try {
+          const savedAffection = await db.kumikoAffection.get('current');
+          setAffection(sanitizeKumikoAffectionRecord(savedAffection));
+        } catch {
+          setAffection(null);
+        }
+        try {
+          const savedBlock = await db.getVal(KUMIKO_BLOCK_RUNTIME_STORAGE_KEY, null);
+          const block = sanitizeKumikoBlockRuntime(savedBlock);
+          if (block) {
+            setBlockRuntime(block);
+            // Reschedule the Android expiry alarm if the WebView was
+            // killed: blockRuntimeService.startBlock registered one when
+            // the block began, but Android may have dropped the
+            // AlarmManager state on a hard-stop / device reboot. We
+            // re-register here so the OS still has a chance to wake the
+            // WebView when the block lapses, even if the JS regulator
+            // never gets to tick because the user backgrounded again.
+            if (block.activeUntilMs > bootNow) {
+              try {
+                const { isCapacitorNative, getCapacitorPlatform } = await import('../services/environment');
+                if (isCapacitorNative() && getCapacitorPlatform() === 'android') {
+                  const { scheduleAndroidAlarm } = await import('../services/androidAlarmService');
+                  await scheduleAndroidAlarm({
+                    reminderId: 'kumiko_block_expiry',
+                    at: block.activeUntilMs,
+                    event: 'block_release',
+                    text: 'Kumiko · 拉黑解除',
+                    wantsCall: false,
+                  });
+                }
+              } catch (e) {
+                console.warn('[BOOT] Block-expiry alarm rescheduling failed (non-fatal):', e);
+              }
+            }
+            // If already expired, the JS-side useBlockRegulator will
+            // notice `activeUntilMs <= now` on its first tick and fire
+            // the block_release proactive. We intentionally do NOT
+            // clear the row here — leaving it intact is what lets the
+            // regulator detect the "expired during downtime" state.
+          } else {
+            setBlockRuntime(null);
+          }
+        } catch (e) {
+          console.warn('[BOOT] Block-runtime hydration failed (non-fatal):', e);
+          setBlockRuntime(null);
         }
 
         ragBufferRef.current = await db.getVal('kumiko_rag_buffer', []);

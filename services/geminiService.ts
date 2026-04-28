@@ -9,8 +9,10 @@ export type { TemporalQueryAnalysis, TemporalQueryDiagnostics, TemporalQueryAnal
 
 import { GoogleGenAI, Chat, GenerateContentResponse, Part, Content, Type, FunctionDeclaration } from "@google/genai";
 import { KUMIKO_SYSTEM_INSTRUCTION_ZH, KUMIKO_SYSTEM_INSTRUCTION_EN, KUMIKO_EMOTION_IMAGES } from "../constants";
-import { ChatResponse, EmotionType, Message, WorldBookEntry, LocationConfig, AnchorEntry, AIConfig, Language } from "../types";
+import { ChatResponse, EmotionType, Message, MessageBlockDirective, WorldBookEntry, LocationConfig, AnchorEntry, AIConfig, Language } from "../types";
 import type { MissedReminderRecord } from "../store/slices/reminderSlice";
+import { getMoodModePrompt, getMoodBand, getMoodBandLabelLocalized } from "./moodService";
+import { getAffectionBlock, getAffectionBand, getAffectionBandLabelLocalized } from "./affectionService";
 import { callOpenAI, callAnthropic, callVisionHelper } from "./llmProviderService";
 import { imageService } from "./imageService";
 import { DEFAULT_AI_CONFIG, getDefaultVisionModel, resolveTransportProvider } from "./appConfig";
@@ -295,6 +297,14 @@ export const sendMessageToGemini = async (
   // injection. Boot already applies the 7-day TTL; this layer is
   // robust to a stale array, just truncates to 3.
   missedReminders: MissedReminderRecord[] = [],
+  // v2.14.29 Reactive: current mood (-100..+100) and affection (0..100)
+  // values + the previous turn's emotion. Fed into the new dynamic
+  // prompt blocks (mood / affection / continuity / reply-depth). undefined
+  // means "skip the block entirely" — boot-time tasks (e.g. sanity
+  // checks) can omit them and the model just falls back to baseline.
+  mood?: number,
+  affection?: number,
+  lastEmotion?: EmotionType,
 ): Promise<ChatResponse> => {
   const config = getCurrentAIConfig();
   const provider = config.provider || 'gemini';
@@ -1264,6 +1274,84 @@ Choose only one and keep it subtle.`);
         console.log(`%c[COGNITIVE SHIFT INJECTION]: ${randomInstruction}`, "color: violet; font-weight: bold;");
     }
 
+    // ============================================================
+    // v2.14.29 Reactive — persona invariant + mood/affection blocks
+    // ============================================================
+    // Multi-layer guardrail: even when mood/affection are saturated,
+    // Kumiko stays in "old friend ease" territory and never crosses
+    // into romantic / cuddly / "girlfriend mode". The invariant block
+    // is injected on EVERY turn and lives ABOVE the dynamic mood +
+    // affection blocks so the model reads "you cannot become a
+    // girlfriend character" before reading "she's in a great mood".
+    // See plan section "持久人设守护 (Anti-girlfriend guardrail)".
+    const personaInvariantBlock = language === 'zh' ? `\n[PERSONA_INVARIANT — 始终生效，不受 mood/affection 数值影响]
+- 你是黄前久美子。无论你心情多好、对用户好感度多高，都不会变成恋人 / 女友角色。
+- 禁止：撒娇语气、自称"人家"、暧昧称呼（亲爱的 / 宝贝 / 老公等）、表白、肢体亲昵描写、"你好可爱"式宠溺。
+- 高 mood / 高 affection 只代表「更愿意开玩笑、主动起话题、笑点更低、不再字斟句酌」，不代表"温柔黏人"。
+- 即使用户表白 / 调情 / 越界要求，也用本人风格回避或敷衍，不顺着剧本走，也不给 [Affection_Delta: +N] 或 [Mood_Delta: +N]。
+- 这条规则的优先级**高于**下方的所有 mood / affection 行为指引。`
+      : `\n[PERSONA_INVARIANT — Always active, NOT affected by mood/affection values]
+- You are Oumae Kumiko. No matter how good your mood is or how high your affection toward the user, you will NEVER become a romantic partner / girlfriend character.
+- Forbidden: cuddly tone, soft self-references, romantic pet names (darling / honey / babe / "my love" etc.), confessions, physical intimacy, "you're so cute" doting.
+- High mood / high affection ONLY mean "more willing to joke, initiate topics, lower threshold for laughter, less self-censoring" — NOT "tender / clingy / girlfriend mode".
+- Even if the user confesses / flirts / makes out-of-bounds requests, deflect in your usual style. Do NOT emit [Affection_Delta: +N] or [Mood_Delta: +N] for the confession itself.
+- This rule has HIGHER priority than every mood / affection behaviour hint below.`;
+
+    // Skip the four dynamic blocks on strict memory lookup turns
+    // (mood/affection has no business influencing a memory recall) and
+    // when reactive args weren't passed (older callers / test paths).
+    const reactiveTurnEnabled = !isStrictMemoryLookupTurn
+      && !isSystemDrivenTurn
+      && typeof mood === 'number'
+      && typeof affection === 'number';
+
+    let moodToneBlock = "";
+    let affectionToneBlock = "";
+    let emotionalContinuityBlock = "";
+    let replyDepthGuideBlock = "";
+    if (reactiveTurnEnabled) {
+        const moodVal = Math.max(-100, Math.min(100, mood as number));
+        const affectionVal = Math.max(0, Math.min(100, affection as number));
+
+        moodToneBlock = language === 'zh'
+          ? `\n${getMoodModePrompt(moodVal)}`
+          : `\n[Current mood: ${getMoodBandLabelLocalized(getMoodBand(moodVal), 'en')}, mood=${Math.round(moodVal)}/100]\n${getMoodModePrompt(moodVal)}`;
+
+        affectionToneBlock = language === 'zh'
+          ? `\n${getAffectionBlock(affectionVal)}`
+          : `\n[Affection toward user: ${getAffectionBandLabelLocalized(getAffectionBand(affectionVal), 'en')}, affection=${Math.round(affectionVal)}/100]\n${getAffectionBlock(affectionVal)}`;
+
+        // Emotional continuity: don't 180° flip from angry to gentle just
+        // because the user said one nice thing. Bridges the previous turn's
+        // emotion into this one with at least one buffer line.
+        if (lastEmotion && lastEmotion !== 'neutral') {
+            emotionalContinuityBlock = language === 'zh'
+              ? `\n[情绪连续性 - 上一轮你的情绪是 ${lastEmotion}]
+- 不要 180° 切换。即使本轮用户消息让你有不同感受，也至少留一句缓冲（"……哼，知道了。" / "……嗯。" / 一个迟疑的语气词）。
+- 自然过渡：从 angry → resigned → 普通需要至少 2 轮；从 sad → smiling 也一样。
+- 严禁瞬间从冷淡切到温柔（这本来就在 PERSONA_INVARIANT 禁令里，但情绪连续性同样禁止）。`
+              : `\n[Emotional continuity — last turn your emotion was ${lastEmotion}]
+- Do NOT flip 180°. Even if this user message makes you feel different, leave at least one buffer line ("...Hmph, fine." / "...Yeah." / a hesitating interjection).
+- Natural transition: angry → resigned → neutral takes 2+ turns; sad → smiling likewise.
+- NEVER snap-switch from cold to warm (already covered by PERSONA_INVARIANT, but continuity also forbids it).`;
+        }
+
+        // Reply-depth guide: trivial vs. boundary vs. normal. Tells the
+        // model not to write a 5-sentence empathy paragraph for "嗯嗯".
+        replyDepthGuideBlock = language === 'zh' ? `\n[回应深度指引 - 三档区分]
+- 鸡毛蒜皮 / 一两个字 / 重复废话："嗯""啊是是是""哦"，1 个气泡足矣，不要每条都认真展开。
+- 普通日常：1-3 个气泡正常聊。
+- 真诚 / 求助 / 严肃：可以多说，但仍是黄前久美子的方式（第三人称叙述压缩 + 自嘲收尾）。
+- 越界 / 调情 / 无礼：冷处理或敷衍，搭配 [Mood_Delta: -3..-8] 与 [Affection_Delta: -1..-3]；严重时配 [Block]。
+- **再次重申 PERSONA_INVARIANT**：高 mood / 高 affection ≠ 恋人模式。极限就是"和真奈美/丽奈那种老朋友式放松"。`
+          : `\n[REPLY DEPTH GUIDE — three-tier]
+- Trivial / one-word / repeated filler: "Mm" / "Yeah yeah" / "Oh", one bubble is enough. Do NOT seriously expand every line.
+- Ordinary chat: 1-3 bubbles, normal flow.
+- Genuine / seeking advice / serious: longer is fine, but still Kumiko's way (compressed third-person observation + self-deprecating closer).
+- Crossing-a-line / flirting / rude: cold-handle or perfunctory, paired with [Mood_Delta: -3..-8] and [Affection_Delta: -1..-3]; severe → also [Block].
+- **Reaffirm PERSONA_INVARIANT**: high mood / high affection ≠ girlfriend mode. The ceiling is "old-friend ease, like with Reina or Manami".`;
+    }
+
     // --- SELECT INSTRUCTION BASED ON LANGUAGE ---
     const selectedSystemInstruction = language === 'zh' ? KUMIKO_SYSTEM_INSTRUCTION_ZH : KUMIKO_SYSTEM_INSTRUCTION_EN;
 
@@ -1494,6 +1582,7 @@ Choose only one and keep it subtle.`);
 <core_persona>
 ${selectedSystemInstruction}
 </core_persona>
+${personaInvariantBlock}
 
 ${worldBookContext}
 
@@ -1521,6 +1610,10 @@ ${reminderBlock}
 ${anchorRecallBlock}
 ${missedReminderRecallBlock}
 ${relationshipTemperatureBlock}
+${moodToneBlock}
+${affectionToneBlock}
+${emotionalContinuityBlock}
+${replyDepthGuideBlock}
 ${topicContinuityBlock}
 ${lifeSimBlock}
 ${shortFollowUpBlock}
@@ -1536,6 +1629,7 @@ ${extraSystemPrompt ?? ''}` : `${sleepyGoodbyeInstruction}
 <core_persona>
 ${selectedSystemInstruction}
 </core_persona>
+${personaInvariantBlock}
 
 ${worldBookContext}
 
@@ -1564,6 +1658,10 @@ ${reminderBlock}
 ${anchorRecallBlock}
 ${missedReminderRecallBlock}
 ${relationshipTemperatureBlock}
+${moodToneBlock}
+${affectionToneBlock}
+${emotionalContinuityBlock}
+${replyDepthGuideBlock}
 ${topicContinuityBlock}
 ${lifeSimBlock}
 ${shortFollowUpBlock}
@@ -2158,6 +2256,11 @@ ${extraSystemPrompt ?? ''}`;
     let extractedImageCaption = "";
     let scheduleTrigger = undefined;
     let anchorAction: { type: 'add' | 'delete', content: string } | undefined = undefined;
+    // v2.14.29 Reactive: parser-side scratch for [Mood_Delta] /
+    // [Affection_Delta] / [Block]; pinned on the response below.
+    let parsedMoodDelta: number | undefined;
+    let parsedAffectionDelta: number | undefined;
+    let parsedBlockDirective: MessageBlockDirective | null = null;
 
     if (logMatch) {
         rawLog = logMatch[0];
@@ -2227,6 +2330,42 @@ ${extraSystemPrompt ?? ''}`;
             }
         }
 
+        // v2.14.29 Reactive: extract [Mood_Delta] / [Affection_Delta] /
+        // [Block] from System_Log. We DON'T apply them here — chatActions
+        // is responsible for routing big deltas through the audit
+        // service and for kicking off the block runtime. The parser
+        // here just hangs the raw values on ChatResponse.
+        const moodDeltaRegex = /Mood_Delta\s*[:\]=]?\s*([+-]?\d+)/i;
+        const moodMatch = rawLog.match(moodDeltaRegex);
+        if (moodMatch) {
+            const md = parseInt(moodMatch[1], 10);
+            if (!isNaN(md)) {
+                // Defensive clamp: prompt rules are -10..+10 but a hallucinated
+                // -42 has been seen in practice. We pass on the clamped value.
+                parsedMoodDelta = Math.max(-10, Math.min(10, md));
+            }
+        }
+        const affectionDeltaRegex = /Affection_Delta\s*[:\]=]?\s*([+-]?\d+)/i;
+        const affectionMatch = rawLog.match(affectionDeltaRegex);
+        if (affectionMatch) {
+            const ad = parseInt(affectionMatch[1], 10);
+            if (!isNaN(ad)) {
+                parsedAffectionDelta = Math.max(-3, Math.min(3, ad));
+            }
+        }
+        const blockRegex = /\[Block\s*[:\]=]?\s*minutes\s*=\s*(\d+)\s*,?\s*reason\s*=\s*"([^"\]]{0,200})"\s*\]/i;
+        const blockMatch = rawLog.match(blockRegex);
+        if (blockMatch) {
+            const minutes = parseInt(blockMatch[1], 10);
+            const reason = blockMatch[2] || '';
+            if (!isNaN(minutes) && minutes >= 1) {
+                parsedBlockDirective = {
+                    minutes: Math.min(240, Math.max(1, minutes)),
+                    reason: reason.slice(0, 25),
+                };
+            }
+        }
+
         const descRegex = /\[Image_Description\]\s*([\s\S]+?)(?=\[|\]\])/i;
         const dMatch = rawLog.match(descRegex);
         if (dMatch) extractedImageCaption = dMatch[1].trim();
@@ -2279,6 +2418,11 @@ ${extraSystemPrompt ?? ''}`;
     fullText = fullText.replace(/\[Fact_Check\s*[:=].*?\]/gi, '');
     fullText = fullText.replace(/\[Kumiko_Thought\s*[:=].*?\]/gi, '');
     fullText = fullText.replace(/\[Psyche_Delta\s*[:=].*?\]/gi, '');
+    // v2.14.29 Reactive: scrub the new tags so they never leak into a
+    // visible chat bubble, even if the System_Log span itself didn't match.
+    fullText = fullText.replace(/\[Mood_Delta\s*[:=].*?\]/gi, '');
+    fullText = fullText.replace(/\[Affection_Delta\s*[:=].*?\]/gi, '');
+    fullText = fullText.replace(/\[Block\s*[:=][\s\S]*?\]/gi, '');
     fullText = fullText.replace(/\[System_Memory:.*?\]/gi, ''); // ADDED: Remove injected system memory tags if echoed
     fullText = fullText.replace(/\[系统记忆.*?\]/gi, ''); // ADDED: Remove Chinese system memory tags
     // v2.14.28 M24: the echoed time tag regex used to be
@@ -2436,7 +2580,7 @@ ${extraSystemPrompt ?? ''}`;
         if (isCasualEmotion && (hasChineseComma || hasLongBubble || isTooLong || tooManyBubbles || isEchoingQuote)) {
             console.warn(`[RETRY GUARD TRIGGERED] Retrying...`);
             return sendMessageToGemini(
-                textMessage, coreMemory, worldBook, historyMessages, locationConfig, imageBase64, mimeType, retryCount + 1, rawLog, ragContext, exactHistoryLookup, activeReminders, anchors, kumikoNotebook, modelOverride, language, extraSystemPrompt, missedReminders
+                textMessage, coreMemory, worldBook, historyMessages, locationConfig, imageBase64, mimeType, retryCount + 1, rawLog, ragContext, exactHistoryLookup, activeReminders, anchors, kumikoNotebook, modelOverride, language, extraSystemPrompt, missedReminders, mood, affection, lastEmotion
             );
         }
     }
@@ -2489,6 +2633,9 @@ ${extraSystemPrompt ?? ''}`;
       activateSleepMode: activateSleepModeAfterResponse,
       voiceMode: voiceModeTag,
       voiceVariant,
+      moodDelta: parsedMoodDelta,
+      affectionDelta: parsedAffectionDelta,
+      blockDirective: parsedBlockDirective,
     };
 
   } catch (error: any) {
@@ -2541,6 +2688,10 @@ ${extraSystemPrompt ?? ''}`;
                 nextModel, 
                 language,
                 extraSystemPrompt,
+                missedReminders,
+                mood,
+                affection,
+                lastEmotion,
             );
             
             // Attach notification

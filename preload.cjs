@@ -104,6 +104,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const validChannels = [
       'show-window',
       'app:update-unread-state',
+      'app:update-block-state',
       'app:send-notification',
       'app:send-call-notification',
       'app:close-call-notification',

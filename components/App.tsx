@@ -31,6 +31,8 @@ import { useInitialLoadBootstrap } from '../hooks/useInitialLoadBootstrap';
 import { useVoicePipeline } from '../hooks/useVoicePipeline';
 import { useProactiveLifeCycle } from '../hooks/useProactiveLifeCycle';
 import { useBusyRegulator } from '../hooks/useBusyRegulator';
+import { useBlockRegulator } from '../hooks/useBlockRegulator';
+import { useBlockChromeSync } from '../hooks/useBlockChromeSync';
 import { useBackupWorkflow } from '../hooks/useBackupWorkflow';
 // F2B.2: deleted useMobileApiProxy / useMobileBroadcaster /
 // useMobileMessageSync. They were the PC↔phone bridge over the local
@@ -428,6 +430,11 @@ export const App = () => {
   const setBusySlotRuntime = useAppStore(s => s.setBusySlotRuntime);
   const setBusyFollowUp = useAppStore(s => s.setBusyFollowUp);
   const setPendingApology = useAppStore(s => s.setPendingApology);
+  // v2.14.29 Reactive: pass-through setters so useInitialLoadBootstrap
+  // can hydrate mood / affection / blockRuntime on app start.
+  const setMood = useAppStore(s => s.setMood);
+  const setAffection = useAppStore(s => s.setAffection);
+  const setBlockRuntime = useAppStore(s => s.setBlockRuntime);
 
   usePreferencesPersistence({
     isDataLoaded,
@@ -684,6 +691,9 @@ export const App = () => {
     setBusySlotRuntime,
     setBusyFollowUp,
     setPendingApology,
+    setMood,
+    setAffection,
+    setBlockRuntime,
   });
 
   const sendTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -891,6 +901,14 @@ export const App = () => {
   });
 
   useBusyRegulator(flowState === 'APP');
+  // v2.14.29 Reactive: 1Hz watcher for block-runtime expiry → fires
+  // the `block_release` proactive message once the timer lapses.
+  // Single owner (mirror of useBusyRegulator) so the JS-side timeout
+  // path and the boot rescue path don't double-fire.
+  useBlockRegulator(flowState === 'APP');
+  // v2.14.29 Reactive: pushes "[拉黑中]" / "[Blocked]" prefix to
+  // Electron window title + tray tooltip, no-op on web/mobile.
+  useBlockChromeSync();
 
   useScheduledReminders({
     flowState,

@@ -6,6 +6,7 @@ import { Language, EmotionType } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
 import { db } from '../services/db';
 import { getModeName, getModeNameEn, DEFAULT_PSYCHE_STATE, type PsycheMode } from '../services/psycheStateService';
+import { AffectionBars } from './app/AffectionBars';
 
 const PsycheBar: React.FC<{ label: string; value: number; isDarkMode: boolean; colorHigh?: boolean }> = ({ label, value, isDarkMode, colorHigh }) => {
   const pct = Math.max(0, Math.min(100, Math.round(value)));
@@ -53,6 +54,11 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
   const psyche = psycheState || DEFAULT_PSYCHE_STATE;
   const mode = useMemo(() => getModeName(psyche), [psyche]);
   const modeLabel = language === 'zh' ? `${mode}模式` : getModeNameEn(mode);
+  // v2.14.29 Reactive: live mood + affection rows. useLiveQuery so the
+  // bars tick without the panel needing to re-mount when an
+  // applyDelta lands during open.
+  const moodEntity = useLiveQuery(() => db.kumikoMood.get('current'));
+  const affectionEntity = useLiveQuery(() => db.kumikoAffection.get('current'));
   const timeSinceUpdate = useMemo(() => {
     const diffMs = Date.now() - psyche.lastUpdated;
     const mins = Math.floor(diffMs / 60000);
@@ -199,6 +205,18 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
                   {language === 'zh' ? '当前模式' : 'CURRENT MODE'}
                 </span>
                 <span className={`ka-value font-mono text-sm ${titleClass}`}>{modeLabel}</span>
+              </div>
+              {/* v2.14.29 Reactive: mood + affection bars. Sit inside
+                  the same PSYCHE STATUS card with a dashed separator so
+                  the panel stays compact instead of getting a 3rd new
+                  panel header. */}
+              <div className={`pt-2 border-t border-dashed ${isDarkMode ? 'border-yellow-900/30' : 'border-gray-300/40'}`}>
+                <AffectionBars
+                  mood={moodEntity?.mood}
+                  affection={affectionEntity?.score}
+                  isDarkMode={isDarkMode}
+                  language={language}
+                />
               </div>
             </div>
           </div>

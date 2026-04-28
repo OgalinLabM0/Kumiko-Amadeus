@@ -116,6 +116,35 @@ export interface PsycheStateEntity {
   lastChatDeltaDirection?: { stress: number; energy: number; relaxation: number };
 }
 
+// v2.14.29 Reactive: short-term mood swing toward / away from the
+// user. -100 ↔ +100, 0 = neutral. The +100 cap intentionally does NOT
+// represent "tender / girlfriend / clingy" — even at saturation Kumiko
+// stays in "playful, easy-going friend" territory. See
+// services/moodService.ts band labels & the persona invariant block.
+export interface KumikoMoodEntity {
+  id: string; // 'current'
+  mood: number; // -100..+100
+  lastUpdated: number;
+  // Same damping pattern as psycheState: if the next delta pushes the
+  // same direction as `lastDelta`, scale magnitude down. Persisted so
+  // damping survives a renderer reload.
+  lastDelta?: number;
+}
+
+// v2.14.29 Reactive: long-term affection / "好感度". 0..100 with 55
+// as default ("already chatting with you, but not specially close").
+// Upper end (81–100, "unguarded") = relaxed friend energy similar to
+// her canon dynamic with Reina/Manami; explicitly NOT a romantic
+// relationship.
+export interface KumikoAffectionEntity {
+  id: string; // 'current'
+  score: number; // 0..100
+  weeklyHigh: number;
+  weeklyLow: number;
+  lastUpdated: number;
+  lastDelta?: number;
+}
+
 export class AppDatabase extends Dexie {
   messages!: Table<MessageEntity, string>;
   images!: Table<ImageEntity, string>;
@@ -125,6 +154,8 @@ export class AppDatabase extends Dexie {
   dailyFragments!: Table<DailyFragmentEntity, string>;
   kumikoDiary!: Table<KumikoDiaryEntity, string>;
   psycheState!: Table<PsycheStateEntity, string>;
+  kumikoMood!: Table<KumikoMoodEntity, string>;
+  kumikoAffection!: Table<KumikoAffectionEntity, string>;
 
   constructor() {
     super('KumikoDB');
@@ -227,6 +258,25 @@ export class AppDatabase extends Dexie {
           delete m.image;
         }
       });
+    });
+
+    // V12 (v2.14.29): adds `kumikoMood` and `kumikoAffection` single-row
+    // tables for the Reactive Mood + Affection system (see plan
+    // reactive_mood_affection_block). Both tables use 'current' as the
+    // singleton primary key, mirroring the `psycheState` shape so the
+    // pattern is recognisable at a glance. Unrelated tables stay
+    // identical; Dexie only needs schema bumps for *added* stores.
+    this.version(12).stores({
+      messages: 'id, timestamp, role, isPinned, imageId',
+      images: 'id, timestamp',
+      vectors: 'id, timestamp, tier, source, canonicalKey, *tags',
+      episodes: 'id, startTimestamp, endTimestamp, startMessageId, endMessageId, roleScope',
+      keyval: 'key',
+      dailyFragments: 'id, date, timestamp',
+      kumikoDiary: 'id, date, timestamp',
+      psycheState: 'id',
+      kumikoMood: 'id',
+      kumikoAffection: 'id',
     });
   }
 

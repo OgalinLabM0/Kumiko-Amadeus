@@ -1,9 +1,16 @@
-import type { Message, MissedMessageAlert, MessageAlertKind } from '../../types';
+import type {
+  KumikoBlockRuntime,
+  Message,
+  MessageAlertKind,
+  MissedMessageAlert,
+} from '../../types';
 import {
   INITIAL_WORLD_CHARACTER_STATUS,
   type DailyFragmentEntity,
   type EpisodeEntity,
+  type KumikoAffectionEntity,
   type KumikoDiaryEntity,
+  type KumikoMoodEntity,
   type PsycheStateEntity,
   type WorldCharacterStatusMap,
 } from '../../services/db';
@@ -393,6 +400,76 @@ export const sanitizeDailyFragmentRecord = (record: any): DailyFragmentEntity | 
     timestamp: typeof record.timestamp === 'number' ? record.timestamp : Date.now(),
     content: record.content,
     triggerReason: typeof record.triggerReason === 'string' ? record.triggerReason : 'restore',
+  };
+};
+
+// v2.14.29 Reactive: clamp + structural validation for the singleton
+// `kumikoMood` / `kumikoAffection` rows on backup restore. Both share
+// the "current" id; bogus shapes return null so the boot path falls
+// back to the service-default state instead of corrupting an existing
+// row.
+export const sanitizeKumikoMoodRecord = (record: any): KumikoMoodEntity | null => {
+  if (!record || typeof record.mood !== 'number' || !Number.isFinite(record.mood)) {
+    return null;
+  }
+  const mood = Math.max(-100, Math.min(100, record.mood));
+  return {
+    id: typeof record.id === 'string' ? record.id : 'current',
+    mood,
+    lastUpdated: typeof record.lastUpdated === 'number' ? record.lastUpdated : Date.now(),
+    lastDelta: typeof record.lastDelta === 'number' && Number.isFinite(record.lastDelta)
+      ? record.lastDelta
+      : undefined,
+  };
+};
+
+export const sanitizeKumikoAffectionRecord = (record: any): KumikoAffectionEntity | null => {
+  if (!record || typeof record.score !== 'number' || !Number.isFinite(record.score)) {
+    return null;
+  }
+  const score = Math.max(0, Math.min(100, record.score));
+  const weeklyHigh = typeof record.weeklyHigh === 'number' && Number.isFinite(record.weeklyHigh)
+    ? Math.max(0, Math.min(100, record.weeklyHigh))
+    : score;
+  const weeklyLow = typeof record.weeklyLow === 'number' && Number.isFinite(record.weeklyLow)
+    ? Math.max(0, Math.min(100, record.weeklyLow))
+    : score;
+  return {
+    id: typeof record.id === 'string' ? record.id : 'current',
+    score,
+    weeklyHigh,
+    weeklyLow,
+    lastUpdated: typeof record.lastUpdated === 'number' ? record.lastUpdated : Date.now(),
+    lastDelta: typeof record.lastDelta === 'number' && Number.isFinite(record.lastDelta)
+      ? record.lastDelta
+      : undefined,
+  };
+};
+
+// v2.14.29 Reactive: keyval-stored block runtime. Same shape as
+// busySlotRuntime but lives in `kumiko_block_runtime`. Boot rescue and
+// restore paths run the value through this before pushing to the
+// store; bogus shapes (or expired-too-long-to-be-meaningful) return
+// null so the slice resets to "no active block".
+export const sanitizeKumikoBlockRuntime = (record: any): KumikoBlockRuntime | null => {
+  if (!record
+      || typeof record.activeUntilMs !== 'number'
+      || !Number.isFinite(record.activeUntilMs)
+      || typeof record.startedAt !== 'number'
+      || !Number.isFinite(record.startedAt)) {
+    return null;
+  }
+  const reason = typeof record.reason === 'string' ? record.reason.slice(0, 200) : '';
+  const capturedUnreadIds = Array.isArray(record.capturedUnreadIds)
+    ? (record.capturedUnreadIds as unknown[]).filter((v): v is string => typeof v === 'string')
+    : [];
+  return {
+    activeUntilMs: record.activeUntilMs,
+    startedAt: record.startedAt,
+    reason,
+    triggerMessageId: typeof record.triggerMessageId === 'string' ? record.triggerMessageId : undefined,
+    capturedUnreadIds,
+    expiryAcked: !!record.expiryAcked,
   };
 };
 

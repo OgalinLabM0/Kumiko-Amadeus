@@ -94,6 +94,7 @@ const {
   handleSendCallNotification,
   handleCloseCallNotification,
   handleUpdateUnreadState,
+  handleUpdateBlockState,
 } = require('./electron/notifications.cjs');
 const {
   createWindow,
@@ -214,6 +215,7 @@ if (!singleInstanceLock) {
   ipcMain.on('app:send-call-notification', handleSendCallNotification);
   ipcMain.on('app:close-call-notification', handleCloseCallNotification);
   ipcMain.on('app:update-unread-state', handleUpdateUnreadState);
+  ipcMain.on('app:update-block-state', handleUpdateBlockState);
 
   ipcMain.handle('quit-app', () => {
     app.isQuiting = true;

@@ -29,6 +29,13 @@ export interface Message {
   japaneseText?: string;
   sendStatus?: 'sending' | 'delivered' | 'failed';
   failReason?: string;
+  // v2.14.29 Reactive: stamped on user-originated messages that are
+  // captured during an active block. ChatBubble renders a "未送达"
+  // subtitle instead of the standard read/unread/sending status.
+  // Preserved after the block lifts as a historical fact (the user
+  // really did send those messages while she had them blocked) so the
+  // log doesn't retroactively look like everything got read on time.
+  blockedDuringSend?: boolean;
 }
 
 export interface WorldBookEntry {
@@ -190,6 +197,14 @@ export interface ChatResponse {
   activateSleepMode?: boolean; // NEW: Signal to activate sleep mode after this response
   voiceMode?: boolean;
   voiceVariant?: string;
+  // v2.14.29 Reactive: extracted from System_Log on the way back. The
+  // chatActions wiring decides whether to apply directly (small delta /
+  // no block directive) or route through affectionAuditService for a
+  // second-pass sanity check (large delta or block present). See plan
+  // section "Audit Service".
+  moodDelta?: number;
+  affectionDelta?: number;
+  blockDirective?: MessageBlockDirective | null;
 }
 
 export type VoiceMode = 'full' | 'text' | 'hybrid';
@@ -307,6 +322,40 @@ export interface UpdaterCacheInfo {
   exists: boolean;
   sizeBytes: number;
   fileCount: number;
+}
+
+// v2.14.29 Reactive: short-term mood (-100..+100, hours-scale) and
+// long-term affection (0..100, weeks-scale). Persisted in their own
+// Dexie tables (db.kumikoMood / db.kumikoAffection); see
+// services/moodService + affectionService for the read/write/decay
+// pattern (mirrors psycheStateService).
+export type MoodBand = 'fuming' | 'cold' | 'neutral' | 'bright' | 'playful';
+export type AffectionBand = 'distrusting' | 'cool' | 'default' | 'fond' | 'unguarded';
+
+// v2.14.29 Reactive: LLM-issued block directive parsed out of the
+// system log. Surfaces on ChatResponse so chatActions can decide
+// whether to start a runtime block (after audit). `reason` is capped
+// to 25 chars by the prompt rules; we don't enforce the cap here so
+// the parser can still expose the raw string for diagnostic logging.
+export interface MessageBlockDirective {
+  minutes: number;
+  reason: string;
+}
+
+// v2.14.29 Reactive: lifecycle tracker for an active "block" period.
+// Persisted in keyval `kumiko_block_runtime` so it survives PC quit /
+// Android process kill (mirrors busySlotRuntime; see plan section
+// "拉黑跨场景的处理"). Cleared by useBlockRegulator on expiry, by
+// the boot rescue path in useInitialLoadBootstrap when downtime
+// exceeded `activeUntilMs`, or by `clearBlock` after expiry proactive
+// fires.
+export interface KumikoBlockRuntime {
+  activeUntilMs: number;
+  startedAt: number;
+  reason: string;
+  triggerMessageId?: string;
+  capturedUnreadIds: string[];
+  expiryAcked?: boolean;
 }
 
 export type MessageAlertKind = 'reply' | 'proactive' | 'reminder';

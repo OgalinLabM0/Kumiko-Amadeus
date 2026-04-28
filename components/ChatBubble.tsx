@@ -199,6 +199,12 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   const displayContent = messageText;
   const isFailed = isUser && message.sendStatus === 'failed';
   const isSending = isUser && message.sendStatus === 'sending';
+  // v2.14.29 Reactive: bubble was sent during an active block. Set on
+  // executeSendCore intercept and preserved through future runs as a
+  // historical fact (the user really did try to message while
+  // blocked). Triggers the "未送达" subtitle below and a slight opacity
+  // dimming on the bubble itself.
+  const isBlockedSend = isUser && message.blockedDuringSend === true;
   // v2.14.28 H5 (post-H18 reframe): the bubble is "stuck-未读" when the
   // user message has finished its 9s pre-send window (isPending=false) and
   // executeSendCore has flipped sendStatus to undefined, but Kumiko hasn't
@@ -388,7 +394,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                 )}
                 {/* Status Line */}
                 <div className={`flex flex-col items-end ka-micro leading-tight ${isDarkMode ? 'text-gray-300' : 'text-gray-400'}`}>
-                   {isFailed ? (
+                   {isBlockedSend ? (
+                     <span className="opacity-80">
+                       {language === 'zh' ? '未送达' : 'Not delivered'}
+                     </span>
+                   ) : isFailed ? (
                      <span className="text-red-500 font-semibold">
                        {language === 'zh' ? '发送失败' : 'Failed'}
                      </span>
@@ -433,6 +443,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                     ${bubbleClasses} 
                     ${isSelectionMode && isSelected ? 'ring-2 ring-offset-1 ring-yellow-500/50' : ''}
                     ${isPending ? 'border-dashed opacity-90' : ''} 
+                    ${isBlockedSend ? 'opacity-85' : ''}
                     ${highlightClass}
                   `}
                 >
@@ -553,6 +564,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
     prevProps.message.voiceFileId === nextProps.message.voiceFileId &&
     prevProps.message.sendStatus === nextProps.message.sendStatus &&
     prevProps.message.failReason === nextProps.message.failReason &&
+    prevProps.message.blockedDuringSend === nextProps.message.blockedDuringSend &&
     prevProps.isDarkMode === nextProps.isDarkMode &&
     prevProps.isSelectionMode === nextProps.isSelectionMode &&
     prevProps.isSelected === nextProps.isSelected &&

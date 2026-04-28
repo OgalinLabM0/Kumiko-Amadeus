@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { BellOff, CalendarClock, Clock3, Hourglass, Inbox, Pause, Play, Repeat, Trash2, X } from 'lucide-react';
+import { BellOff, CalendarClock, Clock3, Hourglass, Inbox, Pause, Play, Repeat, ShieldOff, Trash2, X } from 'lucide-react';
 import { Language } from '../../types';
 import { useAppStore } from '../../store';
 
@@ -125,6 +125,7 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
 }) => {
   const busyFollowUp = useAppStore(s => s.busyFollowUp);
   const pendingApology = useAppStore(s => s.pendingApology);
+  const blockRuntime = useAppStore(s => s.blockRuntime);
 
   // Polling clock so countdowns update live while the panel is open.
   // We tick every 1 s but only when `isOpen` is true so the panel
@@ -141,7 +142,8 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
     ? pendingApology.sources.reduce((sum, s) => sum + s.unreadUserMessageIds.length, 0)
     : 0;
   const apologySourceCount = pendingApology?.sources.length ?? 0;
-  const totalTasks = relativeReminders.length + dailyReminders.length + (busyFollowUp ? 1 : 0) + (pendingApology ? 1 : 0);
+  const blockActive = blockRuntime !== null && blockRuntime.activeUntilMs > Date.now();
+  const totalTasks = relativeReminders.length + dailyReminders.length + (busyFollowUp ? 1 : 0) + (pendingApology ? 1 : 0) + (blockActive ? 1 : 0);
   const nextOneTime = relativeReminders.slice().sort((a, b) => a.dueAt - b.dueAt)[0];
 
   const busyStatusLabel = (() => {
@@ -309,6 +311,32 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
                       ? `未读 ${busyUnreadCount}`
                       : `${busyUnreadCount} unread`}
                   </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* v2.14.29 Reactive: block-runtime card. Sits with busyFollowUp /
+            pendingApology so all "Kumiko-side awaiting" surfaces stack
+            together. Wording is neutral status-line per plan
+            ("拉黑中" not "她在生气你"). */}
+        {blockRuntime && blockActive && (
+          <div className={`rounded border p-3 ${cardClass}`}>
+            <div className="flex items-start gap-2">
+              <ShieldOff size={14} className={`mt-0.5 shrink-0 ${titleClass}`} />
+              <div className="min-w-0 flex-1">
+                <div className={`ka-kicker ${labelClass}`}>
+                  {language === 'zh' ? '拉黑中' : 'Blocked'}
+                </div>
+                <div className={`mt-1 ka-copy break-words ${textClass}`}>
+                  {blockRuntime.reason || (language === 'zh' ? '（未提供原因）' : '(no reason given)')}
+                </div>
+                <div className={`mt-1 ka-copy-sm ${textClass} opacity-70`}>
+                  {formatCountdown(blockRuntime.activeUntilMs, language)}
+                </div>
+                <div className={`mt-1 ka-copy-sm ${textClass} opacity-60`}>
+                  {language === 'zh' ? '期间消息会在解除后送达' : 'Messages sent now arrive after the block lifts'}
                 </div>
               </div>
             </div>

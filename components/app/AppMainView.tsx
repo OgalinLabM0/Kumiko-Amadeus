@@ -11,6 +11,7 @@ import { AppUpdateModal, DeleteConfirmationModal, DoubleClearAllModal, ClearAllM
 import { DisconnectedBanner } from './AppStatusOverlays';
 import { MessageCenterPanel } from './MessageCenterPanel';
 import { TaskPanel } from './TaskPanel';
+import { BlockBanner } from './BlockBanner';
 import { DiaryPanel } from '../DiaryPanel';
 
 interface AppMainViewProps {
@@ -93,6 +94,10 @@ export const AppMainView: React.FC<AppMainViewProps> = ({
         <AppChatHeader {...chatHeaderProps} />
         <DisconnectedBanner
           isVisible={isDisconnected}
+          isDarkMode={messageListProps.isDarkMode}
+          language={messageListProps.language}
+        />
+        <BlockBanner
           isDarkMode={messageListProps.isDarkMode}
           language={messageListProps.language}
         />

@@ -38,6 +38,12 @@ let trayRef = null;
 // Module-private state.
 let unreadMessageCount = 0;
 let callNotifWindow = null;
+// v2.14.29 Reactive: block status tracked here so `applyUnreadShellState`
+// can prepend "[拉黑中]" / "[Blocked]" to the window title and tray
+// tooltip without the renderer needing to push two updates. The renderer
+// pushes once per state change via `app:update-block-state`.
+let blockActive = false;
+let blockLanguage = 'zh';
 
 function setNotificationWindow(win) {
   mainWin = win || null;
@@ -57,17 +63,34 @@ function focusMainWindow() {
 
 function applyUnreadShellState() {
   const baseTitle = 'Kumiko·Amadeus';
-  const nextTitle = unreadMessageCount > 0 ? `(${unreadMessageCount}) ${baseTitle}` : baseTitle;
+  const blockPrefix = blockActive
+    ? (blockLanguage === 'en' ? '[Blocked] ' : '[拉黑中] ')
+    : '';
+  const unreadPrefix = unreadMessageCount > 0 ? `(${unreadMessageCount}) ` : '';
+  const nextTitle = `${blockPrefix}${unreadPrefix}${baseTitle}`;
 
   if (mainWin && !mainWin.isDestroyed()) {
     mainWin.setTitle(nextTitle);
-    mainWin.flashFrame(unreadMessageCount > 0);
+    // While blocked we suppress flashFrame to avoid the bouncing-icon
+    // implying urgency; the title prefix already conveys the state.
+    mainWin.flashFrame(unreadMessageCount > 0 && !blockActive);
   }
 
   if (trayRef) {
-    const tooltip = unreadMessageCount > 0
-      ? `Kumiko·Amadeus 后台守护中 · ${unreadMessageCount} 条未读来信`
-      : 'Kumiko·Amadeus 后台守护中...';
+    let tooltip;
+    if (blockActive) {
+      tooltip = blockLanguage === 'en'
+        ? (unreadMessageCount > 0
+            ? `Kumiko·Amadeus · Blocked · ${unreadMessageCount} unread (queued)`
+            : 'Kumiko·Amadeus · Blocked')
+        : (unreadMessageCount > 0
+            ? `Kumiko·Amadeus 拉黑中 · ${unreadMessageCount} 条暂存消息`
+            : 'Kumiko·Amadeus 拉黑中');
+    } else {
+      tooltip = unreadMessageCount > 0
+        ? `Kumiko·Amadeus 后台守护中 · ${unreadMessageCount} 条未读来信`
+        : 'Kumiko·Amadeus 后台守护中...';
+    }
     trayRef.setToolTip(tooltip);
   }
 }
@@ -177,6 +200,17 @@ function handleUpdateUnreadState(_event, payload = {}) {
   applyUnreadShellState();
 }
 
+// v2.14.29 Reactive: renderer pushes block on/off (and language so the
+// prefix matches the user's UI language). Cheap to call; we just store
+// and re-render the title/tray.
+function handleUpdateBlockState(_event, payload = {}) {
+  blockActive = Boolean(payload && payload.active);
+  if (payload && (payload.language === 'en' || payload.language === 'zh')) {
+    blockLanguage = payload.language;
+  }
+  applyUnreadShellState();
+}
+
 module.exports = {
   setNotificationWindow,
   setNotificationTray,
@@ -186,4 +220,5 @@ module.exports = {
   handleSendCallNotification,
   handleCloseCallNotification,
   handleUpdateUnreadState,
+  handleUpdateBlockState,
 };
