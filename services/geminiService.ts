@@ -291,6 +291,14 @@ export const sendMessageToGemini = async (
 ): Promise<ChatResponse> => {
   const config = getCurrentAIConfig();
   const provider = config.provider || 'gemini';
+  // v2.14.28 M25: capture Tavily search hits so the chat bubble can display
+  // a "sources" footer. Previously ChatResponse.groundingSources was always
+  // []; the legacy Google Grounding path was deleted in P1 #26 and Tavily
+  // results were thrown away after the model consumed them. Still cheap to
+  // keep — push {title, uri} per hit when the search_internet tool
+  // returns success, then return the array at the bottom of this function.
+  // Shape matches ChatResponse.groundingSources: { title: string; uri: string }[].
+  const tavilyGroundingSources: Array<{ title: string; uri: string }> = [];
   const transportProvider = resolveTransportProvider(
     provider,
     config.useCustomEndpoint ? config.customEndpoint : undefined
@@ -1934,6 +1942,20 @@ ${extraSystemPrompt ?? ''}`;
                         const data = await res.json();
                         const resultsStr = JSON.stringify(data.results || []);
                         toolResponseData = { success: true, results: resultsStr };
+                        // v2.14.28 M25: capture concise hit metadata for
+                        // the chat bubble's source footer. Cap the count
+                        // so a query that returned 30 URLs doesn't bloat
+                        // the bubble.
+                        if (Array.isArray(data.results)) {
+                            for (const hit of data.results.slice(0, 5)) {
+                                if (hit && typeof hit.url === 'string' && hit.url.trim()) {
+                                    tavilyGroundingSources.push({
+                                        title: typeof hit.title === 'string' && hit.title.trim() ? hit.title : hit.url,
+                                        uri: hit.url,
+                                    });
+                                }
+                            }
+                        }
                     } catch (e: any) {
                         console.error("[TOOL CALL] Failed to search internet:", e);
                         toolResponseData = { success: false, error: e.message || "Failed to search internet" };
@@ -2396,7 +2418,9 @@ ${extraSystemPrompt ?? ''}`;
     return {
       textParts: plannedTextParts,
       emotion,
-      groundingSources: [],
+      // v2.14.28 M25: populated from Tavily tool calls earlier in the turn.
+      // Empty when no internet search ran (default for a normal reply).
+      groundingSources: tavilyGroundingSources,
       quote,
       imageCaption: extractedImageCaption,
       scheduleTrigger,

@@ -201,9 +201,23 @@ export const callOpenAI = async (
 
     const data = await response.json();
     const responseMessage = data.choices?.[0]?.message;
-    
+
+    // v2.14.28 M20: many OpenAI-compatible vendors (DeepSeek-R1, Qwen-QwQ
+    // family, several aggregators) return their reasoning content as a
+    // separate `reasoning_content` field instead of inlining it inside
+    // `<think>...</think>` blocks. Without this merge the model's actual
+    // thinking gets discarded and only the final-answer summary survives —
+    // the chat bubble loses context that downstream cleanup expects to be
+    // strippable. Concatenate when both are present so stripThinkingTags
+    // sees the unified payload, then leave the strip pass to do its job.
+    const rawContent = (responseMessage?.content as string | undefined) ?? "";
+    const rawReasoning = (responseMessage?.reasoning_content as string | undefined) ?? "";
+    const combinedRaw = rawReasoning
+        ? (rawContent ? `${rawReasoning}\n${rawContent}` : rawReasoning)
+        : rawContent;
+
     const result: ProviderResponse = {
-        text: stripThinkingTags(responseMessage?.content || "")
+        text: stripThinkingTags(combinedRaw)
     };
 
     if (responseMessage?.tool_calls && responseMessage.tool_calls.length > 0) {
@@ -394,8 +408,13 @@ export const callVisionHelper = async (
             throw new Error(`Vision Helper OpenAI Error: ${response.status} ${errText}`);
         }
         const data = await response.json();
-        return data.choices?.[0]?.message?.content || "[Vision Helper returned no description]";
-        
+        // v2.14.28 M21: vision helper output goes straight into the main
+        // model's prompt context. Strip thinking tags so a vision model
+        // that emits `<think>...</think>` along with its description doesn't
+        // pollute the main chat turn with reasoning fragments.
+        const visionContent = data.choices?.[0]?.message?.content || "[Vision Helper returned no description]";
+        return stripThinkingTags(visionContent);
+
     } else if (transportProvider === 'anthropic') {
         let fetchUrl = (useCustomEndpoint && customEndpoint) ? customEndpoint.replace(/\/$/, '') : 'https://api.anthropic.com/v1/messages';
         
