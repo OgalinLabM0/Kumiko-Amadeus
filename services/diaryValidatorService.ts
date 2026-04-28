@@ -21,15 +21,33 @@ export interface DiaryDateMetadata {
   isTomorrowRestDay: boolean;
 }
 
+// v2.14.28 M17: optional progress / cancellation hooks. The diary
+// backfill dialog can pass `onPhase` to surface "extracting / rag /
+// verifying" labels in its progress UI, and `signal` to wire a Cancel
+// button to the validator's two LLM calls + RAG fan-out. Both fields
+// are optional so existing callers are unaffected.
+export interface VerifyAgainstHistoryOptions {
+  signal?: AbortSignal;
+  onPhase?: (phase: 'extracting' | 'rag' | 'verifying' | 'retry') => void;
+}
+
 export const verifyAgainstHistory = async (
   draftContent: string,
   chatHistoryText: string,
   pastDiarySummary: string,
-  dateMetadata?: DiaryDateMetadata
+  dateMetadata?: DiaryDateMetadata,
+  options?: VerifyAgainstHistoryOptions,
 ): Promise<string[]> => {
   const config = getCurrentAIConfig();
-  
+  const checkAbort = () => {
+    if (options?.signal?.aborted) {
+      throw new DOMException('verifyAgainstHistory aborted', 'AbortError');
+    }
+  };
+
   // 1. Extract Claims
+  options?.onPhase?.('extracting');
+  checkAbort();
   const extractionPrompt = `你是一个智能信息抽取器。请从下面的日记草稿中提取出“主张(Claims)”。
 主张分为三类：
 1. 【过去断言】：日记中提到过去发生的事（例如：“昨天买的大虾还没吃完”、“上次教的《源氏物语》”、“前天那场暴雨”）。只要初稿提到了对过去事情的接续，就必须提取。
@@ -53,11 +71,14 @@ ${draftContent}
   }
 
   const claims = extractionResult.split('\n').map(line => line.replace(/^- /, '').trim()).filter(Boolean);
-  
-  // 2. Batch semantic check via RAG 
+
+  // 2. Batch semantic check via RAG
+  options?.onPhase?.('rag');
+  checkAbort();
   let ragContext = "";
   for (const claim of claims) {
       if (claim.length > 3) {
+          checkAbort();
           const results = await searchLocalRagMemory(claim, 3, undefined, 'semantic_recall');
           if (results && results.length > 0) {
               ragContext += `【关于 "${claim}" 的历史记忆片段】:\n${results.join('\n')}\n\n`;
@@ -117,11 +138,15 @@ ${draftContent}
     return (result || '').trim();
   };
 
+  options?.onPhase?.('verifying');
+  checkAbort();
   let trimmed = await runVerifyOnce('');
   if (!trimmed || trimmed.length < 5) {
     console.warn(
       '[DIARY-VALIDATOR] Empty / too-short first response, retrying once before defaulting to failure.'
     );
+    options?.onPhase?.('retry');
+    checkAbort();
     trimmed = await runVerifyOnce(
       '上一次审查没有给出任何文字反馈。请务必按照审查要求输出：没问题时仅输出 PASS；有问题时逐行列出原因与修改指令。不要输出空白或单字回复。'
     );

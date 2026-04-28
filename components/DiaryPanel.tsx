@@ -38,13 +38,28 @@ const JST_TIMEZONE = 'Asia/Tokyo';
 // The behavioral side of the flag still lives in store/slices/diarySlice.ts, which
 // reads the same localStorage key.
 
-const getCurrentJstDate = () => new Date(new Date().toLocaleString('en-US', { timeZone: JST_TIMEZONE }));
+// v2.14.28 M6: previous helper computed `new Date(toLocaleString(...))`
+// to get a "JST clock", then used `setHours(24, ...)` which operates in
+// the LOCAL timezone — so for non-JST users the next-midnight delay was
+// off by `Asia/Tokyo - localTZ` hours. Replaced with an Intl-based
+// arithmetic that derives the next JST midnight directly from the
+// current epoch ms, no local-timezone arithmetic in the loop.
+const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const getCurrentJstDate = () => new Date(Date.now() + JST_OFFSET_MS - new Date().getTimezoneOffset() * 60 * 1000);
 
 const getDelayUntilNextJstDay = () => {
-  const currentJst = getCurrentJstDate();
-  const nextJstDay = new Date(currentJst);
-  nextJstDay.setHours(24, 0, 5, 0);
-  return Math.max(1000, nextJstDay.getTime() - currentJst.getTime());
+  // Compute "next JST midnight + 5 s" as an absolute epoch ms by:
+  //   1. nowJstMs = Date.now() shifted into JST clock-space
+  //   2. dayStartJstMs = nowJstMs floored to UTC midnight
+  //   3. nextDayJstMs = dayStartJstMs + 24h + 5s
+  //   4. nextDayUtcMs = nextDayJstMs - JST_OFFSET_MS  (back to real epoch)
+  // This is independent of the runtime's local timezone, which is the
+  // whole point of the M6 fix.
+  const nowMs = Date.now();
+  const nowJstMs = nowMs + JST_OFFSET_MS;
+  const dayStartJstMs = Math.floor(nowJstMs / 86_400_000) * 86_400_000;
+  const nextJstMidnightUtcMs = dayStartJstMs + 86_400_000 + 5_000 - JST_OFFSET_MS;
+  return Math.max(1000, nextJstMidnightUtcMs - nowMs);
 };
 
 // getMondayOfWeek removed with renderWeekView (P1 #30).

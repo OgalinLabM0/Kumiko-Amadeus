@@ -1024,8 +1024,16 @@ async function ensureModelReady() {
 // 4. EMBEDDING GENERATION
 // ==========================================
 async function generateEmbedding(text) {
-    await ensureModelReady();
-    return generateEmbeddingInMainProcess(text);
+    // v2.14.28 M18: prefer the worker thread for incremental embedding too —
+    // rebuild was already worker-routed but the rag:save / rag:embed
+    // call sites went through generateEmbeddingInMainProcess, which paid
+    // for ONNX inference on the Electron main thread (= UI thread for
+    // background-process-y purposes) and could spike for several hundred
+    // ms during a chat send. generateEmbeddingInWorker has its own
+    // graceful fallback to main-process embedding when the worker is
+    // unavailable, so this is a pure scheduling improvement with no
+    // behavior change on the unhappy path.
+    return generateEmbeddingInWorker(text);
 }
 
 // ==========================================
