@@ -117,8 +117,21 @@ export const VoiceBubble: React.FC<VoiceBubbleProps> = ({
         // saveVoiceFile wrote them locally during TTS synthesis. No more
         // PWA HTTP-stream branch (PC `/media/voices/{id}` is gone).
         const buf = await loadVoiceFile(voiceFileId);
+        // v2.14.28 M29: SoVITS produces RIFF/WAV bytes but the storage path
+        // names them `.mp3` and we used to feed the resulting Blob as
+        // `audio/mpeg`. Most decoders sniff content first so it played, but
+        // strict ones rejected the mismatch. Sniff the RIFF magic and
+        // promote the MIME to audio/wav when the bytes are actually WAV.
+        // Fish Audio output stays MP3 so the legacy path is unchanged.
+        const _isWav = buf instanceof ArrayBuffer
+          && buf.byteLength >= 4
+          && (() => {
+              const view = new Uint8Array(buf, 0, 4);
+              return view[0] === 0x52 && view[1] === 0x49 && view[2] === 0x46 && view[3] === 0x46; // 'RIFF'
+            })();
+        const _voiceMime = _isWav ? 'audio/wav' : 'audio/mpeg';
         if (!buf) { setAudioError(true); return; }
-        const blob = new Blob([buf], { type: 'audio/mpeg' });
+        const blob = new Blob([buf], { type: _voiceMime });
         const url = URL.createObjectURL(blob);
         objectUrlRef.current = url;
         const audio = new Audio(url);

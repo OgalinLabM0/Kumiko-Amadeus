@@ -201,7 +201,12 @@ export interface TtsConfig {
   fishAudioApiKey: string;
   fishAudioReferenceId: string;
   fishAudioModel: 's1' | 's2-pro';
-  format: 'mp3' | 'opus';
+  // v2.14.28 M30: 'wav' added so the audioMimeForFormat() switch in
+  // TtsConfigSection.tsx is reachable for SoVITS bytes (which are always
+  // wav). Previously the type forced 'mp3' | 'opus' and the wav arm of
+  // the switch was dead code; the resulting MIME mismatch is the symptom
+  // covered by M29 (SoVITS write path).
+  format: 'mp3' | 'opus' | 'wav';
   latency: 'low' | 'balanced' | 'normal';
   speed: number;
   temperature?: number;

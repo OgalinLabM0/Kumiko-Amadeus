@@ -1296,6 +1296,11 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             <label className={fieldLabelClass}>{t.ttsFishApiKey}</label>
             <ComposableInput type="password" value={ttsConfig.fishAudioApiKey} onChange={e => update({ fishAudioApiKey: e.target.value })}
               className={`${inputClass} w-full mt-1`} placeholder="sk-..." />
+            <p className={`${helperClass} mt-1`}>
+              {language === 'zh'
+                ? 'Fish Audio 仅支持一个 API Key（与 AI 设置里"主/备 Key + ACTIVE 标签"的多源轮换无关）；这里填的就是合成时实际使用的那条。'
+                : 'Fish Audio uses a single API key (independent of the "primary / backup + ACTIVE badge" rotation under AI settings). This field is the exact key used during synthesis.'}
+            </p>
           </div>
 
           <div>
