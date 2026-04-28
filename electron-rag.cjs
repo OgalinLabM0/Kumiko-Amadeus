@@ -2642,7 +2642,15 @@ async function initRag() {
     }
 }
 
-function closeRag() {
+// v2.14.28 M7: closeRag is now async so the caller (electron-main.cjs
+// will-quit) can await the worker termination. Previously the
+// `void ragWorker.terminate()` was fire-and-forget and Electron's
+// will-quit could finish before the worker's `process.exit(0)` finished
+// flushing — usually fine, but on slow machines the worker process
+// stuck around for a few hundred ms after the renderer exited, and a
+// subsequent install/upgrade saw the .so file locked. Awaiting closes
+// the gap.
+async function closeRag() {
     if (db) {
         db.close();
         db = null;
@@ -2653,7 +2661,11 @@ function closeRag() {
         activeRebuildJob = null;
     }
     if (ragWorker) {
-        void ragWorker.terminate();
+        try {
+            await ragWorker.terminate();
+        } catch (e) {
+            console.warn('[RAG] worker.terminate() rejected:', e?.message || e);
+        }
         ragWorker = null;
     }
     isModelLoaded = false;

@@ -1,0 +1,13 @@
+v2.14.28 p6.7: macro - infra / IPC / workflow cleanup (M1 + M7 + M8 + M9)
+
+- M1 mobile-event-broadcast dead IPC removed:
+  * services/llmCore.ts setAIConfig: drop electronAPI.send('mobile-event-broadcast'); preload allowlist already rejected the channel since F2B.4, so the call was a silent no-op + log spam.
+  * components/app/useAppPreferencesSync.ts (TTS branch): drop the same dead send.
+  * services/preferencesSync.ts scheduleDesktopPreferencesFlush: drop the IPC send while keeping the in-process dispatchPreferencesUpdated CustomEvent path (the only live consumer).
+- M7 electron-rag.cjs closeRag now async, awaits ragWorker.terminate(); electron-main.cjs prepareForInstall awaits closeRag, will-quit calls preventDefault then awaits closeRag + terminateGenieProcess before app.quit() so the worker process cannot outlive the main process and lock native .so files during in-place upgrade.
+- M8 .github/workflows/linux-appimage.yml: on publish=true, regenerate latest-linux*.yml locally + gh release upload --clobber, mirroring windows-release.yml so auto-updater channel files are canonical regardless of electron-builder POST race.
+- M9 voice:clear-all wired end-to-end:
+  * preload.cjs allowlist adds 'voice:clear-all'.
+  * electron/media-files.cjs handleVoiceClearAll: bulk unlink in one IPC round-trip, returns { success, cleared, errors } matching the renderer-side type.
+  * electron-main.cjs registers ipcMain.handle('voice:clear-all', handleVoiceClearAll).
+  * Renderer voiceFileService.clearAllVoices stays unchanged; it now hits the fast path instead of the per-file fallback loop.

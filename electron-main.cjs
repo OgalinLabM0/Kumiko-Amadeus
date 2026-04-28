@@ -28,6 +28,7 @@ const {
   handleVoiceDelete,
   handleVoiceList,
   handleVoiceOpenFolder,
+  handleVoiceClearAll,
   handleVoiceGetStorageInfo,
   handleRingtoneSave,
   handleRingtoneLoad,
@@ -163,7 +164,10 @@ setAppUpdaterLifecycleHooks({
     markAutoBackupDone(true);
     app.isQuiting = true;
     try {
-      closeRag();
+      // v2.14.28 M7: closeRag is async (awaits worker termination so
+      // electron-builder's installer doesn't see locked native .so files
+      // during in-place upgrade).
+      await closeRag();
     } catch (e) {
       console.warn('[UPDATER HOOK] closeRag failed:', e && e.message);
     }
@@ -322,6 +326,8 @@ if (!singleInstanceLock) {
   ipcMain.handle('voice:list', handleVoiceList);
   ipcMain.handle('voice:open-folder', handleVoiceOpenFolder);
   ipcMain.handle('voice:get-storage-info', handleVoiceGetStorageInfo);
+  // v2.14.28 M9: bulk voice cache clear (single round-trip).
+  ipcMain.handle('voice:clear-all', handleVoiceClearAll);
 
   ipcMain.handle('ringtone:save', handleRingtoneSave);
   ipcMain.handle('ringtone:load', handleRingtoneLoad);
@@ -427,9 +433,27 @@ if (!singleInstanceLock) {
 
   app.on('before-quit', runAutoZipBeforeQuit);
 
-  app.on('will-quit', () => {
-    closeRag();
-    terminateGenieProcess();
-    // F2B.4: dropped mobileAccessIpc.stopOnQuit — Fastify server gone.
+  app.on('will-quit', (event) => {
+    // v2.14.28 M7: hold the will-quit event until closeRag's async worker
+    // termination resolves. Without preventDefault + manual app.quit() the
+    // event handler runs synchronously and the worker process can outlive
+    // the main process, blocking the next install/upgrade.
+    if (app.isQuitingFinalized) return;
+    event.preventDefault();
+    (async () => {
+      try {
+        await closeRag();
+      } catch (e) {
+        console.warn('[will-quit] closeRag failed:', e && e.message);
+      }
+      try {
+        terminateGenieProcess();
+      } catch (e) {
+        console.warn('[will-quit] terminateGenieProcess failed:', e && e.message);
+      }
+      // F2B.4: dropped mobileAccessIpc.stopOnQuit — Fastify server gone.
+      app.isQuitingFinalized = true;
+      app.quit();
+    })();
   });
 }

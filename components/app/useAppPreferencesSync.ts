@@ -130,17 +130,11 @@ export const useAppPreferencesSync = ({
       broadcast: false,
     });
 
-    // F2B.3: dropped the `isMobilePwa()` httpInvoke branch + the cross-device
-    // PC↔phone fan-out comment block. Capacitor APK is standalone, no
-    // upstream PC to push to. Electron desktop still emits the in-process
-    // broadcast for any IPC listener that wants it.
-    if (isDesktopElectron()) {
-      try {
-        window.electronAPI?.send?.('mobile-event-broadcast', { type: 'tts-config:changed' });
-      } catch (e) {
-        console.warn('[useAppPreferencesSync] desktop tts-config:changed broadcast failed:', e);
-      }
-    }
+    // v2.14.28 M1: removed the desktop `mobile-event-broadcast` ping.
+    // The preload allowlist dropped that IPC channel in F2B.4, so the
+    // call was a silent no-op outside this process — same fix as the
+    // setAIConfig path. queueLocalStoragePreferenceSync above is the
+    // one source consumers actually read from.
   }, [sanitizeTtsConfig, setTtsConfig]);
 
   useEffect(() => {

@@ -24,6 +24,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'voice:list',
       'voice:open-folder',
       'voice:get-storage-info',
+      // v2.14.28 M9: voiceFileService.clearAllVoices() invokes
+      // 'voice:clear-all' but the channel was missing from this
+      // allowlist, so the call rejected with "Unauthorized IPC" and
+      // the catch path silently degraded to "list + per-file delete"
+      // (much slower for users with hundreds of cached voice clips).
+      // Allow the channel here; the matching ipcMain.handle is added
+      // in electron-main.cjs in the same commit.
+      'voice:clear-all',
       'images:save',
       'images:load',
       'images:delete',

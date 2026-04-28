@@ -23,13 +23,16 @@ export const getCurrentAIConfig = (): AIConfig => {
 
 // F2B.3: simplified the write-side entry for kumiko_ai_config.
 //
-// - Desktop Electron: writes localStorage and (best-effort) emits a
-//   `mobile-event-broadcast` of `ai-config:changed`. The broadcast is
-//   now historical — there are no connected phones to receive it — but
-//   we keep the IPC ping so any in-process listener (e.g. an Electron
-//   plugin using ipcRenderer) stays informed.
-// - Capacitor Android: localStorage write is the source of truth; no
-//   remote dispatch.
+// v2.14.28 M1: removed the dead `mobile-event-broadcast` IPC ping. The
+// preload allowlist dropped that channel in F2B.4 (preload.cjs:103),
+// so the call was a silent no-op — the only effect was log noise when
+// debugging "why isn't preferences sync firing on the desktop". The
+// useful surface is already covered by `queueLocalStoragePreferenceSync`,
+// which is the one path the renderer reads back from on next mount.
+//
+// - Both runtimes: localStorage write through the shared queue; in-
+//   process consumers read the value directly via `getCurrentAIConfig`
+//   on demand.
 //
 // Everything that used to call `httpInvoke('ai-config:update-from-mobile', cfg)`
 // is dead — the PC HTTP bridge / WebSocket fan-out (Phase 6 Part B) was
@@ -52,18 +55,6 @@ export const setAIConfig = async (
         });
     } catch (e) {
         return { ok: false, error: (e as Error).message };
-    }
-    const anyWindow = typeof window !== 'undefined' ? (window as unknown as {
-        electronAPI?: { send?: (c: string, p: unknown) => void };
-        __KUMIKO_ENV__?: { runtime?: string };
-    }) : null;
-    const runtime = anyWindow?.__KUMIKO_ENV__?.runtime;
-    if (runtime === 'electron') {
-        try {
-            anyWindow?.electronAPI?.send?.('mobile-event-broadcast', { type: 'ai-config:changed' });
-        } catch (e) {
-            console.warn('[setAIConfig] desktop broadcast failed:', e);
-        }
     }
     return { ok: true };
 };

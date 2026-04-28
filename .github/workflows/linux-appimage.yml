@@ -150,6 +150,31 @@ jobs:
         # and overwrite any sha512 electron-builder chose.
         run: node scripts/generate-latest-yml.cjs
 
+      - name: Regenerate latest-linux*.yml + clobber upload (publish mode)
+        if: inputs.publish == true
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        # v2.14.28 M8: mirror the windows-release.yml defense — even on the
+        # publish=true path, run the local generator and force-upload the
+        # latest-linux*.yml so the auto-updater channel files are
+        # canonical regardless of electron-builder's race-prone POST.
+        # The publish step above already wrote them, but we re-emit
+        # locally to make sure sha512 / file-size match what's actually
+        # on disk in release/ — and `--clobber` overwrites the release
+        # asset if electron-builder already uploaded a stale copy.
+        run: |
+          node scripts/generate-latest-yml.cjs
+          TAG="v$(node -p "require('./package.json').version")"
+          # Each arch matrix produces its own file under release/ —
+          # gh release upload tolerates missing files, so this is safe
+          # even when an arch hasn't shipped a particular channel file.
+          if [ -f release/latest-linux.yml ]; then
+            gh release upload "$TAG" release/latest-linux.yml --clobber
+          fi
+          if [ -f release/latest-linux-arm64.yml ]; then
+            gh release upload "$TAG" release/latest-linux-arm64.yml --clobber
+          fi
+
       - name: Clean release directory (postbuild)
         run: node scripts/clean-release.cjs postbuild
 

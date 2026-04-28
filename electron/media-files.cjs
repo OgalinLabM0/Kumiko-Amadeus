@@ -364,6 +364,37 @@ function handleVoiceGetStorageInfo() {
   }
 }
 
+// v2.14.28 M9: bulk-delete every cached voice .mp3. Mirrors the
+// per-file unlink loop in voiceFileService.clearAllVoices but does it
+// in a single IPC round-trip so the renderer doesn't pay 1 round-trip
+// per file (a settings-level "Clear voice cache" with 500 cached
+// clips used to take 30s+ on slow disks). Field name `cleared` matches
+// the renderer-side type already in use.
+function handleVoiceClearAll() {
+  try {
+    const dir = getVoiceDir();
+    let cleared = 0;
+    let errors = 0;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir).filter(f => f.endsWith('.mp3'));
+    } catch {
+      return { success: true, cleared: 0, errors: 0 };
+    }
+    for (const f of entries) {
+      try {
+        fs.unlinkSync(path.join(dir, f));
+        cleared += 1;
+      } catch {
+        errors += 1;
+      }
+    }
+    return { success: true, cleared, errors };
+  } catch (e) {
+    return { success: false, error: e.message, cleared: 0, errors: 0 };
+  }
+}
+
 // ── Ringtone IPC handlers ─────────────────────────────────────────
 
 function handleRingtoneSave(_event, payload = {}) {
@@ -470,6 +501,7 @@ module.exports = {
   handleVoiceList,
   handleVoiceOpenFolder,
   handleVoiceGetStorageInfo,
+  handleVoiceClearAll,
   handleRingtoneSave,
   handleRingtoneLoad,
   handleRingtoneDelete,

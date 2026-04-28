@@ -98,14 +98,22 @@ interface PreferencesUpdatedDetail {
   revision?: number;
 }
 
+// v2.14.28 M1: the IPC channel name `mobile-event-broadcast` is kept here
+// purely as a constant string for the in-process dispatchPreferencesUpdated
+// CustomEvent below. The actual `electronAPI.send(...)` IPC call is now
+// gone — the preload allowlist dropped that channel in F2B.4 (preload.cjs:103),
+// so the desktop send was a silent no-op. Same-process consumers always
+// listened to the CustomEvent path anyway, so removing the IPC ping is a
+// pure cleanup with no behavior change.
 const DESKTOP_BROADCAST_CHANNEL = 'mobile-event-broadcast';
 
 let syncSuppressionDepth = 0;
 let queuedDesktopKeys = new Set<string>();
 let desktopFlushScheduled = false;
-// F2B.3: removed `queuedMobile*` + `mobileFlushScheduled` state. PWA HTTP
-// fan-out is gone, so the only remaining transport is the Electron
-// `mobile-event-broadcast` ping.
+// F2B.3 / M1: removed `queuedMobile*` + `mobileFlushScheduled` state. PWA HTTP
+// fan-out is gone (F2B.3) and the desktop IPC broadcast is now a no-op
+// at preload allowlist (M1). The dispatchPreferencesUpdated CustomEvent
+// is the only live consumer.
 
 function dispatchPreferencesUpdated(detail: PreferencesUpdatedDetail): void {
   if (typeof window === 'undefined') return;
@@ -429,15 +437,15 @@ function scheduleDesktopPreferencesFlush(): void {
     queuedDesktopKeys = new Set<string>();
     if (keys.length === 0) return;
     const revision = bumpPreferencesRevision();
-    try {
-      window.electronAPI?.send?.(DESKTOP_BROADCAST_CHANNEL, {
-        type: 'preferences:changed',
-        keys,
-        revision,
-      });
-    } catch (e) {
-      console.warn('[preferencesSync] desktop preferences broadcast failed:', e);
-    }
+    // v2.14.28 M1: removed the `electronAPI.send(DESKTOP_BROADCAST_CHANNEL,
+    // { type: 'preferences:changed', keys, revision })` IPC ping. The
+    // preload allowlist no longer accepts that channel (F2B.4), so the
+    // call was a silent no-op. The CustomEvent dispatch below is the
+    // only live consumer for in-process listeners.
+    void DESKTOP_BROADCAST_CHANNEL; // referenced only by the historical
+                                    // comment block above; kept exported
+                                    // for any future caller that wants
+                                    // the canonical channel-name string.
     dispatchPreferencesUpdated({ keys, revision });
   }, 0);
 }
