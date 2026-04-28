@@ -118,8 +118,25 @@ function handleSendCallNotification(_event, payload = {}) {
       resizable: false, skipTaskbar: true, focusable: true,
       webPreferences: { nodeIntegration: false, contextIsolation: true }
     });
-    const title = (payload.title || 'Incoming Call').replace(/'/g, "\\'").replace(/\n/g, ' ');
-    const body = (payload.body || '').replace(/'/g, "\\'").replace(/\n/g, ' ');
+    // v2.14.28 L2: escape the *full* HTML metacharacter set, not just the
+    // single-quote / newline pair from v2.14.5. Today every caller is
+    // trusted (electron-main / Kumiko-emitted strings), but a future
+    // contributor wiring `payload.title` to a user-controlled string —
+    // e.g. forwarding a chat snippet into a desktop "incoming call" toast
+    // — would otherwise re-open an HTML-injection / `</script>` break-out
+    // vector. Whitelist approach: escape `& < > " ' /` and collapse
+    // newlines, which covers the OWASP "HTML element / attribute / JS
+    // string" intersection that we actually use in the template literal.
+    const escapeHtml = (s) => String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+      .replace(/\//g, '&#x2F;')
+      .replace(/\r?\n/g, ' ');
+    const title = escapeHtml(payload.title || 'Incoming Call');
+    const body = escapeHtml(payload.body || '');
     let avatarBase64 = '';
     try { avatarBase64 = fs.readFileSync(path.join(__dirname, '..', 'public', 'CCA-P2.png')).toString('base64'); } catch(_e) {}
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>

@@ -18,7 +18,8 @@ export default defineConfig(({ mode }) => {
       // electron/app-updater.cjs on PC) can compare locally without
       // bundling a fetch-package-json round-trip. Stringified so Vite's
       // define replaces every `__APP_VERSION__` literal at build time
-      // with the JSON-encoded string `"2.12.0"`.
+      // with the JSON-encoded string of whatever package.json reports
+      // at build time (e.g. `"2.14.28"` for the current release).
       define: {
         __APP_VERSION__: JSON.stringify(pkg.version || '0.0.0'),
       },

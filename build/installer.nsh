@@ -1,9 +1,16 @@
 ; =============================================================================
-; Kumiko-Amadeus installer / uninstaller custom hooks (v2.14.5).
+; Kumiko-Amadeus installer / uninstaller custom hooks.
+;
+; History:
+;   v2.14.5  initial polish pass landed (E.2 / E.3 / E.4 — see notes below).
+;   v2.14.27 hardened uninstall data-cleanup, wired registry tracking.
+;   v2.14.28 L1 — banner version note refreshed; the wizard skeleton itself
+;            still matches v2.14.5's MUI2 4-page layout, the installer logic
+;            below has accumulated v2.14.5 → v2.14.28 fixes.
 ;
 ; Layout: standard MUI2 4-page wizard (Welcome / Directory / Install / Finish)
 ; with system-native chrome — same skeleton that landed in v2.14.4 — plus four
-; v2.14.5 polish passes:
+; v2.14.5 polish passes that are still active today:
 ;
 ;   E.2  HEADERIMAGE bitmap (configured via package.json nsis.installerHeader)
 ;        renders a small KA wordmark strip in the top-right of every page after
@@ -498,6 +505,28 @@ FunctionEnd
 ;
 ; The HKCU flag is cleared at the very end of this macro regardless of branch,
 ; so the next install starts from a clean slate.
+;
+; v2.14.28 L3 — registry hive choice:
+; This installer ships with `nsis.perMachine: true` (package.json), which
+; means the program files land under Program Files and the install/uninstall
+; record lives under HKLM\Software. The user-data flags below
+; (`UninstallWipeData`, `UserDataPath`, `PendingMigration*`) however live
+; under HKCU\Software\KumikoAIAmadeus. This is intentional, not a bug:
+;
+;   - User profile / chat history / TTS / RAG indices all live under the
+;     calling user's %APPDATA% (per-user paths). The flags that point at,
+;     or describe the policy for, those files are themselves per-user.
+;   - When the elevated uninstaller runs as a different user (e.g. an
+;     admin running uninstall.exe for a regular user's account), HKCU
+;     refers to the elevated admin, not the original chat owner. We
+;     defensively also wipe SetShellVarContext=current+all paths above
+;     to cover that mismatch — see do_data_removal block.
+;   - If a future build wants per-machine UninstallWipeData (so any
+;     uninstall context sees the same answer), move WriteRegStr in
+;     un.KumikoUnDataChoiceLeave to HKLM and update the matching
+;     ReadRegStr / DeleteRegValue calls below. We chose HKCU to keep
+;     installer behavior unchanged from v2.14.5 and avoid an admin
+;     elevation just to record a yes/no toggle.
 ; -----------------------------------------------------------------------------
 
 !macro customUnInstall
