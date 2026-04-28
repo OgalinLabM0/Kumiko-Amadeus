@@ -39,6 +39,13 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
   // Retry logic state
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // v2.14.28 M4: SAVED→IDLE revert timer kept in a ref so unmount can
+  // clear it. See executeSave for the rationale.
+  const idleRevertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // v2.14.28 M3: latest onSaveError ref so executeSave's stable identity
+  // can dispatch the freshest callback even after the parent recreates it.
+  const onSaveErrorRef = useRef(onSaveError);
+  useEffect(() => { onSaveErrorRef.current = onSaveError; }, [onSaveError]);
 
   // Sync refs
   useEffect(() => {
@@ -77,8 +84,11 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
     if (validate && !validate(currentData)) {
         console.warn("[AutoSave] Data validation failed (Write Protection). Skipping save.");
         setStatus('ERROR');
-        if (onSaveError) {
-            onSaveError('数据完整性校验失败，已暂停自动保存以防止覆盖。请检查记忆/世界书等是否异常后手动重试。');
+        // v2.14.28 M3: read through the ref so a parent that swaps
+        // onSaveError between renders never sees a stale callback fire.
+        const cbValidate = onSaveErrorRef.current;
+        if (cbValidate) {
+            cbValidate('数据完整性校验失败，已暂停自动保存以防止覆盖。请检查记忆/世界书等是否异常后手动重试。');
         }
         return;
     }
@@ -136,8 +146,16 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
           console.log("[AutoSave] Pending save detected, triggering immediately...");
           executeSave(); // Recurse
       } else {
-          // Revert to IDLE after a moment for visual feedback
-          setTimeout(() => {
+          // v2.14.28 M4: keep a handle to the SAVED→IDLE timer in a ref so
+          // unmount can clear it. The previous fire-and-forget setTimeout
+          // would call setStatus on an unmounted component during HMR or
+          // when the user navigated away mid-save, producing the React
+          // "update on unmounted" warning.
+          if (idleRevertTimerRef.current) {
+            clearTimeout(idleRevertTimerRef.current);
+          }
+          idleRevertTimerRef.current = setTimeout(() => {
+              idleRevertTimerRef.current = null;
               if (statusRef.current === 'SAVED') setStatus('IDLE');
           }, 2000);
       }
@@ -158,7 +176,9 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
           }, delay);
       } else {
           setStatus('ERROR');
-          if(onSaveError) onSaveError(error.message || "Timeout/Network Error");
+          // v2.14.28 M3: ref-read for fresh callback identity.
+          const cbErr = onSaveErrorRef.current;
+          if (cbErr) cbErr(error.message || "Timeout/Network Error");
       }
     }
   }, [lastSyncedTime, validate]); // Depend on lastSyncedTime and validate
@@ -245,13 +265,20 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
           if (statusRef.current === 'SAVING' && timeSinceChange > 45000) {
               console.warn("[AutoSave Watchdog] Detected stuck SAVING state. Resetting to ERROR.");
               setStatus('ERROR');
-              if(onSaveError) onSaveError("Sync process hung (Watchdog reset).");
+              // v2.14.28 M3: ref-read for fresh callback identity.
+              const cbWatchdog = onSaveErrorRef.current;
+              if (cbWatchdog) cbWatchdog("Sync process hung (Watchdog reset).");
           }
 
       }, 5000); 
 
       return () => clearInterval(interval);
-  }, [lastChangeTime, triggerSave, onSaveError]);
+  // v2.14.28 M3: removed `onSaveError` from this dep list — the watchdog
+  // closure now reads `onSaveErrorRef.current` so a parent re-creating the
+  // callback no longer churns the interval (effectively pausing the
+  // 5s watchdog every render).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastChangeTime, triggerSave]);
 
   // Watch for "Talking" End (Immediate Trigger - Falling Edge)
   const prevBlocked = useRef(isBlocked);
@@ -271,6 +298,48 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
       retryCountRef.current = 0;
       triggerSave();
   }, [triggerSave]);
+
+  // v2.14.28 M4: clean up the SAVED→IDLE timer on unmount so React no
+  // longer warns about state updates on unmounted components when HMR
+  // re-renders the parent or the user navigates away mid-save.
+  useEffect(() => {
+    return () => {
+      if (idleRevertTimerRef.current) {
+        clearTimeout(idleRevertTimerRef.current);
+        idleRevertTimerRef.current = null;
+      }
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // v2.14.28 M5: best-effort flush on browser/window close so the last
+  // few seconds of edits still hit disk. The 3s debounce in the data
+  // watcher means a quick exit after typing could leave the local
+  // backup file slightly behind. `beforeunload` fires synchronously
+  // on Electron close + browser tab close + Capacitor backgrounding,
+  // and `flushIfDirty` is a fire-and-forget that schedules the save
+  // immediately — it's allowed to lose to a hard kill, but soft exits
+  // (the common case) will land on disk. The handler short-circuits
+  // when we're not the desktop / browser path (mobile has no fileHandle).
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onBeforeUnload = () => {
+      if (statusRef.current === 'DIRTY') {
+        try { executeSave(); } catch { /* swallow — exit window is short */ }
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    // Some Electron builds dispatch a parallel custom event from
+    // electron-main's `before-quit` IPC; subscribe defensively.
+    window.addEventListener('app:before-quit-flush', onBeforeUnload as EventListener);
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload);
+      window.removeEventListener('app:before-quit-flush', onBeforeUnload as EventListener);
+    };
+  }, [executeSave]);
 
   return {
     syncStatus: status,
