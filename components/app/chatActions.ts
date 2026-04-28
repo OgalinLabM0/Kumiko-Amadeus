@@ -955,12 +955,20 @@ export async function triggerTimedReminderMessage(
         return true;
       }
 
+      // v2.14.28 H17.B: AbortController for the background reminder TTS path.
+      // The user's `onReject` (or any other early-exit) calls .abort() so
+      // an in-flight Fish Audio / SoVITS / Vocu HTTP request gets the chance
+      // to short-circuit instead of running to completion + writing an
+      // unused voice file. The pipeline checks the signal at three gate
+      // points (translation start, post-translation, post-synthesis) so the
+      // worst case is one extra translation chunk paid before bailing.
+      const reminderAbortCtrl = prewarmedVoice ? null : new AbortController();
       // v2.14.28 H17.A: same shortcut for the background path. If the prewarm
       // delivered a voice payload at T-60s, wrap it in a resolved Promise so
       // the rest of the function (which awaits voiceResultPromise) is unchanged.
       let voiceResultPromise = prewarmedVoice
         ? Promise.resolve({ success: true as const, voiceFileId: prewarmedVoice.voiceFileId, voiceDuration: prewarmedVoice.voiceDuration, japaneseText: prewarmedVoice.japaneseText })
-        : helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion);
+        : helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion, undefined, reminderAbortCtrl?.signal);
 
       // v2.14.26: only fire a system notification when MainActivity
       // is actually backgrounded. If forceOverlay was set because the
@@ -1064,6 +1072,11 @@ export async function triggerTimedReminderMessage(
           },
           onReject: () => {
             if (isDesktopElectron()) window.electronAPI?.send('app:close-call-notification');
+            // v2.14.28 H17.B: abort the in-flight TTS pipeline so the
+            // remaining HTTP calls (Fish/SoVITS/Vocu) bail instead of
+            // running to completion. Prewarm-cached path uses a resolved
+            // Promise so the controller is null — nothing to abort.
+            try { reminderAbortCtrl?.abort('user_declined_call'); } catch { /* noop */ }
             useAppStore.getState().setVoiceCallOverlayData(null);
             resolve(true);
           },

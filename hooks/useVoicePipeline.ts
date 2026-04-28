@@ -15,6 +15,15 @@ export type RunVoicePipelineFn = (
   sourceText: string,
   emotion: EmotionType,
   voiceVariant?: string,
+  // v2.14.28 H17.B: optional abort signal. The reminder dispatch path
+  // (triggerTimedReminderMessage) creates a controller and aborts on
+  // user reject so the in-flight TTS HTTP request stops paying tokens.
+  // The pipeline checks the signal at translation start, between
+  // translation and synthesis, and after synthesis but before disk
+  // write — if any check trips, the pipeline returns { success: false }
+  // and the partial voice file (if already written) gets discarded by
+  // the caller's normal "no addMessageToStore" flow.
+  signal?: AbortSignal,
 ) => Promise<{ success: boolean; voiceFileId?: string; voiceDuration?: number; japaneseText?: string }>;
 
 export interface UseVoicePipelineReturn {
@@ -189,6 +198,7 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
     sourceText,
     emotion,
     voiceVariant,
+    signal,
   ) => {
     const cfg = ttsConfigRef.current;
     const backend = cfg.ttsBackend || 'fish';
@@ -203,6 +213,12 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
     }
     if (backend === 'vocu' && (!cfg.vocuApiKey || !cfg.vocuVoiceId || !isVoiceServiceAvailable())) {
       console.warn('[TTS-Vocu] Missing Vocu API key / voiceId or voice service unavailable');
+      return { success: false };
+    }
+
+    // v2.14.28 H17.B: gate point #1 — bail before paying for translation.
+    if (signal?.aborted) {
+      console.log('[TTS] aborted before translation start');
       return { success: false };
     }
 
@@ -226,6 +242,12 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
         return { success: false };
       }
 
+      // v2.14.28 H17.B: gate point #2 — bail before paying for synthesis.
+      if (signal?.aborted) {
+        console.log('[TTS] aborted between translation and synthesis');
+        return { success: false };
+      }
+
       let result;
       if (backend === 'sovits') {
         const { genieTtsWithEmotion } = await import('../services/genieAudioService');
@@ -237,6 +259,13 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
         const emotionTemp = EMOTION_TTS_TEMPERATURE[emotion] ?? 0.6;
         const cfgWithEmotion = { ...cfg, temperature: emotionTemp };
         result = await synthesizeSpeech(jaText, cfgWithEmotion);
+      }
+
+      // v2.14.28 H17.B: gate point #3 — bail before disk write so we
+      // don't leave an orphaned voice blob the user explicitly cancelled.
+      if (signal?.aborted) {
+        console.log('[TTS] aborted after synthesis, skipping disk save');
+        return { success: false };
       }
 
       const saved = await saveVoiceFile(messageId, result.audio);
