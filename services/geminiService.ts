@@ -20,6 +20,7 @@ import { db } from "./db";
 import { getCurrentAIConfig, getGenAI, callLLMRaw } from './llmCore';
 // urlToBase64 re-exported for external consumers (see line 5); no longer used inside this file.
 import { isMemoryHistoryQueryLike } from './temporalRecallService';
+import { searchLocalRagMemoryDetailed } from './localRagService';
 import {
   DEFAULT_DIARY_LAYER_PRESET,
   DIARY_LAYER_PRESETS,
@@ -1851,7 +1852,7 @@ ${extraSystemPrompt ?? ''}`;
     
     const viewHistoricalImageTool: FunctionDeclaration = {
       name: "view_historical_image",
-      description: language === 'zh' ? "查看给定图像 ID 的原始高分辨率图像。仅当用户询问未被图像描述涵盖的过去图像的特定视觉细节时才使用此工具。每次只能查看一张图片，不支持批量查询。" : "View the original high-resolution image for a given image ID. Use this ONLY when the user asks about specific visual details of a past image that are not covered by the image description. Only ONE image per call. Batch queries are NOT supported.",
+      description: language === 'zh' ? "查看给定图像 ID 的原始图像。**当用户问关于过去图像的视觉细节（颜色 / 数量 / 表情 / 背景 / 文字 / 构图等），且仅靠隐藏描述无法回答时，必须调用此工具看图**——即使用户当前消息很短（如『几只啊』『什么颜色』），只要近 1-3 轮在讨论某张图，也要调用。每次只能查看一张图片，不支持批量查询。" : "View the original image for a given image ID. **Whenever the user asks about ANY visual detail of a past image (color / count / expression / background / text / composition) that the hidden description alone cannot answer, you MUST invoke this tool** — even when the user's current line is short (e.g. 'how many', 'what color'), as long as the past 1-3 turns discussed a specific image, invoke it. Only ONE image per call. Batch queries are NOT supported.",
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -1866,7 +1867,7 @@ ${extraSystemPrompt ?? ''}`;
 
     const searchInternetTool: FunctionDeclaration = {
       name: "search_internet",
-      description: language === 'zh' ? "当用户询问实时信息、天气、新闻、或者你（久美子）知识库之外的特定作品设定时，调用此函数。" : "Call this function when the user asks for real-time information, weather, news, or specific work settings outside your (Kumiko's) knowledge base.",
+      description: language === 'zh' ? "用于查询当前真实世界的事实信息（电影/新闻/天气/节日/某人/某作品的最新动态/具体日期）。**只要话题涉及这类外部事实，且你没有可信的最新数据，就主动调用——即使用户本轮消息很短（如『怎么样』『？』『然后呢』），只要近 1-3 轮在讨论外部事实，也要再次调用以拿到最新结果**。每轮调用结果不会跨轮保留，需要时就重调。" : "Look up real-world facts (movies / news / weather / dates / a person / latest info on a specific work). **Whenever the topic touches such external facts and you do not have trustworthy fresh data, invoke this — even when the user's current line is very short (e.g. 'how was it', '?', 'and then?'), as long as the past 1-3 turns discussed an external fact, re-invoke to get current data.** Tool results do not persist across turns; re-invoke when you need them.",
       parameters: {
         type: Type.OBJECT,
         properties: {
@@ -1879,12 +1880,37 @@ ${extraSystemPrompt ?? ''}`;
       }
     };
 
+    const recallMemoryTool: FunctionDeclaration = {
+      name: "recall_memory",
+      description: language === 'zh'
+        ? "在长期记忆 (历史聊天 / 日记 / episodes) 里检索用户问到的过去事件。**当用户问『上次/之前/那时候/你不记得了吗/我之前是不是 X 来着』，且最近可见对话窗口里找不到答案时，必须调用此工具**。即使是短追问（如『叫什么来着』『哪天的事』），只要近 1-3 轮在追溯某段往事，也要调用。每轮结果不会跨轮保留，需要时就重调。如果系统已自动注入了 [RECALLED LONG-TERM MEMORIES (RAG)] 块且其中已有答案，可直接引用，不必再调。"
+        : "Search long-term memory (chat history / diaries / episodes) for past events the user references. **You MUST invoke this when the user asks 'last time / before / back then / don't you remember / didn't I X' and the answer isn't in the visible recent window**. Even short follow-ups ('what was it called', 'which day') count as long as the past 1-3 turns discuss a past event. Results don't persist across turns; re-invoke as needed. If [RECALLED LONG-TERM MEMORIES (RAG)] is already populated with the answer (auto-injected), cite it directly instead.",
+      parameters: {
+        type: Type.OBJECT,
+        properties: {
+          query: {
+            type: Type.STRING,
+            description: language === 'zh'
+              ? "优化过的检索关键词（中日英皆可）。写用户具体追溯的人 / 事 / 物即可，不要堆套话。"
+              : "Optimised search keywords (zh/ja/en OK). Write the specific person/event/thing the user is referencing; no boilerplate.",
+          },
+          timeHint: {
+            type: Type.STRING,
+            description: language === 'zh'
+              ? "可选：时间范围线索如 '上周'、'昨天'、'2026-04'。能帮 RAG 收窄。"
+              : "Optional: time-range hint like 'last week', 'yesterday', '2026-04'. Helps narrow the RAG result.",
+          },
+        },
+        required: ["query"],
+      },
+    };
+
     const enableInternetSearch =
       localStorage.getItem('enable_internet_search') === 'true'
       && !isMemoryHistoryQueryLike(textMessage)
       && !exactHistoryLookup;
 
-    const toolsConfig: any[] = [{ functionDeclarations: [viewHistoricalImageTool] }];
+    const toolsConfig: any[] = [{ functionDeclarations: [viewHistoricalImageTool, recallMemoryTool] }];
     if (enableInternetSearch) {
         toolsConfig[0].functionDeclarations.push(searchInternetTool);
     }
@@ -1901,7 +1927,24 @@ ${extraSystemPrompt ?? ''}`;
         .replace(/[\r\n]+/g, ' ')
         .replace(/"/g, '\\"')
         .slice(0, 60);
-    
+
+    // v2.14.31 tool-call enforcement: per-class advice strings injected into
+    // Fact_Check. Each branch tells the model "if the corresponding tool is
+    // available you MUST call it; if not, honestly admit you don't know"
+    // and bans fake "I checked / I remember / I see" assertions. external
+    // forks on the enable_internet_search toggle; history & image are
+    // unconditional (recall_memory + view_historical_image always registered).
+    const factCheckExternalAdvice_zh = enableInternetSearch
+        ? '→ **必须先调用 `search_internet` 工具**（query 用优化关键词，中日英皆可），把工具返回的要点写进 Fact_Check（如 `[已搜: 2026/12/19 上映]`）。如果工具调用失败或无结果，再写「调用工具但未取得有效结果」。**严禁**未调工具就写「查了」「确实有」「确认了」之类断言。'
+        : '→ 你确实不知道就直说「我不清楚，没查证过」，不要编造。';
+    const factCheckExternalAdvice_en = enableInternetSearch
+        ? '→ **You MUST first call the `search_internet` tool** (use optimised keywords; zh/ja/en all OK), then write the key findings into Fact_Check (e.g. `[searched: opens 2026/12/19]`). If the tool fails or returns nothing, write "tool invoked but no usable result". **Never** write "I searched" / "confirmed" / "I checked" without actually invoking the tool.'
+        : '→ if you genuinely don\'t know, say "I don\'t know, haven\'t checked"; do not fabricate.';
+    const factCheckHistoryAdvice_zh = '→ 先看可见的最近消息；如果没找到，**必须调用 `recall_memory` 工具**召回长期记忆（query 写用户具体追溯的人/事/物）。已经有 [RECALLED LONG-TERM MEMORIES (RAG)] 块且包含答案的，直接引用即可。**严禁**未调工具就写「我记得」「上次你确实说过」之类断言。';
+    const factCheckHistoryAdvice_en = '→ First check the visible recent window; if not found, **you MUST call `recall_memory`** to fetch long-term memory (query the specific person/event/thing the user references). If [RECALLED LONG-TERM MEMORIES (RAG)] is already populated with the answer, cite it directly. **Never** write "I remember" / "you did say so last time" without actually invoking the tool.';
+    const factCheckImageAdvice_zh = '→ 先看图像隐藏描述（chat history 里的 [系统：用户发送了一张图片 (ID: ...)。隐藏描述：xxx]）；如果用户问的视觉细节描述里没有，**必须调用 `view_historical_image` 工具**实际看图（imageId 取自上述 ID）。**严禁**未调工具就写「我看到了」「图里有 X」之类断言。';
+    const factCheckImageAdvice_en = '→ First check the hidden description in chat history ([SYSTEM: User sent an image (ID: ...). Hidden Description: xxx]); if the asked-about visual detail isn\'t there, **you MUST call `view_historical_image`** (imageId from the above ID). **Never** write "I see" / "the image shows X" without actually invoking the tool.';
+
     const systemProtocolTrigger = language === 'zh' ? `\n\n[系统触发]：启动第 1 层逻辑检查...
     **关键：你必须首先输出 [[System_Log]] 块，然后再输出任何其他文本。**
     
@@ -1912,9 +1955,11 @@ ${extraSystemPrompt ?? ''}`;
     1. 将上面提供的确切时间、间隔、和 [User_Latest_Line] 原话复制到日志中。**[User_Latest_Line] 必须照抄上面引号里的字符串，一字不差，绝对不要替换成上一轮的话题**。
     2. [Fact_Check]：以 [User_Latest_Line] 为核心，先分类再判断：
        - 闲聊 / 招呼 / 情绪宣泄 / 短问候 / 单字回应（"嗯""?""哈""在干啥""哦"等）→ 写「无可验证事实，纯互动」。
-       - 用户问的是**过去聊天里发生过的事**（"你之前是不是说 X""昨天 Y 了吗""我刚才不是 Z 了"）→ 在最近消息里找证据，找到就用半句引用一下；找不到老实写「我不太确认，记忆里没有这条」。
-       - 用户问的是**外部世界事实**（电影 / 新闻 / 节日 / 某人某事 / 时令）→ 你确实不知道就直说「我不清楚，没查证过」，不要编造。
+       - 用户问的是**外部世界事实**（电影 / 新闻 / 节日 / 某人某事 / 时令）${factCheckExternalAdvice_zh}
+       - 用户问的是**你们之间过去发生过的事**（"我们上次"/"你之前是不是说 X"/"那家店叫什么"/"我那天给你看的"）${factCheckHistoryAdvice_zh}
+       - 用户问的是**过去某张图的视觉细节**（"那张图里 X 是什么颜色"/"几只猫"/"她的表情怎样"）${factCheckImageAdvice_zh}
        - 用户**主动陈述了一个新事实**（"我今天吃了拉面""我换工作了""我刚到家"）→ 写「用户告知：<复述本轮内容>」。
+       **短回应延续规则**：若 [User_Latest_Line] 信息量小（如『怎么样』『然后？』『？』『嗯』），但**近 1-3 轮明显在讨论某具体话题**（外部事实 / 共同往事 / 某张图），本轮应当作为该话题的延续，按对应分类（external / chat_history / image_visual）执行；不要因短就一刀切归到「无可验证事实，纯互动」。
        **禁止**把上一轮已经讨论完的事实当作本轮 Fact_Check 的核心。它最多以"承接上轮：…"作背景出现一次，不许占主体。Fact_Check 必须是关于本轮 [User_Latest_Line] 的判断，不是上一轮的复读。
     3. [Kumiko_Thought]：以「我（久美子）听到用户**本轮**说『${userLatestLineForLog}』」为起点，按以下认知链写 1~3 句内心活动：
        (a) 身体/直觉反应——这一句话听到的最原始一瞬间（叹气、心跳、想翻白眼、困、无语……）
@@ -1932,6 +1977,11 @@ ${extraSystemPrompt ?? ''}`;
        深夜疲惫："(a)困……眼睛快睁不开了。 (b)这个点还找我，是不是又没睡。 (c)先问一句吧"
     4. [Emotion]：从以下选项中选择一个有效的情绪代码：[neutral, smiling, happy, angry, sad, shy, surprised, resigned, serious, gentle, sleepy, confused, confused_2, disgusted, smug, worried, worried_2]。如果情绪复杂，映射到最接近的一个。
     5. [Voice]（可选）：如需精确控制语音语气，可额外输出 [Voice: VARIANT]，变体列表参见语音变体协议。不输出则自动选择。
+    6. [调用工具协议（通用，适用于 search_internet / recall_memory / view_historical_image）]：
+       - **第 1 轮（你看到 user 输入后立即作出反应）**：如果 Fact_Check 任一分类要求调工具且对应工具可用，**第 1 轮只发 tool_call，不要写 System_Log 和 Reply**；System_Log 在第 2 轮拿到工具结果后再写。允许同一轮发多个 tool_call（如同时需要 search_internet + view_historical_image）。
+       - **第 2 轮（你看到 [tool] 消息了）**：你能看到工具结果，按要点写 Fact_Check + Reply。Fact_Check 必须用工具结果支撑，不许凭空编造。
+       - **如果某工具不可用**（例如 search_internet 在 enable_internet_search 关闭时不会注册），就走对应"老实承认"分支，**不要假装**调过该工具。可用工具列表以本轮 system 中实际声明的为准。
+       - **跨轮不持久化**：上一轮调过的工具结果不会留到本轮，需要的话就重调。
     
     然后关闭括号并开始第 2 层（久美子的回复）。第 2 层必须先回应 [User_Latest_Line]，不要复读上一轮已经聊完的话题。` : `\n\n[SYSTEM TRIGGER]: Initiating Layer 1 Logic Check...
     **CRITICAL: You MUST output the [[System_Log]] block FIRST, before any other text.**
@@ -1943,9 +1993,11 @@ ${extraSystemPrompt ?? ''}`;
     1. COPY the exact Time, Gap, and [User_Latest_Line] string above into the log. **[User_Latest_Line] must be the verbatim quoted string from above — do NOT replace it with a previous turn's topic.**
     2. [Fact_Check]: Centred on [User_Latest_Line]. Classify first, then judge:
        - Idle chat / greeting / emotional vent / short interjection / single-token reply ("hm", "?", "lol", "what're you up to", "oh", etc.) → write "No verifiable fact, pure interaction".
-       - User is asking about **something that happened earlier in this conversation** ("did you say X before?", "did you do Y yesterday?", "I just told you Z, right?") → look for evidence in the recent messages; if found, briefly cite half a sentence; if not, honestly write "I'm not sure, I don't have that on record".
-       - User is asking about an **external-world fact** (movie / news / holiday / a person or event / current season) → if you genuinely don't know, say "I don't know, haven't checked"; do not fabricate.
+       - User is asking about an **external-world fact** (movie / news / holiday / a person or event / current season) ${factCheckExternalAdvice_en}
+       - User is asking about **something that happened between you two in the past** ("we last time", "did you say X before?", "what was that place called", "the one I showed you") ${factCheckHistoryAdvice_en}
+       - User is asking about a **visual detail of a past image** ("what colour is X in that pic", "how many cats", "what was her expression") ${factCheckImageAdvice_en}
        - User is **stating a new fact** ("I had ramen today", "I changed jobs", "I just got home") → write "User reports: <restate this turn>".
+       **Short-reply continuity rule**: if [User_Latest_Line] is low-info (e.g. "how was it", "and then?", "?", "hm"), but **the past 1-3 turns clearly discussed a specific topic** (external fact / shared past / a specific image), treat this turn as a continuation of that topic and classify under the matching branch (external / chat_history / image_visual); do NOT lazily lump it into "No verifiable fact, pure interaction".
        **Forbidden**: do NOT make a previous turn's already-discussed fact the core of this turn's Fact_Check. It may at most appear once as background ("Carrying over from last turn: …"); it must not be the subject. Fact_Check must judge **this turn's [User_Latest_Line]**, never replay the previous turn.
     3. [Kumiko_Thought]: Anchored to "I (Kumiko) hear the user say **this turn**: '${userLatestLineForLog}'". Follow this cognitive chain in 1~3 sentences:
        (a) Body/gut reaction — the rawest first instant (sigh, heartbeat, urge to roll eyes, sleepy, speechless...)
@@ -1963,6 +2015,11 @@ ${extraSystemPrompt ?? ''}`;
        Late-night tired: "(a) Sleepy... can barely keep my eyes open. (b) Still messaging me at this hour, did they not sleep again? (c) Ask first"
     4. [Emotion]: Select ONE valid emotion code from: [neutral, smiling, happy, angry, sad, shy, surprised, resigned, serious, gentle, sleepy, confused, confused_2, disgusted, smug, worried, worried_2]. If complex, map to closest.
     5. [Voice] (optional): To precisely control vocal tone, additionally output [Voice: VARIANT]. See Voice Variant Protocol for the variant list. Omit to let the system auto-select.
+    6. [Tool-Use Protocol (universal — applies to search_internet / recall_memory / view_historical_image)]:
+       - **Round 1 (you immediately react to user input)**: if any Fact_Check branch requires a tool and that tool is available, **Round 1 emits ONLY tool_call(s) — no System_Log, no Reply**; System_Log is written in Round 2 once you have the tool result. Multiple tool_calls in the same round are allowed (e.g. when search_internet + view_historical_image are both needed).
+       - **Round 2 (you see the [tool] message)**: you can read the tool result; write Fact_Check + Reply backed by it. Fact_Check MUST be supported by the tool result, never fabricated.
+       - **If a tool is unavailable** (e.g. search_internet is not registered when enable_internet_search is off), fall back to the corresponding "honestly admit" branch and **do NOT pretend** to have invoked it. The list of available tools is whatever this round's system actually declares.
+       - **No cross-round persistence**: tool results from a previous turn are not retained; re-invoke when you need them again.
     
     Then close brackets and start Layer 2 (Kumiko's Reply). Layer 2 must respond to [User_Latest_Line] first; do not replay topics that were already wrapped up in earlier turns.`;
 
@@ -2255,6 +2312,59 @@ ${extraSystemPrompt ?? ''}`;
                         }
                     }] });
                 }
+            }
+        } else if (call.name === "recall_memory") {
+            const recallQuery = call.args?.query;
+            const timeHint = call.args?.timeHint;
+            let toolResponseData: any;
+
+            if (typeof recallQuery === 'string' && recallQuery.trim().length > 0) {
+                console.log(`[TOOL CALL] Model requested to recall memory: ${recallQuery}${timeHint ? ` (timeHint=${timeHint})` : ''}`);
+                try {
+                    const recall = await searchLocalRagMemoryDetailed(
+                        recallQuery.trim(),
+                        5,
+                        undefined,
+                        'semantic_recall',
+                        undefined,
+                        { suppressEmptyWarning: true }
+                    );
+                    const blocks = recall.blocks ?? [];
+                    toolResponseData = blocks.length > 0
+                        ? { success: true, blocks, count: blocks.length, timeHint: timeHint || null }
+                        : { success: true, blocks: [], count: 0, note: "no memories matched", timeHint: timeHint || null };
+                } catch (e: any) {
+                    console.error("[TOOL CALL] recall_memory failed:", e);
+                    toolResponseData = { success: false, error: e?.message || "recall_memory failed" };
+                }
+            } else {
+                console.warn(`[TOOL CALL] Rejected invalid recall query: ${String(recallQuery).slice(0, 50)}`);
+                toolResponseData = { success: false, error: "query must be a non-empty string" };
+            }
+
+            toolResponseData._reminder = toolSyslogReminder;
+
+            if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
+                result = await callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, {
+                    toolCall: result.rawToolCall || call,
+                    toolResult: toolResponseData,
+                    originalMessage: promptToSend
+                });
+            } else if (transportProvider === 'anthropic') {
+                result = await callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, {
+                    toolCall: result.rawToolCall || call,
+                    toolResult: toolResponseData,
+                    originalMessage: promptToSend
+                });
+            } else {
+                result = await chatSession.sendMessage({
+                    message: [{
+                        functionResponse: {
+                            name: "recall_memory",
+                            response: toolResponseData
+                        }
+                    }]
+                });
             }
         }
     }

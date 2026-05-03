@@ -64,9 +64,17 @@ android {
         // 解耦 Kumiko_Thought、彻底移除 shortFollowUpBlock 让模型自看
         // 上下文判断、proactiveReplyBlock 概率 38%→25% 并要求"先答本轮"；
         // 日记验证器 RAG warn 静默化）。
+        // 2.14.31 → 21431（三件套工具调用强化：search_internet
+        // / view_historical_image 描述加压 + 新增 recall_memory tool
+        // 让模型主动召回 RAG；Fact_Check 拆为 external/chat_history/
+        // image_visual 三类分支并按"工具可用 → MUST 调；不可用 → 老实
+        // 承认"分叉；新增短回应延续规则与通用 anti-fake 护栏；
+        // systemProtocolTrigger 末尾加第 6 条通用 Tool-Use Protocol；
+        // AppMessageList 热修：顶部对齐为默认，仅"已在底部"时跟随
+        // 新消息，不再因 isListening 跳转）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21430
-        versionName "2.14.30"
+        versionCode 21431
+        versionName "2.14.31"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

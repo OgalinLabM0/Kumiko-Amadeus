@@ -375,12 +375,14 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
   useEffect(() => {
     if (!lastVisibleMessage) return;
 
-    const shouldAutoScroll =
-      shouldStickToBottomRef.current ||
-      lastVisibleMessage.role === 'user' ||
-      pendingMessageIds.has(lastVisibleMessage.id);
-
-    if (!shouldAutoScroll) return;
+    // v2.14.30 hot-fix: only follow new messages when the user is
+    // already at the bottom (within isNearBottom's 160px threshold).
+    // Previously this also fired for any user-sent message and any
+    // pending message, which forced the viewport to jump even when the
+    // user had scrolled up to read history. Aligns with WeChat / Line:
+    // sender at bottom → keep at bottom; sender scrolled up → silently
+    // append, no jump.
+    if (!shouldStickToBottomRef.current) return;
 
     let raf1 = 0;
     let raf2 = 0;
@@ -395,7 +397,7 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
       window.cancelAnimationFrame(raf1);
       window.cancelAnimationFrame(raf2);
     };
-  }, [isListening, lastVisibleMessage, lastVisibleMessageId, pendingMessageIds, scrollToBottom]);
+  }, [lastVisibleMessage, lastVisibleMessageId, pendingMessageIds, scrollToBottom]);
 
   const renderedSlice = endIndex >= startIndex
     ? visibleMessages.slice(startIndex, endIndex + 1)
@@ -409,48 +411,46 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
       onClick={onBackgroundClick}
       onScroll={handleScroll}
     >
-      <div className="min-h-full flex flex-col justify-end">
-        <div style={{ position: 'relative', height: totalContentHeight }}>
-          {renderedSlice.map((message, localIndex) => {
-            const absoluteIndex = startIndex + localIndex;
-            return (
-              <VirtualizedMessageRow
-                key={message.id}
-                index={absoluteIndex}
+      <div style={{ position: 'relative', height: totalContentHeight }}>
+        {renderedSlice.map((message, localIndex) => {
+          const absoluteIndex = startIndex + localIndex;
+          return (
+            <VirtualizedMessageRow
+              key={message.id}
+              index={absoluteIndex}
+              message={message}
+              top={itemOffsets[absoluteIndex] || 0}
+              onMeasured={handleMeasured}
+              isMobileRuntime={isMobileRuntime}
+            >
+              <ChatBubble
                 message={message}
-                top={itemOffsets[absoluteIndex] || 0}
-                onMeasured={handleMeasured}
-                isMobileRuntime={isMobileRuntime}
-              >
-                <ChatBubble
-                  message={message}
-                  isDarkMode={isDarkMode}
-                  isSelectionMode={isSelectionMode}
-                  isSelected={selectedIds.has(message.id)}
-                  onSelect={() => onSelectMessage(message.id)}
-                  language={language}
-                  isPending={pendingMessageIds.has(message.id)}
-                  onRecall={onRecall}
-                  onReply={onReply}
-                  isHighlighted={highlightedMessageId === message.id}
-                  onImageClick={onImageClick}
-                  onRegenerateVoice={onRegenerateVoice}
-                  isRegeneratingVoice={regeneratingVoiceIds?.has(message.id)}
-                  onResend={onResend}
-                  onWithdraw={onWithdraw}
-                  onLongPress={onLongPress}
-                />
-              </VirtualizedMessageRow>
-            );
-          })}
-        </div>
-        {isListening && (
-          <div className={`flex justify-end mt-1 mr-3 ka-micro font-mono ${isDarkMode ? 'text-yellow-600/70' : 'text-yellow-700/70'}`}>
-            <span>{listeningLabel} {timeLeft}s</span>
-          </div>
-        )}
-        <div ref={messagesEndRef} />
+                isDarkMode={isDarkMode}
+                isSelectionMode={isSelectionMode}
+                isSelected={selectedIds.has(message.id)}
+                onSelect={() => onSelectMessage(message.id)}
+                language={language}
+                isPending={pendingMessageIds.has(message.id)}
+                onRecall={onRecall}
+                onReply={onReply}
+                isHighlighted={highlightedMessageId === message.id}
+                onImageClick={onImageClick}
+                onRegenerateVoice={onRegenerateVoice}
+                isRegeneratingVoice={regeneratingVoiceIds?.has(message.id)}
+                onResend={onResend}
+                onWithdraw={onWithdraw}
+                onLongPress={onLongPress}
+              />
+            </VirtualizedMessageRow>
+          );
+        })}
       </div>
+      {isListening && (
+        <div className={`flex justify-end mt-1 mr-3 ka-micro font-mono ${isDarkMode ? 'text-yellow-600/70' : 'text-yellow-700/70'}`}>
+          <span>{listeningLabel} {timeLeft}s</span>
+        </div>
+      )}
+      <div ref={messagesEndRef} />
     </div>
   );
 };
