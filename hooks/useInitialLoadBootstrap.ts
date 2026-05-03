@@ -264,7 +264,8 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
         forceRawHistoryResyncRef.current = false;
         updateMemoryQuerySession(loadedMemoryQuerySession);
         setLanguage(await db.getVal('kumiko_language', 'zh'));
-        setLocationConfig(await db.getVal('kumiko_location_config', DEFAULT_LOCATION_CONFIG));
+        const loadedLocationConfig: LocationConfig = await db.getVal('kumiko_location_config', DEFAULT_LOCATION_CONFIG);
+        setLocationConfig(loadedLocationConfig);
         setCoreMemory(loadedCoreMemory);
         setKumikoNotebook(await db.getVal('kumiko_notebook', ''));
         setContextLimit(await db.getVal('kumiko_context_limit', 100));
@@ -295,7 +296,64 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
         setTurnCount(loadedTurnCount);
         setSummaryArchiveState(loadedSummaryArchiveState);
         setAnchors(await db.getVal('kumiko_anchors', []));
-        setCurrentEmotion(await db.getVal('kumiko_current_emotion', 'neutral'));
+
+        // v2.14.29 sleep-window FSM reconstruction at cold boot.
+        //
+        // The status line ("睡眠模式 (勿扰)") is computed every second from
+        // the JST schedule slot, so it is always accurate. But the avatar
+        // emotion / 情感参数 reads `kumiko_current_emotion` from disk, and the
+        // only writers that flip it to 'sleepy' are runtime FSM transitions
+        // (Phase 3 farewell + 5s, 30-min idle auto-sleep, chatActions
+        // post-reply sleep activation). On a cold boot during the sleep
+        // window — especially for fresh users who have never chatted —
+        // none of those writers have ever fired, so the avatar stays at the
+        // default 'neutral' even though the schedule says she should be
+        // asleep.
+        //
+        // Heuristic: if JST is inside the sleeping slot AND the user is not
+        // recentlyActive (no message in the last 15 min, OR no message
+        // ever), then the FSM would have placed her at 'sleepy' by now.
+        // Match the heartbeat's own thresholds (useProactiveLifeCycle.ts
+        // line ~178/240). Don't override when she's mid-conversation —
+        // her last reply emotion stays. Don't override outside the sleeping
+        // slot. The mount-time effect in useProactiveLifeCycle then sets
+        // hasGoneToSleepRef.current so the user's first message correctly
+        // routes through the late-night wake dice in chatActions:2839.
+        let bootEmotion: EmotionType = await db.getVal<EmotionType>('kumiko_current_emotion', 'neutral');
+        try {
+          const { getDetailedScheduleSlot } = await import('../services/kumikoStateMachine');
+          const slot = getDetailedScheduleSlot(loadedLocationConfig?.modelTimezone, false);
+          const lastMsgTime = loadedMessages.length > 0
+            ? loadedMessages[loadedMessages.length - 1].timestamp
+            : 0;
+          const recentlyActive = lastMsgTime > 0 && Date.now() - lastMsgTime < 15 * 60_000;
+          if (slot?.slotType === 'sleeping' && !recentlyActive && bootEmotion !== 'sleepy') {
+            bootEmotion = 'sleepy';
+            await db.setVal('kumiko_current_emotion', 'sleepy');
+            console.log('[BOOT-SLEEP-SYNC] reconstructed FSM: she is asleep right now (slot=sleeping, !recentlyActive)');
+          } else if (
+            bootEmotion === 'sleepy'
+            && slot?.slotType !== 'sleeping'
+            && slot?.slotType !== 'drowsy'
+          ) {
+            // Stale 'sleepy' from a previous night. The existing 6:00 reset
+            // branch (useProactiveLifeCycle.ts:181 / chatActions.ts:2818) is
+            // gated by `hasGoneToSleepRef.current` which is false on every
+            // cold boot, so a user who closed the app at 03:00 (with 'sleepy'
+            // persisted by the heartbeat / by the boot sync above) and
+            // reopens at 06:30+ would otherwise see the avatar stuck on
+            // sleepy all morning. Treat any non-sleeping / non-drowsy slot
+            // as "she has woken up" and rebaseline to neutral. Drowsy
+            // (00:00-00:29) is preserved because that window legitimately
+            // overlaps with "still tired, just laid down".
+            bootEmotion = 'neutral';
+            await db.setVal('kumiko_current_emotion', 'neutral');
+            console.log('[BOOT-SLEEP-SYNC] cleared stale sleepy: slot=', slot?.slotType, '→ neutral');
+          }
+        } catch (e) {
+          console.warn('[BOOT-SLEEP-SYNC] reconstruct failed; keeping rehydrated emotion', e);
+        }
+        setCurrentEmotion(bootEmotion);
         // v2.14.29 H10 rework: dual-branch boot scan for missed one-shot reminders.
         //
         // Background: the v2.14.28 first cut blanket re-armed any expired

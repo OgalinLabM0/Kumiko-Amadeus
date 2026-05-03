@@ -81,6 +81,42 @@ export function useProactiveLifeCycle(
   // --- SESSION LOCK (ANTI-RACE CONDITION) ---
   const welcomeTriggeredRef = useRef<boolean>(false);
 
+  // v2.14.29 cold-boot FSM reconstruction (paired with the boot-time
+  // currentEmotion override in useInitialLoadBootstrap.ts).
+  //
+  // Refs reset to false on every mount, so a user reopening the app at 03:00
+  // would always see hasGoneToSleepRef.current === false — meaning the
+  // pre-send sleep gate at chatActions.ts:2833 would still self-heal on the
+  // first message, but during the 15s before the first heartbeat tick (or
+  // before any user message) anything reading the ref (e.g. proactive
+  // scheduler) treats her as "awake during sleep window" which is wrong.
+  //
+  // This one-shot mount effect mirrors the boot bootstrap heuristic (slot ===
+  // 'sleeping' AND !recentlyActive) and lifts hasGoneToSleepRef.current to
+  // true immediately so the first user message routes through the late-night
+  // wake dice (chatActions.ts:2839) instead of the normal daytime path.
+  // Empty deps: runs exactly once per mount with the initial render closures.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { getDetailedScheduleSlot } = await import('../services/kumikoStateMachine');
+        if (cancelled) return;
+        const slot = getDetailedScheduleSlot(locationConfig?.modelTimezone, false);
+        const lastMsgTime = messages.length > 0 ? messages[messages.length - 1].timestamp : 0;
+        const recentlyActive = lastMsgTime > 0 && Date.now() - lastMsgTime < 15 * 60_000;
+        if (!cancelled && slot?.slotType === 'sleeping' && !recentlyActive) {
+          hasGoneToSleepRef.current = true;
+          console.log('[BOOT-SLEEP-SYNC] hasGoneToSleepRef set true at mount (slot=sleeping, !recentlyActive)');
+        }
+      } catch (e) {
+        console.warn('[BOOT-SLEEP-SYNC] mount sync failed', e);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // v2.14.28 B2: pass explicit mode so the underlying primitive does not stomp sleep
   // refs. 'sleep_command' for Phase 1/2 and late-night-wake warnings; 'proactive_life'
   // for the normal gap≥3h RNG path. Both modes leave sleep refs untouched, but the
@@ -236,11 +272,19 @@ export function useProactiveLifeCycle(
               }
             }
 
-            // Auto-sleep on long inactivity in sleep window (backup for handleSend)
-            if (!hasGoneToSleepRef.current && sleepWindowNow && !recentlyActive && lastMsgTime > 0) {
-              const inactiveMin = (Date.now() - lastMsgTime) / 60000;
+            // Auto-sleep on long inactivity in sleep window (backup for handleSend).
+            //
+            // v2.14.29: The previous `lastMsgTime > 0` guard meant brand-new
+            // users (turn count 0) never triggered the heartbeat self-heal,
+            // so the avatar stayed at the default 'neutral' even though the
+            // schedule slot read 'sleeping'. Treat "no message ever" as
+            // "infinite inactivity" so the boot-time heuristic in
+            // useInitialLoadBootstrap is mirrored by the periodic heartbeat
+            // for any clock crossings that happen mid-session.
+            if (!hasGoneToSleepRef.current && sleepWindowNow && !recentlyActive) {
+              const inactiveMin = lastMsgTime > 0 ? (Date.now() - lastMsgTime) / 60000 : Infinity;
               if (inactiveMin > 30) {
-                console.log("[SLEEP-HB] Auto-sleep: 30+ min inactivity during sleep window");
+                console.log("[SLEEP-HB] Auto-sleep: long inactivity during sleep window", { inactiveMin });
                 hasGoneToSleepRef.current = true;
                 setCurrentEmotion('sleepy');
               }

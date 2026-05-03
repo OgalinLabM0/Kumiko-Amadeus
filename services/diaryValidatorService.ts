@@ -73,18 +73,28 @@ ${draftContent}
   const claims = extractionResult.split('\n').map(line => line.replace(/^- /, '').trim()).filter(Boolean);
 
   // 2. Batch semantic check via RAG
+  // v2.14.30: suppress per-query "no candidates" warnings — the diary
+  // validator can fan out 5~20 RAG calls per save, and most of those
+  // claims (e.g. "今天上课讲了《枕草子》") legitimately have no
+  // matching memory yet. Spamming WARN per claim hides real RAG issues
+  // in the console. We aggregate into a single summary log instead.
   options?.onPhase?.('rag');
   checkAbort();
   let ragContext = "";
+  let ragHits = 0;
+  let ragChecked = 0;
   for (const claim of claims) {
       if (claim.length > 3) {
           checkAbort();
-          const results = await searchLocalRagMemory(claim, 3, undefined, 'semantic_recall');
+          ragChecked++;
+          const results = await searchLocalRagMemory(claim, 3, undefined, 'semantic_recall', undefined, { suppressEmptyWarning: true });
           if (results && results.length > 0) {
               ragContext += `【关于 "${claim}" 的历史记忆片段】:\n${results.join('\n')}\n\n`;
+              ragHits++;
           }
       }
   }
+  console.log(`[DIARY-VALIDATOR] RAG check: ${ragChecked} claims, ${ragHits} with hits`);
 
   // 3. Verification Prompt
   const verifyPrompt = `你是一个世界上最严格的逻辑与查重审查官。

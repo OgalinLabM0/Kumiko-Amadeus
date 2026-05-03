@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Loader2 } from 'lucide-react';
 import { ChatBubble } from '../ChatBubble';
 import { Language, Message } from '../../types';
 import { isMobileLikeRuntime } from '../../services/environment';
@@ -37,8 +36,6 @@ const OVERSCAN_PX_DESKTOP = 420;
 const OVERSCAN_PX_MOBILE = 240;
 const MIN_ESTIMATED_HEIGHT = 84;
 const MAX_ESTIMATED_HEIGHT = 460;
-const BOTTOM_CLEARANCE_DESKTOP = 72;
-const BOTTOM_CLEARANCE_MOBILE = 72;
 
 // Invalidate the cached flag used by the hot paths so the next
 // `msgListIsMobile()` call re-reads `isMobileLikeRuntime()`. Invoked from
@@ -114,24 +111,6 @@ const findClosestItemIndex = (offsets: number[], targetOffset: number) => {
   }
 
   return low;
-};
-
-const parseCssPx = (value: string | null | undefined): number => {
-  if (!value) return 0;
-  const parsed = parseFloat(value);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-};
-
-const readBottomClearancePx = (isMobileRuntime: boolean): number => {
-  const base = isMobileRuntime ? BOTTOM_CLEARANCE_MOBILE : BOTTOM_CLEARANCE_DESKTOP;
-  if (typeof window === 'undefined' || typeof document === 'undefined') return base;
-
-  const rootStyle = window.getComputedStyle(document.documentElement);
-  const safeAreaBottom = parseCssPx(rootStyle.getPropertyValue('--sab'));
-  // AppMainView already uses --kb-inset to shrink the chat column above the
-  // keyboard, so do not add any keyboard-derived gap here. This clearance is
-  // only the tail room needed for the footer/status line and safe-area bottom.
-  return Math.ceil(base + safeAreaBottom);
 };
 
 const VirtualizedMessageRow: React.FC<VirtualizedMessageRowProps> = ({
@@ -233,9 +212,6 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
   const [viewportHeight, setViewportHeight] = useState(0);
   const [scrollTop, setScrollTop] = useState(0);
   const [layoutVersion, setLayoutVersion] = useState(0);
-  const [bottomClearancePx, setBottomClearancePx] = useState(() =>
-    readBottomClearancePx(msgListIsMobile()),
-  );
   const shouldStickToBottomRef = useRef(true);
 
   // Track the runtime flag so OVERSCAN_PX stays in sync when the async
@@ -277,22 +253,21 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
     return offsets;
   }, [itemHeights]);
 
-  const totalMessageHeight = itemOffsets[itemOffsets.length - 1] || 0;
-  const totalContentHeight = totalMessageHeight + bottomClearancePx;
+  const totalContentHeight = itemOffsets[itemOffsets.length - 1] || 0;
 
   const isNearBottom = useCallback((container: HTMLDivElement) => {
-    const distance = totalContentHeight - (container.scrollTop + container.clientHeight);
-    return distance <= Math.max(160, bottomClearancePx + 48);
-  }, [bottomClearancePx, totalContentHeight]);
+    const distance = container.scrollHeight - (container.scrollTop + container.clientHeight);
+    return distance <= 160;
+  }, []);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const container = containerRef.current;
     if (!container) return;
-    const desiredTop = Math.max(0, totalContentHeight - container.clientHeight);
+    const desiredTop = Math.max(0, container.scrollHeight - container.clientHeight);
     container.scrollTo({ top: desiredTop, behavior });
     pendingScrollTopRef.current = desiredTop;
     setScrollTop((current) => current === desiredTop ? current : desiredTop);
-  }, [totalContentHeight]);
+  }, []);
 
   const { startIndex, endIndex } = useMemo(() => {
     if (visibleMessages.length === 0) {
@@ -317,10 +292,8 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
     const syncViewport = () => {
       const nextHeight = container.clientHeight;
       const nextTop = container.scrollTop;
-      const nextClearance = readBottomClearancePx(isMobileRuntime);
       setViewportHeight((current) => current === nextHeight ? current : nextHeight);
       setScrollTop((current) => current === nextTop ? current : nextTop);
-      setBottomClearancePx((current) => current === nextClearance ? current : nextClearance);
       shouldStickToBottomRef.current = isNearBottom(container);
     };
 
@@ -422,7 +395,7 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
       window.cancelAnimationFrame(raf1);
       window.cancelAnimationFrame(raf2);
     };
-  }, [bottomClearancePx, lastVisibleMessage, lastVisibleMessageId, pendingMessageIds, scrollToBottom, totalContentHeight]);
+  }, [isListening, lastVisibleMessage, lastVisibleMessageId, pendingMessageIds, scrollToBottom]);
 
   const renderedSlice = endIndex >= startIndex
     ? visibleMessages.slice(startIndex, endIndex + 1)
@@ -436,45 +409,44 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
       onClick={onBackgroundClick}
       onScroll={handleScroll}
     >
-      <div style={{ position: 'relative', height: totalContentHeight }}>
-        {renderedSlice.map((message, localIndex) => {
-          const absoluteIndex = startIndex + localIndex;
-          return (
-            <VirtualizedMessageRow
-              key={message.id}
-              index={absoluteIndex}
-              message={message}
-              top={itemOffsets[absoluteIndex] || 0}
-              onMeasured={handleMeasured}
-              isMobileRuntime={isMobileRuntime}
-            >
-              <ChatBubble
+      <div className="min-h-full flex flex-col justify-end">
+        <div style={{ position: 'relative', height: totalContentHeight }}>
+          {renderedSlice.map((message, localIndex) => {
+            const absoluteIndex = startIndex + localIndex;
+            return (
+              <VirtualizedMessageRow
+                key={message.id}
+                index={absoluteIndex}
                 message={message}
-                isDarkMode={isDarkMode}
-                isSelectionMode={isSelectionMode}
-                isSelected={selectedIds.has(message.id)}
-                onSelect={() => onSelectMessage(message.id)}
-                language={language}
-                isPending={pendingMessageIds.has(message.id)}
-                onRecall={onRecall}
-                onReply={onReply}
-                isHighlighted={highlightedMessageId === message.id}
-                onImageClick={onImageClick}
-                onRegenerateVoice={onRegenerateVoice}
-                isRegeneratingVoice={regeneratingVoiceIds?.has(message.id)}
-                onResend={onResend}
-                onWithdraw={onWithdraw}
-                onLongPress={onLongPress}
-              />
-            </VirtualizedMessageRow>
-          );
-        })}
-      </div>
-      <div className="flex flex-col gap-2 items-end mr-3 mt-2">
+                top={itemOffsets[absoluteIndex] || 0}
+                onMeasured={handleMeasured}
+                isMobileRuntime={isMobileRuntime}
+              >
+                <ChatBubble
+                  message={message}
+                  isDarkMode={isDarkMode}
+                  isSelectionMode={isSelectionMode}
+                  isSelected={selectedIds.has(message.id)}
+                  onSelect={() => onSelectMessage(message.id)}
+                  language={language}
+                  isPending={pendingMessageIds.has(message.id)}
+                  onRecall={onRecall}
+                  onReply={onReply}
+                  isHighlighted={highlightedMessageId === message.id}
+                  onImageClick={onImageClick}
+                  onRegenerateVoice={onRegenerateVoice}
+                  isRegeneratingVoice={regeneratingVoiceIds?.has(message.id)}
+                  onResend={onResend}
+                  onWithdraw={onWithdraw}
+                  onLongPress={onLongPress}
+                />
+              </VirtualizedMessageRow>
+            );
+          })}
+        </div>
         {isListening && (
-          <div className={`flex items-center gap-2 text-xs font-mono animate-pulse ${isDarkMode ? 'text-yellow-600/70' : 'text-yellow-700'}`}>
-            <Loader2 size={12} className="animate-spin" />
-            <span>{listeningLabel} {timeLeft}s...</span>
+          <div className={`flex justify-end mt-1 mr-3 ka-micro font-mono ${isDarkMode ? 'text-yellow-600/70' : 'text-yellow-700/70'}`}>
+            <span>{listeningLabel} {timeLeft}s</span>
           </div>
         )}
         <div ref={messagesEndRef} />

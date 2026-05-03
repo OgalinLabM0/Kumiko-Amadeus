@@ -1,7 +1,7 @@
 
 import React, { memo, useState, useRef, useEffect } from 'react';
 import { Message, Language } from '../types';
-import { Circle, CheckCircle, Undo2, Reply, Quote, Link as LinkIcon, ImageOff, AlertCircle, RotateCcw, PenLine, Loader2 } from 'lucide-react';
+import { Circle, CheckCircle, Undo2, Reply, Quote, Link as LinkIcon, ImageOff, AlertCircle, RotateCcw, PenLine } from 'lucide-react';
 import { UI_TRANSLATIONS } from '../constants';
 import { VoiceBubble } from './VoiceBubble';
 import { useMessageImage } from './app/useMessageImage';
@@ -205,18 +205,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
   // blocked). Triggers the "未送达" subtitle below and a slight opacity
   // dimming on the bubble itself.
   const isBlockedSend = isUser && message.blockedDuringSend === true;
-  // v2.14.28 H5 (post-H18 reframe): the bubble is "stuck-未读" when the
-  // user message has finished its 9s pre-send window (isPending=false) and
-  // executeSendCore has flipped sendStatus to undefined, but Kumiko hasn't
-  // read it yet (isRead=false). Without an escape, a hung LLM call leaves
-  // the user trapped — this gate enables the same withdraw popover used by
-  // the failed-state path.
-  const isStuckUnread = isUser
-    && !isPending
-    && !isFailed
-    && !isSending
-    && message.sendStatus === undefined
-    && message.isRead === false;
+  // v2.14.30: removed isStuckUnread popover trigger. The 9s pre-send
+  // window already exposes a red 撤回 button for users to abort hung
+  // sends, and the post-9s spinning "未读" UI was reported as confusing
+  // ("现实的聊天软件哪儿有这样的"). After 9s the status line just
+  // shows the plain text "未读" until Kumiko reads the message, with no
+  // additional control surface. Hung LLM calls eventually flip to
+  // failed and surface the AlertCircle popover below.
 
   const longPressHandlers = useLongPress({
     threshold: 500,
@@ -299,16 +294,14 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                   </div>
                 )}
 
-                {/* Failed / Stuck-未读 popover trigger.
-                    v2.14.28 H5 (post-H18 reframe): the popover surface now also
-                    appears for the "stuck-未读" case — the user sent a message,
-                    9s pre-send timer ran out, executeSendCore is in flight,
-                    Kumiko hasn't read it yet (sendStatus undefined + isRead
-                    false). On a hung LLM call the user used to be trapped;
-                    now they get the same withdraw popover (no Resend, since
-                    the original turn is still in flight — handleWithdrawMessage
-                    bumps generationId to abort it cleanly). */}
-                {(isFailed || isStuckUnread) && (
+                {/* Failed popover trigger.
+                    v2.14.30: only shown for explicit send failures
+                    (sendStatus === 'failed'). The previous stuck-未读
+                    spinner branch was removed — the 9s pre-send 撤回
+                    button covers the user-abort path; after 9s the
+                    status line just reads "未读" until Kumiko replies
+                    or the request hard-fails into this popover. */}
+                {isFailed && (
                   <div className="relative" ref={failPopoverRef}>
                     <button
                       ref={failBtnRef}
@@ -320,16 +313,10 @@ export const ChatBubble: React.FC<ChatBubbleProps> = memo(({
                         }
                         setShowFailPopover(prev => !prev);
                       }}
-                      className={isFailed ? 'p-0.5 animate-pulse' : 'p-0.5 opacity-70 hover:opacity-100 transition-opacity'}
-                      title={isFailed
-                        ? (message.failReason || (language === 'zh' ? '发送失败' : 'Send failed'))
-                        : (language === 'zh' ? '撤回 / 编辑' : 'Withdraw / edit')}
+                      className="p-0.5 animate-pulse"
+                      title={message.failReason || (language === 'zh' ? '发送失败' : 'Send failed')}
                     >
-                      {isFailed ? (
-                        <AlertCircle size={20} className="text-red-500 drop-shadow-sm" />
-                      ) : (
-                        <Loader2 size={18} className={`${isDarkMode ? 'text-yellow-500/70' : 'text-yellow-700/70'} animate-spin`} />
-                      )}
+                      <AlertCircle size={20} className="text-red-500 drop-shadow-sm" />
                     </button>
                     {showFailPopover && (
                       <div className={`

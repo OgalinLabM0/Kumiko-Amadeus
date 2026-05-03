@@ -57,9 +57,16 @@ android {
         // 自动接听；Xiaomi/HyperOS T-5min 预热缓解漂移；新增首启
         // PermissionOnboardingWizard 8 步引导 + 60 秒锁屏深度自检；
         // AppChatHeader 加可靠性体检小灯）。
+        // 2.14.30 → 21430（聊天尾部锚定 + 反复读重构：移除 stuck-未读
+        // 旋转图标改为纯文本"未读"；发送中倒计时挪到最近气泡正下方紧贴；
+        // 列表底部 flex justify-end 让短对话紧贴 footer 黄线；prompt 端
+        // 加 [User_Latest_Line] 锚字段，重写 Fact_Check 为 4 类决策、
+        // 解耦 Kumiko_Thought、彻底移除 shortFollowUpBlock 让模型自看
+        // 上下文判断、proactiveReplyBlock 概率 38%→25% 并要求"先答本轮"；
+        // 日记验证器 RAG warn 静默化）。
         // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21429
-        versionName "2.14.29"
+        versionCode 21430
+        versionName "2.14.30"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

@@ -880,14 +880,24 @@ function formatContextBlock(msgs: RagMessage[]): string {
 // ==========================================
 // SEARCH (IPC to main process + context expansion + LLM re-ranking in renderer)
 // ==========================================
+// v2.14.30: `options.suppressEmptyWarning` lets batch callers (e.g. the
+// diary validator that fans out 5~20 RAG queries per save) silence the
+// per-query "no candidates" / "temporal filters returned no candidates"
+// warnings and emit a single summary line instead. Default behaviour
+// (warning fires) is preserved for ad-hoc callers.
+export interface SearchLocalRagMemoryOptions {
+  suppressEmptyWarning?: boolean;
+}
+
 export const searchLocalRagMemory = async (
     query: string,
     topK: number = 3,
     temporalFilters?: { startTime?: number | null, endTime?: number | null, role?: string },
     memoryIntent: LocalRagSearchIntent = 'default',
-    keywords?: string[]
+    keywords?: string[],
+    options?: SearchLocalRagMemoryOptions
 ): Promise<string[]> => {
-  const result = await searchLocalRagMemoryDetailed(query, topK, temporalFilters, memoryIntent, keywords);
+  const result = await searchLocalRagMemoryDetailed(query, topK, temporalFilters, memoryIntent, keywords, options);
   return result.blocks;
 };
 
@@ -896,7 +906,8 @@ export const searchLocalRagMemoryDetailed = async (
     topK: number = 3,
     temporalFilters?: { startTime?: number | null, endTime?: number | null, role?: string },
     memoryIntent: LocalRagSearchIntent = 'default',
-    keywords?: string[]
+    keywords?: string[],
+    options?: SearchLocalRagMemoryOptions
 ): Promise<LocalRagRecallResult> => {
   try {
     let rawCandidates: {
@@ -933,14 +944,16 @@ export const searchLocalRagMemoryDetailed = async (
     // table as if it were "recall failed silently".
     if (rawCandidates.length === 0) {
         if (invoker) {
-            if (temporalFilters && (
-              typeof temporalFilters.startTime === 'number'
-              || typeof temporalFilters.endTime === 'number'
-              || (temporalFilters.role && temporalFilters.role !== 'any')
-            )) {
-                console.warn('[LOCAL RAG] Temporal filters requested but IPC search returned no candidates. Skipping IndexedDB fallback to avoid wrong-time recall.');
-            } else {
-                console.warn('[LOCAL RAG] IPC search returned no candidates. Skipping recent-vector fallback to avoid false recall.');
+            if (!options?.suppressEmptyWarning) {
+                if (temporalFilters && (
+                  typeof temporalFilters.startTime === 'number'
+                  || typeof temporalFilters.endTime === 'number'
+                  || (temporalFilters.role && temporalFilters.role !== 'any')
+                )) {
+                    console.warn('[LOCAL RAG] Temporal filters requested but IPC search returned no candidates. Skipping IndexedDB fallback to avoid wrong-time recall.');
+                } else {
+                    console.warn('[LOCAL RAG] IPC search returned no candidates. Skipping recent-vector fallback to avoid false recall.');
+                }
             }
             return {
                 blocks: [],
