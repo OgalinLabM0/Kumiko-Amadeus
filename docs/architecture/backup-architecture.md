@@ -5,7 +5,7 @@ backups. It is the source of truth for anyone touching the `backup:*` IPC
 surface, `data.json` schema, or the auto-zip / manual-export flows.
 
 Scope: backup only. RAG vector store / SQLite message mirror is separate —
-see [rag-architecture.md](./rag-architecture.md).
+see [rag-architecture.md](rag-architecture.md).
 
 ## Two entry points, one builder
 

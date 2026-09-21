@@ -8,6 +8,7 @@ import {
   persistNormalizedBackupData as persistNormalizedBackupDataAction,
   restoreBackupData as restoreBackupDataAction,
 } from '../components/app/backupActions';
+import { validateBackupImportPayload } from '../components/app/backupImportValidation';
 import { yieldToMainThread } from '../components/app/appUtils';
 import { LOCAL_BACKUP_PATH_STORAGE_KEY } from '../components/app/appConstants';
 import { DEFAULT_WORLD_BOOK, LOCALIZED_WORLD_BOOK } from '../constants';
@@ -287,7 +288,11 @@ export function useBackupWorkflow(params: UseBackupWorkflowParams): UseBackupWor
     backupJson: any,
     importedImages: Array<{ id: string; dataUrl: string }> = []
   ) => {
-    if (!backupJson) return null;
+    const validation = validateBackupImportPayload(backupJson);
+    if (!validation.valid) {
+      console.warn('[RESTORE] Parsed backup rejected before media writes:', validation.reason);
+      return null;
+    }
 
     if (importedImages.length > 0) {
       for (let imageIndex = 0; imageIndex < importedImages.length; imageIndex += 1) {

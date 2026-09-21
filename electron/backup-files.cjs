@@ -115,6 +115,7 @@ function getBackupFileInfo(filePath) {
 }
 
 async function parseBackupImportFile(filePath) {
+  const { validateBackupImportPayload } = await import('./backup-import-validation.mjs');
   const normalizedPath = normalizeBackupFilePath(filePath);
   assertBackupPathAllowed(normalizedPath);
   const fileName = path.basename(normalizedPath);
@@ -137,6 +138,10 @@ async function parseBackupImportFile(filePath) {
 
     const jsonText = await dataFile.async('string');
     const json = JSON.parse(jsonText);
+    const validation = validateBackupImportPayload(json);
+    if (!validation.valid) {
+      throw new Error(`Invalid backup payload: ${validation.reason || 'unrecognized structure'}`);
+    }
     const images = [];
     const imagesFolder = zip.folder('images');
 
@@ -194,6 +199,10 @@ async function parseBackupImportFile(filePath) {
 
   const content = fs.readFileSync(normalizedPath, 'utf8');
   const json = JSON.parse(content);
+  const validation = validateBackupImportPayload(json);
+  if (!validation.valid) {
+    throw new Error(`Invalid backup payload: ${validation.reason || 'unrecognized structure'}`);
+  }
 
   return {
     success: true,

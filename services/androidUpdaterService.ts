@@ -157,6 +157,12 @@ export async function checkForAndroidUpdate(force = false): Promise<AndroidUpdat
   const latestTag = release.tag_name || release.name || '';
   if (!latestTag) return { hasUpdate: false, currentVersion };
 
+  // The restarted 0.x line must not offer the repository's legacy 2.x.
+  // Revisit this boundary before publishing a new-generation 2.x release.
+  if (/^v?0\./.test(currentVersion) && /^v?2\./.test(latestTag)) {
+    return { hasUpdate: false, currentVersion };
+  }
+
   const newer = compareVersions(latestTag, currentVersion) > 0;
   if (!newer) {
     return { hasUpdate: false, currentVersion, latestVersion: latestTag };

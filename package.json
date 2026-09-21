@@ -1,12 +1,14 @@
 {
   "name": "kumiko-ai-amadeus",
   "private": true,
-  "version": "2.14.31",
+  "version": "0.0.0",
+  "androidVersionCode": 21432,
   "description": "Kumiko Amadeus desktop companion focused on long-term memory and natural character interaction.",
   "author": "Kitauji Fan Project",
   "type": "module",
   "main": "electron-main.cjs",
   "scripts": {
+    "check-version": "node scripts/check-version-consistency.cjs",
     "desktop:dev": "concurrently -k \"npm run dev\" \"wait-on tcp:3000 && electron .\"",
     "desktop:build": "npm run build:cap && npm run release:clean:prebuild && electron-builder && npm run release:latest-yml && npm run release:assets && npm run release:clean:postbuild",
     "release:assets": "node scripts/package-assets.cjs",

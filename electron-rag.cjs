@@ -875,7 +875,7 @@ async function rebuildHnswFromSqlite() {
     if (rows.length === 0) {
         console.log('[RAG] No vectors in SQLite to rebuild HNSW index from.');
         initHnswIndexes();
-        return;
+        return { indexed: 0, total: 0 };
     }
 
     const coreRows = rows.filter(row => normalizeTier(row.tier) === RAG_TIER_CORE);
@@ -909,6 +909,7 @@ async function rebuildHnswFromSqlite() {
     }
 
     console.log(`[RAG] HNSW indexes rebuilt from SQLite: ${added}/${rows.length} vectors indexed. core=${coreRows.length}, episodic=${episodicRows.length}, background=${backgroundRows.length}`);
+    return { indexed: added, total: rows.length };
 }
 
 function addToHnswIndex(id, vector, tier = RAG_TIER_CORE) {
@@ -1357,7 +1358,11 @@ function searchTierVectors(queryVector, queryTokens, tier, topK = 5, filters = {
     const normalizedTier = normalizeTier(tier);
     // Note: tierCount is the total vector count, not the filtered count.
     
-    const hasFilters = Object.keys(filters).length > 0;
+    // IPC includes keys whose values are undefined. Match the predicates
+    // actually applied by getTierSearchRows instead of counting those keys.
+    const hasFilters = typeof filters.startTime === 'number'
+        || typeof filters.endTime === 'number'
+        || !!(filters.role && filters.role !== 'any');
     let vectorCandidates = [];
     const hnswK = Math.max(topK * 5, 25);
     
@@ -2487,6 +2492,18 @@ function registerIpcHandlers() {
     ipcMain.handle('rag:restore', async (event, vectors) => {
         try {
             if (!Array.isArray(vectors)) return { success: false, error: 'Invalid data' };
+            // Reject incompatible snapshots before replacing the active store.
+            const ids = new Set();
+            for (const item of vectors) {
+                if (!item || typeof item.id !== 'string' || !item.id.trim() || ids.has(item.id)
+                    || typeof item.text !== 'string' || !Number.isFinite(item.timestamp)
+                    || !(Array.isArray(item.vector) || item.vector instanceof Float32Array)
+                    || item.vector.length !== EMBEDDING_DIM
+                    || !Array.from(item.vector).every(value => Number.isFinite(value) && Number.isFinite(Math.fround(value)))) {
+                    return { success: false, error: `Invalid or incompatible vector backup: unique IDs and ${EMBEDDING_DIM}-dimensional finite vectors are required.` };
+                }
+                ids.add(item.id);
+            }
             
             const stmt = db.prepare(
                 'INSERT OR REPLACE INTO vectors (id, message_id, text, vector, timestamp, tier, source, score, canonical_key, role) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
@@ -2509,14 +2526,20 @@ function registerIpcHandlers() {
                         typeof item.role === 'string' ? item.role : 'unknown'
                     );
                 }
+                const count = db.prepare('SELECT COUNT(*) AS count FROM vectors').get().count;
+                if (count !== items.length) throw new Error('Restored vector row count does not match the backup.');
+                return count;
             });
             
-            insertMany(vectors);
+            const count = insertMany(vectors);
             
-            await rebuildHnswFromSqlite();
+            const indexResult = await rebuildHnswFromSqlite();
+            if (indexResult.indexed !== count || indexResult.total !== count) {
+                return { success: false, count, error: 'Vectors were saved, but the search index could not restore every entry. Rebuild the memory bank before relying on recall.' };
+            }
             
             console.log(`[RAG] Restored ${vectors.length} vectors + rebuilt HNSW index.`);
-            return { success: true, count: vectors.length };
+            return { success: true, count };
         } catch (e) {
             console.error('[RAG IPC] restore failed:', e);
             return { success: false, error: e.message };

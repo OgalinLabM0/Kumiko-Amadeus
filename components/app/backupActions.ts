@@ -37,6 +37,7 @@ import {
 import { syncRawHistoryMessages } from './rawHistorySync';
 import { yieldToMainThread } from './appUtils';
 import { buildBackupData, validateBackupData, type AutoZipMeta } from './backupData';
+import { validateBackupImportPayload } from './backupImportValidation';
 import {
   db,
   INITIAL_WORLD_CHARACTER_STATUS,
@@ -119,8 +120,8 @@ export function normalizeBackupData(source: any) {
   const state = useAppStore.getState();
   const language = state.language;
 
-  const root = source.data || source;
-  const targetMessages = root.messages || source.messages || (source.data && source.data.messages) || [];
+  const root = source.data ?? source;
+  const targetMessages = root.messages;
   const normalizedBackupMessages = normalizeImportedBackupMessages(
     Array.isArray(targetMessages) ? targetMessages : []
   );
@@ -131,7 +132,7 @@ export function normalizeBackupData(source: any) {
     console.warn('[RESTORE] Backup message normalization adjusted imported history.', normalizedBackupMessages.stats);
   }
 
-  const currentLang = root.language || language;
+  const currentLang = typeof root.language === 'string' ? root.language : language;
 
   const baselineLore = LOCALIZED_WORLD_BOOK[currentLang] || DEFAULT_WORLD_BOOK;
   let finalWorldBook: WorldBookEntry[] = baselineLore;
@@ -166,11 +167,14 @@ export function normalizeBackupData(source: any) {
 
   finalWorldBook = [...mergedOfficial, ...sanitizedCustom];
 
-  const normalizedTurnCount = typeof root.turnCount === 'number' ? root.turnCount : 0;
-  const normalizedSummaryArchiveState = normalizeSummaryArchiveState(root.summaryArchiveState, normalizedTurnCount);
+  const normalizedTurnCount = typeof root.turnCount === 'number' ? root.turnCount : state.turnCount;
+  const normalizedSummaryArchiveState = normalizeSummaryArchiveState(
+    root.summaryArchiveState ?? state.summaryArchiveState,
+    normalizedTurnCount,
+  );
   const normalizedCoreMemory = resolveCoreMemoryFromSummaryArchive(
     normalizedSummaryArchiveState,
-    root.coreMemory || '',
+    typeof root.coreMemory === 'string' ? root.coreMemory : state.coreMemory,
   );
   const hasWorldCharacterStatus = root.worldCharacterStatus !== undefined || source.worldCharacterStatus !== undefined;
   const hasKumikoDiary = root.kumikoDiary !== undefined || source.kumikoDiary !== undefined;
@@ -182,20 +186,20 @@ export function normalizeBackupData(source: any) {
     messages: normalizedBackupMessages.messages,
     coreMemory: normalizedCoreMemory,
     worldBook: finalWorldBook,
-    contextLimit: root.contextLimit || 100,
+    contextLimit: typeof root.contextLimit === 'number' ? root.contextLimit : state.contextLimit,
     turnCount: normalizedTurnCount,
     summaryArchiveState: normalizedSummaryArchiveState,
-    currentEmotion: root.currentEmotion || 'neutral',
-    locationConfig: root.locationConfig || DEFAULT_LOCATION_CONFIG,
+    currentEmotion: typeof root.currentEmotion === 'string' ? root.currentEmotion : state.currentEmotion,
+    locationConfig: root.locationConfig ?? state.locationConfig ?? DEFAULT_LOCATION_CONFIG,
     language: currentLang,
-    anchors: root.anchors || [],
-    kumikoNotebook: root.kumikoNotebook || '',
+    anchors: Array.isArray(root.anchors) ? root.anchors : state.anchors,
+    kumikoNotebook: typeof root.kumikoNotebook === 'string' ? root.kumikoNotebook : state.kumikoNotebook,
     relativeReminders: Array.isArray(root.relativeReminders)
       ? root.relativeReminders.map(sanitizeRelativeReminderRecord).filter(Boolean)
-      : [],
+      : state.relativeReminders,
     dailyReminders: Array.isArray(root.dailyReminders)
       ? root.dailyReminders.map(sanitizeDailyReminderRecord).filter(Boolean)
-      : [],
+      : state.dailyReminders,
     worldCharacterStatus: hasWorldCharacterStatus
       ? sanitizeWorldCharacterStatusRecord(root.worldCharacterStatus ?? source.worldCharacterStatus)
       : undefined,
@@ -315,7 +319,11 @@ export async function restoreBackupData(
   backup: any,
   deps: RestoreBackupDeps,
 ) {
-  if (!backup) return null;
+  const validation = validateBackupImportPayload(backup);
+  if (!validation.valid) {
+    console.warn('[RESTORE] Backup rejected before state writes:', validation.reason);
+    return null;
+  }
 
   const {
     isBulkRestoreInProgressRef,
@@ -653,6 +661,11 @@ export async function handleImportBackup(
         throw new Error('data.json not found in ZIP');
       }
       jsonStr = await dataFile.async('string');
+      parsedJson = JSON.parse(jsonStr);
+      const validation = validateBackupImportPayload(parsedJson);
+      if (!validation.valid) {
+        throw new Error(`Invalid backup payload: ${validation.reason || 'unrecognized structure'}`);
+      }
 
       const imagesFolder = zip.folder('images');
       if (imagesFolder) {
@@ -722,6 +735,10 @@ export async function handleImportBackup(
 
     await yieldToMainThread();
     const json = parsedJson ?? JSON.parse(jsonStr);
+    const validation = validateBackupImportPayload(json);
+    if (!validation.valid) {
+      throw new Error(`Invalid backup payload: ${validation.reason || 'unrecognized structure'}`);
+    }
 
     // P0 #2 (Plan 2): detect degraded auto-backups. _autoZipMeta is stamped at
     // the root of data.json by electron-main's before-quit handler. Manual
@@ -822,6 +839,7 @@ export async function handleImportBackup(
         console.warn('[IMPORT] Inline image hydrate pass failed:', hydrateErr);
       }
 
+      let ragRestoreFailed = false;
       if (json.vectors) {
         await yieldToMainThread();
         // P1 #13 follow-up (Plan 4): restoreVectors now returns a structured
@@ -830,24 +848,27 @@ export async function handleImportBackup(
         // continues regardless.
         const restoreResult = await restoreVectors(json.vectors);
         if (!restoreResult?.ok) {
+          ragRestoreFailed = true;
           console.warn('[IMPORT] RAG vectors restore was partial or failed:', restoreResult);
           state.setSystemNotice(
             language === 'zh'
-              ? 'RAG 向量恢复不完整，可手动重建记忆库以补齐。'
-              : 'RAG vectors restore was partial. You can manually rebuild the memory bank to refill.'
+              ? '聊天已恢复，但长期记忆恢复失败或不完整。请重试或重建记忆库。'
+              : 'Chat was restored, but long-term memory restoration failed or was incomplete. Retry or rebuild the memory bank.'
           );
+          state.setIsRagHistoryDirty(true);
+        } else {
+          state.setRagDirtyNoticeShown(false);
+          state.setIsRagHistoryDirty(false);
         }
-        state.setRagDirtyNoticeShown(false);
-        state.setIsRagHistoryDirty(false);
       } else if (backupConfig.ragEnabled && Array.isArray(restoredData.messages) && restoredData.messages.length > 0) {
         state.setIsRagHistoryDirty(true);
         console.warn('[LOCAL RAG] Imported backup restored messages without vector snapshots. Rebuild recommended.');
       }
       deps.updateBaseline(json.timestamp || Date.now(), restoredData);
-      if (flowState === 'APP') {
+      if (flowState === 'APP' && !ragRestoreFailed) {
         state.setSystemNotice(language === 'zh' ? '备份恢复成功！' : 'Backup restored successfully!');
       }
-      if (autoZipDegradedMessage) {
+      if (autoZipDegradedMessage && !ragRestoreFailed) {
         state.setSystemNotice(autoZipDegradedMessage);
       }
       return true;

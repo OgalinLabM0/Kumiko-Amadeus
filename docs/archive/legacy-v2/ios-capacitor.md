@@ -1,3 +1,5 @@
+> 历史档案：保留当时的描述；旧PWA、路径和阶段状态可能已失效。当前入口见 [文档目录](../../README.md)。
+
 # iOS（Capacitor）长期方案说明
 
 目标：与社区常见栈一致（**Vite + React 主工程 + Capacitor 薄壳**），便于后续加 Android、再接 PC（Tauri）共用同一 `dist/`。

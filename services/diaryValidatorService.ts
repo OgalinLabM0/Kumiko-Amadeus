@@ -148,9 +148,18 @@ ${draftContent}
     return (result || '').trim();
   };
 
+  // PASS is a complete response, so recognize it before the short-response
+  // retry guard. Surrounding whitespace and punctuation are presentation
+  // noise; any other text (including a second line) is an actual issue.
+  const isPassResponse = (response: string) =>
+    /^[\s\p{P}]*pass[\s\p{P}]*$/iu.test(response);
+
   options?.onPhase?.('verifying');
   checkAbort();
   let trimmed = await runVerifyOnce('');
+  if (isPassResponse(trimmed)) {
+    return [];
+  }
   if (!trimmed || trimmed.length < 5) {
     console.warn(
       '[DIARY-VALIDATOR] Empty / too-short first response, retrying once before defaulting to failure.'
@@ -161,23 +170,14 @@ ${draftContent}
       '上一次审查没有给出任何文字反馈。请务必按照审查要求输出：没问题时仅输出 PASS；有问题时逐行列出原因与修改指令。不要输出空白或单字回复。'
     );
   }
+  if (isPassResponse(trimmed)) {
+    return [];
+  }
   if (!trimmed || trimmed.length < 5) {
     console.warn(
       '[DIARY-VALIDATOR] Retry also returned empty / too-short response; treating as validation failure so the rewrite loop can recover.'
     );
     return ['验证器无响应：审查接口连续返回空白 / 过短回复，无法确认草稿是否存在吃书、重复或矛盾。请基于历史记录与聊天事实，保守重写一份更安全的版本，优先替换高特异性事件与微小物件的重复素材。'];
-  }
-
-  // Strict PASS detection: avoid substring traps like "NOT PASS" / "CANNOT PASS" / "未 PASS".
-  // Only treat as passed when the response (or its first meaningful line) is exactly "PASS"
-  // (case-insensitive, optional surrounding punctuation). Anything else is treated as a failure
-  // list and the lines are returned as issues for rewrite.
-  if (/^\s*PASS[\s.!。！]*$/im.test(trimmed)) {
-    return [];
-  }
-  const firstLine = trimmed.split('\n')[0].trim().toUpperCase();
-  if (firstLine === 'PASS' || firstLine.startsWith('PASS:') || firstLine.startsWith('PASS ')) {
-    return [];
   }
 
   return trimmed.split('\n').filter(line => line.trim().length > 0);

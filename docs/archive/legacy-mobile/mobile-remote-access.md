@@ -1,3 +1,5 @@
+> 历史档案：保留当时的描述；旧PWA、路径和阶段状态可能已失效。当前入口见 [文档目录](../../README.md)。
+
 # Mobile Remote Access Architecture
 
 This note documents how the desktop Kumiko·Amadeus process exposes itself
@@ -6,11 +8,11 @@ for anyone touching the `electron/server/` tree, the `mobile-api-proxy`
 IPC channel, or the pairing token flow.
 
 Scope: the phone-side remote access story only. Backup architecture is
-separate — see [backup-architecture.md](./backup-architecture.md). RAG
-vector store internals — see [rag-architecture.md](./rag-architecture.md).
+separate — see [backup-architecture.md](../../architecture/backup-architecture.md). RAG
+vector store internals — see [rag-architecture.md](../../architecture/rag-architecture.md).
 User-facing feature coverage, file storage map, and the three data-flow
 paths (write / sync / push) are covered in
-[mobile-parity.md](./mobile-parity.md); look there before adding feature
+[mobile-parity.md](mobile-parity.md); look there before adding feature
 matrices to this doc.
 
 ## Deployment model: distributed, not SaaS
@@ -100,45 +102,45 @@ migration risk. Deferred.
 
 All live under `electron/server/` except the renderer-side shim:
 
-- [electron/server/fastify-server.cjs](../electron/server/fastify-server.cjs) —
+- [electron/server/fastify-server.cjs](../../../electron/server/fastify-server.cjs) —
   Fastify 5.x instance. Binds `0.0.0.0` at a user-configurable high
   port (persisted in userData), registers static serve for `dist/`,
   WebSocket, auth, pairing, API bridge, and media routes. Stops
   gracefully on `before-quit`.
-- [electron/server/tailscale-cert.cjs](../electron/server/tailscale-cert.cjs) —
+- [electron/server/tailscale-cert.cjs](../../../electron/server/tailscale-cert.cjs) —
   detects the `tailscale` CLI, runs `tailscale cert <hostname>` to obtain
   Let's Encrypt certs, watches for the 90-day renewal window, and exposes
   the current cert / key file paths to the Fastify boot routine. Returns
   a structured error when Tailscale is not installed so the UI can
   surface a "please install Tailscale" hint.
-- [electron/server/auth.cjs](../electron/server/auth.cjs) — generates,
+- [electron/server/auth.cjs](../../../electron/server/auth.cjs) — generates,
   verifies, and rotates the pairing token. Token is a 256-bit random
   string persisted under `userData/mobile-access.json` (mode 0o600 on
   Linux). Verified via constant-time compare. Pairing endpoint
   (`POST /api/auth/pair`) is rate-limited to 5 attempts / IP / minute.
   On success issues an `HttpOnly; Secure; SameSite=Strict` cookie with
   a 90-day expiry; subsequent requests auth against the cookie.
-- [electron/server/ipc-bridge.cjs](../electron/server/ipc-bridge.cjs) —
+- [electron/server/ipc-bridge.cjs](../../../electron/server/ipc-bridge.cjs) —
   generic HTTP → `webContents.send('mobile-api-proxy', { requestId,
   channel, args })` → renderer → `ipcRenderer.send('mobile-api-proxy-
   reply', { requestId, result })` → main → HTTP response. First batch
   wired: `ping`, `chat`, `messages:recent`. Phase 2 extends the same
   mechanism to the full IPC surface.
-- [electron/server/media-routes.cjs](../electron/server/media-routes.cjs) —
+- [electron/server/media-routes.cjs](../../../electron/server/media-routes.cjs) —
   `GET /media/images/:id` reads `userData/images/{id}.{ext}` using
-  `findImageFile` from [electron/media-files.cjs](../electron/media-files.cjs).
+  `findImageFile` from [electron/media-files.cjs](../../../electron/media-files.cjs).
   Sends `Cache-Control: private, max-age=86400` plus an `ETag` so
   service worker and browser cache both kick in. Voice / ringtone
   routes land in Phase 2.
 
 Renderer side:
 
-- [services/environment.ts](../services/environment.ts) — reports
+- [services/environment.ts](../../../services/environment.ts) — reports
   whether the current page is running inside Electron (via the
   `window.__KUMIKO_ENV__` sentinel injected by preload) or as a PWA on
   the phone. Also surfaces the API base URL derived from
   `window.location` when remote.
-- [services/httpApi.ts](../services/httpApi.ts) — thin HTTP client for
+- [services/httpApi.ts](../../../services/httpApi.ts) — thin HTTP client for
   PWA builds. Exposes `httpInvoke(channel, args)` mirroring the
   `electronAPI.invoke(channel, data)` contract, plus `httpPair`,
   `httpLogout`, `httpStatus`, `httpCheckSession`, and `getHttpImageUrl`
@@ -147,13 +149,13 @@ Renderer side:
   electronAPI exposes) are Phase 2 work on the WebSocket surface — the
   shim intentionally doesn't stub them in Phase 1 so callers that need
   them fail loudly.
-- [components/app/useMobileApiProxy.ts](../components/app/useMobileApiProxy.ts) —
+- [components/app/useMobileApiProxy.ts](../../../components/app/useMobileApiProxy.ts) —
   subscribes to `mobile-api-proxy` IPC on the Electron renderer and
   handles `ping`, `chat`, `messages:recent` by invoking the same
   services the Electron UI already uses. Keeps renderer code paths
   single-sourced; the phone simply triggers what the desktop would
   have triggered itself.
-- [components/settings/MobileAccessSection.tsx](../components/settings/MobileAccessSection.tsx) —
+- [components/settings/MobileAccessSection.tsx](../../../components/settings/MobileAccessSection.tsx) —
   the desktop-only Settings panel entry that shows the enable toggle,
   the current Tailscale MagicDNS hostname, the pairing token (with a
   reveal / copy / rotate action), and a guide linking to Tailscale

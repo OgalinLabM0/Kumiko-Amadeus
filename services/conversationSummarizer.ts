@@ -263,6 +263,10 @@ export const summarizeConversation = async (
         text = result.text || "";
     }
     
+    if (!text.trim()) {
+      throw new Error('Memory summarization returned an empty response.');
+    }
+
     let cleanText = text.replace(/```\w*\n?/g, '').replace(/```/g, '').replace(/\*\*/g, ''); 
     
     let diaryMatch = cleanText.match(/(?:\[|【|\*\*\[)\s*DIARY[_\s]ENTRY\s*(?:\]|】|\]\*\*)\s*([\s\S]*?)\s*(?:\[|【|\*\*\[)\s*\/\s*DIARY[_\s]ENTRY\s*(?:\]|】|\]\*\*)/i);
@@ -284,13 +288,20 @@ export const summarizeConversation = async (
     let notebook = notebookMatch ? notebookMatch[1].trim() : "";
     let chunks: string[] = [];
 
-    if (chunksMatch) {
-        try {
-            chunks = JSON.parse(chunksMatch[1].trim());
-            if (!Array.isArray(chunks)) chunks = [];
-        } catch (e) {
-            console.warn("[SUMMARY WARN] Failed to parse MEMORY_CHUNKS JSON.");
-        }
+    if (!notebookMatch) {
+      throw new Error('Memory summarization response did not contain a notebook update.');
+    }
+    if (!chunksMatch) {
+      throw new Error('Memory summarization response did not contain memory chunks.');
+    }
+    try {
+      const parsedChunks: unknown = JSON.parse(chunksMatch[1].trim());
+      if (!Array.isArray(parsedChunks) || !parsedChunks.every(chunk => typeof chunk === 'string')) {
+        throw new Error('MEMORY_CHUNKS must be a JSON array of strings.');
+      }
+      chunks = parsedChunks;
+    } catch (error) {
+      throw new Error(`Memory summarization returned invalid memory chunks: ${error instanceof Error ? error.message : String(error)}`);
     }
 
     if (!diary && cleanText.includes('[KEY_FACT]')) {
@@ -301,16 +312,19 @@ export const summarizeConversation = async (
          }
     }
 
-    diary = diary || existingMemory;
+    if (!diary) {
+      throw new Error('Memory summarization response did not contain a diary entry.');
+    }
+
     notebook = notebook || currentNotebook;
 
     console.log("[SUMMARY DEBUG] Raw Output:", text);
     if (!diaryMatch && !diary) console.warn("[SUMMARY WARN] Failed to parse DIARY_ENTRY. Falling back to old memory.");
-    if (!notebookMatch && !notebook) console.warn("[SUMMARY WARN] Failed to parse NOTEBOOK_UPDATE. Falling back to old notebook.");
+    if (!notebook) console.warn("[SUMMARY WARN] Empty NOTEBOOK_UPDATE; keeping the existing notebook.");
 
     return { diary, notebook, chunks };
   } catch (error) {
     console.error("Memory summarization failed:", error);
-    return { diary: existingMemory, notebook: currentNotebook, chunks: [] };
+    throw error;
   }
 };

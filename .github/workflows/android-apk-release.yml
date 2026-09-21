@@ -38,7 +38,7 @@
 #   uninstall once because v2.14.3 was debug-signed. From v2.14.4
 #   onwards, in-place upgrades work and the sandbox is preserved.
 # Setup guide for the keystore + secrets lives in
-# docs/android-keystore-setup.md.
+# docs/guides/android-keystore-setup.md.
 #
 # Universal APK (single APK with every ABI's native libs) is the default
 # AGP behavior since we do NOT set `android.splits.abi.enable true`.
@@ -138,12 +138,7 @@ jobs:
         id: appver
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          # versionCode = MAJOR*10000 + MINOR*100 + PATCH so 2.12.0 → 21200,
-          # mirrors the value committed in app/build.gradle defaultConfig.
-          MAJOR=$(echo $VERSION | cut -d. -f1)
-          MINOR=$(echo $VERSION | cut -d. -f2)
-          PATCH=$(echo $VERSION | cut -d. -f3)
-          VERSION_CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          VERSION_CODE=$(node -e "const v = require('./package.json').androidVersionCode; if (!Number.isSafeInteger(v) || v <= 21431 || v > 2100000000) throw new Error('Invalid androidVersionCode'); process.stdout.write(String(v));")
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
           echo "Resolved versionName=$VERSION versionCode=$VERSION_CODE"
@@ -157,6 +152,7 @@ jobs:
           sed -i "s/versionCode .*/versionCode ${{ steps.appver.outputs.version_code }}/" android/app/build.gradle
           sed -i 's/versionName ".*"/versionName "${{ steps.appver.outputs.version }}"/' android/app/build.gradle
           grep -E "versionCode|versionName" android/app/build.gradle
+          npm run check-version
 
       - name: Make gradlew executable
         # The android/gradlew script is committed with executable bit

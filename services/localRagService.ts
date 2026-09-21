@@ -447,23 +447,34 @@ export interface RestoreVectorsResult {
 // a structured result so the importer can warn the user (and suggest rebuilding
 // the RAG index) when recovery was partial.
 export const restoreVectors = async (vectorsData: any[]): Promise<RestoreVectorsResult> => {
-  if (!vectorsData || !Array.isArray(vectorsData) || vectorsData.length === 0) {
-    return { ok: true, restored: 0, failed: 0, backend: 'none' };
+  if (!Array.isArray(vectorsData)) {
+    return { ok: false, restored: 0, failed: 0, backend: 'none', error: 'Invalid vector backup: expected an array.' };
   }
 
   const totalExpected = vectorsData.length;
   const invoker = getRagInvoker();
   if (invoker) {
+    const backend = invoker.kind === 'electron' ? 'sqlite' : 'indexeddb';
     try {
       const result = await invoker.invoke<any>('rag:restore', vectorsData);
       if (result?.success) {
-        const restored = typeof result.count === 'number' ? result.count : totalExpected;
-        console.log(`[LOCAL RAG] Restored ${restored} vectors to SQLite.`);
-        return { ok: restored === totalExpected, restored, failed: totalExpected - restored, backend: 'sqlite' };
+        const validCount = Number.isSafeInteger(result.count) && result.count >= 0 && result.count <= totalExpected;
+        const restored = validCount ? result.count : 0;
+        const ok = validCount && restored === totalExpected;
+        return { ok, restored, failed: totalExpected - restored, backend,
+          ...(ok ? {} : { error: 'The active memory store did not confirm restoring every vector.' }) };
       }
-      console.warn('[LOCAL RAG] SQLite restore failed, falling back to IndexedDB:', result?.error);
+      if (invoker.kind === 'electron') {
+        return { ok: false, restored: 0, failed: totalExpected, backend,
+          error: result?.error || 'The active SQLite memory store could not be restored.' };
+      }
+      console.warn('[LOCAL RAG] Android restore channel unavailable; restoring its IndexedDB store:', result?.error);
     } catch (e) {
-      console.warn('[LOCAL RAG] SQLite restore threw, falling back to IndexedDB:', e);
+      if (invoker.kind === 'electron') {
+        return { ok: false, restored: 0, failed: totalExpected, backend,
+          error: e instanceof Error ? e.message : String(e) };
+      }
+      console.warn('[LOCAL RAG] Android restore threw; restoring its IndexedDB store:', e);
     }
   }
 
@@ -480,8 +491,10 @@ export const restoreVectors = async (vectorsData: any[]): Promise<RestoreVectors
       score: v.score || 0,
       canonicalKey: v.canonicalKey,
     }));
-    await db.vectors.clear();
-    await db.vectors.bulkAdd(vectorsToRestore);
+    await db.transaction('rw', db.vectors, async () => {
+      await db.vectors.clear();
+      await db.vectors.bulkAdd(vectorsToRestore);
+    });
     console.log(`Restored ${vectorsToRestore.length} vectors to local RAG memory (IndexedDB).`);
     return { ok: true, restored: vectorsToRestore.length, failed: 0, backend: 'indexeddb' };
   } catch (e) {
@@ -763,89 +776,29 @@ const appendRawHistoryWindow = (
 };
 
 const expandContextBatch = async (candidates: { text: string, messageId?: string, source?: string, timestamp?: number }[]): Promise<string[]> => {
-  const finalBlocks: string[] = [];
-  const episodicBlocks: string[] = [];
-  
-  const messageMap = new Map<string, RagMessage>();
-  const rawMessages = await getStoredChatHistory();
-  
+  // Preserve each hit together with its proven context, so topK cannot
+  // accidentally keep the neighbors while dropping the retrieved fact.
+  const rawMessages = candidates.some(candidate => candidate.messageId)
+    ? await getStoredChatHistory()
+    : [];
+  const blocks: string[] = [];
   for (const candidate of candidates) {
-    if (candidate.source === 'episodic_merge') {
-      episodicBlocks.push(candidate.text);
-      continue;
+    let block = candidate.text;
+    if (candidate.source !== 'episodic_merge' && candidate.messageId) {
+      const rawIndex = rawMessages.findIndex(message => message.id === candidate.messageId);
+      const messageMap = new Map<string, RagMessage>();
+      if (rawIndex >= 0 && appendRawHistoryWindow(messageMap, rawMessages, rawIndex)) {
+        const context = formatContextBlock(Array.from(messageMap.values()));
+        block = rawMessages[rawIndex].text === candidate.text
+          ? context
+          : `${candidate.text}\n\n${context}`;
+      }
     }
-    
-    try {
-      const invoker = getRagInvoker();
-      if (candidate.messageId) {
-          const rawIndex = rawMessages.findIndex(message => message.id === candidate.messageId);
-          if (rawIndex >= 0 && appendRawHistoryWindow(messageMap, rawMessages, rawIndex)) {
-             continue;
-          }
-      }
-
-      if (Number.isFinite(candidate.timestamp)) {
-          let closestIndex = -1;
-          let smallestGap = Number.POSITIVE_INFINITY;
-          rawMessages.forEach((message, index) => {
-              const gap = Math.abs(message.timestamp - Number(candidate.timestamp));
-              if (gap < smallestGap) {
-                  smallestGap = gap;
-                  closestIndex = index;
-              }
-          });
-
-          if (closestIndex >= 0 && smallestGap <= 10 * 60 * 1000 && appendRawHistoryWindow(messageMap, rawMessages, closestIndex)) {
-              continue;
-          }
-      }
-
-      if (invoker && candidate.timestamp) {
-          const result = await invoker.invoke<any>('rag:expand-context', { timestamp: candidate.timestamp });
-          if (result.success && result.messages) {
-              result.messages.forEach((msg: any) => {
-                  if (msg.messageId || msg.timestamp) {
-                      const id = msg.messageId || `${msg.timestamp}`;
-                      messageMap.set(id, {
-                          messageId: msg.messageId,
-                          text: msg.text,
-                          timestamp: msg.timestamp,
-                          role: msg.role || 'unknown'
-                      });
-                  }
-              });
-          }
-      } else {
-         episodicBlocks.push(candidate.text);
-      }
-    } catch (e) {
-       console.error("Failed to expand candidate", e);
-       episodicBlocks.push(candidate.text);
-    }
+    // Timestamps on summaries may mean archive time. Unlinked hits must
+    // not borrow unrelated nearby chat, including from legacy IPC expansion.
+    blocks.push(block);
   }
-
-  const allMessages = Array.from(messageMap.values()).sort((a, b) => a.timestamp - b.timestamp);
-  
-  if (allMessages.length > 0) {
-      let currentBlockMsgs = [allMessages[0]];
-      
-      for (let i = 1; i < allMessages.length; i++) {
-          const prev = allMessages[i-1];
-          const curr = allMessages[i];
-          if (curr.timestamp - prev.timestamp > 60 * 60 * 1000) {
-              finalBlocks.push(formatContextBlock(currentBlockMsgs));
-              currentBlockMsgs = [curr];
-          } else {
-              currentBlockMsgs.push(curr);
-          }
-      }
-      if (currentBlockMsgs.length > 0) {
-          finalBlocks.push(formatContextBlock(currentBlockMsgs));
-      }
-  }
-
-  const uniqueBlocks = Array.from(new Set([...episodicBlocks, ...finalBlocks]));
-  return uniqueBlocks;
+  return Array.from(new Set(blocks));
 };
 
 function formatContextBlock(msgs: RagMessage[]): string {

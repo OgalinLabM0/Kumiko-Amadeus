@@ -122,6 +122,30 @@ export interface SummarySegmentMetadata {
   summaryText: string;
 }
 
+/**
+ * A generated archive that is waiting for all of its required writes to
+ * finish. Keeping this in the persisted archive state means a retry reuses
+ * the exact same facts instead of asking the model to summarize the segment
+ * again after only some RAG chunks were stored.
+ */
+export interface PendingSummaryArchive {
+  archiveKey: string;
+  segmentStartMessageId: string | null;
+  segmentEndMessageId: string | null;
+  segmentStartTime: number;
+  segmentEndTime: number;
+  summaryCompletedTime: number;
+  timeRangeStr: string;
+  summaryText: string;
+  notebook: string;
+  chunks: string[];
+  savedChunkPayloads: string[];
+  reason: SummaryBoundaryReason;
+  isComplete: boolean;
+  nextSegmentStartTurn: number;
+  nextSegmentStartMessageId: string | null;
+}
+
 export interface SummaryArchiveState {
   segmentStartTurn: number;
   segmentStartMessageId: string | null;
@@ -132,6 +156,7 @@ export interface SummaryArchiveState {
   lastBoundaryReason?: SummaryBoundaryReason | null;
   lastBoundaryAt?: number | null;
   recentSummarySegments?: SummarySegmentMetadata[];
+  pendingArchive?: PendingSummaryArchive | null;
 }
 
 export type MemoryQuerySessionKind = 'exact_history' | 'temporal_history' | 'topic_search';

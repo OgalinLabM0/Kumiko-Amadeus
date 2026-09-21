@@ -12,6 +12,7 @@ import { isVoiceServiceAvailable } from '../../services/voiceFileService';
 import { dialogService } from '../../services/dialogService';
 import { useAppStore } from '../../store';
 import { yieldToMainThread } from './appUtils';
+import { validateBackupImportPayload } from './backupImportValidation';
 import type { BackupPayload } from './backupData';
 // F2B.1: dropped `MobilePickResult` import + `isMobilePwa` / `httpInvoke`
 // imports from this file. The Phase 6 mobile-PWA-via-PC remote file
@@ -195,6 +196,10 @@ export const useLocalFileBackup = ({
       if (parsedJson || text) {
         await yieldToMainThread();
         const json = parsedJson ?? JSON.parse(text);
+        const validation = validateBackupImportPayload(json);
+        if (!validation.valid) {
+          throw new Error(`Invalid backup payload: ${validation.reason || 'unrecognized structure'}`);
+        }
 
         // Voice-file pre-check: warn if the backup has voice messages but the
         // current data directory has no audio files yet.
@@ -227,6 +232,7 @@ export const useLocalFileBackup = ({
           updateBaseline(restoredAt, restoredData);
           return true;
         }
+        return false;
       }
 
       return true;
@@ -271,6 +277,10 @@ export const useLocalFileBackup = ({
       if (parsedJson || text) {
         await yieldToMainThread();
         const json = parsedJson ?? JSON.parse(text);
+        const validation = validateBackupImportPayload(json);
+        if (!validation.valid) {
+          throw new Error(`Invalid backup payload: ${validation.reason || 'unrecognized structure'}`);
+        }
         const restoredData = await restoreBackupData(json);
         if (restoredData) {
           updateBaseline(json.timestamp || Date.now(), restoredData);

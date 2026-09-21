@@ -7,7 +7,7 @@ source of truth for the IPC boundary, the SQLite schema, and the
 `vectors` table evolution across Dexie versions.
 
 Scope: RAG only. Backup file format / data.json layout is separate — see
-[backup-architecture.md](./backup-architecture.md).
+[backup-architecture.md](backup-architecture.md).
 
 ## Process split
 

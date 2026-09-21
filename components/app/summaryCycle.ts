@@ -1,4 +1,4 @@
-import { Language, Message, SummaryArchiveState, SummaryBoundaryReason, SummarySegmentMetadata } from '../../types';
+import { Language, Message, PendingSummaryArchive, SummaryArchiveState, SummaryBoundaryReason, SummarySegmentMetadata } from '../../types';
 
 export const SUMMARY_SOFT_THRESHOLD = 15;
 export const SUMMARY_HARD_THRESHOLD = 24;
@@ -98,6 +98,48 @@ const normalizeRecentSummarySegments = (raw: unknown): SummarySegmentMetadata[] 
     .map(normalizeSummarySegmentMetadata)
     .filter((segment): segment is SummarySegmentMetadata => !!segment)
     .slice(-SUMMARY_RECENT_SEGMENT_LIMIT);
+};
+
+const normalizePendingSummaryArchive = (raw: unknown): PendingSummaryArchive | null => {
+  if (!raw || typeof raw !== 'object') return null;
+  const parsed = raw as Partial<PendingSummaryArchive>;
+  if (
+    typeof parsed.archiveKey !== 'string' || !parsed.archiveKey.trim() ||
+    (parsed.segmentStartMessageId !== null && typeof parsed.segmentStartMessageId !== 'string') ||
+    (parsed.segmentEndMessageId !== null && typeof parsed.segmentEndMessageId !== 'string') ||
+    !Number.isFinite(parsed.segmentStartTime) ||
+    !Number.isFinite(parsed.segmentEndTime) ||
+    !Number.isFinite(parsed.summaryCompletedTime) ||
+    typeof parsed.timeRangeStr !== 'string' ||
+    typeof parsed.summaryText !== 'string' || !parsed.summaryText.trim() ||
+    typeof parsed.notebook !== 'string' ||
+    !Array.isArray(parsed.chunks) || !parsed.chunks.every(chunk => typeof chunk === 'string') ||
+    !Array.isArray(parsed.savedChunkPayloads) || !parsed.savedChunkPayloads.every(payload => typeof payload === 'string') ||
+    !['topic_shift', 'semantic_shift', 'long_gap', 'reminder_created', 'sleep_transition', 'wrap_up', 'hard_limit', 'manual'].includes(parsed.reason || '') ||
+    typeof parsed.isComplete !== 'boolean' ||
+    !Number.isFinite(parsed.nextSegmentStartTurn) ||
+    (parsed.nextSegmentStartMessageId !== null && typeof parsed.nextSegmentStartMessageId !== 'string')
+  ) {
+    return null;
+  }
+
+  return {
+    archiveKey: parsed.archiveKey.trim(),
+    segmentStartMessageId: parsed.segmentStartMessageId || null,
+    segmentEndMessageId: parsed.segmentEndMessageId || null,
+    segmentStartTime: Number(parsed.segmentStartTime),
+    segmentEndTime: Number(parsed.segmentEndTime),
+    summaryCompletedTime: Number(parsed.summaryCompletedTime),
+    timeRangeStr: parsed.timeRangeStr,
+    summaryText: parsed.summaryText,
+    notebook: parsed.notebook,
+    chunks: parsed.chunks.map(chunk => chunk.trim()).filter(Boolean),
+    savedChunkPayloads: Array.from(new Set(parsed.savedChunkPayloads.map(payload => payload.trim()).filter(Boolean))),
+    reason: parsed.reason as SummaryBoundaryReason,
+    isComplete: parsed.isComplete,
+    nextSegmentStartTurn: Math.max(0, Math.floor(Number(parsed.nextSegmentStartTurn))),
+    nextSegmentStartMessageId: parsed.nextSegmentStartMessageId || null,
+  };
 };
 
 export const buildSummarySegmentId = (
@@ -210,6 +252,7 @@ export const normalizeSummaryArchiveState = (raw: unknown, turnCount: number): S
       ? parsed.lastBoundaryAt
       : null,
     recentSummarySegments: normalizeRecentSummarySegments(parsed.recentSummarySegments),
+    pendingArchive: normalizePendingSummaryArchive(parsed.pendingArchive),
   };
 };
 

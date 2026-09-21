@@ -597,7 +597,7 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
     if (minutesOfDay >= period.startMinute && minutesOfDay < period.endMinute) {
       if (period.id === 'shr_morning') {
         if (daySchedule.shr) {
-          return {
+    return {
             slotType: 'shr',
             description: daySchedule.shrNote || 'SHR朝会',
             canChat: false,
@@ -615,7 +615,7 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
 
       if (period.id === 'shr_evening') {
         if (daySchedule.shr && daySchedule.shrNote?.includes('归宅')) {
-          return {
+    return {
             slotType: 'shr',
             description: '归宅SHR+清扫监督',
             canChat: false,
@@ -628,7 +628,7 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
       }
 
       if (period.id === 'after_school') {
-        return {
+    return {
           slotType: 'after_school',
           freeActivity: daySchedule.afterSchool,
           description: `放课后：${daySchedule.afterSchool}`,
@@ -652,7 +652,7 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
         const cg = assignment.classGroups[timetableSlot.classGroupKey];
         const sub = assignment.subjectMap[timetableSlot.subjectKey];
         if (!cg || !sub) {
-          return {
+    return {
             slotType: 'teaching',
             periodNumber: periodNum,
             description: `第${periodNum}校时 上课中`,
@@ -672,7 +672,7 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
           unitLabel = currResult ? currResult.stageLabel : '';
         }
 
-        return {
+    return {
           slotType: 'teaching',
           classGroup: cg.label,
           subject: sub.label,
@@ -683,9 +683,9 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
           interceptChance: 0.40,
           slotKey: `${dateStr}:teaching:${pId}`,
           endAtMinutes: period.endMinute,
-        };
-      } else {
-        return {
+    };
+  } else {
+    return {
           slotType: 'free',
           freeActivity: timetableSlot.activity,
           periodNumber: periodNum,

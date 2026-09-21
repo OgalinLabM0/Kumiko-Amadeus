@@ -7,74 +7,10 @@ android {
         applicationId "com.kumiko.amadeus.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        // versionCode = MAJOR*10000 + MINOR*100 + PATCH，跟 package.json 同步：
-        // 2.12.0 → 21200，2.12.1 → 21201，2.13.0 → 21300，2.14.0 → 21400，2.14.1 → 21401，
-        // 2.14.2 → 21402，2.14.3 → 21403，2.14.4 → 21404，2.14.5 → 21405，
-        // 2.14.6 → 21406，2.14.7 → 21407，2.14.8 → 21408，2.14.9 → 21409，
-        // 2.14.10 → 21410，2.14.11 → 21411，2.14.12 → 21412，2.14.13 → 21413，
-        // 2.14.14 → 21414，2.14.15 → 21415（v2.14.13/14 因 Android booting bug
-        // 已被 git revert 回退至 v2.14.12 代码状态，仅版本号继续往前走以满足
-        // GitHub Release 不能复用 tag 的硬约束），2.14.16 → 21416（在 v2.14.15
-        // baseline 上重做 v2.14.13/14 的 chatActions LLM scheduleTrigger
-        // fall-through 修复，单文件低风险，作为分组重做的第 1 组），
-        // 2.14.17 → 21417（聚合 release：v2.14.13/14 剩余的 IME / Embedding /
-        // Android exact alarm 三组 + 新设计的 D 方案 LLM 兜底，按组拆 5 个独立
-        // commit 便于 booting 时 git revert 二分定位）。
-        // 2.14.18 → 21418（v2.14.17 装机 booting 排查：revert c4 ac67aaf
-        // Embedding 重构 — 改 ESM 依赖图最有可能在 Capacitor cold-start 触发
-        // module-load-time 死锁。其他 4 commit c1/c2/c3/c5 全部保留。装机
-        // 仍 booting 则下次再 revert c5 60b121e Android exact alarm 二分），
-        // 2.14.19 → 21419（splash 一闪而过 + Embedding issue 1/2 一发解决：
-        // c1 index.html IIFE 加 Capacitor 检测一并 remove ka-boot-splash 文字层；
-        // c2 styles.xml windowBackground 改 @color/ic_launcher_background
-        // (#f9f7f2 跟 Web 同色)，OS launch → WebView → React mount 全程纯色；
-        // c3 CloudEmbeddingForm 模型字段三元渲染 + custom 切换时 model=''
-        // 修自定义模型 ID 被下拉框覆盖；c4 CloudEmbeddingForm mount selfheal
-        // — store 是 default-shaped 但 LS 有真值时拉回，修配置不同步。
-        // 全部不动 ESM 依赖图，0 booting 风险，仍按 5 commit 拆分便于二分），
-        // 2.14.20 → 21420（Android 输入链路 hotfix：custom embedding model
-        // DOM 兜底落盘；聊天发送改用可见 DOM 值避免纯中文按钮灰/文本截断；
-        // captureInput=false 验证蓝牙键盘中文；消息列表 bottom clearance；
-        // reminder 支持中文数字 + 主模型自然语言理解也能触发 D-fallback 创建任务），
-        // 2.14.21 → 21421（Android 后台提醒 hotfix：收窄消息列表底部留白；
-        // AlarmManager call 分支改 full-screen notification；IncomingCallActivity
-        // 自己播放用户配置铃声 + 长震动；APP 入口主动创建 notification channels
-        // 并请求通知权限，避免后台主动消息静默失败）。
-        // 2.14.22 → 21422（OEM 权限体检与转圈修复：snapshot 去除副作用 +
-        // 加 timeout/unknown 降级，避免转圈不结束；新增 KumikoVendorPermissionHelper
-        // + Manifest queries 让设置页能检测并 deep-link 小米 / 华为 / 三星 /
-        // OPPO / vivo / OnePlus / realme / 荣耀 各家自启动 / 锁屏 / 受保护
-        // 应用 / 永不休眠 / 后台高耗电 设置页；MIUI Show on lock screen
-        // best-effort 反射检测；测试按钮加 6s 超时 + 5s/3s 退后台倒计时
-        // 提示，作为 OEM 层唯一可信验证）。
-        // 2.14.23 → 21423（提醒可达性深度改造：消息发送失败 popover
-        // 改为乐观更新 + busy-state；提醒管道加 D-fallback 结构化日志、
-        // 全角数字归一化、空 event 兜底、JSON 字符串 boolean/number 容忍；
-        // 新增 KumikoBootReceiver/KumikoAlarmGuardianService/
-        // KumikoConnectionService 自管理 Telecom 通道 +
-        // SharedPreferences ledger 持久化以实现重启后重新调度；
-        // IncomingCallActivity ACCEPT 入队，JS drainer 在 overlay
-        // 自动接听；Xiaomi/HyperOS T-5min 预热缓解漂移；新增首启
-        // PermissionOnboardingWizard 8 步引导 + 60 秒锁屏深度自检；
-        // AppChatHeader 加可靠性体检小灯）。
-        // 2.14.30 → 21430（聊天尾部锚定 + 反复读重构：移除 stuck-未读
-        // 旋转图标改为纯文本"未读"；发送中倒计时挪到最近气泡正下方紧贴；
-        // 列表底部 flex justify-end 让短对话紧贴 footer 黄线；prompt 端
-        // 加 [User_Latest_Line] 锚字段，重写 Fact_Check 为 4 类决策、
-        // 解耦 Kumiko_Thought、彻底移除 shortFollowUpBlock 让模型自看
-        // 上下文判断、proactiveReplyBlock 概率 38%→25% 并要求"先答本轮"；
-        // 日记验证器 RAG warn 静默化）。
-        // 2.14.31 → 21431（三件套工具调用强化：search_internet
-        // / view_historical_image 描述加压 + 新增 recall_memory tool
-        // 让模型主动召回 RAG；Fact_Check 拆为 external/chat_history/
-        // image_visual 三类分支并按"工具可用 → MUST 调；不可用 → 老实
-        // 承认"分叉；新增短回应延续规则与通用 anti-fake 护栏；
-        // systemProtocolTrigger 末尾加第 6 条通用 Tool-Use Protocol；
-        // AppMessageList 热修：顶部对齐为默认，仅"已在底部"时跟随
-        // 新消息，不再因 isListening 跳转）。
-        // CI workflow（A1.5）会以 package.json 为权威源覆盖这两个值。
-        versionCode 21431
-        versionName "2.14.31"
+        // Public version restarts at 0.0.0; the internal install sequence keeps increasing.
+        // Canonical versionCode: package.json androidVersionCode (legacy maximum: 21431).
+        versionCode 21432
+        versionName "0.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.

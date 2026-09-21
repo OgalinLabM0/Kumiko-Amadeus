@@ -528,6 +528,21 @@ function emitAppUpdateState(patch = {}) {
 
 // Flow ──────────────────────────────────────────────────────────────
 
+// The repository still contains legacy 2.x releases whose semver is
+// greater than the restarted 0.x line. Revisit this rule before a new 2.x.
+function isLegacyRestartUpdate(version) {
+  return /^v?0\./.test(app.getVersion()) && /^v?2\./.test(version || '');
+}
+
+function ignoreLegacyRestartUpdate(version) {
+  if (!isLegacyRestartUpdate(version)) return false;
+  emitAppUpdateState({
+    status: 'not-available', availableVersion: null, releaseDate: null,
+    progressPercent: 0, transferred: 0, total: 0, bytesPerSecond: 0, error: null,
+  });
+  return true;
+}
+
 async function checkForAppUpdates(trigger = 'manual') {
   if (!app.isPackaged || isDev) {
     const reason = 'Automatic updates are only available in packaged desktop builds.';
@@ -555,7 +570,7 @@ async function checkForAppUpdates(trigger = 'manual') {
     .then((result) => ({
       success: true,
       trigger,
-      updateInfo: result?.updateInfo || null,
+      updateInfo: isLegacyRestartUpdate(result?.updateInfo?.version) ? null : result?.updateInfo || null,
     }))
     .catch((error) => {
       const message = stringifyUpdateError(error);
@@ -570,6 +585,9 @@ async function checkForAppUpdates(trigger = 'manual') {
 }
 
 async function downloadAppUpdate() {
+  if (ignoreLegacyRestartUpdate(appUpdateState.availableVersion)) {
+    return { success: false, error: 'Legacy 2.x updates are excluded from the restarted 0.x line.' };
+  }
   if (!app.isPackaged || isDev) {
     const reason = 'Automatic updates are only available in packaged desktop builds.';
     emitAppUpdateState({ status: 'unsupported', error: reason });
@@ -678,6 +696,9 @@ async function cancelAppUpdateDownload() {
 }
 
 async function quitAndInstallAppUpdate() {
+  if (ignoreLegacyRestartUpdate(appUpdateState.availableVersion)) {
+    return { success: false, error: 'Legacy 2.x updates are excluded from the restarted 0.x line.' };
+  }
   if (appUpdateState.status !== 'downloaded') {
     return { success: false, error: 'No downloaded update is ready to install.' };
   }
@@ -822,6 +843,7 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on('update-available', (info) => {
+    if (ignoreLegacyRestartUpdate(info?.version)) return;
     console.log('[UPDATER] Update available:', info?.version);
     emitAppUpdateState({
       status: 'available',
@@ -861,6 +883,7 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on('update-downloaded', (info) => {
+    if (ignoreLegacyRestartUpdate(info?.version || appUpdateState.availableVersion)) return;
     console.log('[UPDATER] Update downloaded:', info?.version);
     emitAppUpdateState({
       status: 'downloaded',

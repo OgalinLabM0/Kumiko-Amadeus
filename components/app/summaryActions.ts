@@ -1,7 +1,10 @@
 import React from 'react';
 import { useAppStore } from '../../store';
+import { db } from '../../services/db';
+import { SUMMARY_ARCHIVE_STATE_STORAGE_KEY } from './appConstants';
 import type {
   Message,
+  PendingSummaryArchive,
   SummaryArchiveState,
   SummaryBoundaryReason,
   SummarySegmentMetadata,
@@ -66,6 +69,41 @@ export interface TriggerAutoSummaryParams {
   retryCount?: number;
 }
 
+const buildPendingArchiveKey = (segmentMessages: Message[]) => {
+  const first = segmentMessages[0];
+  const last = segmentMessages[segmentMessages.length - 1];
+  return `pending-summary-${first?.id || first?.timestamp || 'unknown'}-${last?.id || last?.timestamp || 'unknown'}`;
+};
+
+const isPendingArchiveForSegment = (
+  pendingArchive: PendingSummaryArchive | null | undefined,
+  segmentMessages: Message[],
+) => {
+  if (!pendingArchive || segmentMessages.length === 0) return false;
+  // A hard-limit retry may include a carryover tail that starts before the
+  // normal active segment. On restart, a manual retry begins at the normal
+  // cursor, so match the original boundary end rather than requiring the
+  // carryover message to be present in this fresh slice.
+  return !!pendingArchive.segmentEndMessageId
+    && segmentMessages.some(message => message.id === pendingArchive.segmentEndMessageId);
+};
+
+const persistPendingArchive = (
+  state: ReturnType<typeof useAppStore.getState>,
+  pendingArchive: PendingSummaryArchive,
+  currentCount: number,
+) => {
+  const previous = useAppStore.getState().summaryArchiveState;
+  const nextArchiveState = normalizeSummaryArchiveState({
+    ...previous,
+    pendingArchive,
+  }, Math.max(currentCount, previous.segmentStartTurn));
+  return db.setVal(SUMMARY_ARCHIVE_STATE_STORAGE_KEY, nextArchiveState).then(() => {
+    state.setSummaryArchiveState(nextArchiveState);
+    return nextArchiveState;
+  });
+};
+
 // ---------------------------------------------------------------------------
 // triggerAutoSummary
 // ---------------------------------------------------------------------------
@@ -95,7 +133,7 @@ export async function triggerAutoSummary(
   const locationConfig = state.locationConfig;
   const language = state.language;
 
-  if (refs.summaryRunningRef.current && retryCount === 0) {
+  if (refs.summaryRunningRef.current) {
     console.warn('[AUTO-SUMMARY] Already running, skipping concurrent trigger.');
     return;
   }
@@ -109,50 +147,86 @@ export async function triggerAutoSummary(
       return;
     }
 
-    const start = segmentMessages[0].timestamp;
-    const summaryCompletedAt = Date.now();
-    const segmentEndTime = segmentMessages[segmentMessages.length - 1].timestamp;
-    const end = Math.max(segmentEndTime, summaryCompletedAt);
-
-    const startDate = new Date(start);
-    const endDate = new Date(end);
-
-    const getJSTParts = (d: Date) => {
-      const formatter = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Asia/Tokyo',
-        year: 'numeric', month: '2-digit', day: '2-digit',
-        hour: '2-digit', minute: '2-digit', hour12: false,
-      });
-      const parts = formatter.formatToParts(d);
-      const p: any = {};
-      parts.forEach(part => p[part.type] = part.value);
-      return p;
-    };
-
-    const s = getJSTParts(startDate);
-    const e = getJSTParts(endDate);
-
-    let timeRangeStr = '';
-    if (s.year === e.year && s.month === e.month && s.day === e.day) {
-      timeRangeStr = `${s.year}/${s.month}/${s.day} ${s.hour}:${s.minute} - ${e.hour}:${e.minute} (JST)`;
-    } else {
-      timeRangeStr = `${s.year}/${s.month}/${s.day} ${s.hour}:${s.minute} - ${e.year}/${e.month}/${e.day} ${e.hour}:${e.minute} (JST)`;
+    const liveArchiveState = useAppStore.getState().summaryArchiveState;
+    if (retryCount > 0 && !liveArchiveState.pendingArchive && (
+      liveArchiveState.segmentStartTurn !== archiveState.segmentStartTurn ||
+      liveArchiveState.segmentStartMessageId !== archiveState.segmentStartMessageId
+    )) {
+      console.info('[AUTO-SUMMARY] Discarding stale retry after archive state advanced.');
+      return;
+    }
+    if (retryCount > 0 && liveArchiveState.pendingArchive && !isPendingArchiveForSegment(liveArchiveState.pendingArchive, segmentMessages)) {
+      console.info('[AUTO-SUMMARY] Discarding stale retry for a different pending archive.');
+      return;
     }
 
-    const { diary: newSummary, notebook: newNotebook, chunks } = await summarizeConversation(
-      segmentMessages,
-      currentMemory,
-      timeRangeStr,
-      kumikoNotebook,
-      locationConfig,
-      language,
-      {
+    let pendingArchive = isPendingArchiveForSegment(liveArchiveState.pendingArchive, segmentMessages)
+      ? liveArchiveState.pendingArchive!
+      : null;
+
+    if (!pendingArchive) {
+      const start = segmentMessages[0].timestamp;
+      const summaryCompletedAt = Date.now();
+      const segmentEndTime = segmentMessages[segmentMessages.length - 1].timestamp;
+      const end = Math.max(segmentEndTime, summaryCompletedAt);
+
+      const getJSTParts = (d: Date) => {
+        const formatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'Asia/Tokyo',
+          year: 'numeric', month: '2-digit', day: '2-digit',
+          hour: '2-digit', minute: '2-digit', hour12: false,
+        });
+        const parts = formatter.formatToParts(d);
+        const p: Record<string, string> = {};
+        parts.forEach(part => p[part.type] = part.value);
+        return p;
+      };
+
+      const s = getJSTParts(new Date(start));
+      const e = getJSTParts(new Date(end));
+      const timeRangeStr = s.year === e.year && s.month === e.month && s.day === e.day
+        ? `${s.year}/${s.month}/${s.day} ${s.hour}:${s.minute} - ${e.hour}:${e.minute} (JST)`
+        : `${s.year}/${s.month}/${s.day} ${s.hour}:${s.minute} - ${e.year}/${e.month}/${e.day} ${e.hour}:${e.minute} (JST)`;
+
+      const { diary, notebook, chunks } = await summarizeConversation(
+        segmentMessages,
+        currentMemory,
+        timeRangeStr,
+        kumikoNotebook,
+        locationConfig,
+        language,
+        {
+          reason,
+          isComplete,
+          isContinuation,
+          turnsInSegment,
+        },
+      );
+
+      pendingArchive = {
+        archiveKey: buildPendingArchiveKey(segmentMessages),
+        segmentStartMessageId: segmentMessages[0]?.id || null,
+        segmentEndMessageId: segmentMessages[segmentMessages.length - 1]?.id || null,
+        segmentStartTime: start,
+        segmentEndTime,
+        summaryCompletedTime: summaryCompletedAt,
+        timeRangeStr,
+        summaryText: diary,
+        notebook,
+        chunks: Array.from(new Set(chunks.filter(chunk => typeof chunk === 'string' && chunk.trim()).map(chunk => chunk.trim()))),
+        savedChunkPayloads: [],
         reason,
         isComplete,
-        isContinuation,
-        turnsInSegment,
-      },
-    );
+        nextSegmentStartTurn,
+        nextSegmentStartMessageId,
+      };
+      // Persist the retry record before touching RAG. This is not a
+      // cross-database transaction, but it pins the generated facts and
+      // original cursor for ordinary retries and restarts.
+      await persistPendingArchive(state, pendingArchive, currentCount);
+    }
+
+    const { summaryText: newSummary, notebook: newNotebook, chunks, timeRangeStr } = pendingArchive;
 
     console.log('[AUTO-SUMMARY] Generated New Core Memory:', newSummary);
     console.log('[AUTO-SUMMARY] Updated Notebook:', newNotebook);
@@ -160,78 +234,85 @@ export async function triggerAutoSummary(
 
     const summarySegmentMetadata: SummarySegmentMetadata = {
       segmentId: buildSummarySegmentId(
-        start,
-        archiveState.segmentStartMessageId || segmentMessages[0]?.id || null,
-        summaryCompletedAt,
+        pendingArchive.segmentStartTime,
+        pendingArchive.segmentStartMessageId || segmentMessages[0]?.id || null,
+        pendingArchive.summaryCompletedTime,
       ),
-      segmentStartTime: start,
-      segmentEndTime,
-      summaryCompletedTime: summaryCompletedAt,
-      isComplete,
+      segmentStartTime: pendingArchive.segmentStartTime,
+      segmentEndTime: pendingArchive.segmentEndTime,
+      summaryCompletedTime: pendingArchive.summaryCompletedTime,
+      isComplete: pendingArchive.isComplete,
       topicLabel: helpers.deriveSummaryTopicLabel(chunks, segmentMessages, newSummary),
       summaryText: newSummary,
     };
-    const updatedRecentSummarySegments = appendRecentSummarySegment(archiveState, summarySegmentMetadata);
+    const archiveStateForCommit = useAppStore.getState().summaryArchiveState;
+    const updatedRecentSummarySegments = appendRecentSummarySegment(archiveStateForCommit, summarySegmentMetadata);
     const nextSummaryBuffer = buildRecentSummaryBuffer(updatedRecentSummarySegments, newSummary);
-
-    if (nextSummaryBuffer !== currentMemory) {
-      state.setCoreMemory(nextSummaryBuffer);
-    }
 
     if (backupConfig.ragEnabled && chunks && chunks.length > 0) {
       state.setRagStatus('INDEXING');
       console.log(`[RAG] Archiving ${chunks.length} memory chunks to Local DB...`);
 
-      try {
-        for (const chunk of chunks) {
-          if (typeof chunk === 'string' && chunk.trim().length > 0) {
-            const ragPayload = `【MEMORY CHUNK (${timeRangeStr})】\n${chunk}`;
-            const memoryDecision = evaluateRagMemoryCandidate(ragPayload, 'memory_chunk');
-            await saveLocalRagMemory(ragPayload, undefined, {
-              tier: mapRagDecisionTierToStorageTier(memoryDecision.tier),
-              source: 'memory_chunk',
-              score: memoryDecision.score,
-              canonicalKey: memoryDecision.canonicalKey,
-              role: 'system',
-            });
-          }
+      for (const chunk of chunks) {
+        const ragPayload = `【MEMORY CHUNK (${timeRangeStr})】\n${chunk}`;
+        if (pendingArchive.savedChunkPayloads.includes(ragPayload)) continue;
+
+        const memoryDecision = evaluateRagMemoryCandidate(ragPayload, 'memory_chunk');
+        try {
+          await saveLocalRagMemory(ragPayload, undefined, {
+            tier: mapRagDecisionTierToStorageTier(memoryDecision.tier),
+            source: 'memory_chunk',
+            score: memoryDecision.score,
+            canonicalKey: memoryDecision.canonicalKey,
+            role: 'system',
+          });
+        } catch (ragErr) {
+          state.setRagStatus('ERROR');
+          throw new Error(`Failed to archive memory chunk: ${ragErr instanceof Error ? ragErr.message : String(ragErr)}`);
         }
-        console.log('[RAG] Memory Chunks Archived Successfully.');
-        state.setRagStatus('IDLE');
-      } catch (ragErr) {
-        console.warn('[RAG] Failed to archive memory chunks.', ragErr);
-        state.setRagStatus('ERROR');
+
+        pendingArchive = {
+          ...pendingArchive,
+          savedChunkPayloads: [...pendingArchive.savedChunkPayloads, ragPayload],
+        };
+        await persistPendingArchive(state, pendingArchive, currentCount);
       }
+      console.log('[RAG] Memory Chunks Archived Successfully.');
+      state.setRagStatus('IDLE');
     }
 
-    if (newNotebook !== kumikoNotebook) {
-      state.setKumikoNotebook(newNotebook);
-    }
-
-    const continuationCarryover = reason === 'hard_limit'
+    const continuationCarryover = pendingArchive.reason === 'hard_limit'
       ? getSummaryContinuationCarryoverState(segmentMessages)
       : {
           carryoverStartMessageId: null,
           carryoverEndMessageId: null,
         };
 
-    state.setSummaryArchiveState(
-      normalizeSummaryArchiveState({
-        segmentStartTurn: nextSegmentStartTurn,
-        segmentStartMessageId: nextSegmentStartMessageId,
+    const committedArchiveState = normalizeSummaryArchiveState({
+        segmentStartTurn: pendingArchive.nextSegmentStartTurn,
+        segmentStartMessageId: pendingArchive.nextSegmentStartMessageId,
         activeSegmentId: buildSummarySegmentId(
           segmentMessages[Math.max(0, segmentMessages.length - 1)]?.timestamp ?? Date.now(),
-          nextSegmentStartMessageId,
+          pendingArchive.nextSegmentStartMessageId,
           Date.now(),
         ),
         carryoverStartMessageId: continuationCarryover.carryoverStartMessageId,
         carryoverEndMessageId: continuationCarryover.carryoverEndMessageId,
         pendingSinceTurn: null,
-        lastBoundaryReason: reason,
+        lastBoundaryReason: pendingArchive.reason,
         lastBoundaryAt: Date.now(),
         recentSummarySegments: updatedRecentSummarySegments,
-      }, nextSegmentStartTurn),
-    );
+        pendingArchive: null,
+      }, pendingArchive.nextSegmentStartTurn);
+
+    await db.transaction('rw', db.keyval, async () => {
+      await db.keyval.put({ key: 'kumiko_core_memory', value: nextSummaryBuffer });
+      await db.keyval.put({ key: 'kumiko_notebook', value: newNotebook });
+      await db.keyval.put({ key: SUMMARY_ARCHIVE_STATE_STORAGE_KEY, value: committedArchiveState });
+    });
+    if (nextSummaryBuffer !== currentMemory) state.setCoreMemory(nextSummaryBuffer);
+    if (newNotebook !== kumikoNotebook) state.setKumikoNotebook(newNotebook);
+    state.setSummaryArchiveState(committedArchiveState);
   } catch (err) {
     console.error(`[AUTO-SUMMARY] Process Failed (attempt ${retryCount + 1}/3):`, err);
     if (backupConfig.ragEnabled) state.setRagStatus('ERROR');

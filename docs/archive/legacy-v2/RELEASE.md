@@ -1,3 +1,5 @@
+> 历史档案：保留当时的描述；旧PWA、路径和阶段状态可能已失效。当前入口见 [文档目录](../../README.md)。
+
 # Release Playbook
 
 This document is the single source of truth for cutting a new release of
@@ -139,9 +141,9 @@ their existing signing chain.
 
 | Channel | Workflow | Runs on | Publishes |
 | --- | --- | --- | --- |
-| Linux AppImage | [.github/workflows/linux-appimage.yml](../.github/workflows/linux-appimage.yml) | `ubuntu-24.04` (x64) + `ubuntu-24.04-arm` (arm64) | `Kumiko-Amadeus-x86_64.AppImage`, `Kumiko-Amadeus-arm64.AppImage`, `latest-linux.yml`, `latest-linux-arm64.yml`, `kumiko-assets.zip` |
-| Windows NSIS | [.github/workflows/windows-release.yml](../.github/workflows/windows-release.yml) | `windows-latest` (x64) + `windows-11-arm` (arm64) | `Kumiko-Amadeus-Setup-x64-<version>.exe`, `Kumiko-Amadeus-Setup-arm64-<version>.exe`, `latest.yml`, `latest-arm64.yml` |
-| iOS Capacitor bootstrap | [.github/workflows/ios-cap-bootstrap.yml](../.github/workflows/ios-cap-bootstrap.yml) | `macos-latest` | `ios/` project folder as artifact only; **not a user-facing release** |
+| Linux AppImage | [.github/workflows/linux-appimage.yml](../../../.github/workflows/linux-appimage.yml) | `ubuntu-24.04` (x64) + `ubuntu-24.04-arm` (arm64) | `Kumiko-Amadeus-x86_64.AppImage`, `Kumiko-Amadeus-arm64.AppImage`, `latest-linux.yml`, `latest-linux-arm64.yml`, `kumiko-assets.zip` |
+| Windows NSIS | [.github/workflows/windows-release.yml](../../../.github/workflows/windows-release.yml) | `windows-latest` (x64) + `windows-11-arm` (arm64) | `Kumiko-Amadeus-Setup-x64-<version>.exe`, `Kumiko-Amadeus-Setup-arm64-<version>.exe`, `latest.yml`, `latest-arm64.yml` |
+| iOS Capacitor bootstrap | [.github/workflows/ios-cap-bootstrap.yml](../../../.github/workflows/ios-cap-bootstrap.yml) | `macos-latest` | `ios/` project folder as artifact only; **not a user-facing release** |
 
 The Linux x64 matrix job is the **single owner** of `kumiko-assets.zip`
 on the release. Windows workflow does not upload it. This avoids four

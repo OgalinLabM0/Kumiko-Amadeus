@@ -151,7 +151,7 @@ D:\Kumiko-Amadeus\resources\models\bge-m3-onnx\model_int8.onnx
 npm run desktop:build
 ```
 
-完成后主要看 `release/` 目录，里面有这 5 个产物（自 v2.14.0 起 `differentialPackage: false`，不再生成 `.blockmap`）：
+完成后主要看 `release/` 目录，主要产物如下；当前 `differentialPackage: true`，还会生成配套 `.blockmap` 差分更新文件。旧成品归档到 `artifacts/installers/<轨道>/<版本>/<平台架构>/`。
 
 ```text
 release/

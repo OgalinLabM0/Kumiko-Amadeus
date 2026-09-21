@@ -1,3 +1,5 @@
+> 历史档案：保留当时的描述；旧PWA、路径和阶段状态可能已失效。当前入口见 [文档目录](../../README.md)。
+
 # 手机端功能与数据一致性参考 (Mobile Parity Reference)
 
 本文是 Kumiko·Amadeus 手机端（PWA）的 **功能与数据层面** 的参考手册。
@@ -10,12 +12,12 @@ Phase 1–5 全部交付完成后，这份文档回答两个问题：
 
 | 文档 | 主题 |
 |------|------|
-| [mobile-remote-access.md](./mobile-remote-access.md) | 传输层架构：Fastify / WebSocket / Tailscale / cookie / 配对协议 |
-| [mobile-setup-guide.md](./mobile-setup-guide.md) | 终端用户安装教程：Tailscale 怎么装、手机怎么连 |
+| [mobile-remote-access.md](mobile-remote-access.md) | 传输层架构：Fastify / WebSocket / Tailscale / cookie / 配对协议 |
+| [mobile-setup-guide.md](../../mobile-setup-guide.md) | 终端用户安装教程：Tailscale 怎么装、手机怎么连 |
 | **本文件** | **功能全量对照、文件管理、数据流全景、物理限制** |
 
-底层实现细节请去 [mobile-remote-access.md](./mobile-remote-access.md) 和
-[backup-architecture.md](./backup-architecture.md) / [rag-architecture.md](./rag-architecture.md)
+底层实现细节请去 [mobile-remote-access.md](mobile-remote-access.md) 和
+[backup-architecture.md](../../architecture/backup-architecture.md) / [rag-architecture.md](../../architecture/rag-architecture.md)
 查看，本文只在必要时链过去。
 
 ---
@@ -52,17 +54,17 @@ flowchart LR
 **各步骤对应代码**：
 
 1. PC 侧设置面板 → Mobile Access → 启动服务。
-   入口：[electron/server/fastify-server.cjs](../electron/server/fastify-server.cjs) 的 `start()`。
-2. PC Toast 上显示一次性 token（详见 [mobile-remote-access.md](./mobile-remote-access.md)）。
+   入口：[electron/server/fastify-server.cjs](../../../electron/server/fastify-server.cjs) 的 `start()`。
+2. PC Toast 上显示一次性 token（详见 [mobile-remote-access.md](mobile-remote-access.md)）。
 3. 手机浏览器访问 `https://<Tailscale MagicDNS>:<port>/`。@fastify/static
    返回 PWA 的 `dist/index.html`。
 4. iOS Safari → 分享 → 添加到主屏幕；Android Chrome → 菜单 → 安装。
-   manifest 配置在 [vite.config.ts](../vite.config.ts)。
-5. 手机粘贴 token，[components/MobilePairingGate.tsx](../components/MobilePairingGate.tsx)
+   manifest 配置在 [vite.config.ts](../../../vite.config.ts)。
+5. 手机粘贴 token，[components/MobilePairingGate.tsx](../../../components/MobilePairingGate.tsx)
    发 `POST /api/auth/pair`，PC 下发 HttpOnly session cookie。
 6. 配对成功那一瞬间（iOS 16.4+ 强制要用户手势）立刻 `ensurePushSubscription()`
    申请通知权限并 `pushManager.subscribe()`。
-   实现在 [services/pushSubscriptionService.ts](../services/pushSubscriptionService.ts)。
+   实现在 [services/pushSubscriptionService.ts](../../../services/pushSubscriptionService.ts)。
 7. `MobilePairingGate` 依次调 `bootstrap:ai-config`（拉 API Key / TTS 配置 /
    主题到 `localStorage`）+ `bootstrap:snapshot`（PC Dexie 全量表拉到手机本地
    IndexedDB），期间显示 `HydratingView`。`sessionStorage` 打标避免同一会话
@@ -85,10 +87,10 @@ flowchart LR
 
 | 功能 | 状态 | 实现路径 |
 |------|------|---------|
-| 文字消息发送 | 一致 | 手机调 [components/app/mobileChatSend.ts](../components/app/mobileChatSend.ts) → `POST /api/ipc/chat` → PC `executeSendCore` |
+| 文字消息发送 | 一致 | 手机调 [components/app/mobileChatSend.ts](../../../components/app/mobileChatSend.ts) → `POST /api/ipc/chat` → PC `executeSendCore` |
 | LLM 调用（Gemini / OpenAI 等） | 一致 | **全部在 PC 执行**，手机只按按钮 |
-| 消息实时到达 | 一致 | [components/app/useMobileBroadcaster.ts](../components/app/useMobileBroadcaster.ts) → WebSocket → [components/app/useMobileMessageSync.ts](../components/app/useMobileMessageSync.ts) |
-| 长按 / 右键菜单 | 一致 | [hooks/useLongPress.ts](../hooks/useLongPress.ts) |
+| 消息实时到达 | 一致 | [components/app/useMobileBroadcaster.ts](../../../components/app/useMobileBroadcaster.ts) → WebSocket → [components/app/useMobileMessageSync.ts](../../../components/app/useMobileMessageSync.ts) |
+| 长按 / 右键菜单 | 一致 | [hooks/useLongPress.ts](../../../hooks/useLongPress.ts) |
 | 编辑 / 复制 / 删除 / 隐藏 / 置顶 / 引用 / 重发 | 一致 | `ChatBubble` + Zustand actions |
 | 图片发送 | 一致 | 手机 base64 上传 → PC `images:save` 落 `userData/images/` |
 | 图片查看（pinch / swipe） | 一致 | Framer Motion 在 `ImageViewer` |
@@ -100,7 +102,7 @@ flowchart LR
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
-| RAG 搜索 | 一致 | `rag:search` 在 [services/httpApi.ts](../services/httpApi.ts) 的 `PWA_ALLOWED_CHANNELS` |
+| RAG 搜索 | 一致 | `rag:search` 在 [services/httpApi.ts](../../../services/httpApi.ts) 的 `PWA_ALLOWED_CHANNELS` |
 | RAG 重建 | 一致 | `rag:rebuild:start` + `rag:rebuild:*` 进度事件通过 WS 桥接到手机 |
 | RAG 嵌入 / 清空 / 同步 / 恢复 | 一致 | IPC 白名单全部开放 |
 | Life Stream 自动生成 | 一致 | PC 后台线程，消息同步到手机 |
@@ -122,7 +124,7 @@ flowchart LR
 
 | 功能 | 状态 | 说明 |
 |------|------|------|
-| 来电全屏 UI | 一致 | [components/VoiceCallOverlay.tsx](../components/VoiceCallOverlay.tsx) + `call:state` WS 广播 |
+| 来电全屏 UI | 一致 | [components/VoiceCallOverlay.tsx](../../../components/VoiceCallOverlay.tsx) + `call:state` WS 广播 |
 | 接听 / 拒听 / 关闭 | 一致 | 手机按钮 → `POST /api/ipc/call:action` → PC 调真实闭包 |
 | 自定义铃声播放 | 一致 | `GET /media/ringtone`（Phase 5D 新增） |
 | 内置铃声 01–08 | 一致 | `/ringtones/0X.mp3` 静态 |
@@ -140,7 +142,7 @@ flowchart LR
 
 VAPID 密钥持久化：`userData/push/vapid.json`。
 订阅列表：`userData/push/subscriptions.json`（410 Gone 自动清理）。
-实现：[electron/server/push-notifications.cjs](../electron/server/push-notifications.cjs)。
+实现：[electron/server/push-notifications.cjs](../../../electron/server/push-notifications.cjs)。
 
 ### 3.6 备份 / 恢复
 
@@ -150,14 +152,14 @@ VAPID 密钥持久化：`userData/push/vapid.json`。
 | 手动导入 ZIP / JSON | 一致 | 手机 `<input type="file">` 取字节 → `POST /api/backup/import` → PC 解包 → WS 广播 |
 | 自动备份进度 | 一致 | `app:auto-zip-progress` 通过 WS 实时到手机 Toast |
 | 备份文件保存到用户选择位置 | 一致 | 手机走浏览器下载对话框（系统原生） |
-| AuthScreen / SettingsPanel 的 LOCAL 备份槽 | **Phase 6 打通** | 手机通过 [components/MobileRemoteFileBrowser.tsx](../components/MobileRemoteFileBrowser.tsx) 浏览 PC 的 `mobileBrowseRoot`，选中 / 新建的 `.json` 文件直接由 `backup:read-desktop-file` / `backup:write-desktop-file` 在 PC 上读写，无需用户去动电脑。详见第 9 节。 |
+| AuthScreen / SettingsPanel 的 LOCAL 备份槽 | **Phase 6 打通** | 手机通过 [components/MobileRemoteFileBrowser.tsx](../../../components/MobileRemoteFileBrowser.tsx) 浏览 PC 的 `mobileBrowseRoot`，选中 / 新建的 `.json` 文件直接由 `backup:read-desktop-file` / `backup:write-desktop-file` 在 PC 上读写，无需用户去动电脑。详见第 9 节。 |
 | 桌面端切换 LOCAL 备份文件 | 一致 → **广播到所有手机** | `useMobileBroadcaster` 订阅 `connectedFileName`，一旦桌面改变就发 `backup:desktop-path-changed` 到所有手机，手机 UI 自动 mirror |
 
-详见 [backup-architecture.md](./backup-architecture.md)。
+详见 [backup-architecture.md](../../architecture/backup-architecture.md)。
 
 ### 3.7 设置面板
 
-设置面板全部 15+ 分区使用同一份 React 代码（[components/SettingsPanel.tsx](../components/SettingsPanel.tsx)
+设置面板全部 15+ 分区使用同一份 React 代码（[components/SettingsPanel.tsx](../../../components/SettingsPanel.tsx)
 + `components/settings/*`），Phase 4A/B 做了响应式改造（全屏化、触控目标、
 安全区），在手机上完整可用：
 
@@ -200,8 +202,8 @@ VAPID 密钥持久化：`userData/push/vapid.json`。
 | Push 订阅表 | `userData/push/subscriptions.json` | 手机仅通过 subscribe / unsubscribe | 不缓存 |
 | TLS 证书（Tailscale 签） | `userData/mobile-access/*.pem` | 仅 PC 用于 HTTPS listen | 不缓存 |
 
-路径统一在 [electron/media-files.cjs](../electron/media-files.cjs)，
-HTTP 路由在 [electron/server/media-routes.cjs](../electron/server/media-routes.cjs)。
+路径统一在 [electron/media-files.cjs](../../../electron/media-files.cjs)，
+HTTP 路由在 [electron/server/media-routes.cjs](../../../electron/server/media-routes.cjs)。
 
 ### 4.2 数据库表同步
 
@@ -219,12 +221,12 @@ PC 是唯一权威数据源。手机本地 IndexedDB 只是 **冷启动加速缓
 
 手机发起的写操作（上传图片 / 保存语音 / 保存铃声 / 删除 / 设置更新 / 聊天）
 一律走 `POST /api/ipc/:channel`，body 是 JSON。二进制先 base64 编码，PC
-的 [components/app/useMobileApiProxy.ts](../components/app/useMobileApiProxy.ts)
+的 [components/app/useMobileApiProxy.ts](../../../components/app/useMobileApiProxy.ts)
 解码后转给真实的 ipcMain handler。
 
 白名单在三处必须同步：
-1. [electron/server/ipc-bridge.cjs](../electron/server/ipc-bridge.cjs) 的 `ALLOWED_CHANNELS`
-2. [services/httpApi.ts](../services/httpApi.ts) 的 `PWA_ALLOWED_CHANNELS`
+1. [electron/server/ipc-bridge.cjs](../../../electron/server/ipc-bridge.cjs) 的 `ALLOWED_CHANNELS`
+2. [services/httpApi.ts](../../../services/httpApi.ts) 的 `PWA_ALLOWED_CHANNELS`
 3. `useMobileApiProxy.ts` 的 switch + `PASSTHROUGH_CHANNELS`
 
 ---
@@ -288,7 +290,7 @@ flowchart TB
 
 ### 6.1 WebSocket 断线
 
-[services/httpApi.ts](../services/httpApi.ts) 的 `subscribeEvents` 自带：
+[services/httpApi.ts](../../../services/httpApi.ts) 的 `subscribeEvents` 自带：
 
 - 指数退避重连（1 秒 → 30 秒上限）。
 - `document.visibilitychange` 监听：手机切回前台立刻重连。
@@ -344,7 +346,7 @@ flowchart TB
 - Tailscale 账号决定 **哪些设备可以看到这台 PC**。一个用户把自己的几台手机
   都加到同一个 tailnet 就能共享这台 PC 的数据（这是他一个人的事）；不同
   用户的 tailnet 完全隔离。
-- 每台 PC 的配对 token 是一次性的 + 短期有效的（见 [mobile-remote-access.md](./mobile-remote-access.md)
+- 每台 PC 的配对 token 是一次性的 + 短期有效的（见 [mobile-remote-access.md](mobile-remote-access.md)
   的 `auth.cjs`），token 泄露也不能被复用。
 
 部署时常见问题：
@@ -373,12 +375,12 @@ Phase 6 之前，手机 PWA 会在 `App.tsx` 里用一段 `useEffect` 直接把 
 - **AUTH**：
   - **LOGIN** 步骤：本地密码 `Kumiko/0821`，纯前端逻辑，不经过 PC。
   - **SETUP** 步骤：
-    - **LOCAL 页签** → 打开 [`MobileRemoteFileBrowser`](../components/MobileRemoteFileBrowser.tsx)
+    - **LOCAL 页签** → 打开 [`MobileRemoteFileBrowser`](../../../components/MobileRemoteFileBrowser.tsx)
       浏览 PC；见下方 9.3。
     - **MANUAL 页签** → `<input type="file" accept=".json,.zip">`（iOS Safari 支持）→
       `POST /api/backup/import` 上传到 PC → PC 解包 → JSON + 图片返回给手机
       走常规 restore 流程。
-- **CONFIG**：[`AIConfigScreen`](../components/AIConfigScreen.tsx) 的"测试连接"
+- **CONFIG**：[`AIConfigScreen`](../../../components/AIConfigScreen.tsx) 的"测试连接"
   和"保存"按钮在手机上不再写自己的 `localStorage`，全部走 Part B
   的 mobile 代理（下方 9.2）。
 
@@ -404,7 +406,7 @@ sequenceDiagram
 
 关键实现点：
 
-- 新增统一写入函数 [`setAIConfig`](../services/llmCore.ts)，所有 AI 配置修改
+- 新增统一写入函数 [`setAIConfig`](../../../services/llmCore.ts)，所有 AI 配置修改
   （`SettingsPanel` / `AIConfigScreen` / `chatActions` 切换备用 Key /
   `useDevLogs` 自动恢复主 Key）都必须走这里。
 - `ai-config:update-from-mobile` / `validate-*-from-mobile` 只存在于 PC 主机，
@@ -435,15 +437,15 @@ flowchart LR
 
 相关白名单三处必须全部同步：
 
-1. [`electron/server/ipc-bridge.cjs`](../electron/server/ipc-bridge.cjs) 的
+1. [`electron/server/ipc-bridge.cjs`](../../../electron/server/ipc-bridge.cjs) 的
    `ALLOWED_CHANNELS`。
-2. [`services/httpApi.ts`](../services/httpApi.ts) 的 `PWA_ALLOWED_CHANNELS`。
-3. [`components/app/useMobileApiProxy.ts`](../components/app/useMobileApiProxy.ts)
+2. [`services/httpApi.ts`](../../../services/httpApi.ts) 的 `PWA_ALLOWED_CHANNELS`。
+3. [`components/app/useMobileApiProxy.ts`](../../../components/app/useMobileApiProxy.ts)
    的 `PASSTHROUGH_CHANNELS`。
 
 #### 9.3.1 `mobileBrowseRoot`：手机访问 PC 的边界
 
-在 [electron/mobile-fs.cjs](../electron/mobile-fs.cjs) 里定义，默认值：
+在 [electron/mobile-fs.cjs](../../../electron/mobile-fs.cjs) 里定义，默认值：
 
 ```
 默认 mobileBrowseRoot = dirname(app.getPath('userData'))
@@ -484,9 +486,9 @@ flowchart LR
 
 #### 9.3.4 `useLocalFileBackup` 的手机分支
 
-[`components/app/useLocalFileBackup.ts`](../components/app/useLocalFileBackup.ts)
+[`components/app/useLocalFileBackup.ts`](../../../components/app/useLocalFileBackup.ts)
 在 `isMobilePwa()` 为真时跳过 `showOpenFilePicker` / `pickDesktopBackupSaveFile`，
-改用新的 [`useMobileRemoteFilePicker`](../components/app/useMobileRemoteFilePicker.ts)
+改用新的 [`useMobileRemoteFilePicker`](../../../components/app/useMobileRemoteFilePicker.ts)
 hook 挂载出来的 overlay：
 
 - **Create**：拿到 `(filePath, fileName)` → `localStorage.LOCAL_BACKUP_PATH_STORAGE_KEY`
