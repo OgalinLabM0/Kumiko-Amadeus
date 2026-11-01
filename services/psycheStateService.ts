@@ -8,8 +8,8 @@
 // happens implicitly through the SLEEPING transition handling below
 // plus the diary continuity logic in lifeStreamService.
 
-import { db, PsycheStateEntity } from './db';
-import { getCurrentKumikoState, getDetailedScheduleSlot } from './kumikoStateMachine';
+import { db, PsycheStateEntity, type PsycheDriftContext } from './db';
+import { getCurrentKumikoState, getDetailedScheduleSlot, getScheduleClock, SCHEDULE_BOUNDARY_MINUTES } from './kumikoStateMachine';
 
 export const DEFAULT_PSYCHE_STATE: PsycheStateEntity = {
   id: 'current',
@@ -21,120 +21,128 @@ export const DEFAULT_PSYCHE_STATE: PsycheStateEntity = {
 
 export const getPsycheState = async (): Promise<PsycheStateEntity> => {
   const state = await db.psycheState.get('current');
-  return state || DEFAULT_PSYCHE_STATE;
+  return state || { ...DEFAULT_PSYCHE_STATE, lastUpdated: Date.now() };
+};
+
+// Hourly rates are evaluated at the historical instant, not the time the
+// client was reopened. The schedule's boundaries all fall on five-minute marks.
+const getDriftRates = (timezone: string, isHoliday: boolean, at: Date) => {
+  const currentCtx = getCurrentKumikoState(timezone, isHoliday, at);
+  const scheduleSlot = getDetailedScheduleSlot(timezone, isHoliday, at);
+  let stress = 0, energy = 0, relaxation = 0;
+  
+  // 1. Energy dynamics (schedule-aware)
+  if (currentCtx.currentState === 'SLEEPING') {
+    energy = 15;
+  } else if (currentCtx.currentState === 'RELAXING_HOME' || currentCtx.currentState === 'OUTING') {
+    energy = -2;
+  } else if (scheduleSlot.slotType === 'teaching') {
+    energy = -6;
+  } else if (scheduleSlot.slotType === 'lunch') {
+    energy = 3;
+  } else if (scheduleSlot.slotType === 'free') {
+    energy = -3;
+  } else if (scheduleSlot.slotType === 'school_prep') {
+    energy = -2;
+  } else {
+    energy = -5;
+  }
+
+  // 2. Stress dynamics (schedule-aware)
+  if (currentCtx.currentState === 'CLUB_ACTIVITIES') {
+    stress = 8;
+  } else if (scheduleSlot.slotType === 'teaching') {
+    stress = 5;
+  } else if (scheduleSlot.slotType === 'free') {
+    stress = 3;
+  } else if (scheduleSlot.slotType === 'school_prep') {
+    stress = 2;
+  } else if (scheduleSlot.slotType === 'lunch') {
+    stress = -2;
+  } else if (currentCtx.currentState === 'COMMUTING') {
+    stress = 4;
+  } else if (currentCtx.currentState === 'SLEEPING') {
+    stress = -10;
+  } else {
+    stress = -5;
+  }
+
+  if (currentCtx.currentState === 'RELAXING_HOME') relaxation = 3;
+  else if (scheduleSlot.slotType === 'teaching') relaxation = -6;
+  else if (scheduleSlot.slotType === 'lunch') relaxation = 2;
+  else if (scheduleSlot.slotType === 'free') relaxation = -3;
+  else if (scheduleSlot.slotType === 'school_prep') relaxation = -2;
+  else if (currentCtx.currentState === 'CLUB_ACTIVITIES') relaxation = -5;
+  return { stress, energy, relaxation };
+};
+
+// Reject corrupt epochs rather than walking centuries in a database transaction.
+const MAX_DRIFT_HISTORY_MS = 100 * 366 * 24 * 3_600_000;
+
+// Pure settlement shared by periodic drift and new emotional adjustments.
+// The saved cursor is authoritative; a message gap is only a legacy fallback.
+export const settlePsycheDrift = (
+  state: PsycheStateEntity,
+  now: number,
+  context: PsycheDriftContext = state.driftContext || { timezone: 'Asia/Tokyo' },
+  fallbackStart: number = now,
+): PsycheStateEntity => {
+  const validCursor = (value: unknown): value is number => typeof value === 'number'
+    && Number.isFinite(value) && value >= 0 && value <= now && now - value <= MAX_DRIFT_HISTORY_MS;
+  let cursor = validCursor(state.lastDriftAt) ? state.lastDriftAt
+    : validCursor(state.lastUpdated) ? state.lastUpdated
+      : validCursor(fallbackStart) ? fallbackStart : now;
+  let { stress, energy, relaxation } = state;
+  const regression = -Math.log(0.95);
+  const advance = (value: number, baseline: number, rate: number, hours: number) => {
+    const decay = Math.exp(-regression * hours);
+    return Math.max(0, Math.min(100, baseline + (value - baseline) * decay + rate * (1 - decay) / regression));
+  };
+  while (cursor < now) {
+    const at = new Date(cursor);
+    const clock = getScheduleClock(context.timezone, at);
+    const previousContext = state.driftContext;
+    const holiday = clock.dateStr === context.holidayDate ? context.isHoliday === true
+      : clock.dateStr === previousContext?.holidayDate ? previousContext.isHoliday === true : false;
+    const rates = getDriftRates(context.timezone, holiday, at);
+    // Jump to the next schedule boundary if the civil clock agrees. Across a
+    // DST/offset change, fall back to the five-minute grid until clocks agree.
+    const nextMinute = SCHEDULE_BOUNDARY_MINUTES.find(minute => minute > clock.minutesOfDay) ?? 1440;
+    const candidate = cursor + (nextMinute - clock.minutesOfDay) * 60_000 - (cursor % 60_000);
+    const beforeBoundary = getScheduleClock(context.timezone, new Date(candidate - 1));
+    const nextBoundary = beforeBoundary.dateStr === clock.dateStr && beforeBoundary.minutesOfDay === nextMinute - 1
+      ? candidate : (Math.floor(cursor / 300_000) + 1) * 300_000;
+    const end = Math.min(now, nextBoundary);
+    const hours = (end - cursor) / 3_600_000;
+    stress = advance(stress, DEFAULT_PSYCHE_STATE.stress, rates.stress, hours);
+    energy = advance(energy, DEFAULT_PSYCHE_STATE.energy, rates.energy, hours);
+    relaxation = advance(relaxation, DEFAULT_PSYCHE_STATE.relaxation, rates.relaxation, hours);
+    cursor = end;
+  }
+  return { ...state, stress, energy, relaxation, lastUpdated: now, lastDriftAt: now, driftContext: context };
 };
 
 export const updatePsycheState = async (
   deltaTimeMs: number,
   timezone: string,
   isHoliday: boolean,
-  weatherStr: string
+  _weatherStr: string,
 ): Promise<PsycheStateEntity> => {
-  const state = await getPsycheState();
-  const hoursPassed = deltaTimeMs / (1000 * 60 * 60);
-  
-  if (hoursPassed <= 0) return state;
-
-  let { stress, energy, relaxation } = state;
-
-  const currentCtx = getCurrentKumikoState(timezone, isHoliday);
-  const scheduleSlot = getDetailedScheduleSlot(timezone, isHoliday);
-  
-  // 1. Energy dynamics (schedule-aware)
-  if (currentCtx.currentState === 'SLEEPING') {
-    energy += hoursPassed * 15;
-  } else if (currentCtx.currentState === 'RELAXING_HOME' || currentCtx.currentState === 'OUTING') {
-    energy -= hoursPassed * 2;
-  } else if (scheduleSlot.slotType === 'teaching') {
-    energy -= hoursPassed * 6;
-  } else if (scheduleSlot.slotType === 'lunch') {
-    energy += hoursPassed * 3;
-  } else if (scheduleSlot.slotType === 'free') {
-    energy -= hoursPassed * 3;
-  } else if (scheduleSlot.slotType === 'school_prep') {
-    energy -= hoursPassed * 2;
-  } else {
-    energy -= hoursPassed * 5;
-  }
-
-  // 2. Stress dynamics (schedule-aware)
-  if (currentCtx.currentState === 'CLUB_ACTIVITIES') {
-    stress += hoursPassed * 8;
-  } else if (scheduleSlot.slotType === 'teaching') {
-    stress += hoursPassed * 5;
-  } else if (scheduleSlot.slotType === 'free') {
-    stress += hoursPassed * 3;
-  } else if (scheduleSlot.slotType === 'school_prep') {
-    stress += hoursPassed * 2;
-  } else if (scheduleSlot.slotType === 'lunch') {
-    stress -= hoursPassed * 2;
-  } else if (currentCtx.currentState === 'COMMUTING') {
-    stress += hoursPassed * 4;
-  } else if (currentCtx.currentState === 'SLEEPING') {
-    stress -= hoursPassed * 10;
-  } else {
-    stress -= hoursPassed * 5;
-  }
-
-  // Weather impact on stress
-  // P1 #21: previously this did `weatherStr.includes('雨')` on the entire ambient
-  // environment block. That block can legitimately contain the word "雨" in
-  // unrelated places (e.g. "- 昨日宇治市曾下过雨" in a historical description),
-  // which would falsely spike Kumiko's stress. We now parse specifically
-  // *Kumiko's current weather line* and only react to that condition. If we
-  // can't find a clear condition token we conservatively skip the adjustment.
-  const extractKumikoWeatherCondition = (s: string): string | null => {
-    if (!s) return null;
-    // Matches "- 久美子所在地 (日本宇治市) 当前天气: 雨, 温度 22°C..."
-    const zh = s.match(/久美子所在地[^\n]*?当前天气:\s*([^,，\n]+)/);
-    if (zh) return zh[1].trim();
-    const en = s.match(/Kumiko'?s? location[^\n]*?current weather:\s*([^,，\n]+)/i);
-    if (en) return en[1].trim();
-    return null;
-  };
-  const kumikoCondition = extractKumikoWeatherCondition(weatherStr);
-  if (kumikoCondition) {
-    if (/^(雨|雪|雷雨|Rain|Snow|Thunderstorm)$/i.test(kumikoCondition)) {
-      stress += hoursPassed * 3;
-    }
-  }
-
-  // 3. Relaxation dynamics (schedule-aware)
-  if (currentCtx.currentState === 'RELAXING_HOME') {
-    relaxation += hoursPassed * 3;
-  } else if (scheduleSlot.slotType === 'teaching') {
-    relaxation -= hoursPassed * 6;
-  } else if (scheduleSlot.slotType === 'lunch') {
-    relaxation += hoursPassed * 2;
-  } else if (scheduleSlot.slotType === 'free') {
-    relaxation -= hoursPassed * 3;
-  } else if (scheduleSlot.slotType === 'school_prep') {
-    relaxation -= hoursPassed * 2;
-  } else if (currentCtx.currentState === 'CLUB_ACTIVITIES') {
-    relaxation -= hoursPassed * 5;
-  }
-
-  // Baseline regression: gently pull toward defaults to prevent permanent extremes
-  const REGRESSION_RATE = 0.05;
-  stress += (DEFAULT_PSYCHE_STATE.stress - stress) * REGRESSION_RATE;
-  energy += (DEFAULT_PSYCHE_STATE.energy - energy) * REGRESSION_RATE;
-  relaxation += (DEFAULT_PSYCHE_STATE.relaxation - relaxation) * REGRESSION_RATE;
-
-  // Clamp values between 0 and 100
-  stress = Math.max(0, Math.min(100, stress));
-  energy = Math.max(0, Math.min(100, energy));
-  relaxation = Math.max(0, Math.min(100, relaxation));
-
-  const newState: PsycheStateEntity = {
-    id: 'current',
-    stress,
-    energy,
-    relaxation,
-    lastUpdated: Date.now()
-  };
-
-  await db.psycheState.put(newState);
-  return newState;
+  if (!Number.isFinite(deltaTimeMs) || deltaTimeMs <= 0) return getPsycheState();
+  return db.transaction('rw', db.psycheState, async () => {
+    const now = Date.now();
+    const context: PsycheDriftContext = {
+      timezone, holidayDate: getScheduleClock(timezone, new Date(now)).dateStr, isHoliday,
+    };
+    const state = await db.psycheState.get('current') || {
+      ...DEFAULT_PSYCHE_STATE, lastUpdated: now - deltaTimeMs,
+    };
+    // Weather is a current observation with no historical interval of validity;
+    // do not backdate it or make outcomes depend on the polling frequency.
+    const newState = settlePsycheDrift(state, now, context, now - deltaTimeMs);
+    await db.psycheState.put(newState);
+    return newState;
+  });
 };
 
 // --- Psyche Delta (chat / diary driven adjustments) ---
@@ -148,8 +156,10 @@ export const applyPsycheDelta = async (
   energyDelta: number,
   relaxationDelta: number,
   maxClamp: number = CHAT_DELTA_CLAMP
-): Promise<PsycheStateEntity> => {
-  const state = await getPsycheState();
+): Promise<PsycheStateEntity> => db.transaction('rw', db.psycheState, async () => {
+  const savedState = await getPsycheState();
+  const now = Date.now();
+  const state = settlePsycheDrift(savedState, now);
 
   const clamp = (v: number, limit: number) => Math.max(-limit, Math.min(limit, v));
   stressDelta = clamp(stressDelta, maxClamp);
@@ -171,11 +181,13 @@ export const applyPsycheDelta = async (
   }
 
   const newState: PsycheStateEntity = {
-    id: 'current',
+    ...state,
     stress: Math.max(0, Math.min(100, state.stress + stressDelta)),
     energy: Math.max(0, Math.min(100, state.energy + energyDelta)),
     relaxation: Math.max(0, Math.min(100, state.relaxation + relaxationDelta)),
-    lastUpdated: Date.now(),
+    lastUpdated: now,
+    // Physical time was settled first, so this cursor also includes this instant.
+    lastDriftAt: now,
     lastChatDeltaDirection: {
       stress: stressDelta,
       energy: energyDelta,
@@ -185,7 +197,7 @@ export const applyPsycheDelta = async (
 
   await db.psycheState.put(newState);
   return newState;
-};
+});
 
 export const applyDiaryPsycheDelta = async (
   stressDelta: number, energyDelta: number, relaxationDelta: number

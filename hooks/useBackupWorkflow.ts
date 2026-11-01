@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { getUserKnownLocation } from '../services/userKnownLocation';
 import {
   buildBackupData,
   validateBackupData,
@@ -125,7 +127,9 @@ export function useBackupWorkflow(params: UseBackupWorkflowParams): UseBackupWor
     dailyReminders,
   } = params;
 
+  const userKnownLocation = useLiveQuery(getUserKnownLocation, []);
   const backupData = useMemo(() => buildBackupData({
+    userKnownLocation,
     messages,
     coreMemory,
     worldBook,
@@ -146,6 +150,7 @@ export function useBackupWorkflow(params: UseBackupWorkflowParams): UseBackupWor
     defaultWorldBook: DEFAULT_WORLD_BOOK,
     localizedWorldBook: LOCALIZED_WORLD_BOOK,
   }), [
+    userKnownLocation,
     messages,
     coreMemory,
     worldBook,

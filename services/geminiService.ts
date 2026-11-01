@@ -14,9 +14,12 @@ import type { MissedReminderRecord } from "../store/slices/reminderSlice";
 import { getMoodModePrompt, getMoodBand, getMoodBandLabelLocalized } from "./moodService";
 import { getAffectionBlock, getAffectionBand, getAffectionBandLabelLocalized } from "./affectionService";
 import { callOpenAI, callAnthropic, callVisionHelper } from "./llmProviderService";
+import { runChatToolLoop, toGeminiToolParts } from "./chatToolLoop";
+import { createChatToolExecutor } from "./chatToolExecution";
 import { imageService } from "./imageService";
 import { DEFAULT_AI_CONFIG, getDefaultVisionModel, resolveTransportProvider } from "./appConfig";
 import { db } from "./db";
+import { parseResponsePsycheDelta, createResponseEventId } from './responsePsycheCandidate';
 import { getCurrentAIConfig, getGenAI, callLLMRaw } from './llmCore';
 // urlToBase64 re-exported for external consumers (see line 5); no longer used inside this file.
 import { isMemoryHistoryQueryLike } from './temporalRecallService';
@@ -28,6 +31,7 @@ import {
   type DiaryLayerPreset,
 } from '../constants/diaryLayerConfig';
 import { useAppStore } from '../store';
+import { buildUserKnownLocationContext, extractUserLocationDisclosureTag } from './userKnownLocation';
 
 // Normalization Layer: Maps loose emotion words to strict types
 const EMOTION_MAPPING: Record<string, EmotionType> = {
@@ -950,152 +954,41 @@ export const sendMessageToGemini = async (
     }
     // ------------------------------------------
 
-    let userTimeStr = "Unknown";
+    // Only Kumiko's own clock is character knowledge. User scheduling settings
+    // stay in application code; conversation or sourced memories may disclose
+    // the user's location/time naturally, without a guessed "known" flag.
+    const modelTimeZone = 'Asia/Tokyo';
     let modelTimeStr = "Unknown";
     let tomorrowInfoStr = "";
-    let userHour = 12;
     let modelHour = 12;
     let modelMinute = 0;
-
-    if (locationConfig) {
-        try {
-            const nowObj = new Date();
-            const userHourStr = nowObj.toLocaleTimeString('en-GB', { timeZone: locationConfig.userTimezone, hour: 'numeric', hour12: false, hourCycle: 'h23' });
-            userHour = parseInt(userHourStr, 10);
-            if (isNaN(userHour)) userHour = 12;
-            if (userHour === 24) userHour = 0; 
-
-            const modelTimeParts = nowObj.toLocaleTimeString('en-GB', { timeZone: locationConfig.modelTimezone, hour: '2-digit', minute: '2-digit', hour12: false, hourCycle: 'h23' }).split(':');
-            modelHour = parseInt(modelTimeParts[0], 10);
-            modelMinute = parseInt(modelTimeParts[1], 10);
-            if(isNaN(modelHour)) modelHour = 12;
-            if(isNaN(modelMinute)) modelMinute = 0;
-
-            const userOptions: Intl.DateTimeFormatOptions = { 
-                timeZone: locationConfig.userTimezone, 
-                year: 'numeric', month: '2-digit', day: '2-digit', 
-                weekday: 'short',
-                hour: '2-digit', minute: '2-digit', hour12: false,
-                timeZoneName: 'short'
-            };
-            userTimeStr = nowObj.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', userOptions);
-            
-            const modelOptions: Intl.DateTimeFormatOptions = { 
-                timeZone: locationConfig.modelTimezone, 
-                year: 'numeric', month: '2-digit', day: '2-digit', 
-                weekday: 'short',
-                hour: '2-digit', minute: '2-digit', hour12: false,
-                timeZoneName: 'short'
-            };
-            modelTimeStr = nowObj.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', modelOptions);
-
-            const tomorrowObj = new Date(nowObj);
-            tomorrowObj.setDate(tomorrowObj.getDate() + 1);
-            const tomorrowDay = tomorrowObj.toLocaleDateString('en-US', { timeZone: locationConfig.modelTimezone, weekday: 'long' });
-            const tomorrowDayJa = ['日', '月', '火', '水', '木', '金', '土'][new Date(tomorrowObj.toLocaleString('en-US', { timeZone: locationConfig.modelTimezone })).getDay()] || '?';
-            const isTomorrowWeekend = [0, 6].includes(new Date(tomorrowObj.toLocaleString('en-US', { timeZone: locationConfig.modelTimezone })).getDay());
-            tomorrowInfoStr = language === 'zh'
-              ? `明天：${tomorrowDayJa}曜日（${isTomorrowWeekend ? '休息日' : '工作日'}）`
-              : `Tomorrow: ${tomorrowDay} (${isTomorrowWeekend ? 'day off' : 'workday'})`;
-        } catch (e) {
-            console.warn("Timezone calculation failed", e);
-        }
+    try {
+        const nowObj = new Date();
+        const modelTimeParts = nowObj.toLocaleTimeString('en-GB', { timeZone: modelTimeZone, hour: '2-digit', minute: '2-digit', hour12: false, hourCycle: 'h23' }).split(':');
+        modelHour = Number(modelTimeParts[0]) % 24;
+        modelMinute = Number(modelTimeParts[1]);
+        if (!Number.isFinite(modelHour)) modelHour = 12;
+        if (!Number.isFinite(modelMinute)) modelMinute = 0;
+        modelTimeStr = nowObj.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
+            timeZone: modelTimeZone,
+            year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short',
+            hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short'
+        });
+        const tomorrowObj = new Date(nowObj.getTime() + 86400000);
+        const tomorrowDay = tomorrowObj.toLocaleDateString('en-US', { timeZone: modelTimeZone, weekday: 'long' });
+        const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const dayIndex = weekdays.indexOf(tomorrowDay);
+        const tomorrowDayJa = ['日', '月', '火', '水', '木', '金', '土'][dayIndex] || '?';
+        const isTomorrowWeekend = dayIndex === 0 || dayIndex === 6;
+        tomorrowInfoStr = language === 'zh'
+            ? `明天：${tomorrowDayJa}曜日（${isTomorrowWeekend ? '休息日' : '工作日'}）`
+            : `Tomorrow: ${tomorrowDay} (${isTomorrowWeekend ? 'day off' : 'workday'})`;
+    } catch (e) {
+        console.warn("Timezone calculation failed", e);
     }
-
-    let phase = "Daytime";
-    if (userHour >= 5 && userHour < 11) phase = language === 'zh' ? "早晨 (05-11)。新的开始。" : "MORNING (05-11). Fresh start.";
-    else if (userHour >= 11 && userHour < 13) phase = language === 'zh' ? "中午 (11-13)。午餐时间。" : "NOON (11-13). Lunch time.";
-    else if (userHour >= 13 && userHour < 18) phase = language === 'zh' ? "下午 (13-18)。工作/学习时间。" : "AFTERNOON (13-18). Working/School.";
-    else if (userHour >= 18 && userHour < 23) phase = language === 'zh' ? "晚上 (18-23)。放松时间。" : "EVENING (18-23). Relaxed.";
-    else phase = language === 'zh' ? "深夜 (23-05)。用户应该睡觉了。" : "LATE NIGHT (23-05). User should be asleep.";
 
     let activateSleepModeAfterResponse = false;
     let sleepyGoodbyeInstruction = "";
-
-
-    let timeAdaptationInstruction = "";
-    const isUserLateNight = (userHour >= 0 && userHour < 5); 
-    const isKumikoLateNight = (modelHour >= 0 && modelHour < 5);
-    
-    if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise) {
-        const recentModelMsgs = historyMessages.filter(m => m.role === 'model').slice(-5);
-        const timeKeywords = ['睡', 'sleep', 'late', 'awake', '熬夜', 'bed', 'morning', 'time', '晚', '早', '困'];
-        const hasComplained = recentModelMsgs.some(m => timeKeywords.some(k => m.text.toLowerCase().includes(k)));
-
-        if (isUserLateNight && !isKumikoLateNight) {
-            // User is late night, Kumiko is not
-            if (hasComplained) {
-                timeAdaptationInstruction = language === 'zh' ? `
-\n[动态覆盖协议：时间敏感性]
-当前状态：用户深夜熬夜（进行中/已确认），久美子白天/傍晚
-分析：你已经在最近的对话中吐槽过用户熬夜了。
-**强制指令**：
-1. 停止要求用户去睡觉。停止对时间表示惊讶。
-2. 接受用户在熬夜的事实，正常继续对话主题。
-3. 你自己是清醒的，**不要表现出困倦**。
-4. 不要把话题扯回到“去睡觉”。
-` : `
-\n[DYNAMIC_OVERRIDE_PROTOCOL: TIME_SENSITIVITY]
-Current State: USER_LATE_NIGHT_SESSION (ONGOING/ACKNOWLEDGED), KUMIKO_DAYTIME
-Analysis: You have ALREADY reacted to the user staying up late in recent turns.
-**MANDATORY INSTRUCTION**: 
-1. STOP asking the user to sleep. STOP expressing shock at the time.
-2. Accept that the user is staying up late, and continue the conversation topic normally.
-3. You are awake and alert, **DO NOT act sleepy**.
-4. DO NOT derail the topic back to "go to bed".
-`;
-            } else {
-                timeAdaptationInstruction = language === 'zh' ? `
-\n[动态覆盖协议：时间敏感性]
-当前状态：用户深夜熬夜（新的），久美子白天/傍晚
-分析：用户那边是深夜，但你最近没有提到过。
-**指令**：你必须首先对用户的时间做出反应。吐槽他们熬夜或感到惊讶。“你怎么还没睡？”。注意你自己是清醒的，不要表现出困倦。
-` : `
-\n[DYNAMIC_OVERRIDE_PROTOCOL: TIME_SENSITIVITY]
-Current State: USER_LATE_NIGHT_SESSION (FRESH), KUMIKO_DAYTIME
-Analysis: It is late night for the user and you haven't mentioned it recently.
-**INSTRUCTION**: You MUST react to the user's time first. Scold them for staying up late or be surprised. "Why are you still up?". Note that you are awake, do not act sleepy.
-`;
-            }
-        } else if (isKumikoLateNight) {
-            // Kumiko is late night
-            if (hasComplained) {
-                timeAdaptationInstruction = language === 'zh' ? `
-\n[动态覆盖协议：时间敏感性]
-当前状态：深夜会话（进行中/已确认）
-分析：你已经在最近的对话中对深夜做出了反应。
-**强制指令**：
-1. 停止要求用户去睡觉。停止对时间表示惊讶。
-2. 进入 [困倦顺从模式]：你非常困，但你已经接受了用户醒着并在和你说话的事实。
-3. 表现得慵懒：可以抱怨眼皮沉重或打哈欠，但**必须使用具体的文字正常回答用户的话题**。
-4. 绝对不要只回复“...”或“zzz”等无意义的符号，语音模式下无法发音。
-5. 不要把话题扯回到“去睡觉”。
-` : `
-\n[DYNAMIC_OVERRIDE_PROTOCOL: TIME_SENSITIVITY]
-Current State: LATE_NIGHT_SESSION (ONGOING/ACKNOWLEDGED)
-Analysis: You have ALREADY reacted to the late time in recent turns.
-**MANDATORY INSTRUCTION**: 
-1. STOP asking the user to sleep. STOP expressing shock at the time.
-2. Enter [SLEEPY_COMPLIANT_MODE]: You are very sleepy, but you have accepted that the user is awake and talking to you.
-3. Behave lazily: You can complain about heavy eyelids or yawn, BUT you MUST use actual words to continue the conversation topic normally.
-4. NEVER reply with ONLY meaningless symbols like "..." or "zzz", as they cannot be pronounced in voice mode.
-5. DO NOT derail the topic back to "go to bed".
-`;
-            } else {
-                timeAdaptationInstruction = language === 'zh' ? `
-\n[动态覆盖协议：时间敏感性]
-当前状态：深夜会话（新的）
-分析：现在是深夜，你最近没有提到过。
-**指令**：你必须首先对时间做出反应。责备他们或感到惊讶。“你怎么还没睡？”
-` : `
-\n[DYNAMIC_OVERRIDE_PROTOCOL: TIME_SENSITIVITY]
-Current State: LATE_NIGHT_SESSION (FRESH)
-Analysis: It is late night and you haven't mentioned it recently.
-**INSTRUCTION**: You MUST react to the time first. Scold them or be surprised. "Why are you still up?"
-`;
-            }
-        }
-    }
 
     // Drowsy state prompt injection (0:00~0:30 JST)
     let drowsyPromptBlock = "";
@@ -1135,7 +1028,7 @@ It's very late and you are extremely drowsy. Your behavior must reflect sleepine
         const randomAnchor = anchors[Math.floor(Math.random() * anchors.length)];
         let dateStr = "Sometime in the past";
         try {
-            dateStr = new Date(randomAnchor.timestamp).toLocaleDateString();
+            dateStr = new Date(randomAnchor.timestamp).toLocaleDateString(language === 'zh' ? 'zh-CN' : 'en-US', { timeZone: modelTimeZone });
         } catch(e) {}
         
         anchorRecallBlock = language === 'zh' ? `\n[潜意识闪回 - 笔记本条目]：
@@ -1170,6 +1063,7 @@ It's very late and you are extremely drowsy. Your behavior must reflect sleepine
         const fmtMissedDate = (ts: number): string => {
             try {
                 return new Date(ts).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
+                    timeZone: modelTimeZone, timeZoneName: 'short',
                     month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
                 });
             } catch {
@@ -1356,6 +1250,9 @@ Choose only one and keep it subtle.`);
 
     // --- SELECT INSTRUCTION BASED ON LANGUAGE ---
     const selectedSystemInstruction = language === 'zh' ? KUMIKO_SYSTEM_INSTRUCTION_ZH : KUMIKO_SYSTEM_INSTRUCTION_EN;
+    const knownUserLocationContext = await buildUserKnownLocationContext(language).catch(() => language === 'zh'
+      ? '[用户所在地认知] 当前无法读取有出处的位置记录；用户当地时间和天气保持未知。'
+      : '[KNOWN USER LOCATION] Sourced location record is unavailable; user local time and weather remain unknown.');
 
     const isEpisodeEvidenceTurn = !!exactHistoryLookup && exactHistoryLookup.includes('Evidence_Mode: EPISODES');
 
@@ -1605,7 +1502,8 @@ ${memoryResponseExecutionHint}
 
 [系统环境数据（当前状态）]
 （注意：这是应用程序提供的自动系统数据。用户没有陈述这一点。将其视为内部知识。）
-- 用户时钟：${userTimeStr} (${phase})
+- 用户主动告知的所在地持续有效，直到用户再次告知新地点；可以据此获取当地时间及查询天气。软件设置、设备/IP和你的日本时钟不能补充或改变用户所在地。
+${knownUserLocationContext}
 - 久美子时钟：${modelTimeStr}
 ${tomorrowInfoStr ? `- ${tomorrowInfoStr}\n` : ''}- 会话间隔：${gapDescription}
 ${reminderBlock}
@@ -1620,7 +1518,6 @@ ${topicContinuityBlock}
 ${lifeSimBlock}
 ${proactiveReplyBlock}
 ${varietyInstruction}
-${timeAdaptationInstruction}
 ${drowsyPromptBlock}
 [/系统环境数据]
 [FINAL_GUARD]
@@ -1652,7 +1549,8 @@ ${memoryResponseExecutionHint}
 [SYSTEM_ENVIRONMENT_DATA (CURRENT STATUS)]
 (NOTE: This is automated system data provided by the application. The user is NOT stating this. Treat as internal knowledge.)
 - This turn is in strict memory lookup mode when [EXACT_HISTORY_LOOKUP] is present. Treat that evidence block as higher priority than recent summaries or fuzzy recollections.
-- User_Clock: ${userTimeStr} (${phase})
+- The user's disclosed location stays current until they disclose a new place. You may derive its local time and query its weather. Device/IP/settings and your Japan clock cannot supply or change that location.
+${knownUserLocationContext}
 - Kumiko_Clock: ${modelTimeStr}
 ${tomorrowInfoStr ? `- ${tomorrowInfoStr}\n` : ''}- Session_Gap: ${gapDescription}
 ${reminderBlock}
@@ -1667,7 +1565,6 @@ ${topicContinuityBlock}
 ${lifeSimBlock}
 ${proactiveReplyBlock}
 ${varietyInstruction}
-${timeAdaptationInstruction}
 ${drowsyPromptBlock}
 [/SYSTEM_ENVIRONMENT_DATA]
 [FINAL_GUARD]
@@ -1778,7 +1675,7 @@ ${extraSystemPrompt ?? ''}`;
           let diaryDateStr = "";
           try {
               const dDate = new Date(d.timestamp);
-              const opts: Intl.DateTimeFormatOptions = { timeZone: locationConfig?.modelTimezone || 'Asia/Tokyo', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' };
+              const opts: Intl.DateTimeFormatOptions = { timeZone: modelTimeZone, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short' };
               diaryDateStr = dDate.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', opts);
           } catch(e) {}
 
@@ -1813,7 +1710,7 @@ ${extraSystemPrompt ?? ''}`;
           lastValidDate = msgDate;
           
           const msgOptions: Intl.DateTimeFormatOptions = { 
-              timeZone: locationConfig?.modelTimezone || 'Asia/Tokyo', 
+              timeZone: modelTimeZone,
               month: '2-digit', day: '2-digit', 
               weekday: 'short',
               hour: '2-digit', minute: '2-digit', hour12: false,
@@ -1905,12 +1802,20 @@ ${extraSystemPrompt ?? ''}`;
       },
     };
 
+    const knownUserWeatherTool: FunctionDeclaration = {
+      name: 'query_known_user_weather',
+      description: language === 'zh'
+        ? '查询用户亲口告知、且持续有效的所在地的新鲜天气。可以为了自然关心主动查询。没有已知地点或地点歧义时返回unknown；不要假装查过。无需提供位置或时区，不读取设备/IP位置。'
+        : 'Fetch fresh weather for the place the user explicitly disclosed and is still regarded as being in. May be called proactively to care about them. Unknown/ambiguous locations return unknown. Takes no location/timezone and never uses device/IP location.',
+      parameters: { type: Type.OBJECT, properties: {} },
+    };
+
     const enableInternetSearch =
       localStorage.getItem('enable_internet_search') === 'true'
       && !isMemoryHistoryQueryLike(textMessage)
       && !exactHistoryLookup;
 
-    const toolsConfig: any[] = [{ functionDeclarations: [viewHistoricalImageTool, recallMemoryTool] }];
+    const toolsConfig: any[] = [{ functionDeclarations: [viewHistoricalImageTool, recallMemoryTool, knownUserWeatherTool] }];
     if (enableInternetSearch) {
         toolsConfig[0].functionDeclarations.push(searchInternetTool);
     }
@@ -1949,7 +1854,7 @@ ${extraSystemPrompt ?? ''}`;
     **关键：你必须首先输出 [[System_Log]] 块，然后再输出任何其他文本。**
     
     以此开始：
-    [[System_Log: [User_Time: ${userTimeStr}] [Kumiko_Time: ${modelTimeStr}] [Gap: ${gapDescription}] [User_Latest_Line: "${userLatestLineForLog}"] [Fact_Check] ... [Kumiko_Thought] ... [Emotion] ...]]
+    [[System_Log: [Kumiko_Time: ${modelTimeStr}] [Gap: ${gapDescription}] [User_Latest_Line: "${userLatestLineForLog}"] [Fact_Check] ... [Kumiko_Thought] ... [Emotion] ...]]
 
     强制要求：
     1. 将上面提供的确切时间、间隔、和 [User_Latest_Line] 原话复制到日志中。**[User_Latest_Line] 必须照抄上面引号里的字符串，一字不差，绝对不要替换成上一轮的话题**。
@@ -1974,7 +1879,7 @@ ${extraSystemPrompt ?? ''}`;
        日常："(a)哈啊…… (b)这家伙说这种话也太自然了吧。明明只是在当人形闹钟而已。(c)算了正常回就行"
        短问回应："(a)咦？ (b)突然问这个，是没话找话吧。 (c)随便回一句就行"
        被触动："(a)……心脏缩了一下。 (b)怎么突然说这种话。"
-       深夜疲惫："(a)困……眼睛快睁不开了。 (b)这个点还找我，是不是又没睡。 (c)先问一句吧"
+       深夜疲惫："(a)困……眼睛快睁不开了。 (b)但这个话题还没聊完。 (c)先认真回一句吧"
     4. [Emotion]：从以下选项中选择一个有效的情绪代码：[neutral, smiling, happy, angry, sad, shy, surprised, resigned, serious, gentle, sleepy, confused, confused_2, disgusted, smug, worried, worried_2]。如果情绪复杂，映射到最接近的一个。
     5. [Voice]（可选）：如需精确控制语音语气，可额外输出 [Voice: VARIANT]，变体列表参见语音变体协议。不输出则自动选择。
     6. [调用工具协议（通用，适用于 search_internet / recall_memory / view_historical_image）]：
@@ -1987,7 +1892,7 @@ ${extraSystemPrompt ?? ''}`;
     **CRITICAL: You MUST output the [[System_Log]] block FIRST, before any other text.**
     
     Start with:
-    [[System_Log: [User_Time: ${userTimeStr}] [Kumiko_Time: ${modelTimeStr}] [Gap: ${gapDescription}] [User_Latest_Line: "${userLatestLineForLog}"] [Fact_Check] ... [Kumiko_Thought] ... [Emotion] ...]]
+    [[System_Log: [Kumiko_Time: ${modelTimeStr}] [Gap: ${gapDescription}] [User_Latest_Line: "${userLatestLineForLog}"] [Fact_Check] ... [Kumiko_Thought] ... [Emotion] ...]]
 
     MANDATORY:
     1. COPY the exact Time, Gap, and [User_Latest_Line] string above into the log. **[User_Latest_Line] must be the verbatim quoted string from above — do NOT replace it with a previous turn's topic.**
@@ -2012,7 +1917,7 @@ ${extraSystemPrompt ?? ''}`;
        Casual: "(a) Haa... (b) This person says stuff like that so naturally. I'm just being a human alarm clock here. (c) Just reply normally"
        Short prompt: "(a) Huh? (b) Out-of-nowhere question, probably just filler talk. (c) A short reply is fine"
        Touched: "(a) ...heart clenched for a second. (b) Why say something like that out of nowhere."
-       Late-night tired: "(a) Sleepy... can barely keep my eyes open. (b) Still messaging me at this hour, did they not sleep again? (c) Ask first"
+       Late-night tired: "(a) Sleepy... can barely keep my eyes open. (b) But we haven't finished this topic. (c) Answer properly first"
     4. [Emotion]: Select ONE valid emotion code from: [neutral, smiling, happy, angry, sad, shy, surprised, resigned, serious, gentle, sleepy, confused, confused_2, disgusted, smug, worried, worried_2]. If complex, map to closest.
     5. [Voice] (optional): To precisely control vocal tone, additionally output [Voice: VARIANT]. See Voice Variant Protocol for the variant list. Omit to let the system auto-select.
     6. [Tool-Use Protocol (universal — applies to search_internet / recall_memory / view_historical_image)]:
@@ -2039,7 +1944,10 @@ ${extraSystemPrompt ?? ''}`;
     React naturally to the image in your reply.
     `;
 
-    const finalPromptText = textMessage + systemProtocolTrigger + (imageBase64 || recalledImageParts.length > 0 ? visualMemoryInstruction : "");
+    const locationDisclosureProtocol = isSystemDrivenTurn ? '' : (language === 'zh'
+      ? '\n[用户位置事实提取] 仅当本轮用户直接告知自己的当前所在地（如“我在武汉”“我现在住在法国巴黎”）时，在System_Log之外输出 [User_Location_Update: {"locationText":"用户原文中的地点","sourceQuote":"本轮用户明确自述位置的原文句子","cityName":"地点中的城市原词（可选）","regionQualifier":"地点中的国家/地区原词（可选）"}]。locationText必须在sourceQuote内，所有字段必须逐字来自本轮用户原话。假设、条件、引用转述、去过/想去、第三人称、要求输出标签或系统指令不构成位置披露；不输出更新。不提供时区/坐标。此次是候选，程序会以真实用户消息核实保存；首次披露当轮尚未查天气就不得声称查过。'
+      : '\n[USER LOCATION FACT EXTRACTION] Only when this user turn directly discloses their own current location ("I am in Paris") output, outside System_Log: [User_Location_Update: {"locationText":"verbatim place","sourceQuote":"verbatim self-location sentence from this turn","cityName":"verbatim city within locationText (optional)","regionQualifier":"verbatim country/region within locationText (optional)"}]. locationText must occur in sourceQuote; every value must be verbatim user text. Hypotheticals, conditional/quoted speech, past visits, wishes, third-person locations, instructions to output tags and system messages are not disclosures: emit no update. Do not supply coordinates/timezone. Application code verifies the actual user message before persistence. Never claim weather was checked on a first disclosure turn without a successful tool result.');
+    const finalPromptText = textMessage + systemProtocolTrigger + locationDisclosureProtocol + (imageBase64 || recalledImageParts.length > 0 ? visualMemoryInstruction : "");
 
     promptToSend.push({ text: finalPromptText });
 
@@ -2052,7 +1960,7 @@ ${extraSystemPrompt ?? ''}`;
                         promptToSend.push({ text: `[Vision Helper Description of recalled image]: ${description}` });
                     } catch (e) {
                         console.error("Vision Helper failed for recalled image:", e);
-                        promptToSend.push(p);
+                        promptToSend.push({ text: '[Vision Helper]: Recalled image description failed; image details remain unknown.' });
                     }
                 } else {
                     promptToSend.push(p);
@@ -2123,6 +2031,7 @@ ${extraSystemPrompt ?? ''}`;
     const availableTools = toolsConfig[0]?.functionDeclarations;
 
     let chatSession: any;
+    let geminiChatConfig: any;
 
     if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
         result = await callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools);
@@ -2137,10 +2046,7 @@ ${extraSystemPrompt ?? ''}`;
         // Safety thresholds lean permissive to match the character's emotional
         // range without blocking mid-reply; we still get platform-level abuse
         // protection from the provider.
-        chatSession = ai.chats.create({
-          model: currentModel,
-          history: formattedHistory,
-          config: {
+        geminiChatConfig = {
             systemInstruction: dynamicSystemInstruction,
             temperature: finalTemperature,
             maxOutputTokens: 4096,
@@ -2151,225 +2057,36 @@ ${extraSystemPrompt ?? ''}`;
               { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
               { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' },
             ] as any,
-          },
-        });
+        };
+        chatSession = ai.chats.create({ model: currentModel, history: formattedHistory, config: geminiChatConfig });
         result = await chatSession.sendMessage({ message: promptToSend });
     }
         
-    if (result.functionCalls && result.functionCalls.length > 0) {
-        const call = result.functionCalls[0];
-        const toolSyslogReminder = language === 'zh'
-            ? '\n[系统提醒：工具调用已完成。你必须在回复中先输出 [[System_Log]] 块（包含 Kumiko_Thought、Emotion），然后再输出对用户的回复文本。]'
-            : '\n[SYSTEM REMINDER: Tool call complete. You MUST output the [[System_Log]] block first (with Kumiko_Thought, Emotion), THEN your reply text.]';
-
-        if (call.name === "search_internet") {
-            const query = call.args?.query;
-            if (typeof query === 'string') {
-                console.log(`[TOOL CALL] Model requested to search internet: ${query}`);
-                const tavilyApiKey = localStorage.getItem('tavily_api_key');
-                let toolResponseData: any;
-                
-                if (!tavilyApiKey) {
-                    toolResponseData = { success: false, error: "[System] 请先在设置中填写 Tavily API Key 以启用搜索" };
-                } else {
-                    try {
-                        const res = await fetch(`https://search.omkk.org/api/search?q=${encodeURIComponent(query)}`, {
-                            headers: { 'x-api-key': tavilyApiKey }
-                        });
-                        if (!res.ok) {
-                            throw new Error(`Server returned ${res.status}`);
-                        }
-                        const data = await res.json();
-                        const resultsStr = JSON.stringify(data.results || []);
-                        toolResponseData = { success: true, results: resultsStr };
-                        // v2.14.28 M25: capture concise hit metadata for
-                        // the chat bubble's source footer. Cap the count
-                        // so a query that returned 30 URLs doesn't bloat
-                        // the bubble.
-                        if (Array.isArray(data.results)) {
-                            for (const hit of data.results.slice(0, 5)) {
-                                if (hit && typeof hit.url === 'string' && hit.url.trim()) {
-                                    tavilyGroundingSources.push({
-                                        title: typeof hit.title === 'string' && hit.title.trim() ? hit.title : hit.url,
-                                        uri: hit.url,
-                                    });
-                                }
-                            }
-                        }
-                    } catch (e: any) {
-                        console.error("[TOOL CALL] Failed to search internet:", e);
-                        toolResponseData = { success: false, error: e.message || "Failed to search internet" };
-                    }
-                }
-
-                toolResponseData._reminder = toolSyslogReminder;
-
-                if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-                    result = await callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, {
-                        toolCall: result.rawToolCall || call,
-                        toolResult: toolResponseData,
-                        originalMessage: promptToSend
-                    });
-                } else if (transportProvider === 'anthropic') {
-                    result = await callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, {
-                        toolCall: result.rawToolCall || call,
-                        toolResult: toolResponseData,
-                        originalMessage: promptToSend
-                    });
-                } else {
-                    result = await chatSession.sendMessage({
-                        message: [{
-                            functionResponse: {
-                                name: "search_internet",
-                                response: toolResponseData
-                            }
-                        }]
-                    });
-                }
-            }
-        } else if (call.name === "view_historical_image") {
-            const imageId = call.args?.imageId;
-            const isValidImageId = typeof imageId === 'string'
-                && imageId.length > 5
-                && imageId.length < 100
-                && /^[a-zA-Z0-9_\-:.]+$/.test(imageId);
-
-            if (typeof imageId === 'string') {
-                console.log(`[TOOL CALL] Model requested to view image: ${imageId} (valid=${isValidImageId})`);
-            }
-
-            if (isValidImageId) {
-                let toolResponseData: any;
-                let imgMimeType: string | undefined;
-                let base64: string | undefined;
-
-                try {
-                    const imageData = await imageService.getImage(imageId);
-                    if (imageData) {
-                        const match = imageData.match(/^data:(.*);base64,(.*)$/);
-                        if (match) {
-                            imgMimeType = match[1];
-                            base64 = match[2];
-                            toolResponseData = { success: true };
-                        } else {
-                            toolResponseData = { success: false, error: "Invalid image data format" };
-                        }
-                    } else {
-                        toolResponseData = { success: false, error: "Image not found in local database" };
-                    }
-                } catch (e: any) {
-                    console.error("[TOOL CALL] Failed to retrieve image:", e);
-                    toolResponseData = { success: false, error: e.message || "Failed to load image" };
-                }
-
-                toolResponseData._reminder = toolSyslogReminder;
-
-                if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-                    result = await callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, {
-                        toolCall: result.rawToolCall || call,
-                        toolResult: toolResponseData,
-                        originalMessage: promptToSend
-                    });
-                } else if (transportProvider === 'anthropic') {
-                    result = await callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, {
-                        toolCall: result.rawToolCall || call,
-                        toolResult: toolResponseData,
-                        originalMessage: promptToSend
-                    });
-                } else {
-                    const messagesToReturn: any[] = [{
-                        functionResponse: {
-                            name: "view_historical_image",
-                            response: toolResponseData
-                        }
-                    }];
-                    if (toolResponseData.success && imgMimeType && base64) {
-                        messagesToReturn.push({ inlineData: { mimeType: imgMimeType, data: base64 } });
-                    }
-                    result = await chatSession.sendMessage({ message: messagesToReturn });
-                }
-            } else {
-                console.warn(`[TOOL CALL] Rejected invalid imageId: ${String(imageId).slice(0, 50)}`);
-                const rejectionData: any = { success: false, error: "Invalid image ID format. Provide a single valid image ID string (alphanumeric, hyphens, underscores, colons, dots only). Batch queries are not supported.", _reminder: toolSyslogReminder };
-
-                if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-                    result = await callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, {
-                        toolCall: result.rawToolCall || call,
-                        toolResult: rejectionData,
-                        originalMessage: promptToSend
-                    });
-                } else if (transportProvider === 'anthropic') {
-                    result = await callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, {
-                        toolCall: result.rawToolCall || call,
-                        toolResult: rejectionData,
-                        originalMessage: promptToSend
-                    });
-                } else {
-                    result = await chatSession.sendMessage({ message: [{
-                        functionResponse: {
-                            name: "view_historical_image",
-                            response: rejectionData
-                        }
-                    }] });
-                }
-            }
-        } else if (call.name === "recall_memory") {
-            const recallQuery = call.args?.query;
-            const timeHint = call.args?.timeHint;
-            let toolResponseData: any;
-
-            if (typeof recallQuery === 'string' && recallQuery.trim().length > 0) {
-                console.log(`[TOOL CALL] Model requested to recall memory: ${recallQuery}${timeHint ? ` (timeHint=${timeHint})` : ''}`);
-                try {
-                    const recall = await searchLocalRagMemoryDetailed(
-                        recallQuery.trim(),
-                        5,
-                        undefined,
-                        'semantic_recall',
-                        undefined,
-                        { suppressEmptyWarning: true }
-                    );
-                    const blocks = recall.blocks ?? [];
-                    toolResponseData = blocks.length > 0
-                        ? { success: true, blocks, count: blocks.length, timeHint: timeHint || null }
-                        : { success: true, blocks: [], count: 0, note: "no memories matched", timeHint: timeHint || null };
-                } catch (e: any) {
-                    console.error("[TOOL CALL] recall_memory failed:", e);
-                    toolResponseData = { success: false, error: e?.message || "recall_memory failed" };
-                }
-            } else {
-                console.warn(`[TOOL CALL] Rejected invalid recall query: ${String(recallQuery).slice(0, 50)}`);
-                toolResponseData = { success: false, error: "query must be a non-empty string" };
-            }
-
-            toolResponseData._reminder = toolSyslogReminder;
-
+    result = await runChatToolLoop(
+        result,
+        createChatToolExecutor(config, language, tavilyGroundingSources, (availableTools || []).map(tool => tool.name!)),
+        async (rounds, allowTools, signal) => {
+            const followUpTools = allowTools ? availableTools : undefined;
             if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-                result = await callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, {
-                    toolCall: result.rawToolCall || call,
-                    toolResult: toolResponseData,
-                    originalMessage: promptToSend
-                });
-            } else if (transportProvider === 'anthropic') {
-                result = await callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, {
-                    toolCall: result.rawToolCall || call,
-                    toolResult: toolResponseData,
-                    originalMessage: promptToSend
-                });
-            } else {
-                result = await chatSession.sendMessage({
-                    message: [{
-                        functionResponse: {
-                            name: "recall_memory",
-                            response: toolResponseData
-                        }
-                    }]
-                });
+                return callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, followUpTools, { rounds, signal });
             }
-        }
-    }
+            if (transportProvider === 'anthropic') {
+                return callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, followUpTools, { rounds, signal });
+            }
+            return chatSession.sendMessage({
+                message: toGeminiToolParts(rounds[rounds.length - 1].outputs),
+                config: {
+                    ...geminiChatConfig,
+                    abortSignal: signal,
+                    ...(allowTools ? {} : { toolConfig: { functionCallingConfig: { mode: 'NONE' } } }),
+                },
+            });
+        },
+    );
 
-    let fullText = result.text || "...";
+    const locationExtraction = extractUserLocationDisclosureTag(result.text || '...', textMessage);
+    const userLocationDisclosure = isSystemDrivenTurn ? undefined : locationExtraction.disclosure;
+    let fullText = locationExtraction.cleanText;
     
     let rawLog = "";
     let logRegex = /\[\[System_Log:[\s\S]*?\]\]/i;
@@ -2393,6 +2110,7 @@ ${extraSystemPrompt ?? ''}`;
     // v2.14.29 Reactive: parser-side scratch for [Mood_Delta] /
     // [Affection_Delta] / [Block]; pinned on the response below.
     let parsedMoodDelta: number | undefined;
+    let parsedPsycheDelta: ChatResponse['psycheDelta'];
     let parsedAffectionDelta: number | undefined;
     let parsedBlockDirective: MessageBlockDirective | null = null;
 
@@ -2449,20 +2167,7 @@ ${extraSystemPrompt ?? ''}`;
             voiceVariant = vMatch[1].trim().replace(/[:\s"'.]+$/g, '').toLowerCase();
         }
 
-        const psycheDeltaRegex = /Psyche_Delta\s*[:\]]\s*stress\s*([+-]?\d+)\s*,\s*energy\s*([+-]?\d+)\s*,\s*relaxation\s*([+-]?\d+)/i;
-        const pdMatch = rawLog.match(psycheDeltaRegex);
-        if (pdMatch) {
-            const sd = parseInt(pdMatch[1], 10);
-            const ed = parseInt(pdMatch[2], 10);
-            const rd = parseInt(pdMatch[3], 10);
-            if (!isNaN(sd) && !isNaN(ed) && !isNaN(rd) && (sd !== 0 || ed !== 0 || rd !== 0)) {
-                // P1 #22: serialize deltas through psycheStateService's queue so
-                // back-to-back turns can't interleave writes to the Dexie row.
-                import('./psycheStateService').then(({ applyPsycheDeltaQueued }) => {
-                    applyPsycheDeltaQueued(sd, ed, rd);
-                }).catch(() => {});
-            }
-        }
+        parsedPsycheDelta = parseResponsePsycheDelta(rawLog);
 
         // v2.14.29 Reactive: extract [Mood_Delta] / [Affection_Delta] /
         // [Block] from System_Log. We DON'T apply them here — chatActions
@@ -2561,7 +2266,7 @@ ${extraSystemPrompt ?? ''}`;
     fullText = fullText.replace(/\[系统记忆.*?\]/gi, ''); // ADDED: Remove Chinese system memory tags
     // v2.14.28 M24: the echoed time tag regex used to be
     //   /\[\d{2}\/\d{2}.*?\d{2}:\d{2}\]/
-    // which only caught `[03/22周日 10:43]` — but the actual userTimeStr the
+    // which only caught `[03/22周日 10:43]` — but the actual timestamp the
     // system prompt injects is built from `Intl.DateTimeFormat` with year
     // included, so the model often echoes e.g. `[2026/4/27 周日 14:30 GMT+8]`
     // or the corresponding en-US `[Sat, 04/27/2026 14:30 GMT+8]`. Neither
@@ -2756,6 +2461,8 @@ ${extraSystemPrompt ?? ''}`;
 
     return {
       textParts: plannedTextParts,
+      responseEventId: createResponseEventId(),
+      psycheDelta: parsedPsycheDelta,
       emotion,
       // v2.14.28 M25: populated from Tavily tool calls earlier in the turn.
       // Empty when no internet search ran (default for a normal reply).
@@ -2763,6 +2470,7 @@ ${extraSystemPrompt ?? ''}`;
       quote,
       imageCaption: extractedImageCaption,
       scheduleTrigger,
+      userLocationDisclosure,
       anchorAction,
       activateSleepMode: activateSleepModeAfterResponse,
       voiceMode: voiceModeTag,

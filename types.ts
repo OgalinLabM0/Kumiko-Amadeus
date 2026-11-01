@@ -208,15 +208,35 @@ export interface ScheduleTrigger {
   recurrence?: 'daily';
   hour?: number;
   minute?: number;
+  /** Only an explicitly requested zone; absent means bind to user settings locally. */
+  time_zone?: string;
+}
+
+export interface ResponsePsycheDelta {
+  stress: number;
+  energy: number;
+  relaxation: number;
+}
+
+/** A proposed fact extracted from this turn, never from device settings. */
+export interface UserLocationDisclosure {
+  locationText: string;
+  sourceQuote: string;
+  cityName?: string;
+  regionQualifier?: string;
 }
 
 export interface ChatResponse {
+  // Kept with pre-generated responses; only visible delivery commits this event.
+  responseEventId?: string;
+  psycheDelta?: ResponsePsycheDelta;
   textParts: string[];
   emotion: EmotionType;
   groundingSources: { title: string; uri: string }[];
   quote?: { text: string; role: 'user' }; 
   imageCaption?: string;
   scheduleTrigger?: ScheduleTrigger; // For Scheduling Events
+  userLocationDisclosure?: UserLocationDisclosure;
   anchorAction?: { type: 'add' | 'delete', content: string }; // NEW: For Life Anchors
   systemNotice?: string; // NEW: Notification field for model switching events
   activateSleepMode?: boolean; // NEW: Signal to activate sleep mode after this response

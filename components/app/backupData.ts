@@ -1,5 +1,6 @@
 import { AnchorEntry, EmotionType, Language, LocationConfig, Message, SummaryArchiveState, WorldBookEntry } from '../../types';
 import { DailyFragmentEntity, KumikoDiaryEntity, PsycheStateEntity, WorldCharacterStatusMap } from '../../services/db';
+import type { UserKnownLocation } from '../../services/userKnownLocation';
 
 export interface RelativeReminderBackup {
   id: string;
@@ -7,6 +8,8 @@ export interface RelativeReminderBackup {
   dueAt: number;
   createdAt: number;
   sourceText?: string;
+  timeZone?: string;
+  originalDueAt?: number;
   retryAt?: number;
 }
 
@@ -38,6 +41,7 @@ export interface AutoZipMeta {
 }
 
 export interface BackupPayload {
+  userKnownLocation?: UserKnownLocation | null;
   messages: Message[];
   coreMemory: string;
   worldBook: Partial<WorldBookEntry>[];
@@ -58,6 +62,7 @@ export interface BackupPayload {
 }
 
 interface BuildBackupDataParams {
+  userKnownLocation?: UserKnownLocation | null;
   messages: Message[];
   coreMemory: string;
   worldBook: WorldBookEntry[];
@@ -101,6 +106,7 @@ export const sanitizeWorldBookForBackup = (
 };
 
 export const buildBackupData = ({
+  userKnownLocation,
   messages,
   coreMemory,
   worldBook,
@@ -121,6 +127,7 @@ export const buildBackupData = ({
   defaultWorldBook,
   localizedWorldBook,
 }: BuildBackupDataParams): BackupPayload => ({
+  userKnownLocation,
   messages,
   coreMemory,
   worldBook: sanitizeWorldBookForBackup(worldBook, language, localizedWorldBook, defaultWorldBook),

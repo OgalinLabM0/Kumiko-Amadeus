@@ -68,6 +68,13 @@ const PERIOD_TIMES: PeriodTimeDef[] = [
 
 const PERIOD_INDEX_MAP: Record<string, number> = { p1: 1, p2: 2, p3: 3, p4: 4, p5: 5, p6: 6 };
 
+// Every rate-changing boundary, including holidays/preparation days.
+export const SCHEDULE_BOUNDARY_MINUTES = [...new Set([
+  0, 30, 6 * 60, 7 * 60 + 50, 8 * 60, 17 * 60, 18 * 60,
+  18 * 60 + 30, 19 * 60 + 30, 24 * 60,
+  ...PERIOD_TIMES.flatMap(period => [period.startMinute, period.endMinute]),
+])].sort((a, b) => a - b);
+
 // ---------------------------------------------------------------------------
 // 2. Weekly timetable (base year 2026)
 // ---------------------------------------------------------------------------
@@ -165,6 +172,7 @@ const BASE_TIMETABLE: Record<number, DayTimetable> = {
 // ---------------------------------------------------------------------------
 
 const BASE_YEAR = 2026;
+const positiveModulo = (value: number, modulus: number): number => ((value % modulus) + modulus) % modulus;
 
 interface YearlyAssignment {
   teachingYear: number;
@@ -183,7 +191,7 @@ export const getSchoolYear = (dateStr: string): number => {
 
 const getYearlyAssignment = (schoolYear: number): YearlyAssignment => {
   const teachingYear = schoolYear - 2022;
-  const yearIndex = (schoolYear - BASE_YEAR) % 3;
+  const yearIndex = positiveModulo(schoolYear - BASE_YEAR, 3);
 
   if (yearIndex === 0) {
     return {
@@ -477,7 +485,7 @@ export const getCurrentCurriculum = (poolKey: string, dateStr: string): { work: 
   if (termIndex < 0) return null;
 
   const schoolYear = getSchoolYear(dateStr);
-  const yearOffset = ((schoolYear - BASE_YEAR) * 3 * UNITS_PER_TERM) % pool.length;
+  const yearOffset = positiveModulo((schoolYear - BASE_YEAR) * 3 * UNITS_PER_TERM, pool.length);
   const weekOfTerm = getWeekOfTerm(dateStr);
   const unitInTerm = Math.min(Math.floor(weekOfTerm / WEEKS_PER_UNIT), UNITS_PER_TERM - 1);
   const unitIndex = (yearOffset + termIndex * UNITS_PER_TERM + unitInTerm) % pool.length;
@@ -503,7 +511,7 @@ const getEssayTopic = (dateStr: string): string => {
   const current = new Date(year, month - 1, day);
   const weekOfYear = Math.floor((current.getTime() - startOfYear.getTime()) / (7 * 24 * 60 * 60 * 1000));
   const yearSeed = (schoolYear - BASE_YEAR) * 17;
-  const index = (yearSeed + weekOfYear) % ESSAY_TOPIC_POOL.length;
+  const index = positiveModulo(yearSeed + weekOfYear, ESSAY_TOPIC_POOL.length);
   return ESSAY_TOPIC_POOL[index];
 };
 
@@ -517,19 +525,29 @@ const formatTime = (minutes: number): string => {
   return `${h}:${String(m).padStart(2, '0')}`;
 };
 
-const getJSTDateStr = (timezone: string): string => {
-  const now = new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+const clockFormatters = new Map<string, Intl.DateTimeFormat>();
+
+// Read a single instant in the model's timezone, without parsing it back in
+// the device timezone (which could normalize a local daylight-saving gap).
+export const getScheduleClock = (timezone: string, at: Date = new Date()) => {
+  let formatter = clockFormatters.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    });
+    clockFormatters.set(timezone, formatter);
+  }
+  const parts = Object.fromEntries(formatter.formatToParts(at).map(p => [p.type, p.value]));
+  return {
+    dateStr: `${parts.year}-${parts.month}-${parts.day}`,
+    minutesOfDay: Number(parts.hour) * 60 + Number(parts.minute),
+    dayOfWeek: new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day))).getUTCDay(),
+  };
 };
 
-export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHoliday: boolean = false): DetailedScheduleSlot => {
-  const nowJST = new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
-  const minutesOfDay = nowJST.getHours() * 60 + nowJST.getMinutes();
-  const dayOfWeek = nowJST.getDay();
-  const dateStr = getJSTDateStr(timezone);
+export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHoliday: boolean = false, at: Date = new Date()): DetailedScheduleSlot => {
+  const { minutesOfDay, dayOfWeek, dateStr } = getScheduleClock(timezone, at);
 
   const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
   const prepPhase = getSchoolPrepPhase(dateStr);
@@ -698,6 +716,11 @@ export const getDetailedScheduleSlot = (timezone: string = 'Asia/Tokyo', isHolid
     }
   }
 
+  // Period definitions omit short breaks, but she is still at school.
+  if (minutesOfDay < 18 * 60 + 30) {
+    return { slotType: 'free', freeActivity: '课间休息/教室间移动', description: '校内课间休息', canChat: true, interceptChance: 0, slotKey: null };
+  }
+
   // After school hours, before commute home
   if (minutesOfDay >= 18 * 60 + 30 && minutesOfDay < 19 * 60 + 30) {
     return { slotType: 'commuting', description: '傍晚通勤回家', canChat: false, interceptChance: 0, slotKey: null };
@@ -833,16 +856,13 @@ export const getDayScheduleSummary = (dateStr: string, timezone: string = 'Asia/
 // 8. Updated getCurrentKumikoState (uses detailed schedule)
 // ---------------------------------------------------------------------------
 
-export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo', isHoliday: boolean = false): StateContext => {
-  const nowJST = new Date(new Date().toLocaleString('en-US', { timeZone: timezone }));
-  const minutesOfDay = nowJST.getHours() * 60 + nowJST.getMinutes();
-  const day = nowJST.getDay();
-  const dateStr = getJSTDateStr(timezone);
+export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo', isHoliday: boolean = false, at: Date = new Date()): StateContext => {
+  const { minutesOfDay, dayOfWeek: day, dateStr } = getScheduleClock(timezone, at);
 
   const isWeekendOrHoliday = day === 0 || day === 6 || isHoliday;
   const inSession = isSchoolInSession(dateStr);
 
-  if (isWeekendOrHoliday || !inSession) {
+  if (isWeekendOrHoliday || (!inSession && !getSchoolPrepPhase(dateStr))) {
     if (minutesOfDay < 30) {
       return { currentState: 'RELAXING_HOME', stateDescription: '深夜犯困中', canUseVoice: true, voicePolicy: 'allow', proactiveProbability: 0.5 };
     } else if (minutesOfDay < 8 * 60) {
@@ -854,7 +874,7 @@ export const getCurrentKumikoState = (timezone: string = 'Asia/Tokyo', isHoliday
     }
   }
 
-  const slot = getDetailedScheduleSlot(timezone, isHoliday);
+  const slot = getDetailedScheduleSlot(timezone, isHoliday, at);
 
   switch (slot.slotType) {
     case 'drowsy':

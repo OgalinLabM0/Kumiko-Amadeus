@@ -111,10 +111,14 @@ export function useBusyRegulator(enabled: boolean): void {
           (!followUp.nextRetryAt || now >= followUp.nextRetryAt)
         ) {
           const result = await prepareBusyFollowUpResponse(followUp);
+          // A user turn can consume the task while its silent draft is in flight.
+          if (useAppStore.getState().busyFollowUp?.id !== followUp.id) return;
           if (result) {
             await useAppStore.getState().patchBusyFollowUp({
               preparedTextParts: result.textParts,
               preparedEmotion: result.emotion,
+              preparedResponseEventId: result.responseEventId,
+              preparedPsycheDelta: result.psycheDelta,
               preparedAt: Date.now(),
               failureCount: 0,
               nextRetryAt: undefined,

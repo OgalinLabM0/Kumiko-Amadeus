@@ -304,12 +304,12 @@ export const UI_TRANSLATIONS = {
 
     // Location Settings
     locationTitle: "时空定位校准",
-    locationDesc: "校准你与久美子的时间参照，让对话里的昼夜、课程与生活节奏保持一致。",
+    locationDesc: "查看你与久美子的时钟。她按日本时间生活，对你的了解来自你们的聊天。",
     modelLocation: "久美子的时空基准",
     modelLocationDesc: "久美子固定使用日本东京时间，以保持角色设定与时间线判断一致。",
     modelTimezoneLocked: "暂不支持修改久美子时区，以免造成功能判断与剧情时间线混乱。",
     userLocation: "你的时空基准",
-    userLocationDesc: "调整你的所在地与时区，让提醒、问候和时间感更贴近你的现实生活。",
+    userLocationDesc: "设置软件使用的当地时间。修改这里不会告诉久美子你去了哪里；在聊天里告诉她，她才会更新自己的认识。",
     country: "国家/地区",
     timezone: "时区 (IANA格式)",
     timezoneHelp: "用户时区格式遵循 IANA 标准。例如 'Asia/Shanghai' 对应北京时间，'America/New_York' 对应美东时间。",
@@ -877,12 +877,12 @@ export const UI_TRANSLATIONS = {
 
     // Location Settings
     locationTitle: "SPATIAL-TEMPORAL CALIBRATION",
-    locationDesc: "Align your time reference with Kumiko so greetings, routines, and daily flow stay coherent.",
+    locationDesc: "View your clock and Kumiko's. Her life follows Japan time; she learns about you through your conversations.",
     modelLocation: "KUMIKO REFERENCE CLOCK",
     modelLocationDesc: "Kumiko is fixed to Japan / Asia-Tokyo to keep her schedule logic and canon timeline stable.",
     modelTimezoneLocked: "Kumiko's timezone is currently locked to prevent timeline and behavior conflicts.",
     userLocation: "YOUR REFERENCE CLOCK",
-    userLocationDesc: "Set your own region and timezone so reminders, greetings, and pacing match your real life better.",
+    userLocationDesc: "Set the software's local clock. Changing this does not tell Kumiko you moved; tell her in chat to update what she knows.",
     country: "Region/Country",
     timezone: "Timezone (IANA)",
     timezoneHelp: "User timezone follows IANA format. 'Asia/Shanghai' is Beijing Time, 'America/New_York' is Eastern Time.",

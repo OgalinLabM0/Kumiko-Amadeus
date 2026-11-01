@@ -82,7 +82,7 @@ export function validateBackupImportPayload(candidate) {
       return invalid(`${field} must be a finite number when present`);
     }
   }
-  for (const field of ['summaryArchiveState', 'locationConfig', 'worldCharacterStatus', 'psycheState']) {
+  for (const field of ['summaryArchiveState', 'locationConfig', 'worldCharacterStatus', 'psycheState', 'userKnownLocation']) {
     const value = payload[field] !== undefined ? payload[field] : candidate[field];
     if (value !== undefined && value !== null && !isPlainObject(value)) return invalid(`${field} must be an object or null when present`);
   }

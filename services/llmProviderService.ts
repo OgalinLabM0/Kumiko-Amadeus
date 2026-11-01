@@ -7,7 +7,39 @@ export interface ProviderResponse {
     functionCalls?: any[];
     groundingSources?: any[];
     rawToolCall?: any;
+    // Transport-only assistant turn, including provider-required tool metadata.
+    // Never concatenate this into the displayed answer or memory text.
+    rawAssistantTurn?: any;
 }
+
+export interface ChatToolOutput {
+    call: { id?: string; name: string; args?: any; argumentError?: string };
+    result: Record<string, any>;
+    image?: { mimeType: string; data: string };
+}
+
+export interface ChatToolRound {
+    model: ProviderResponse;
+    outputs: ChatToolOutput[];
+}
+
+export interface ProviderToolContext {
+    rounds: ChatToolRound[];
+    signal?: AbortSignal;
+}
+
+// Google SDK Type enum values are uppercase; the other transports require
+// JSON Schema's lowercase type names. Preserve property names and enum values.
+const toJsonSchema = (schema: any): any => {
+    if (Array.isArray(schema)) return schema.map(toJsonSchema);
+    if (!schema || typeof schema !== 'object') return schema;
+    return Object.fromEntries(Object.entries(schema).map(([key, value]) => [
+        key,
+        key === 'type' && typeof value === 'string' ? value.toLowerCase()
+            : key === 'type' && Array.isArray(value) ? value.map(item => typeof item === 'string' ? item.toLowerCase() : item)
+            : toJsonSchema(value),
+    ]));
+};
 
 // v2.14.26: many OpenAI-compatible 中转 vendors (DeepSeek-R1 / Qwen-QwQ /
 // some GPT-5 wrappers) and Anthropic show-thinking responses leak the
@@ -40,23 +72,23 @@ type AnthropicContentBlock =
               data: string;
           };
       }
-    | { type: 'tool_result'; tool_use_id: string; content: string };
+    | { type: 'tool_result'; tool_use_id: string; content: any; is_error?: boolean };
 
 const mapGeminiPartsToOpenAI = (parts: any[]) => {
-    // 强制将内容转换为纯字符串，提高对各种第三方中转 API 的兼容性
-    let textContent = "";
+    const content: any[] = [];
     for (const p of parts) {
         if (typeof p === 'string') {
-            textContent += p;
+            content.push({ type: 'text', text: p });
         } else if (p.text) {
-            textContent += p.text;
+            content.push({ type: 'text', text: p.text });
         } else if (p.inlineData) {
-            textContent += "[Image omitted - 此 API 渠道暂不支持图片解析]";
+            content.push({ type: 'image_url', image_url: { url: `data:${p.inlineData.mimeType};base64,${p.inlineData.data}` } });
         } else {
-            textContent += JSON.stringify(p);
+            content.push({ type: 'text', text: JSON.stringify(p) });
         }
     }
-    return textContent;
+    // Keep text-only requests compatible; images must remain actual image parts.
+    return content.some(p => p.type === 'image_url') ? content : content.map(p => p.text).join('');
 };
 
 const mapGeminiPartsToAnthropic = (parts: any[]): AnthropicContentBlock[] => {
@@ -84,7 +116,7 @@ export const callOpenAI = async (
     history: any[],
     message: any,
     tools?: any[],
-    toolContext?: { toolCall: any, toolResult: any, originalMessage: any }
+    toolContext?: ProviderToolContext
 ): Promise<ProviderResponse> => {
     let apiKey = config.activeKey === 'backup' ? config.apiKey_backup : config.apiKey_primary;
     if (!apiKey) throw new Error("API Key 缺失，请检查配置");
@@ -136,7 +168,7 @@ export const callOpenAI = async (
     });
 
     // 压入当前用户的最新消息
-    let currentContent: string = "";
+    let currentContent: string | any[] = "";
     if (Array.isArray(message)) {
         currentContent = mapGeminiPartsToOpenAI(message);
     } else if (typeof message === 'string') {
@@ -145,20 +177,20 @@ export const callOpenAI = async (
         currentContent = mapGeminiPartsToOpenAI([message]);
     }
     
-    if (toolContext) {
-        messages.push({ role: 'user', content: mapGeminiPartsToOpenAI(Array.isArray(toolContext.originalMessage) ? toolContext.originalMessage : [toolContext.originalMessage]) });
-        messages.push({
-            role: 'assistant',
-            content: "",
-            tool_calls: [toolContext.toolCall]
-        });
-        messages.push({
-            role: 'tool',
-            tool_call_id: toolContext.toolCall.id,
-            content: JSON.stringify(toolContext.toolResult)
-        });
-    } else {
-        messages.push({ role: 'user', content: currentContent });
+    messages.push({ role: 'user', content: currentContent });
+    for (const round of toolContext?.rounds || []) {
+        messages.push(round.model.rawAssistantTurn);
+        // Return every requested ID before adding the image evidence message.
+        for (const output of round.outputs) {
+            messages.push({ role: 'tool', tool_call_id: output.call.id, content: JSON.stringify(output.result) });
+        }
+        const images = round.outputs.filter(output => output.image);
+        if (images.length) {
+            messages.push({ role: 'user', content: images.flatMap(output => [
+                { type: 'text', text: `Image evidence for tool ${output.call.id} (${output.call.name})` },
+                { type: 'image_url', image_url: { url: `data:${output.image!.mimeType};base64,${output.image!.data}` } },
+            ]) });
+        }
     }
 
     // 准备发送的 Payload
@@ -170,13 +202,13 @@ export const callOpenAI = async (
     };
 
     // 添加工具支持 (如果提供且不是在处理工具返回结果)
-    if (tools && tools.length > 0 && !toolContext) {
+    if (tools && tools.length > 0) {
         payload.tools = tools.map(t => ({
             type: "function",
             function: {
                 name: t.name,
                 description: t.description,
-                parameters: t.parameters
+                parameters: toJsonSchema(t.parameters)
             }
         }));
         payload.tool_choice = "auto";
@@ -186,6 +218,7 @@ export const callOpenAI = async (
 
     const response = await fetch(fetchUrl, {
         method: 'POST',
+        signal: toolContext?.signal,
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${apiKey}`
@@ -202,35 +235,21 @@ export const callOpenAI = async (
     const data = await response.json();
     const responseMessage = data.choices?.[0]?.message;
 
-    // v2.14.28 M20: many OpenAI-compatible vendors (DeepSeek-R1, Qwen-QwQ
-    // family, several aggregators) return their reasoning content as a
-    // separate `reasoning_content` field instead of inlining it inside
-    // `<think>...</think>` blocks. Without this merge the model's actual
-    // thinking gets discarded and only the final-answer summary survives —
-    // the chat bubble loses context that downstream cleanup expects to be
-    // strippable. Concatenate when both are present so stripThinkingTags
-    // sees the unified payload, then leave the strip pass to do its job.
-    const rawContent = (responseMessage?.content as string | undefined) ?? "";
-    const rawReasoning = (responseMessage?.reasoning_content as string | undefined) ?? "";
-    const combinedRaw = rawReasoning
-        ? (rawContent ? `${rawReasoning}\n${rawContent}` : rawReasoning)
-        : rawContent;
-
+    const rawContent = typeof responseMessage?.content === 'string' ? responseMessage.content : '';
     const result: ProviderResponse = {
-        text: stripThinkingTags(combinedRaw)
+        text: stripThinkingTags(rawContent),
+        rawAssistantTurn: responseMessage,
     };
 
     if (responseMessage?.tool_calls && responseMessage.tool_calls.length > 0) {
-        const tc = responseMessage.tool_calls[0];
-        result.rawToolCall = tc;
-        try {
-            result.functionCalls = [{
-                name: tc.function.name,
-                args: JSON.parse(tc.function.arguments)
-            }];
-        } catch (e) {
-            console.error("Failed to parse tool arguments:", e);
-        }
+        result.rawToolCall = responseMessage.tool_calls[0];
+        result.functionCalls = responseMessage.tool_calls.map((tc: any) => {
+            try {
+                return { id: tc.id, name: tc.function.name, args: JSON.parse(tc.function.arguments) };
+            } catch {
+                return { id: tc.id, name: tc.function?.name, argumentError: 'Invalid JSON tool arguments' };
+            }
+        });
     }
 
     return result;
@@ -243,7 +262,7 @@ export const callAnthropic = async (
     history: any[],
     message: any,
     tools?: any[],
-    toolContext?: { toolCall: any, toolResult: any, originalMessage: any }
+    toolContext?: ProviderToolContext
 ): Promise<ProviderResponse> => {
     let apiKey = config.activeKey === 'backup' ? config.apiKey_backup : config.apiKey_primary;
     if (!apiKey) throw new Error("API Key 缺失，请检查配置");
@@ -266,20 +285,20 @@ export const callAnthropic = async (
         currentContent = mapGeminiPartsToAnthropic([message]);
     }
     
-    if (toolContext) {
-        messages.push({ role: 'user', content: mapGeminiPartsToAnthropic(Array.isArray(toolContext.originalMessage) ? toolContext.originalMessage : [toolContext.originalMessage]) });
-        messages.push({
-            role: 'assistant',
-            content: [toolContext.toolCall]
-        });
-        messages.push({
-            role: 'user',
+    messages.push({ role: 'user', content: currentContent });
+    for (const round of toolContext?.rounds || []) {
+        messages.push({ role: 'assistant', content: round.model.rawAssistantTurn });
+        messages.push({ role: 'user', content: round.outputs.map(output => ({
+            type: 'tool_result' as const,
+            tool_use_id: output.call.id!,
+            is_error: output.result.success === false,
             content: [
-                { type: 'tool_result', tool_use_id: toolContext.toolCall.id, content: JSON.stringify(toolContext.toolResult) }
-            ]
-        });
-    } else {
-        messages.push({ role: 'user', content: currentContent });
+                { type: 'text', text: JSON.stringify(output.result) },
+                ...(output.image ? [{ type: 'image', source: {
+                    type: 'base64', media_type: output.image.mimeType, data: output.image.data,
+                } }] : []),
+            ],
+        })) });
     }
 
     console.log(`[Anthropic Call] 正在请求: ${fetchUrl} | 模型: ${model}`);
@@ -292,16 +311,17 @@ export const callAnthropic = async (
         temperature: 0.7,
     };
 
-    if (tools && tools.length > 0 && !toolContext) {
+    if (tools && tools.length > 0) {
         payload.tools = tools.map(t => ({
             name: t.name,
             description: t.description,
-            input_schema: t.parameters
+            input_schema: toJsonSchema(t.parameters)
         }));
     }
 
     const response = await fetch(fetchUrl, {
         method: 'POST',
+        signal: toolContext?.signal,
         headers: {
             'Content-Type': 'application/json',
             'x-api-key': apiKey,
@@ -319,18 +339,14 @@ export const callAnthropic = async (
 
     const data = await response.json();
     
-    const result: ProviderResponse = { text: "" };
+    const result: ProviderResponse = { text: "", rawAssistantTurn: data.content };
     const textBlocks = data.content?.filter((c: any) => c.type === 'text') || [];
     result.text = stripThinkingTags(textBlocks.map((b: any) => b.text).join('\n'));
 
     const toolBlocks = data.content?.filter((c: any) => c.type === 'tool_use') || [];
     if (toolBlocks.length > 0) {
-        const tb = toolBlocks[0];
-        result.rawToolCall = tb;
-        result.functionCalls = [{
-            name: tb.name,
-            args: tb.input
-        }];
+        result.rawToolCall = toolBlocks[0];
+        result.functionCalls = toolBlocks.map((tb: any) => ({ id: tb.id, name: tb.name, args: tb.input }));
     }
 
     return result;

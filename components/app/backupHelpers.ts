@@ -16,6 +16,7 @@ import {
 } from '../../services/db';
 import { normalizeReminderEvent, type RelativeReminder, type DailyReminder, type MissedReminderRecord } from '../../store/slices/reminderSlice';
 import { DEV_LOG_MAX_OBJECT_KEYS } from './appConstants';
+import { validReminderTimeZone } from '../../services/reminderTime';
 
 export const recalculateTurnCountFromMessages = (messages: Message[]) => {
   const orderedMessages = [...messages]
@@ -98,6 +99,11 @@ export const parseRelativeReminderRequest = (text: string): { event: string; del
   const timeMatch = zhMatch || zhTextMatch || enMatch;
 
   if (!timeMatch) return null;
+  // "8点30分" is a clock, not a 30-minute duration. Leave an absolute
+  // clock to the structured extraction instead of silently arming a timer.
+  const wallClock = normalized.match(/[\d零〇一二两三四五六七八九十]+\s*[点:：]\s*[\d零〇一二两三四五六七八九十]+\s*分?/u);
+  if (wallClock && timeMatch.index !== undefined && wallClock.index !== undefined
+    && timeMatch.index >= wallClock.index && timeMatch.index < wallClock.index + wallClock[0].length) return null;
 
   const amount = zhTextMatch && timeMatch === zhTextMatch
     ? parseSmallChineseNumber(timeMatch[1])
@@ -196,17 +202,18 @@ export const parseDailyReminderRequest = (text: string): { event: string; hour: 
   let timeSegment = '';
   let period = '';
 
-  const zhMatch = normalized.match(/(?:每天|每日|每晚|每个?晚上)[^\d]*(凌晨|早上|上午|中午|下午|晚上|傍晚)?\s*(\d{1,2})\s*(?:点|:|：)\s*(\d{1,2})?/u);
-  const enMatch = normalized.match(/(?:every day|daily)(?:\s+at)?\s*(\d{1,2})[:：](\d{1,2})\s*(am|pm)?/i);
+  const zhMatch = normalized.match(/(?:每天|每日|每晚|每个?晚上)[^\d]*?(凌晨|早上|上午|中午|下午|晚上|傍晚)?\s*(\d{1,2})\s*(?:点|:|：)\s*(\d{1,2}|半)?\s*(am|pm)?/iu);
+  const enMatch = normalized.match(/(?:every day|daily)(?:\s+at)?\s*(\d{1,2})(?:[:：](\d{1,2}))?\s*(am|pm)?/i);
 
   if (zhMatch) {
-    period = zhMatch[1] || '';
+    period = zhMatch[1] || (/^每(?:晚|个?晚上)/u.test(zhMatch[0]) ? '晚上' : '');
+    if (zhMatch[4]) period = zhMatch[4].toLowerCase() === 'pm' ? '晚上' : '上午';
     hour = Number(zhMatch[2]);
-    minute = zhMatch[3] ? Number(zhMatch[3]) : 0;
+    minute = zhMatch[3] === '半' ? 30 : zhMatch[3] ? Number(zhMatch[3]) : 0;
     timeSegment = zhMatch[0];
   } else if (enMatch) {
     hour = Number(enMatch[1]);
-    minute = Number(enMatch[2]);
+    minute = Number(enMatch[2] || 0);
     const suffix = (enMatch[3] || '').toLowerCase();
     if (suffix === 'pm' && hour < 12) hour += 12;
     if (suffix === 'am' && hour === 12) hour = 0;
@@ -275,6 +282,7 @@ export const sanitizeRelativeReminderRecord = (record: any): RelativeReminder | 
     event,
     dueAt: record.dueAt,
     createdAt: record.createdAt,
+    timeZone: validReminderTimeZone(record.timeZone),
     sourceText: typeof record.sourceText === 'string' ? record.sourceText : undefined,
     retryAt: typeof record.retryAt === 'number' ? record.retryAt : undefined,
     // v2.14.29 H10: passthrough originalDueAt when the boot rescue
@@ -483,12 +491,46 @@ export const sanitizePsycheStateRecord = (record: any): PsycheStateEntity | null
     return null;
   }
 
+  let driftContext: PsycheStateEntity['driftContext'];
+  const rawContext = record.driftContext;
+  if (rawContext && typeof rawContext.timezone === 'string') {
+    try {
+      new Intl.DateTimeFormat('en-GB', { timeZone: rawContext.timezone });
+      driftContext = { timezone: rawContext.timezone };
+      if (typeof rawContext.holidayDate === 'string'
+        && /^\d{4}-\d{2}-\d{2}$/.test(rawContext.holidayDate)
+        && Number.isFinite(Date.parse(`${rawContext.holidayDate}T00:00:00Z`))
+        && new Date(`${rawContext.holidayDate}T00:00:00Z`).toISOString().slice(0, 10) === rawContext.holidayDate
+        && typeof rawContext.isHoliday === 'boolean') {
+        driftContext.holidayDate = rawContext.holidayDate;
+        driftContext.isHoliday = rawContext.isHoliday;
+      }
+    } catch { /* Invalid persisted timezone must not break future drift. */ }
+  }
+  const rawDirection = record.lastChatDeltaDirection;
+  const lastChatDeltaDirection = rawDirection && ['stress', 'energy', 'relaxation'].every(
+    key => typeof rawDirection[key] === 'number' && Number.isFinite(rawDirection[key]),
+  ) ? { stress: rawDirection.stress, energy: rawDirection.energy, relaxation: rawDirection.relaxation } : undefined;
+  const committedEntries = record.committedResponseEvents;
+  const committedResponseEvents = committedEntries && typeof committedEntries === 'object' && !Array.isArray(committedEntries)
+    ? Object.fromEntries(Object.entries(committedEntries).flatMap(([eventId, value]) => {
+      const event = value as { messageId?: unknown; committedAt?: unknown } | null;
+      return eventId.trim() && event && typeof event.messageId === 'string' && event.messageId.trim()
+        && typeof event.committedAt === 'number' && Number.isFinite(event.committedAt) && event.committedAt >= 0
+        ? [[eventId, { messageId: event.messageId, committedAt: event.committedAt }]] : [];
+    })) : undefined;
+
   return {
     id: typeof record.id === 'string' ? record.id : 'current',
     stress: record.stress,
     energy: record.energy,
     relaxation: record.relaxation,
     lastUpdated: typeof record.lastUpdated === 'number' ? record.lastUpdated : Date.now(),
+    lastDriftAt: typeof record.lastDriftAt === 'number' && Number.isFinite(record.lastDriftAt)
+      && record.lastDriftAt >= 0 ? record.lastDriftAt : undefined,
+    driftContext,
+    lastChatDeltaDirection,
+    committedResponseEvents,
   };
 };
 

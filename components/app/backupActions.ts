@@ -74,6 +74,7 @@ import {
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../../store/slices/ragSlice';
 import type { RelativeReminder, DailyReminder } from '../../store/slices/reminderSlice';
 import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY } from '../../store/slices/reminderSlice';
+import { getUserKnownLocation, sanitizeUserKnownLocation, USER_KNOWN_LOCATION_KEY } from '../../services/userKnownLocation';
 import {
   SUMMARY_ARCHIVE_STATE_STORAGE_KEY,
 } from './appConstants';
@@ -181,8 +182,12 @@ export function normalizeBackupData(source: any) {
   const hasDailyFragments = root.dailyFragments !== undefined || source.dailyFragments !== undefined;
   const hasPsycheState = root.psycheState !== undefined || source.psycheState !== undefined;
   const hasEpisodes = root.episodes !== undefined || source.episodes !== undefined;
+  const hasKnownLocation = root.userKnownLocation !== undefined || source.userKnownLocation !== undefined;
 
   return {
+    userKnownLocation: hasKnownLocation
+      ? sanitizeUserKnownLocation(root.userKnownLocation !== undefined ? root.userKnownLocation : source.userKnownLocation)
+      : undefined,
     messages: normalizedBackupMessages.messages,
     coreMemory: normalizedCoreMemory,
     worldBook: finalWorldBook,
@@ -305,6 +310,9 @@ export async function persistNormalizedBackupData(
 
     if (normalizedData.worldCharacterStatus !== undefined) {
       keyvalRows.push({ key: 'world_character_status', value: normalizedData.worldCharacterStatus });
+    }
+    if (normalizedData.userKnownLocation !== undefined) {
+      keyvalRows.push({ key: USER_KNOWN_LOCATION_KEY, value: normalizedData.userKnownLocation });
     }
 
     await db.keyval.bulkPut(keyvalRows);
@@ -481,15 +489,17 @@ export async function handleExportBackup(backupData: any) {
   const language = state.language;
 
   try {
-    const [vectors, kumikoDiaryExport, dailyFragmentsExport, psycheStateExport, episodesExport] = await Promise.all([
+    const [vectors, kumikoDiaryExport, dailyFragmentsExport, psycheStateExport, episodesExport, userKnownLocationExport] = await Promise.all([
       getAllVectors(),
       db.kumikoDiary.orderBy('date').toArray(),
       db.dailyFragments.orderBy('timestamp').toArray(),
       db.psycheState.get('current'),
       db.episodes.orderBy('startTimestamp').toArray(),
+      getUserKnownLocation(),
     ]);
     const lightweightBackupData = {
       ...backupData,
+      userKnownLocation: userKnownLocationExport,
       kumikoDiary: undefined,
       dailyFragments: undefined,
       psycheState: undefined,

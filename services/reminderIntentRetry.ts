@@ -23,10 +23,11 @@ export interface ReminderIntentRetryResult {
   event?: string;
   /** Seconds from now (preferred for "30秒后" / "in 5 minutes" type asks). */
   delaySeconds?: number;
-  /** 0-23, only meaningful when recurrence === 'daily'. */
+  /** Requested wall clock, not pre-converted into Japan time. */
   hour?: number;
-  /** 0-59, only meaningful when recurrence === 'daily'. */
   minute?: number;
+  daysOffset?: number;
+  timeZone?: string;
   /** 'daily' for recurring asks, 'once' for one-off, null if unsure. */
   recurrence?: 'daily' | 'once' | null;
 }
@@ -41,6 +42,8 @@ const SYSTEM_PROMPT_ZH = `你是一个意图提取器，专门判断用户消息
   "delaySeconds": number | null,
   "hour": number | null,
   "minute": number | null,
+  "daysOffset": number | null,
+  "timeZone": string | null,
   "recurrence": "daily" | "once" | null
 }
 
@@ -48,6 +51,8 @@ const SYSTEM_PROMPT_ZH = `你是一个意图提取器，专门判断用户消息
 - isReminder=true 当且仅当用户明确要求"在某个时间点/某段时间后提醒/叫/喊我做某事"。
 - 一次性相对时间（"30秒后"/"5分钟后"/"两小时后"/"in 5 min"）→ recurrence="once" + delaySeconds (转成秒)。
 - 每日重复（"每天 8 点"/"每晚 10 点半"/"daily at 7am"）→ recurrence="daily" + hour (0-23) + minute (0-59)。
+- 一次性钟点（"明晚8点提醒我"）→ recurrence="once" + hour=20 + minute=0 + daysOffset=1；没说哪一天时daysOffset=null。不要猜对方现在几点或自行换成delaySeconds。
+- hour/minute照抄用户表达的24小时制钟点，不默认当成日本时间，不做时差换算。仅对方明确指定某地时间时timeZone才填对应IANA时区，否则null；用户设置和所在地不在你的已知信息里。
 - 含糊提及未来事件但没有明确时间 → isReminder=false。
 - 单纯问候/闲聊/感叹 → isReminder=false。
 - event 是简短动词短语（"喝水"/"开会"/"吃药"）。如果用户没说做什么，event 可以是 "提醒你"。
@@ -63,6 +68,8 @@ Output only a single JSON object, no other text (no markdown fences, no explanat
   "delaySeconds": number | null,
   "hour": number | null,
   "minute": number | null,
+  "daysOffset": number | null,
+  "timeZone": string | null,
   "recurrence": "daily" | "once" | null
 }
 
@@ -70,6 +77,8 @@ Rules:
 - isReminder=true iff the user explicitly asks to be reminded/pinged/called at a specific point in time or after a duration.
 - One-off relative time ("in 30 seconds" / "after 5 min" / "30秒后") → recurrence="once" + delaySeconds (in seconds).
 - Daily recurring ("every day 8am" / "daily at 22:30" / "每天早上7点") → recurrence="daily" + hour (0-23) + minute (0-59).
+- One-off wall clock ("tomorrow at 8 PM") → recurrence="once", hour=20, minute=0, daysOffset=1; no explicit day means daysOffset=null. Never guess the user's current clock to calculate a delay.
+- Extract the stated 24-hour clock without converting to Japan time. Set timeZone to an IANA zone ONLY when the user explicitly specifies a location's clock; otherwise null. Device/settings/location data are not known to you.
 - Vague future mention without specific time → isReminder=false.
 - Pure greetings / chitchat / exclamations → isReminder=false.
 - event is a short verb phrase ("drink water" / "meeting" / "take medicine"). If unspecified, event can be "remind you".
@@ -134,6 +143,8 @@ function tryParseJson(raw: string): ReminderIntentRetryResult | null {
       delaySeconds: delayInt !== null && delayInt > 0 ? delayInt : undefined,
       hour: hourInt !== null && hourInt >= 0 && hourInt <= 23 ? hourInt : undefined,
       minute: minuteInt !== null && minuteInt >= 0 && minuteInt <= 59 ? minuteInt : undefined,
+      daysOffset: Number.isInteger(parsed.daysOffset) && Number(parsed.daysOffset) >= 0 && Number(parsed.daysOffset) <= 3660 ? Number(parsed.daysOffset) : undefined,
+      timeZone: typeof parsed.timeZone === 'string' ? parsed.timeZone : undefined,
       recurrence: rec === 'daily' || rec === 'once' ? (rec as 'daily' | 'once') : null,
     };
   } catch {
@@ -184,7 +195,7 @@ export const extractReminderIntentLLM = async (
   if (!parsed.isReminder) return parsed;
 
   // Sanity gate: must have either daily timing or a positive delaySeconds.
-  const hasDaily = parsed.recurrence === 'daily' && typeof parsed.hour === 'number' && typeof parsed.minute === 'number';
+  const hasDaily = typeof parsed.hour === 'number' && typeof parsed.minute === 'number';
   const hasRelative = typeof parsed.delaySeconds === 'number' && parsed.delaySeconds > 0;
   if (!hasDaily && !hasRelative) {
     console.warn('[reminderIntentRetry] isReminder=true but timing missing:', parsed);

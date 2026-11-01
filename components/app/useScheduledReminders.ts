@@ -13,6 +13,8 @@ import {
   cancelReminderPrewarm,
 } from '../../services/reminderPrewarmService';
 import { getTimePartsInTimezone } from './backupHelpers';
+import { getNextDailyReminderAt } from './reminderScheduling';
+import type { TimedReminderContext } from '../../services/reminderPrompt';
 import { getCapacitorPlatform, isCapacitorNative } from '../../services/environment';
 import {
   EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY,
@@ -137,9 +139,7 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
     // v2.14.29 H10: widen to accept `originalDueAt` so the boot-rescued
     // late-chat path can route to the late prompt template. Daily branch
     // doesn't carry it (recurring reminders never get rescued).
-    reminder:
-      | (Pick<RelativeReminder, 'event' | 'sourceText'> & { originalDueAt?: number })
-      | Pick<DailyReminder, 'event' | 'sourceText'>,
+    reminder: TimedReminderContext,
     reminderId?: string,
   ): Promise<boolean> => {
     return triggerTimedReminderMessageAction(
@@ -225,7 +225,6 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                   .filter(reminder =>
                       !reminder.paused &&
                       (() => {
-                          const timeParts = getTimePartsInTimezone(new Date(now), reminder.timeZone || 'Asia/Tokyo');
                           // v2.14.28 M11: a 5-minute grace window after the
                           // configured hour:minute. The previous strict
                           // single-minute match would silently drop a daily
@@ -236,13 +235,10 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                           // staying inside the same hour and not bleeding
                           // into the next day's reminder. lastTriggeredDate
                           // dedup guarantees we only fire once per local day.
-                          const reminderTotalMinutes = reminder.hour * 60 + reminder.minute;
-                          const nowTotalMinutes = timeParts.hour * 60 + timeParts.minute;
-                          const insideGraceWindow = nowTotalMinutes >= reminderTotalMinutes
-                              && nowTotalMinutes <= reminderTotalMinutes + 5;
+                          const dueAt = getNextDailyReminderAt(reminder, now - 5 * 60_000 - 1);
+                          const insideGraceWindow = dueAt !== null && dueAt <= now;
                           return (
                               insideGraceWindow &&
-                              reminder.lastTriggeredDate !== timeParts.dateKey &&
                               (!reminder.retryAt || reminder.retryAt <= now)
                           );
                       })()
@@ -256,9 +252,10 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
               // in shouldKickReminderPrewarm doesn't have a stable value to
               // compare against. Acceptable: daily reminders fire once a day at a
               // known wall-clock minute and the user is usually expecting them.
-              const delivered = await triggerTimedReminderMessage(dueDailyReminder, dueDailyReminder.id);
+              const dueAt = getNextDailyReminderAt(dueDailyReminder, now - 5 * 60_000 - 1)!;
+              const delivered = await triggerTimedReminderMessage({ ...dueDailyReminder, dueAt }, dueDailyReminder.id);
               if (delivered) {
-                  const timeParts = getTimePartsInTimezone(new Date(now), dueDailyReminder.timeZone || 'Asia/Tokyo');
+                  const timeParts = getTimePartsInTimezone(new Date(dueAt), dueDailyReminder.timeZone || 'Asia/Tokyo');
                   await markDailyReminderTriggered(dueDailyReminder.id, timeParts.dateKey);
               } else {
                   await markDailyReminderRetry(dueDailyReminder.id);
@@ -353,13 +350,8 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
   // to the native OS AlarmManager so it fires even after Doze kills the
   // WebView. Reconciliation runs every 30s + on flowState mount; safe
   // because scheduleExact with the same reminderId is idempotent
-  // (replaces the existing PendingIntent). Cancellation of stale alarms
-  // happens implicitly because we only schedule for currently-active
-  // reminders — anything removed from the store stops getting refreshed
-  // and AlarmManager will fire it once more (its PendingIntent is still
-  // alive), but the receiver's notification is harmless and the in-app
-  // poller won't double-fire because removeRelativeReminder already
-  // cleared the store row.
+  // (replaces the existing PendingIntent). Previously synced alarms are
+  // explicitly cancelled when their reminder is removed or becomes inactive.
   //
   // Routing:
   //   wantsCall = (ttsConfig.voiceMode !== 'text') AND has any TTS key
@@ -374,8 +366,12 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
       if (flowState !== 'APP') return;
 
       const lastSyncedIdsRef = new Set<string>();
+      const prewarmScheduledAt = new Map<string, number>();
+      let reconciling = false;
 
       const reconcile = async () => {
+          if (reconciling) return;
+          reconciling = true;
           try {
               const ttsConfig = ttsConfigRef.current;
               const wantsCall = ttsConfig.voiceMode !== 'text' && (
@@ -394,7 +390,7 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
               const seenIds = new Set<string>();
 
               for (const r of relatives) {
-                  if (!r || !r.id || !r.dueAt || r.dueAt <= Date.now()) continue;
+                  if (!r || !r.id || !Number.isFinite(r.dueAt) || r.dueAt <= Date.now()) continue;
                   seenIds.add(r.id);
                   const result = await scheduleAndroidAlarm({
                       reminderId: r.id,
@@ -417,9 +413,14 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                   // < 70 s away — we only schedule prewarm when there's
                   // headroom for it to actually finish before T=0).
                   const prewarmAt = r.dueAt - 60_000;
-                  if (prewarmAt > Date.now() + 10_000) {
-                      const prewarmId = `${r.id}__prewarm`;
+                  const prewarmId = `${r.id}__prewarm`;
+                  // The lead-time cutoff only governs creation. An existing
+                  // alarm remains valid until the parent reminder is due,
+                  // even if its own wake-up is imminent or delayed by Doze.
+                  if (prewarmScheduledAt.get(prewarmId) === prewarmAt) {
                       seenIds.add(prewarmId);
+                  }
+                  if (prewarmAt > Date.now() + 10_000) {
                       const prewarmResult = await scheduleAndroidAlarm({
                           reminderId: prewarmId,
                           at: prewarmAt,
@@ -435,34 +436,16 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                       });
                       // Don't toast the inexact-fallback notice for the
                       // prewarm too — it would dupe the main alarm's notice.
-                      void prewarmResult;
+                      if (prewarmResult.scheduled) {
+                          prewarmScheduledAt.set(prewarmId, prewarmAt);
+                          seenIds.add(prewarmId);
+                      }
                   }
               }
               for (const d of dailies) {
                   if (!d || !d.id || d.paused) continue;
-                  // Daily reminders need a per-day at-ms calculation. We use
-                  // the next future occurrence in the user's reminder timezone.
-                  const tz = d.timeZone || 'Asia/Tokyo';
-                  const nowParts = getTimePartsInTimezone(new Date(), tz);
-                  // Fresh date to avoid mutating the source
-                  const today = new Date();
-                  const todayParts = getTimePartsInTimezone(today, tz);
-                  let atMs = today.getTime();
-                  // Coarse approximation: snap minute boundary in current TZ
-                  // by walking minute-by-minute from now until matching hour/minute.
-                  // For strict accuracy in DST transitions, the OS will fire ±1h
-                  // at most and the in-app poller will still catch it within 1s.
-                  const startOfTodayUtcMs = new Date(today.toISOString().slice(0, 10) + 'T00:00:00Z').getTime();
-                  // Simpler: schedule for HH:MM today (or tomorrow if past) in
-                  // a UTC approximation — close enough for AlarmManager wake-up.
-                  void todayParts; void nowParts; void startOfTodayUtcMs;
-                  const localizedNow = new Date();
-                  const target = new Date(localizedNow);
-                  target.setHours(d.hour, d.minute, 0, 0);
-                  if (target.getTime() <= localizedNow.getTime()) {
-                      target.setDate(target.getDate() + 1);
-                  }
-                  atMs = target.getTime();
+                  const atMs = getNextDailyReminderAt(d, Date.now());
+                  if (atMs === null) continue;
                   // Daily alarms get a stable id to avoid orphaning across days.
                   const alarmId = `daily-${d.id}`;
                   seenIds.add(alarmId);
@@ -482,12 +465,15 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
               for (const stale of lastSyncedIdsRef) {
                   if (!seenIds.has(stale)) {
                       await cancelAndroidAlarm(stale);
+                      prewarmScheduledAt.delete(stale);
                   }
               }
               lastSyncedIdsRef.clear();
               for (const id of seenIds) lastSyncedIdsRef.add(id);
           } catch (e) {
               console.warn('[useScheduledReminders] native alarm sync failed:', e);
+          } finally {
+              reconciling = false;
           }
       };
 

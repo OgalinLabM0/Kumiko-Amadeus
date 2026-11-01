@@ -765,21 +765,13 @@ export const analyzeTemporalQueryDetailed = async (query: string, locationConfig
           jstTime = now.toLocaleString('en-US', { timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
       } catch(e) {}
       
-      let userTime = "??:??";
-      if (locationConfig?.userTimezone) {
-          try {
-             userTime = now.toLocaleString('en-US', { timeZone: locationConfig.userTimezone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
-          } catch(e) {}
-      }
-
       const prompt = `
 You are an intent parser. Your job is to extract temporal boundaries from a user's conversational query.
 
 [CURRENT TIME REFERENCE]
 Current JST (Japan Standard Time): ${jstTime}
-Current User Time: ${userTime}
-Default rule: interpret the user's query in the user's timezone and convert the computed boundaries into JST (Japan Standard Time) timestamps.
-Override rule: if the query explicitly says JST / Japan time / 日本时间 / 东京时间, treat the stated time as already being in JST and DO NOT convert it from the user's timezone again.
+This is Kumiko's clock only, not the user's local clock. Application timezone settings are unavailable to you.
+Preserve relative dates, wall-clock values and explicitly stated timezone words in normalizedQuery. Application code will resolve the retrieval window locally. Never infer the user's location or timezone.
 
 [USER QUERY]
 "${query}"
@@ -787,8 +779,8 @@ Override rule: if the query explicitly says JST / Japan time / 日本时间 / �
 [RULES]
 1. Determine if the user is asking about a past conversation (e.g., "What did we talk about yesterday?", "What did I say on March 17th?").
 2. If YES, set isTemporalQuery = true. If NO, set isTemporalQuery = false.
-3. If a specific time block is implied (e.g., "yesterday", "March 17th at 10pm"), calculate the startTimestampJST and endTimestampJST covering that block in milliseconds. 
-4. If it's a general past request, you may set timestamps to null.
+3. normalizedQuery: normalize temporal wording into Chinese retrieval syntax the local parser understands, preserving the original date/relative day and clock (e.g., "昨天晚上10点 我们聊了什么"). Keep explicit JST / 日本时间 only when the user's query states it. Never convert clocks or replace relative dates with calendar dates.
+4. Always set startTimestampJST and endTimestampJST to null. Only application code computes absolute timestamps.
 5. searchRole: Determine who the user is asking about. "What did *I* say" -> 'user'. "What did *you* say" -> 'model'. "What did *we* talk about" -> 'any'.
 6. precision: classify the result window as one of:
    - "exact_minute"
@@ -803,8 +795,9 @@ Override rule: if the query explicitly says JST / Japan time / 日本时间 / �
 You MUST output ONLY valid JSON matching this schema exactly:
 {
   "isTemporalQuery": boolean,
-  "startTimestampJST": number | null,
-  "endTimestampJST": number | null,
+  "normalizedQuery": string,
+  "startTimestampJST": null,
+  "endTimestampJST": null,
   "searchRole": "user" | "model" | "any",
   "precision": "exact_minute" | "approximate_minutes" | "hour_window" | "day_window" | null,
   "source": "main_model",
@@ -835,9 +828,24 @@ You MUST output ONLY valid JSON matching this schema exactly:
       if (!parsed) {
         throw new SyntaxError(`Unable to parse temporal intent JSON: ${text.slice(0, 200)}`);
       }
+      // Model only normalizes words. Hidden scheduling/display settings are
+      // used locally, and can never enter this parser's prompt or memories.
+      const extracted = extractJsonObjectFromText(text);
+      let normalizedQuery = '';
+      try {
+        const candidate = JSON.parse(extracted || '{}');
+        normalizedQuery = typeof candidate.normalizedQuery === 'string' ? candidate.normalizedQuery : '';
+      } catch {}
+      const localWindow = normalizedQuery
+        ? buildHeuristicTemporalQueryAnalysis(normalizedQuery, locationConfig)
+        : null;
+      const analysis: TemporalQueryAnalysis = localWindow
+        ? { ...localWindow, source: 'main_model', confidence: parsed.confidence }
+        : { ...parsed, startTimestampJST: null, endTimestampJST: null, precision: null };
+
       return {
-        analysis: parsed,
-        diagnostics: buildTemporalQueryDiagnostics('main_model_success', parsed, null, text.slice(0, 200) || null),
+        analysis,
+        diagnostics: buildTemporalQueryDiagnostics('main_model_success', analysis, null, text.slice(0, 200) || null),
       };
   } catch (e) {
       const fallback = buildHeuristicTemporalQueryAnalysis(query, locationConfig);
@@ -888,44 +896,11 @@ export const rewriteHistoricalRecallQueryDetailed = async (
     const transportProvider = resolveTransportProvider(provider, config.useCustomEndpoint ? config.customEndpoint : undefined);
     const modelName = config.model_main || 'gemini-2.5-flash';
     const now = new Date();
-    const displayTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Tokyo';
-    const characterTimeZone = locationConfig?.userTimezone || displayTimeZone;
-    const modelTimeZone = locationConfig?.modelTimezone || 'Asia/Tokyo';
-
     let jstTime = "??:??";
-    let displayTime = "??:??";
-    let characterTime = "??:??";
     try {
       jstTime = now.toLocaleString('en-US', {
-        timeZone: modelTimeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-      });
-    } catch {}
-    try {
-      displayTime = now.toLocaleString('en-US', {
-        timeZone: displayTimeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-      });
-    } catch {}
-    try {
-      characterTime = now.toLocaleString('en-US', {
-        timeZone: characterTimeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
+        timeZone: 'Asia/Tokyo', year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false
       });
     } catch {}
 
@@ -940,11 +915,8 @@ Your job is NOT to answer the user. Your only job is to transform a natural-lang
 
 [CURRENT TIME REFERENCE]
 Current Kumiko/JST Time: ${jstTime}
-Current Display Time (user's screen clock): ${displayTime}
-Display Timezone: ${displayTimeZone}
-User Character Timezone: ${characterTimeZone}
-Current Character Time: ${characterTime}
-Kumiko Timezone: ${modelTimeZone}
+This is Kumiko's clock only. The user's local time, location and application timezone settings are not supplied.
+Do not infer them or add them to the rewritten query. Application code performs timezone conversion locally.
 
 [RECENT CONVERSATION CONTEXT]
 ${recentContextStr}
@@ -976,13 +948,13 @@ ${recentContextStr}
    - "我说了什么" => searchRole "user"
    - "你说了什么" => searchRole "model"
    - "我们聊了什么" => searchRole "any"
-8. CRITICAL TIMEZONE RULE: The app shows timestamps in TWO places — chat bubbles use Display Timezone (${displayTimeZone}), while the memory/context editor uses JST (Asia/Tokyo). When the user references a time, they could be reading EITHER. Because the retrieval system searches a wide window (±30 min) around the target, use the MOST LIKELY interpretation: if Display Timezone and JST differ by ≤1 hour, just output the time as JST directly (the wide window covers the gap). If they differ by more, convert from Display Timezone to JST. Do NOT use the User Character Timezone for this conversion.
-9. If the query explicitly mentions Japan time / JST / 日本時間, keep it in JST.
-10. Do not invent content. Only normalize intent, speaker, time range, timezone conversion, and extract keywords.
+8. Preserve the user's stated wall-clock values and relative date words ("昨天", "today") without converting timezone or resolving them against Kumiko's calendar date. Application code resolves them using private settings.
+9. Only preserve Japan time / JST / 日本時間 when explicitly stated in the input or sourced recent conversation. Never append JST automatically.
+10. Do not invent content. Only normalize intent, speaker, time range wording, and extract keywords.
 11. Preferred rewrittenQuery patterns:
-   - exact minute: "2026年3月18日 10:15 JST 我说了什么"
-   - exact hour: "2026年3月18日 10点 JST 我们聊了什么"
-   - nearby window: "2026年3月18日 10:15 JST 前后5分钟 我们聊了什么"
+   - exact minute: "2026年3月18日 10:15 我说了什么"
+   - exact hour: "2026年3月18日 10点 我们聊了什么"
+   - nearby window: "2026年3月18日 10:15 前后5分钟 我们聊了什么"
    - semantic recall: "回忆检索 3月18日 那次关于X的对话内容"
    - topic search: "回忆检索 关于丽奈的所有对话内容"
 12. searchKeywords: Extract the core entity names, person names, or topic keywords from the query. Include ALL name variants the user might use (short name, full name, alternate spellings). For example, if the user mentions "丽奈", include ["丽奈", "高坂丽奈"]. For non-topic queries, set to [].

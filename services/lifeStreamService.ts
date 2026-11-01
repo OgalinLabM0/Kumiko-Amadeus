@@ -748,9 +748,10 @@ export const buildDailyContext = (
   const weekdayIndex = getJSTWeekdayIndex(dateStr);
   const weekday = DIARY_WEEKDAY_LABELS[weekdayIndex] || '日';
   const isWeekend = weekdayIndex === 0 || weekdayIndex === 6;
+  const holidayUnknown = isHoliday === undefined && !isWeekend;
   const isRestDay = Boolean(isHoliday) || isWeekend;
   const prepPhase = getSchoolPrepPhase(dateStr);
-  const dayTypeText = isHoliday ? '日本法定节假日' : isWeekend ? '周末' : prepPhase ? `学校准备日（${prepPhase.description}）` : '普通工作日';
+  const dayTypeText = isHoliday ? '日本法定节假日' : isWeekend ? '周末' : holidayUnknown ? '节假日状态未知，不能确认是否为工作日' : prepPhase ? `学校准备日（${prepPhase.description}）` : '普通工作日';
   const weekdayFocus = pickWeekdayFocus(dateStr, continuityContext?.recentFocuses || [], isRewrite);
 
   const detailedSchedule = getDayScheduleSummary(dateStr);
@@ -762,6 +763,11 @@ export const buildDailyContext = (
       '- 白天：自由安排，可以外出、休息、处理杂事，也可能和秀一见面或顺路约会',
       '- 傍晚：从外面回来，或者准备晚上在家待着',
       '- 晚上：在家收尾；有时和秀一一起简单吃点，有时会出门找地方吃饭',
+    ];
+  } else if (holidayUnknown) {
+    scheduleLines = [
+      '- 节假日信息未核实，是否需要到校授课未知。',
+      '- 仅按本日聊天与生活切片记录已经确认的活动，不把通常课表当成已经发生的事实。',
     ];
   } else if (prepPhase) {
     scheduleLines = [
@@ -800,13 +806,15 @@ export const buildDailyContext = (
     `明天是${tomorrow.weekday}曜日（${tomorrow.isRestDay ? '休息日，不上课不上班' : '工作日，正常上课'}）。`,
     '你的本职是北宇治高中的国语老师，吹奏乐部副顾问只是附加身份，不代表你每天都在带整个社团。',
     ...scheduleLines,
-    (!isRestDay && !prepPhase) ? `- 今日镜头重点：${weekdayFocus.label}` : '',
+    (!isRestDay && !prepPhase && !holidayUnknown) ? `- 今日镜头重点：${weekdayFocus.label}` : '',
     `天气：${getWeatherContextText(weatherStr)}`,
     '',
-    prepPhase
+    holidayUnknown
+      ? '今天的节假日状态未知，不能自行认定到校授课；以本日聊天和生活切片中的已知活动为准。'
+      : prepPhase
       ? '今天是准备日，日记内容应围绕会议、准备工作、同事交流等展开，不要写正式授课内容。'
       : '具体几点起床、早餐吃什么、路上的见闻、课堂、办公室、批改作文、回家之后的小事，都由你根据天气、心情和生活切片自由发挥，但不能违背上述课表框架。只有当天确实合理时，才少量提到吹奏部，而且更适合写成副顾问事务。如果课表中有具体教材内容，你可以在日记中提及课堂的某个细节（学生反应、讲到哪里了等），但不要长篇复述课文。',
-    (!isRestDay && !prepPhase) ? weekdayFocus.detailHint : '',
+    (!isRestDay && !prepPhase && !holidayUnknown) ? weekdayFocus.detailHint : '',
     '',
     buildChatAnchorBlock(chatMessages),
   ].join('\n');

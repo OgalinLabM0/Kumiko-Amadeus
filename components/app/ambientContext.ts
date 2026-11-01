@@ -47,7 +47,6 @@ export const getAmbientEnvironmentContext = async (): Promise<string> => {
     const res = await invoke('app:get-weather');
     if (res && res.success) {
       const uji = res.uji;
-      const user = res.user;
       
       const mapWeatherCode = (code: number): string => {
         if (code === 0) return '晴';
@@ -64,11 +63,8 @@ export const getAmbientEnvironmentContext = async (): Promise<string> => {
         envStr += `\n- 久美子所在地 (日本宇治市) 当前天气: ${cond ? cond + ', ' : ''}温度 ${uji.temperature}°C, 风速 ${uji.windspeed}km/h`;
         hasData = true;
       }
-      if (user) {
-        const cond = typeof user.weathercode === 'number' ? mapWeatherCode(user.weathercode) : '';
-        envStr += `\n- 用户所在地当前天气: ${cond ? cond + ', ' : ''}温度 ${user.temperature}°C, 风速 ${user.windspeed}km/h`;
-        hasData = true;
-      }
+      // Device/IP weather is not something Kumiko has been told about the
+      // user. Only her own environment belongs in the character context.
     }
   } catch (e) {
     console.warn('[Environment] Failed to fetch ambient weather context:', e);

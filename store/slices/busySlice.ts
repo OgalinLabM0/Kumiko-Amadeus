@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import { db } from '../../services/db';
-import type { EmotionType } from '../../types';
+import type { EmotionType, ResponsePsycheDelta } from '../../types';
 import type { ScheduleSlotType } from '../../services/kumikoStateMachine';
 
 // Dexie keyval keys. Surfaced for useInitialLoadBootstrap to pre-hydrate.
@@ -56,6 +56,8 @@ export interface BusyFollowUp {
   reason?: 'dice' | 'round_limit';
   preparedTextParts?: string[];            // Set after successful prepare.
   preparedEmotion?: EmotionType;
+  preparedResponseEventId?: string;
+  preparedPsycheDelta?: ResponsePsycheDelta;
   preparedAt?: number;
   failureCount: number;                    // Prepare attempts that errored.
   nextRetryAt?: number;                    // Exponential backoff waypoint.

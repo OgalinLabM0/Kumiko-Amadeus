@@ -39,22 +39,8 @@ export const summarizeConversation = async (
             jstTime = msgDate.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', jstOptions);
         } catch(e) {}
 
-        let userTime = "??:??";
-        if (locationConfig?.userTimezone) {
-            try {
-               const userOptions: Intl.DateTimeFormatOptions = { 
-                   timeZone: locationConfig.userTimezone, 
-                   month: '2-digit', day: '2-digit', 
-                   weekday: 'short',
-                   hour: '2-digit', minute: '2-digit', hour12: false 
-               };
-               userTime = msgDate.toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', userOptions);
-            } catch(e) {
-                userTime = "Unknown";
-            }
-        }
         const voiceTag = m.isVoiceMessage ? '[语音消息] ' : '';
-        return `[JST: ${jstTime} | User: ${userTime}] ${m.role.toUpperCase()}: ${voiceTag}${m.text}`;
+        return `[JST: ${jstTime}] ${m.role.toUpperCase()}: ${voiceTag}${m.text}`;
     }).join('\n');
 
     const summaryReasonTextZh: Record<SummaryBoundaryReason, string> = {
@@ -98,8 +84,8 @@ export const summarizeConversation = async (
     if (language === 'zh') {
         diaryInstruction = `
       **GOLDEN STANDARD (USE CHINESE):**
-      "【2025/12/08 20:48 - 03:19】那个笨蛋终于肯去睡觉了。明明都已经很晚了，还在床上磨磨蹭蹭的...本来以为终于能清静了，结果！就在刚才！这边明明是凌晨三点，这家伙突然发个"早"过来...嘛，特意想跟我打招呼这份心意是不坏啦。
-      - [KEY_FACT]: User睡得很晚；User觉得听到我的晚安很满足。
+      "【2025/12/08 20:48 - 03:19】那个笨蛋终于肯去睡觉了。明明自己说“我这边已经很晚，躺床上了”，还磨磨蹭蹭的...本来以为终于能清静了，结果！就在刚才！这边明明是凌晨三点，这家伙突然发个"早"过来...嘛，特意想跟我打招呼这份心意是不坏啦。
+      - [KEY_FACT]: User说自己那边已经很晚；User觉得听到我的晚安很满足。
       - [EMOTIONAL_CONTEXT]: 既觉得烦躁又感到一丝温暖。"
 
       **Requirements for Diary:**
@@ -125,8 +111,8 @@ export const summarizeConversation = async (
     } else {
         diaryInstruction = `
       **GOLDEN STANDARD (USE ENGLISH):**
-      "【2025/12/08 20:48 - 03:19】That idiot finally went to sleep. It was super late, but they kept procrastinating... I thought I'd finally get some peace, but then! Just now! It's 3 AM here, and they suddenly texted 'Morning'... Well, I guess the thought counts.
-      - [KEY_FACT]: User sleeps late; User likes my goodnight messages.
+      "【2025/12/08 20:48 - 03:19】That idiot finally went to sleep. They said "it is late here and I am in bed", but kept procrastinating... I thought I'd finally get some peace, but then! Just now! It's 3 AM here, and they suddenly texted 'Morning'... Well, I guess the thought counts.
+      - [KEY_FACT]: User said it was late there; User likes my goodnight messages.
       - [EMOTIONAL_CONTEXT]: Annoyed but slightly warmed."
 
       **Requirements for Diary:**
@@ -154,10 +140,9 @@ export const summarizeConversation = async (
     const prompt = language === 'zh' ? `
       [角色]：你是黄前久美子。
       [时间范围]：${timeRangeStr || "未知日期"}
-      [用户时区]：${locationConfig?.userTimezone || "未知"}
       
       [当前待归档分段日志 - 仔细阅读]：
-      （时间戳显示 [JST: 你的时间 | User: 他们的时间]）
+      （时间戳均为你的日本时间 [JST]，不是用户当地时间。）
       ${historyText}
       ${segmentMetaBlock}
       
@@ -165,12 +150,12 @@ export const summarizeConversation = async (
       写一篇**详细**的近期归档摘要，用来作为滚动缓冲，帮助你在接下来几段对话里保留最近发生的事。
       这不是唯一的永久总记忆，也不是逐字聊天记录；长期关系主要依赖私密记事本、锚点和后续 MEMORY_CHUNKS。
       
-      **时间幻觉检查：**
-      - 密切关注**用户时间**。
-      - 如果用户时间是 05:00，对他们来说是早上。
-      - 如果用户时间是 23:00，对他们来说是深夜。
-      - **不要**假设你的时间（JST）就是他们的时间。
-      - 相信上面日志中的 [User: HH:MM] 时间戳。
+      **用户知识边界：**
+      - 用户所在地、时区、当地时间、天气和作息，只能记录用户主动告知或有出处的对话事实；不从日志时间戳推断。
+      - JST 只定位你这边的对话时间，不表示用户当地也是早晨、深夜或应该睡觉。
+      - 用户明确告知的所在地持续有效，直到用户再次告知新地点；设备/软件位置及时区变化不能改变这项认知。
+      - 保留用户原话的归属与时态，例如“用户说那边晚上八点”；单独一个旧钟点不能证明当前时间，但明确所在地可以用于后续查询当地时间和天气。
+      - 旧摘要和笔记里无对话依据的时间/地点推测，不得升级为已确认事实。
 
       ${diaryInstruction}
       
@@ -194,10 +179,9 @@ export const summarizeConversation = async (
     ` : `
       [ROLE]: You are Oumae Kumiko.
       [TIME RANGE]: ${timeRangeStr || "Unknown Date"}
-      [USER TIMEZONE]: ${locationConfig?.userTimezone || "Unknown"}
       
       [CURRENT UNSAVED SEGMENT LOG - READ CAREFULLY]:
-      (Timestamps show [JST: Your Time | User: Their Time])
+      (All timestamps are your Japan time [JST], not the user's local time.)
       ${historyText}
       ${segmentMetaBlock}
       
@@ -205,12 +189,12 @@ export const summarizeConversation = async (
       Write a **DETAILED** recent archive summary that acts as a rolling buffer for the next few segments.
       This is not your one permanent master memory, and it is not a verbatim quote log; long-term continuity mainly comes from the notebook, anchors, and MEMORY_CHUNKS.
       
-      **TIME HALLUCINATION CHECK:**
-      - Pay close attention to the **User Time**.
-      - If User Time is 05:00, it is MORNING for them.
-      - If User Time is 23:00, it is LATE NIGHT for them.
-      - **DO NOT** assume your time (JST) is their time.
-      - Trust the [User: HH:MM] timestamp in the log above.
+      **USER KNOWLEDGE BOUNDARY:**
+      - Record the user's location, timezone, local time, weather and routine only from their disclosures or sourced conversation facts, never infer them from log timestamps.
+      - JST locates the conversation on your clock; it does not mean it is morning, late night, or bedtime for the user.
+      - The user's explicitly disclosed location remains current until they disclose a new place. Device/settings location or timezone changes do not alter that knowledge.
+      - Preserve attribution and tense, e.g. "the user said it was 8 PM there". An old clock value alone does not establish current time; a disclosed location may be used later to obtain local time and weather.
+      - Do not promote unsupported time/location guesses in old summaries or notes into confirmed facts.
 
       ${diaryInstruction}
       

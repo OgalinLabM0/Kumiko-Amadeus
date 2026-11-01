@@ -30,6 +30,9 @@ const getKumikoLocalRag = (language?: Language) =>
 import { setAIConfig } from '../../services/llmCore';
 import { dialogService } from '../../services/dialogService';
 import { extractReminderIntentLLM } from '../../services/reminderIntentRetry';
+import { buildTimedReminderSystemPrompt, type TimedReminderContext } from '../../services/reminderPrompt';
+import { getClockReminderAt, getExplicitReminderTimeZone, resolveReminderTimeZone } from '../../services/reminderTime';
+import { commitUserKnownLocationDisclosure, validateUserLocationDisclosure, resolveUserKnownLocation } from '../../services/userKnownLocation';
 import {
   sendMessageToGemini,
   getCurrentAIConfig,
@@ -64,6 +67,7 @@ import {
 import { evaluateRagMemoryCandidate, hasRecentRagDuplicate } from '../../services/ragMemoryFilter';
 import { loadTemporalEpisodesForRange } from '../../services/temporalEpisodeService';
 import { db } from '../../services/db';
+import { commitVisibleResponsePsyche } from '../../services/responsePsycheCommit';
 import { mapMessageToEntity } from './messageMappers';
 import { getAmbientEnvironmentContext } from './ambientContext';
 import { yieldToMainThread } from './appUtils';
@@ -305,6 +309,19 @@ export function addMessageToStore(
   return newMessage.id;
 }
 
+async function commitAcceptedResponsePsyche(
+  response: Pick<ChatResponse, 'responseEventId' | 'psycheDelta'>,
+  messageId: string,
+): Promise<void> {
+  const message = useAppStore.getState().messages.find(m => m.id === messageId);
+  if (!message) return;
+  try {
+    await commitVisibleResponsePsyche(response, mapMessageToEntity(message));
+  } catch (error) {
+    console.warn('[Psyche] Visible response commit failed', response.responseEventId, error);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // showBackgroundNotification — standalone helper
 // ---------------------------------------------------------------------------
@@ -523,6 +540,7 @@ export async function triggerNativeProactiveMessage(
 
     const msgText = response.textParts[0];
     const proactiveMessageId = addMessageToStore('model', msgText, undefined, undefined, undefined, undefined, undefined, response.emotion);
+    await commitAcceptedResponsePsyche(response, proactiveMessageId);
     showBackgroundNotification(msgText, 'proactive', proactiveMessageId);
 
     if (response.textParts.length > 1) {
@@ -559,7 +577,7 @@ export async function triggerNativeProactiveMessage(
 // Returns null on API failure so the regulator can track retry count.
 export async function prepareBusyFollowUpResponse(
   followUp: BusyFollowUp,
-): Promise<{ textParts: string[]; emotion: EmotionType } | null> {
+): Promise<Pick<ChatResponse, 'textParts' | 'emotion' | 'responseEventId' | 'psycheDelta'> | null> {
   const state = useAppStore.getState();
   const { coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, language, messages, missedReminders } = state;
 
@@ -643,7 +661,7 @@ export async function prepareBusyFollowUpResponse(
       .map(t => (t || '').trim())
       .filter(t => t.length > 0);
     if (cleanedParts.length === 0) return null;
-    return { textParts: cleanedParts, emotion: response.emotion };
+    return { textParts: cleanedParts, emotion: response.emotion, responseEventId: response.responseEventId, psycheDelta: response.psycheDelta };
   } catch (e) {
     console.warn('[BUSY-PREPARE] Draft generation failed', e);
     return null;
@@ -669,14 +687,27 @@ export async function displayPreparedProactiveMessage(
   }
   const combined = followUp.preparedTextParts.join(' ');
   const typingMs = Math.max(2000, Math.min(8000, 1500 + combined.length * 60));
+  const latestUserId = storeState.messages.filter(m => m.role === 'user').at(-1)?.id;
   useAppStore.getState().setIsThinking(true);
   await new Promise(r => setTimeout(r, typingMs));
+  if (useAppStore.getState().busyFollowUp?.id !== followUp.id) {
+    // A user turn may have converted this draft to an apology during typing.
+    // The discarded draft has no accepted response event.
+    if (useAppStore.getState().messages.filter(m => m.role === 'user').at(-1)?.id === latestUserId) {
+      useAppStore.getState().setIsThinking(false);
+    }
+    return false;
+  }
   useAppStore.getState().setIsThinking(false);
   useAppStore.getState().setIsTalking(true);
 
   const emotion = followUp.preparedEmotion || 'neutral';
   const firstText = followUp.preparedTextParts[0];
   const firstMsgId = addMessageToStore('model', firstText, undefined, undefined, undefined, undefined, undefined, emotion);
+  await commitAcceptedResponsePsyche({
+    responseEventId: followUp.preparedResponseEventId,
+    psycheDelta: followUp.preparedPsycheDelta,
+  }, firstMsgId);
   showBackgroundNotification(firstText, 'proactive', firstMsgId);
 
   for (let i = 1; i < followUp.preparedTextParts.length; i++) {
@@ -776,78 +807,6 @@ ${highlightLines}
 }
 
 // ---------------------------------------------------------------------------
-// buildTimedReminderSystemPrompt
-// ---------------------------------------------------------------------------
-// Shared prompt builder used by both the live trigger path and the T-60s
-// prewarm path (H17.A). Keeping it in one place ensures the prewarmed LLM
-// response is byte-identical to what a live trigger would have produced.
-//
-// v2.14.29 H10 rework: routes between two templates based on `originalDueAt`.
-//   - undefined / unset (normal path)         → on-time prompt: "现在已经到点了"
-//   - present (≤ 3-day boot rescue Branch 1)  → late prompt: acknowledge the
-//                                                miss, ask if user already
-//                                                handled it, do NOT pretend
-//                                                the original time just hit.
-// The trigger and prewarm callers both pass `originalDueAt` through; if a
-// caller forgets to thread it, behavior degrades gracefully back to on-time.
-function buildTimedReminderSystemPrompt(
-  reminder: Pick<RelativeReminder, 'event' | 'sourceText'> | Pick<DailyReminder, 'event' | 'sourceText'>,
-  language: Language,
-  userTimezone: string,
-  originalDueAt?: number,
-): string {
-  const userTimeStr = new Date().toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
-    timeZone: userTimezone,
-    weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-  });
-
-  if (typeof originalDueAt === 'number' && Number.isFinite(originalDueAt) && originalDueAt < Date.now()) {
-    const originalTimeStr = new Date(originalDueAt).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', {
-      timeZone: userTimezone,
-      weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-    });
-    return language === 'zh' ? `[SYSTEM_ACTIVATION_PROTOCOL: 迟到的提醒 — 错过原定时间]
-      之前你答应过用户：到 ${originalTimeStr} 提醒他「${reminder.event}」，
-      但因为软件没开着、你没赶上，现在用户的时间是 ${userTimeStr}。
-      ${reminder.sourceText ? `用户当时大意是：${reminder.sourceText}` : ''}
-      规则：
-      1. 像黄前久美子刚刚才反应过来"哦……我应该早点说的"，主动承认自己迟了，不要装作刚到点。
-      2. 简短问一句用户是不是已经处理了，例如"我应该 ${originalTimeStr} 提醒你「${reminder.event}」的，没赶上，你做了吗？"
-      3. 不要催促"快去做"，因为已经过了；语气稍带歉意但保持自然，1-2 句话即可。
-      4. 不要提系统、定时器、倒计时、自动触发、后台、模块、"应用没开"之类的解释，听起来要像她自己忘了或顾着别的事。`
-    : `[SYSTEM_ACTIVATION_PROTOCOL: LATE REMINDER — ORIGINAL TIME MISSED]
-      You earlier promised to remind the user about "${reminder.event}" at ${originalTimeStr},
-      but you missed the moment, and now the user's local time is ${userTimeStr}.
-      ${reminder.sourceText ? `Original request context: ${reminder.sourceText}` : ''}
-      Rules:
-      1. Sound like Kumiko just realized she forgot — admit it instead of pretending the time just arrived.
-      2. Briefly check whether the user already handled it, e.g. "I was supposed to remind you about ${reminder.event} at ${originalTimeStr} — I missed it. Did you take care of it?"
-      3. Don't push them to do it now; the moment has passed. A small apology in passing is fine, 1-2 lines max.
-      4. Do not mention systems, timers, countdowns, automation, the app being closed, modules, etc. — it should sound like she got distracted or just forgot.`;
-  }
-
-  return language === 'zh' ? `[SYSTEM_ACTIVATION_PROTOCOL: 约好时间的提醒]
-      之前用户拜托过你到时间提醒这件事，现在已经到点了。
-      要提醒的事：${reminder.event}
-      ${reminder.sourceText ? `用户当时大意是：${reminder.sourceText}` : ''}
-      【重要时区注意】：用户当前所在时区的本地时间是 ${userTimeStr}。请严格根据【用户的时间】来判断用户的作息状态。如果用户那边是晚上，绝对不要说"早上好"或让用户"别赖床"。
-      规则：
-      1. 像黄前久美子本人突然想起来后给对方发一条 Line 一样自然。
-      2. 直接用祈使句催促，例如"快去洗衣服！""该吃饭了！""别忘了喝水！"，而不是"喊用户去xxx"这种描述式。
-      3. 保持简短，1-2句话就够，可以轻轻催一下或顺手吐槽一句。
-      4. 不要提系统、定时器、倒计时、自动触发、后台、模块。`
-  : `[SYSTEM_ACTIVATION_PROTOCOL: PROMISED REMINDER]
-      The user asked you earlier to remind them when the time came, and now it is due.
-      Reminder topic: ${reminder.event}
-      ${reminder.sourceText ? `Original request context: ${reminder.sourceText}` : ''}
-      [CRITICAL TIMEZONE NOTE]: The user's current local time is ${userTimeStr}. Strictly base your greeting and context on the USER'S time. Do not say "good morning" or "wake up" if it's evening for the user.
-      Rules:
-      1. Sound like Kumiko herself suddenly remembering and sending a LINE message.
-      2. Use direct imperative phrases like "Go do laundry!" "Time to eat!" rather than descriptive phrases like "remind user to do X".
-      3. Keep it short, just 1-2 natural lines, with maybe a light nudge or tiny complaint.
-      4. Do not mention systems, timers, countdowns, automation, background tasks, or modules.`;
-}
-
 // ---------------------------------------------------------------------------
 // prewarmTimedReminderMessage (H17.A — desktop T-60s prewarm)
 // ---------------------------------------------------------------------------
@@ -872,7 +831,7 @@ export async function prewarmTimedReminderMessage(
   // produce the "late acknowledgement" template; otherwise both stick
   // with the on-time template. Important that they agree, otherwise
   // the prewarmed cache would be used with a mismatched trigger prompt.
-  reminder: { id: string; event: string; sourceText?: string; dueAt: number; originalDueAt?: number },
+  reminder: TimedReminderContext & { id: string; dueAt: number },
 ): Promise<void> {
   const entry = startReminderPrewarm(reminder.id, reminder.event, reminder.dueAt);
   // The sentinel returns the EXISTING entry if a prewarm is already in flight or
@@ -884,10 +843,9 @@ export async function prewarmTimedReminderMessage(
 
   try {
     const systemPrompt = buildTimedReminderSystemPrompt(
-      { event: reminder.event, sourceText: reminder.sourceText },
+      reminder,
       language,
-      locationConfig.userTimezone,
-      reminder.originalDueAt,
+      reminder.dueAt,
     );
     const recentMessages = refs.messagesRef.current.slice(-contextLimit);
     const response = await sendMessageToGemini(
@@ -958,9 +916,7 @@ export async function triggerTimedReminderMessage(
   // RelativeReminder so callers can pass `originalDueAt` for the late
   // template. DailyReminder doesn't have `originalDueAt` (recurring), so
   // its branch always picks the on-time template.
-  reminder:
-    | (Pick<RelativeReminder, 'event' | 'sourceText'> & { originalDueAt?: number })
-    | Pick<DailyReminder, 'event' | 'sourceText'>,
+  reminder: TimedReminderContext,
   // v2.14.28 H17.A: optional reminder id so we can pull a prewarmed payload from
   // services/reminderPrewarmService. When the polling loop kicked a prewarm at
   // T-60s and the LLM (and possibly TTS) finished before T=0, this dispatch
@@ -973,12 +929,9 @@ export async function triggerTimedReminderMessage(
   const { language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook } = state;
   const prewarmHit = reminderId ? consumeReminderPrewarm(reminderId) : null;
 
-  const reminderOriginalDueAt = (reminder as { originalDueAt?: number }).originalDueAt;
   const systemPrompt = buildTimedReminderSystemPrompt(
     reminder,
     language,
-    locationConfig.userTimezone,
-    reminderOriginalDueAt,
   );
 
   state.setIsThinking(true);
@@ -1061,11 +1014,13 @@ export async function triggerTimedReminderMessage(
           ? { success: true as const, voiceFileId: prewarmedVoice.voiceFileId, voiceDuration: prewarmedVoice.voiceDuration, japaneseText: prewarmedVoice.japaneseText }
           : await helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion);
         if (voiceResult.success) {
-          addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion, undefined, {
+          const messageId = addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion, undefined, {
             isVoiceMessage: true, voiceFileId: voiceResult.voiceFileId, voiceDuration: voiceResult.voiceDuration, japaneseText: voiceResult.japaneseText,
           });
+          await commitAcceptedResponsePsyche(response, messageId);
         } else {
-          addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion);
+          const messageId = addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion);
+          await commitAcceptedResponsePsyche(response, messageId);
         }
         setTimeout(() => useAppStore.getState().setIsTalking(false), 2000);
         return true;
@@ -1128,22 +1083,28 @@ export async function triggerTimedReminderMessage(
         }
       }
 
+      let callCancelled = false;
+      let callAccepted = false;
       return new Promise<boolean>((resolve) => {
         useAppStore.getState().setVoiceCallOverlayData({
           reminderEvent: reminder.event,
           reminderText: combinedReminderText,
           emotion: response.emotion,
           onAccept: async () => {
+            if (callCancelled || callAccepted) return;
+            callAccepted = true;
             useAppStore.getState().setIsTalking(true);
             useAppStore.getState().setVoiceCallOverlayData((prev: any) => prev ? { ...prev, isConnecting: true } : null);
             if (isDesktopElectron()) window.electronAPI?.send('app:close-call-notification');
 
             const voiceResult = await voiceResultPromise;
+            if (callCancelled) return;
 
             if (voiceResult.success) {
               const voiceMsgId = addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion, undefined, {
                 isVoiceMessage: true, voiceFileId: voiceResult.voiceFileId, voiceDuration: voiceResult.voiceDuration, japaneseText: voiceResult.japaneseText,
               });
+              await commitAcceptedResponsePsyche(response, voiceMsgId);
               showBackgroundNotification(combinedReminderText, 'reminder', voiceMsgId);
               const buf = await (await import('../../services/voiceFileService')).loadVoiceFile(voiceResult.voiceFileId!);
               if (buf) {
@@ -1180,13 +1141,15 @@ export async function triggerTimedReminderMessage(
                 resolve(true);
               }
             } else {
-              addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion);
+              const messageId = addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion);
+              await commitAcceptedResponsePsyche(response, messageId);
               useAppStore.getState().setVoiceCallOverlayData(null);
               useAppStore.getState().setIsTalking(false);
               resolve(true);
             }
           },
           onReject: () => {
+            callCancelled = true;
             if (isDesktopElectron()) window.electronAPI?.send('app:close-call-notification');
             // v2.14.28 H17.B: abort the in-flight TTS pipeline so the
             // remaining HTTP calls (Fish/SoVITS/Vocu) bail instead of
@@ -1194,10 +1157,14 @@ export async function triggerTimedReminderMessage(
             // Promise so the controller is null — nothing to abort.
             try { reminderAbortCtrl?.abort('user_declined_call'); } catch { /* noop */ }
             useAppStore.getState().setVoiceCallOverlayData(null);
+            useAppStore.getState().setIsTalking(false);
             resolve(true);
           },
           onClose: () => {
+            callCancelled = true;
+            try { reminderAbortCtrl?.abort('user_closed_call'); } catch { /* noop */ }
             useAppStore.getState().setVoiceCallOverlayData(null);
+            useAppStore.getState().setIsTalking(false);
             resolve(true);
           },
         });
@@ -1227,6 +1194,7 @@ export async function triggerTimedReminderMessage(
     useAppStore.getState().setIsTalking(true);
 
     const reminderMessageId = addMessageToStore('model', firstText, undefined, undefined, undefined, undefined, undefined, response.emotion);
+    await commitAcceptedResponsePsyche(response, reminderMessageId);
     showBackgroundNotification(firstText, 'reminder', reminderMessageId);
 
     if (response.textParts.length > 1) {
@@ -1373,6 +1341,9 @@ export async function executeSend(
 async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
   const state = useAppStore.getState();
   const { coreMemory, worldBook, contextLimit, locationConfig, backupConfig, anchors, kumikoNotebook, turnCount, language, summaryArchiveState, missedReminders } = state;
+  // Capture before the model round trip; later settings/zone changes cannot move this promise.
+  const reminderRequestAt = Date.now();
+  const reminderUserZone = locationConfig.userTimezone;
 
   const {
     combinedText,
@@ -2245,6 +2216,23 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       }));
     }
 
+    // Only an actual user message in this turn may update what she knows.
+    // Proactive/prewarm/rewrite prompts never enter this persistence path.
+    if (response.userLocationDisclosure) {
+      const source = ctx.getMessagesSnapshot()
+        .filter(message => message.role === 'user' && !message.isHidden
+          && (currentPendingIds.has(message.id) || message.id === currentTurnStartMessageId))
+        .sort((a, b) => b.timestamp - a.timestamp)
+        .find(message => validateUserLocationDisclosure(response.userLocationDisclosure, message.text));
+      if (source) {
+        try {
+          await commitUserKnownLocationDisclosure(response.userLocationDisclosure, source, { isActualUserTurn: true });
+        } catch (error) {
+          console.warn('[USER LOCATION] Could not persist the disclosed location:', error);
+        }
+      }
+    }
+
     // --- REMINDERS & ANCHORS ---
     const hasReminderIntent = /(?:提醒|叫|喊)(?:一下)?我|记得.+(?:提醒|叫|喊)|remind me|ping me|tell me|wake me up/i.test(userTextForRag);
     const modelReminderAckText = (response.textParts || []).join(' ').replace(/\s+/g, ' ').trim();
@@ -2253,6 +2241,38 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
         .test(modelReminderAckText);
     const parsedRelativeReminder = parseRelativeReminderRequest(userTextForRag);
     const parsedDailyReminder = parseDailyReminderRequest(userTextForRag);
+    const reminderKnownLocation = hasReminderIntent || response.scheduleTrigger || hasModelAcknowledgedReminder
+      ? await resolveUserKnownLocation() : null;
+    const timingFor = (explicitZone?: string) => ({
+      referenceAt: reminderRequestAt,
+      timeZone: resolveReminderTimeZone(userTextForRag, reminderKnownLocation?.timeZone || reminderUserZone, explicitZone),
+    });
+    let invalidReminderClock = false;
+    let unknownReminderPlace = false;
+    const canResolveClock = (explicitZone?: string) => {
+      if (reminderKnownLocation && !reminderKnownLocation.timeZone && !getExplicitReminderTimeZone(userTextForRag, explicitZone)) {
+        unknownReminderPlace = true;
+        return false;
+      }
+      return true;
+    };
+    const saveDailyReminder = async (event: string, hour: number, minute: number, explicitZone?: string) => {
+      if (!canResolveClock(explicitZone)) return false;
+      if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+        invalidReminderClock = true;
+        return false;
+      }
+      await s2.saveDailyReminder(event, hour, minute, userTextForRag, timingFor(explicitZone).timeZone);
+      return true;
+    };
+    const saveClockReminder = async (event: string, hour: number, minute: number, daysOffset?: number, explicitZone?: string) => {
+      if (!canResolveClock(explicitZone)) return false;
+      const timing = timingFor(explicitZone);
+      const dueAt = getClockReminderAt(hour, minute, timing.timeZone, reminderRequestAt, daysOffset);
+      if (dueAt === null) { invalidReminderClock = true; return false; }
+      await s2.saveRelativeReminder(event, 1, userTextForRag, { ...timing, dueAt });
+      return true;
+    };
     let createdReminderThisTurn = false;
     // v2.14.23: structured pipeline log. Gate 1 = turn-start. Lets us see in
     // logcat exactly which path hit / missed without sprinkling ad-hoc
@@ -2290,13 +2310,14 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     // and is allowed to fall through too — schedule_events is a calendar entry,
     // not a reminder, and creating both for "明天提醒我..." is valid.
     if (response.scheduleTrigger?.event) {
-      const { event, days_offset, delay_seconds, recurrence, hour, minute } = response.scheduleTrigger;
+      const { event, days_offset, delay_seconds, recurrence, hour, minute, time_zone } = response.scheduleTrigger;
       if (recurrence === 'daily' && typeof hour === 'number' && typeof minute === 'number') {
-        await s2.saveDailyReminder(event, hour, minute, userTextForRag);
-        createdReminderThisTurn = true;
+        createdReminderThisTurn = await saveDailyReminder(event, parsedDailyReminder?.hour ?? hour, parsedDailyReminder?.minute ?? minute, time_zone);
         console.log('[REMINDER] gate=llm-trigger-hit', { kind: 'daily', event, hour, minute });
+      } else if (typeof hour === 'number' && typeof minute === 'number') {
+        createdReminderThisTurn = await saveClockReminder(event, hour, minute, days_offset, time_zone);
       } else if (typeof delay_seconds === 'number' && delay_seconds > 0) {
-        await s2.saveRelativeReminder(event, delay_seconds, userTextForRag);
+        await s2.saveRelativeReminder(event, delay_seconds, userTextForRag, timingFor(time_zone));
         createdReminderThisTurn = true;
         console.log('[REMINDER] gate=llm-trigger-hit', { kind: 'relative', event, delay_seconds });
       } else {
@@ -2325,16 +2346,15 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
 
     if (!createdReminderThisTurn) {
       const llmEvent = response.scheduleTrigger?.event;
-      if (parsedRelativeReminder) {
+      if (parsedDailyReminder) {
+        const eventText = llmEvent || parsedDailyReminder.event;
+        createdReminderThisTurn = await saveDailyReminder(eventText, parsedDailyReminder.hour, parsedDailyReminder.minute);
+        console.log('[REMINDER] gate=local-regex-hit', { kind: 'daily', event: eventText, hour: parsedDailyReminder.hour, minute: parsedDailyReminder.minute });
+      } else if (parsedRelativeReminder) {
         const eventText = llmEvent || parsedRelativeReminder.event;
-        await s2.saveRelativeReminder(eventText, parsedRelativeReminder.delaySeconds, userTextForRag);
+        await s2.saveRelativeReminder(eventText, parsedRelativeReminder.delaySeconds, userTextForRag, timingFor());
         createdReminderThisTurn = true;
         console.log('[REMINDER] gate=local-regex-hit', { kind: 'relative', event: eventText, delaySec: parsedRelativeReminder.delaySeconds });
-      } else if (parsedDailyReminder) {
-        const eventText = llmEvent || parsedDailyReminder.event;
-        await s2.saveDailyReminder(eventText, parsedDailyReminder.hour, parsedDailyReminder.minute, userTextForRag);
-        createdReminderThisTurn = true;
-        console.log('[REMINDER] gate=local-regex-hit', { kind: 'daily', event: eventText, hour: parsedDailyReminder.hour, minute: parsedDailyReminder.minute });
       }
     }
 
@@ -2374,11 +2394,12 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           typeof llmRetryResult.hour === 'number' &&
           typeof llmRetryResult.minute === 'number'
         ) {
-          await s2.saveDailyReminder(llmRetryResult.event, llmRetryResult.hour, llmRetryResult.minute, userTextForRag);
-          createdReminderThisTurn = true;
+          createdReminderThisTurn = await saveDailyReminder(llmRetryResult.event, llmRetryResult.hour, llmRetryResult.minute, llmRetryResult.timeZone);
           console.log('[REMINDER] gate=dfallback-hit', { kind: 'daily', event: llmRetryResult.event, hour: llmRetryResult.hour, minute: llmRetryResult.minute });
+        } else if (typeof llmRetryResult.hour === 'number' && typeof llmRetryResult.minute === 'number') {
+          createdReminderThisTurn = await saveClockReminder(llmRetryResult.event, llmRetryResult.hour, llmRetryResult.minute, llmRetryResult.daysOffset, llmRetryResult.timeZone);
         } else if (typeof llmRetryResult.delaySeconds === 'number' && llmRetryResult.delaySeconds > 0) {
-          await s2.saveRelativeReminder(llmRetryResult.event, llmRetryResult.delaySeconds, userTextForRag);
+          await s2.saveRelativeReminder(llmRetryResult.event, llmRetryResult.delaySeconds, userTextForRag, timingFor(llmRetryResult.timeZone));
           createdReminderThisTurn = true;
           console.log('[REMINDER] gate=dfallback-hit', { kind: 'relative', event: llmRetryResult.event, delaySec: llmRetryResult.delaySeconds });
         }
@@ -2415,7 +2436,15 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       // confused. Now they at least see "时间没听清" and can rephrase.
       // Other reasons stay silent (rejected-by-llm means the ask wasn't
       // actually a reminder; null/unclassified are usually transient).
-      if (reason === 'intent-no-timing' || reason === 'intent-no-event') {
+      if (unknownReminderPlace) {
+        s2.setSystemNotice(language === 'zh'
+          ? '你告诉久美子的地区还没确认清楚，请补充城市或明确按哪个地区的时间提醒。'
+          : 'Please clarify the city you told Kumiko about, or explicitly name the reminder’s timezone.');
+      } else if (invalidReminderClock) {
+        s2.setSystemNotice(language === 'zh'
+          ? '这个提醒的日期或钟点已经过去，或在约定时区不存在，请换一个明确的时间。'
+          : 'That date/time has passed or does not exist in the agreed timezone. Please choose a valid time.');
+      } else if (reason === 'intent-no-timing' || reason === 'intent-no-event') {
         const toastZh = reason === 'intent-no-timing'
           ? '听到了「提醒我」，但没听清是几分钟还是几点。可以再说一遍具体时间吗？'
           : '听到了时间，但没听清要提醒做什么，可以再说一次吗？';
@@ -2483,12 +2512,14 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           quoteData, response.emotion, undefined,
           { isVoiceMessage: true, voiceFileId: voiceResult.voiceFileId, voiceDuration: voiceResult.voiceDuration, japaneseText: voiceResult.japaneseText },
         );
+        await commitAcceptedResponsePsyche(response, voiceMsgId);
         showBackgroundNotification(combinedVoiceText, 'reply', voiceMsgId);
       } else {
         const textMsgId = addMessageToStore(
           'model', combinedVoiceText, undefined, undefined, undefined, undefined,
           quoteData, response.emotion, undefined,
         );
+        await commitAcceptedResponsePsyche(response, textMsgId);
         showBackgroundNotification(combinedVoiceText, 'reply', textMsgId);
       }
     } else {
@@ -2551,6 +2582,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           }
         }
 
+        if (ctx.isCancelled()) break;
         if (i === 0) {
           useAppStore.getState().setIsThinking(false);
           useAppStore.getState().setIsTalking(true);
@@ -2574,6 +2606,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
         );
 
         if (i === 0) {
+          await commitAcceptedResponsePsyche(response, modelMessageId);
           showBackgroundNotification(response.textParts[i], 'reply', modelMessageId);
         }
       }

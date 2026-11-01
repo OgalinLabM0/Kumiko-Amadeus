@@ -120,6 +120,7 @@ function loadBackupActionsForInvalidRestore() {
     './backupImportValidation': { validateBackupImportPayload },
     '../../services/db': { db: { transaction: async () => { databaseWrites += 1; } } },
     '../../services/appConfig': {},
+    '../../services/userKnownLocation': {},
     '../../services/desktopBackupService': {},
     '../../services/environment': {},
     '../../services/capacitorBackupNative': {},

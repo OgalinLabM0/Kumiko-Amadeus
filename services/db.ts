@@ -107,13 +107,22 @@ export interface KumikoDiaryEntity {
   previousSummary?: string;
 }
 
+export interface PsycheDriftContext {
+  timezone: string;
+  holidayDate?: string;
+  isHoliday?: boolean;
+}
+
 export interface PsycheStateEntity {
   id: string; // usually 'current'
   stress: number; // 0-100
   energy: number; // 0-100
   relaxation: number; // 0-100
   lastUpdated: number;
+  lastDriftAt?: number; // independent of chat/diary emotional adjustments
+  driftContext?: PsycheDriftContext;
   lastChatDeltaDirection?: { stress: number; energy: number; relaxation: number };
+  committedResponseEvents?: Record<string, { messageId: string; committedAt: number }>;
 }
 
 // v2.14.29 Reactive: short-term mood swing toward / away from the
