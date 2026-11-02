@@ -23,16 +23,8 @@ export const selectDiaryMessages = <T extends { timestamp: number }>(messages: T
 // calendar entry for the target date instead; a failed calendar read is unknown.
 export const getDiaryHoliday = async (date: string): Promise<boolean | undefined> => {
   try {
-    const api = typeof window !== 'undefined' ? (window as any).electronAPI : null;
-    let result;
-    if (api && typeof api.invoke === 'function') {
-      result = await api.invoke('app:get-japan-holidays');
-    } else {
-      const { isCapacitorNative } = await import('./environment');
-      if (!isCapacitorNative()) return undefined;
-      const { fetchJapanHolidaysDirect } = await import('./ambientWeatherDirect');
-      result = await fetchJapanHolidaysDirect();
-    }
+    const { fetchJapanHolidaysDirect } = await import('./ambientWeatherDirect');
+    const result = await fetchJapanHolidaysDirect();
     if (result?.success && result.holidays && typeof result.holidays === 'object') {
       return Boolean(result.holidays[date]);
     }

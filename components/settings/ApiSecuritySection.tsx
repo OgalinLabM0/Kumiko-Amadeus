@@ -5,6 +5,7 @@ import { getDefaultEndpoint } from '../../services/appConfig';
 import { Collapse } from '../Collapse';
 import { ThemedSelect, type ThemedSelectItem } from '../common/ThemedSelect';
 import { ComposableInput } from '../common/ComposableInput';
+import { hasNativeCredentials } from '../../services/nativeCredentials';
 
 const PROVIDER_OPTIONS: { value: AIProvider; label: string; group: 'intl' | 'cn' }[] = [
   { value: 'gemini', label: 'Google Gemini', group: 'intl' },
@@ -126,13 +127,16 @@ export const ApiSecuritySection: React.FC<ApiSecuritySectionProps> = ({
           </div>
 
           <div className="space-y-3">
+            {!hasNativeCredentials() && <p className="ka-copy-sm">新密钥仅用于当前会话，旧存储副本单独保留。 / New keys are session-only; older stored copies are retained separately.</p>}
             <div>
               <label className={`block ka-label ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t_local.keyLabel}</label>
-              <ComposableInput type="password" value={localAiConfig.apiKey_primary || ''} onChange={(e) => onUpdateAiConfig('apiKey_primary', e.target.value)} placeholder={t_local.keyPlaceHolder} className={inputClass} />
+              <ComposableInput type="password" value={localAiConfig.apiKey_primary?.startsWith('vault:') ? '' : (localAiConfig.apiKey_primary || '')} onChange={(e) => onUpdateAiConfig('apiKey_primary', e.target.value)} placeholder={localAiConfig.apiKey_primary?.startsWith('vault:') ? '已配置 / Configured · 输入以替换 / Enter to replace' : t_local.keyPlaceHolder} className={inputClass} />
+              {localAiConfig.apiKey_primary?.startsWith('vault:') && <button type="button" className="ka-copy-sm underline" onClick={() => onUpdateAiConfig('apiKey_primary', '')}>移除此配置 / Remove from configuration</button>}
             </div>
             <div>
               <label className={`block ka-label ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t_local.keyLabel_backup}</label>
-              <ComposableInput type="password" value={localAiConfig.apiKey_backup || ''} onChange={(e) => onUpdateAiConfig('apiKey_backup', e.target.value)} placeholder={t_local.keyPlaceHolder} className={inputClass} />
+              <ComposableInput type="password" value={localAiConfig.apiKey_backup?.startsWith('vault:') ? '' : (localAiConfig.apiKey_backup || '')} onChange={(e) => onUpdateAiConfig('apiKey_backup', e.target.value)} placeholder={localAiConfig.apiKey_backup?.startsWith('vault:') ? '已配置 / Configured · 输入以替换 / Enter to replace' : t_local.keyPlaceHolder} className={inputClass} />
+              {localAiConfig.apiKey_backup?.startsWith('vault:') && <button type="button" className="ka-copy-sm underline" onClick={() => onUpdateAiConfig('apiKey_backup', '')}>移除此配置 / Remove from configuration</button>}
             </div>
           </div>
 

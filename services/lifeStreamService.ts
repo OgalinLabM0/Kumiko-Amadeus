@@ -17,19 +17,30 @@
 // the two sibling services above. There is nothing to restore from the
 // pre-0a82cba layout — the responsibility was promoted, not removed.
 
-import { db, DailyFragmentEntity, KumikoDiaryEntity, getWorldCharacterStatus, updateWorldCharacterStatus, WorldCharacterStatusMap } from './db';
+import { db, DailyFragmentEntity, KumikoDiaryEntity, getWorldCharacterStatus, INITIAL_WORLD_CHARACTER_STATUS, type MessageEntity, type KeyValEntity, WorldCharacterStatusMap } from './db';
 import { callLLMRaw, getCurrentAIConfig } from './geminiService';
 import { verifyAgainstHistory, type DiaryDateMetadata } from './diaryValidatorService';
 import { getCurrentKumikoState, getSchoolTermContext, getDetailedScheduleSlot, getDayScheduleSummary, getSchoolPrepPhase } from './kumikoStateMachine';
 import { updatePsycheState } from './psycheStateService';
 import { isCapacitorNative } from './environment';
 import { fetchHistoricalWeatherDirect } from './ambientWeatherDirect';
+import { resolveTaskModel } from './taskModelRouter';
+import { getDataRestoreVersion, assertDataWritesAllowed } from './dataRestoreGate';
+import { getMemoryGeneration, assertMemoryAvailable, assertMemoryGenerationCurrent } from './memoryMaintenanceGate';
+import { TaskCapacityError, assertTaskModelRevisionsCurrent, beginForegroundActivity, endForegroundActivity, type TaskContext } from './taskRuntime';
+import { saveDiaryWithIndexJob, indexSavedDiary } from './diaryIndexJobs';
+import { recordStateProvenance } from './stateProvenance';
+import { assertSourceRefsCurrent } from './artifactIndexService';
+import type { EvidenceRef } from './runtimeEntities';
 // F2B.3: dropped `isMobilePwa` + `httpApi` imports. PWA used to fetch
 // historical weather through PC's `app:get-historical-weather` channel;
 // with the bridge gone, Capacitor goes direct to Open-Meteo and Electron
 // stays on the main-process handler.
 
 type DiaryChatMessage = {
+  id?: string;
+  sourceRevision?: string;
+  contentRevision?: string;
   role: 'user' | 'model';
   text: string;
   timestamp: number;
@@ -423,9 +434,12 @@ const extractForbiddenSpecificsFromDiary = (diary: KumikoDiaryEntity): string[] 
 const buildDiaryContinuityContext = async (
   dateStr: string,
   chatMessages: DiaryChatMessage[] = [],
-  fragments: DailyFragmentEntity[] = []
+  fragments: DailyFragmentEntity[] = [],
+  diarySnapshot?: KumikoDiaryEntity[]
 ): Promise<DiaryContinuityContext> => {
-  const recentDiaries = await getRecentDiaries(DIARY_RECENT_LOOKBACK_DAYS, dateStr);
+  const recentDiaries = diarySnapshot
+    ? diarySnapshot.filter(d => d.date < dateStr).sort((a, b) => a.date.localeCompare(b.date)).slice(-DIARY_RECENT_LOOKBACK_DAYS)
+    : await getRecentDiaries(DIARY_RECENT_LOOKBACK_DAYS, dateStr);
   const previousDiary = recentDiaries.length > 0 ? recentDiaries[recentDiaries.length - 1] : null;
   const carryoverFacts = previousDiary ? extractCarryoverFactsFromContent(previousDiary.content) : [];
   const specificityEvidence = buildSpecificityEvidenceBundle(chatMessages, fragments, carryoverFacts);
@@ -517,7 +531,7 @@ ${recentEvidenceText}`;
 const parseDiaryModelResponse = (
   response: string,
   diaryDateHeader: string
-): { content: string; summary: string; updatesText: string; psycheDeltaText: string } => {
+): { content: string; summary: string; updatesText: string; psycheDeltaText: string; sourceIdsText: string } => {
   const cleanResponse = response.replace(/^```[a-z]*\s*/im, '').replace(/```$/im, '').trim();
 
   const contentMatch = cleanResponse.match(/<diary_content>([\s\S]*?)<\/diary_content>/i);
@@ -533,6 +547,7 @@ const parseDiaryModelResponse = (
     rawContent = rawContent.replace(/<diary_summary>[\s\S]*?<\/diary_summary>/gi, '')
                            .replace(/<character_status_updates>[\s\S]*?<\/character_status_updates>/gi, '')
                            .replace(/<kumiko_psyche_delta>[\s\S]*?<\/kumiko_psyche_delta>/gi, '')
+                           .replace(/<diary_source_ids>[\s\S]*?<\/diary_source_ids>/gi, '')
                            .replace(/<diary_content>/gi, '')
                            .replace(/<\/diary_content>/gi, '')
                            .trim();
@@ -558,6 +573,7 @@ const parseDiaryModelResponse = (
     summary: summaryMatch ? summaryMatch[1].trim() : `${contentForSummary.replace(/\s+/gu, ' ').slice(0, 50)}...`,
     updatesText: updatesMatch ? updatesMatch[1].trim() : '',
     psycheDeltaText: psycheDeltaMatch ? psycheDeltaMatch[1].trim() : '',
+    sourceIdsText: cleanResponse.match(/<diary_source_ids>\s*(\[[\s\S]*?\])\s*<\/diary_source_ids>/i)?.[1] || '[]',
   };
 };
 
@@ -622,24 +638,19 @@ const hardWeekdayCheck = (content: string, dateStr: string): string[] => {
   return issues;
 };
 
-const fetchHistoricalWeather = async (dateStr: string): Promise<string | undefined> => {
+const fetchHistoricalWeather = async (dateStr: string, taskContext?: TaskContext): Promise<string | undefined> => {
   // Two runtime targets, same data shape:
   //   - Electron desktop: PC's main-process handler (electron/weather-calendar.cjs).
   //   - Capacitor native (Android APK): direct Open-Meteo call via
   //     services/ambientWeatherDirect — no PC dependency.
   // F2B.3: PWA HTTP bridge removed.
   try {
-    const api = (typeof window !== 'undefined' ? (window as any).electronAPI : null);
-    let res: any = null;
-    if (api && typeof api.invoke === 'function') {
-      res = await api.invoke('app:get-historical-weather', dateStr);
-    } else if (isCapacitorNative()) {
-      res = await fetchHistoricalWeatherDirect(dateStr);
-    }
+    const res = await fetchHistoricalWeatherDirect(dateStr, taskContext);
     if (res && res.success && res.weather) {
       return `久美子所在地 (日本宇治市) 当前天气: ${res.weather}`;
     }
   } catch (e) {
+    if (e instanceof TaskCapacityError || (e instanceof Error && e.name === 'AbortError')) throw e;
     console.warn(`[LifeStream] Failed to fetch historical weather for ${dateStr}:`, e);
   }
   return undefined;
@@ -892,7 +903,7 @@ ${continuityContext.recentMotifs.length > 0
 7. **防止时间停滞（Temporal Inertia）**：如果你看到了昨天关于“明天准备做某事”的回忆，你**必须将时间推进为过去时**（例如：“今天终于做完了某事”），绝对不允许像复读机一样在今天再次感叹“明天要去做某事”！
 8. 不要输出任何多余的解释，直接输出文本。`;
 
-    const content = await callLLMRaw(systemPrompt, "请推演当前的生活切片。", config.model_summary || config.model_main);
+    const content = await callLLMRaw(systemPrompt, "请推演当前的生活切片。", undefined, { role: 'diary' });
     
     if (!content) return null;
 
@@ -929,6 +940,7 @@ const rewriteDiaryModelResponse = async (params: {
   originalSummary: string;
   issues: string[];
   freezeStatusEvolution: boolean;
+  taskContext?: TaskContext;
 }): Promise<string | null> => {
   const config = getCurrentAIConfig();
   const {
@@ -1013,9 +1025,33 @@ ${freezeStatusEvolution ? '留空。' : '如无必要请留空。'}
   return callLLMRaw(
     rewritePrompt,
     '初稿发生客观逻辑穿帮，请你根据报错信息，以相同丰满的颗粒度定点重写矛盾段落，绝不许泛化退缩。',
-    config.model_summary || config.model_main
+    undefined, { taskContext: params.taskContext, signal: params.taskContext?.signal, role: 'diary' }
   );
 };
+
+export interface DiaryGenerationSnapshot {
+  messages: MessageEntity[];
+  fragments: DailyFragmentEntity[];
+  recentDiaries: KumikoDiaryEntity[];
+  worldStatusRow?: KeyValEntity;
+  weather?: string;
+  isHoliday?: boolean;
+  afterContext?: string;
+}
+
+async function readDiarySnapshot(date: string): Promise<Omit<DiaryGenerationSnapshot, 'weather' | 'isHoliday' | 'afterContext'>> {
+  const start = getJSTMidnightUTC(date);
+  const [messages, fragments, previous, current, next, worldStatusRow] = await Promise.all([
+    db.messages.where('timestamp').between(start, start + 86_400_000, true, false).toArray(),
+    db.dailyFragments.where('date').equals(date).toArray(),
+    db.kumikoDiary.where('date').below(date).reverse().limit(DIARY_RECENT_LOOKBACK_DAYS).toArray(),
+    db.kumikoDiary.where('date').equals(date).toArray(), db.kumikoDiary.where('date').above(date).first(),
+    db.keyval.get('world_character_status'),
+  ]);
+  const recentDiaries = [...previous, ...current, ...(next ? [next] : [])];
+  return { messages: messages.sort((a, b) => a.id.localeCompare(b.id)), fragments: fragments.sort((a, b) => a.id.localeCompare(b.id)),
+    recentDiaries: recentDiaries.sort((a, b) => a.id.localeCompare(b.id)), worldStatusRow };
+}
 
 export const generateDailyDiary = async (
   dateStr: string,
@@ -1024,23 +1060,38 @@ export const generateDailyDiary = async (
   weatherStr?: string,
   isHoliday?: boolean,
   freezeStatusEvolution: boolean = false,
-  existingDiary?: KumikoDiaryEntity | null
+  existingDiary?: KumikoDiaryEntity | null,
+  jobContext?: { assertCurrent(): Promise<void>; assertClaim?(): Promise<void>; complete?(): Promise<void>; saveDraft?(diary: KumikoDiaryEntity): Promise<void>; taskContext?: TaskContext; snapshot?: DiaryGenerationSnapshot }
 ): Promise<KumikoDiaryEntity | null> => {
+  const restoreVersion = getDataRestoreVersion();
+  const memoryGeneration = getMemoryGeneration();
+  const ownTask = !jobContext?.taskContext;
+  const taskId = crypto.randomUUID();
+  const taskContext: TaskContext = jobContext?.taskContext ?? { taskId, rootId: taskId, role: 'diary', lane: 'foreground',
+    deadlineAt: Date.now() + 180_000, epoch: restoreVersion, memoryGeneration, modelRevisions: {}, consultedSources: [] };
   try {
+    if (ownTask) await beginForegroundActivity(taskContext);
+    assertDataWritesAllowed();
     const config = getCurrentAIConfig();
     // Fetch historical weather if none provided
-    if (!weatherStr || !weatherStr.trim()) {
-      const historical = await fetchHistoricalWeather(dateStr);
+    if (!jobContext?.snapshot && (!weatherStr || !weatherStr.trim())) {
+      const historical = await fetchHistoricalWeather(dateStr, taskContext);
       if (historical) {
         weatherStr = historical;
         console.log(`[LifeStream] Using historical weather for ${dateStr}: ${historical}`);
       }
     }
-    const normalizedChatMessages = Array.isArray(chatMessages)
-      ? [...chatMessages].sort((a, b) => a.timestamp - b.timestamp)
-      : [];
-    const fragments = await getDailyFragments(dateStr);
-    const continuityContext = await buildDiaryContinuityContext(dateStr, normalizedChatMessages, fragments);
+    const snapshot = jobContext?.snapshot ?? await db.transaction('r', [db.messages, db.dailyFragments, db.kumikoDiary, db.keyval], () => readDiarySnapshot(dateStr));
+    if (jobContext?.snapshot) { weatherStr = jobContext.snapshot.weather; isHoliday = jobContext.snapshot.isHoliday; afterContext = jobContext.snapshot.afterContext; }
+    if (existingDiary && !snapshot.recentDiaries.some(d => d.id === existingDiary!.id && JSON.stringify(d) === JSON.stringify(existingDiary))) {
+      throw new Error('Diary changed before rewrite.');
+    }
+    // Unread/failed user messages have not become the character's knowledge.
+    const normalizedChatMessages: DiaryChatMessage[] = snapshot.messages
+      .filter(message => message.role !== 'user' || (message.isRead === true && message.sendStatus !== 'failed'))
+      .sort((a, b) => a.timestamp - b.timestamp);
+    const fragments = snapshot.fragments;
+    const continuityContext = await buildDiaryContinuityContext(dateStr, normalizedChatMessages, fragments, snapshot.recentDiaries);
     const chatHistoryText = buildChatHistoryText(normalizedChatMessages);
     const isRewrite = Boolean(existingDiary);
     if (isRewrite && existingDiary) {
@@ -1058,6 +1109,7 @@ export const generateDailyDiary = async (
     const continuityPromptBlock = buildContinuityPromptBlock(continuityContext);
     
     // Get today's fragments
+    const diaryEvidence = normalizedChatMessages.filter(m => m.id && m.text.trim());
     const fragmentContext = fragments.map(f => `[时间 ${formatJSTTime(f.timestamp)}]: ${f.content}`).join('\n');
 
     // Get recent diaries for causal continuity
@@ -1072,7 +1124,7 @@ export const generateDailyDiary = async (
       : '';
 
     // Get current character status for dynamic evolution
-    const charStatus = await getWorldCharacterStatus();
+    const charStatus = (snapshot.worldStatusRow?.value as WorldCharacterStatusMap | undefined) ?? INITIAL_WORLD_CHARACTER_STATUS;
     const charStatusContext = Object.entries(charStatus).map(([key, data]) => {
       return `- ${data.aliases[0]} (${key}): [客观状态] ${data.current_status} | [主观情绪] ${data.current_attitude} | [近期事件] ${data.last_major_event}`;
     }).join('\n');
@@ -1083,6 +1135,7 @@ export const generateDailyDiary = async (
       : '';
 
     const systemPrompt = `你现在是黄前久美子。现在是深夜23点，你正在写今天的私人日记。
+只能引用实际记录过的经历；在 <diary_source_ids> 中输出支撑日记的消息 ID JSON 数组。消息是对话证据，不证明对话中提及的外部事件实际发生。可引用的消息：${JSON.stringify(diaryEvidence.map(m => ({ id: m.id, role: m.role, text: m.text })))}。没有依据则输出 []。
 ${rewriteBlock}
 【今天的客观信息】
 - 日期：${dateStr}（${weekday}曜日）
@@ -1211,7 +1264,7 @@ ${freezeStatusEvolution ? '留空。' : '如果今天的经历对你的心理状
       freezeStatusEvolution
         ? '请写下今天的日记。注意这是历史补齐模式，不要更新人物状态。'
         : '请写下今天的日记，并仅在确有必要时更新人物状态档案。',
-      config.model_summary || config.model_main
+      undefined, { taskContext, signal: taskContext.signal, role: 'diary' }
     );
     
     if (!response) return null;
@@ -1239,7 +1292,7 @@ ${freezeStatusEvolution ? '留空。' : '如果今天的经历对你的心理状
         dailyContext, fragmentContext, diaryContext, afterContextBlock,
         chatHistoryText, charStatusContext, continuityPromptBlock,
         originalContent: parsedDiary.content, originalSummary: parsedDiary.summary,
-        issues: hardIssues, freezeStatusEvolution,
+        issues: hardIssues, freezeStatusEvolution, taskContext,
       });
       if (hwRewrite) {
         parsedDiary = parseDiaryModelResponse(hwRewrite, diaryDateHeader);
@@ -1252,7 +1305,8 @@ ${freezeStatusEvolution ? '留空。' : '如果今天的经历对你的心理状
     const MAX_VALIDATION_ROUNDS = 2;
     let lastRoundHadIssues = false;
     for (let round = 0; round < MAX_VALIDATION_ROUNDS; round++) {
-      const issues = await verifyAgainstHistory(parsedDiary.content, chatHistoryText, diaryContext, dateMetadata);
+      const issues = await verifyAgainstHistory(parsedDiary.content, chatHistoryText, diaryContext, dateMetadata,
+        { taskContext, signal: taskContext.signal });
       if (issues.length === 0) { lastRoundHadIssues = false; break; }
 
       hadIssues = true;
@@ -1263,7 +1317,7 @@ ${freezeStatusEvolution ? '留空。' : '如果今天的经历对你的心理状
         dailyContext, fragmentContext, diaryContext, afterContextBlock,
         chatHistoryText, charStatusContext, continuityPromptBlock,
         originalContent: parsedDiary.content, originalSummary: parsedDiary.summary,
-        issues, freezeStatusEvolution,
+        issues, freezeStatusEvolution, taskContext,
       });
 
       if (rewrittenResponse) {
@@ -1292,7 +1346,7 @@ ${freezeStatusEvolution ? '留空。' : '如果今天的经历对你的心理状
             originalContent: parsedDiary.content,
             originalSummary: parsedDiary.summary,
             issues: [`文本重叠过高（${(overlapScore * 100).toFixed(0)}%），与最近几天的日记内容过于雷同。必须大幅改写场景、视线焦点、行为细节，换用全新的素材和切入点。`],
-            freezeStatusEvolution,
+            freezeStatusEvolution, taskContext,
           });
           if (overlapRewrite) {
             parsedDiary = parseDiaryModelResponse(overlapRewrite, diaryDateHeader);
@@ -1302,42 +1356,37 @@ ${freezeStatusEvolution ? '留空。' : '如果今天的经历对你的心理状
       }
     }
 
+    // A later rewrite replaces the earlier validated text, so validate the
+    // final candidate again before it can become an indexed diary.
+    if (hardWeekdayCheck(parsedDiary.content, dateStr).length > 0 ||
+        (await verifyAgainstHistory(parsedDiary.content, chatHistoryText, diaryContext, dateMetadata,
+          { taskContext, signal: taskContext.signal })).length > 0) {
+      validationStatus = 'failed';
+    }
+
     const { content, summary, updatesText, psycheDeltaText } = parsedDiary;
-    
-    // Process character status updates
-    if (!freezeStatusEvolution && updatesText && updatesText !== '无' && updatesText !== '{}' && updatesText !== '留空。') {
+    let sourceIds: string[] = [];
+    try { const parsed = JSON.parse(parsedDiary.sourceIdsText); if (Array.isArray(parsed) && parsed.every(id => typeof id === 'string')) sourceIds = [...new Set(parsed)]; } catch { /* no usable evidence */ }
+    const basis = diaryEvidence.filter(message => message.id && sourceIds.includes(message.id));
+    let validEvidence = sourceIds.length > 0 && basis.length === sourceIds.length;
+    if (validEvidence && validationStatus === 'passed') {
+      const verifyInput = JSON.stringify(basis.map(m => ({ id: m.id, role: m.role, text: m.text })));
+      const audit = await callLLMRaw(
+        `核验日记和心理反思只能依据已阅读对话。只输出 JSON {"approved":true或false,"sourceIds":[...] }。\n` +
+        `只有日记每项具体经历均有引用记录直接支持，且情绪/人物态度是对已有对话的主观反应才批准；聊天里提及外部事情不证明其真实发生。` +
+        `禁止把想象、常规日程或日记叙事当事实，禁止人物客观状态和事件更新。任何依据不足或不确定一律 false。\n依据：${verifyInput}\n` +
+        `日记：${content}\n心理候选：${psycheDeltaText}\n人物候选：${updatesText}`,
+        '逐项检查依据并输出 JSON。', undefined,
+        { taskContext, signal: taskContext.signal, role: 'verification' });
       try {
-        const jsonMatch = updatesText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsedUpdates = JSON.parse(jsonMatch[0]) as Partial<WorldCharacterStatusMap>;
-          if (Object.keys(parsedUpdates).length > 0) {
-            console.log('[LifeStream] Evolving character status:', parsedUpdates);
-            await updateWorldCharacterStatus(parsedUpdates);
-          }
-        }
-      } catch (e) {
-        console.warn('[LifeStream] Failed to parse character_status_updates JSON:', e);
-      }
+        const parsed = JSON.parse(audit?.match(/\{[\s\S]*\}/)?.[0] || '{}');
+        validEvidence = parsed.approved === true && Array.isArray(parsed.sourceIds)
+          && parsed.sourceIds.length === sourceIds.length && sourceIds.every(id => parsed.sourceIds.includes(id));
+      } catch { validEvidence = false; }
     }
 
-    // Process Kumiko's own psyche delta from diary
-    if (!freezeStatusEvolution && psycheDeltaText && psycheDeltaText !== '留空。' && psycheDeltaText.trim()) {
-      try {
-        const pdJson = psycheDeltaText.match(/\{[\s\S]*\}/);
-        if (pdJson) {
-          const pd = JSON.parse(pdJson[0]) as { stress?: number; energy?: number; relaxation?: number };
-          const sd = pd.stress ?? 0, ed = pd.energy ?? 0, rd = pd.relaxation ?? 0;
-          if (sd !== 0 || ed !== 0 || rd !== 0) {
-            const { applyDiaryPsycheDelta } = await import('./psycheStateService');
-            await applyDiaryPsycheDelta(sd, ed, rd);
-            console.log(`[LifeStream] Diary psyche delta applied: stress${sd >= 0 ? '+' : ''}${sd}, energy${ed >= 0 ? '+' : ''}${ed}, relaxation${rd >= 0 ? '+' : ''}${rd}`);
-          }
-        }
-      } catch (e) {
-        console.warn('[LifeStream] Failed to parse kumiko_psyche_delta JSON:', e);
-      }
-    }
-
+    if (restoreVersion !== getDataRestoreVersion()) throw new Error('Diary generation expired after restoration.');
+    assertDataWritesAllowed();
     const diary: KumikoDiaryEntity = {
       id: existingDiary?.id || crypto.randomUUID(),
       date: dateStr,
@@ -1349,11 +1398,51 @@ ${freezeStatusEvolution ? '留空。' : '如果今天的经历对你的心理状
       validationStatus,
     };
 
-    await db.kumikoDiary.put(diary);
-    return diary;
+    // A generated narrative is never itself evidence of an event. Keep an
+    // ungrounded or failed draft outside the formal diary and its index.
+    if (!validEvidence || validationStatus !== 'passed') {
+      if (jobContext?.saveDraft) await jobContext.saveDraft(diary);
+      else await db.transaction('rw', db.keyval, async () => {
+        await assertMemoryGenerationCurrent(memoryGeneration);
+        assertDataWritesAllowed();
+        if (restoreVersion !== getDataRestoreVersion()) throw new Error('Diary draft expired after restore');
+        await db.keyval.put({ key: `kumiko_diary_draft_v1:${diary.date}`, value: diary });
+        assertMemoryAvailable(memoryGeneration);
+      });
+      return null;
+    }
+    const { createDiaryReflection } = await import('./diaryReflection');
+    const reflect = await createDiaryReflection({ date: dateStr, sourceMessages: basis, updatesText, psycheDeltaText,
+      reflect: !freezeStatusEvolution && !existingDiary });
+    const expected = JSON.stringify({ messages: [...snapshot.messages].sort((a, b) => a.id.localeCompare(b.id)),
+      fragments: [...snapshot.fragments].sort((a, b) => a.id.localeCompare(b.id)),
+      recentDiaries: [...snapshot.recentDiaries].sort((a, b) => a.id.localeCompare(b.id)), worldStatusRow: snapshot.worldStatusRow });
+    const commitReflection = async () => {
+      if (JSON.stringify(await readDiarySnapshot(dateStr)) !== expected) throw new Error('Diary input snapshot changed');
+      await assertTaskModelRevisionsCurrent(taskContext);
+      if (taskContext.consultedSources?.length) await assertSourceRefsCurrent(taskContext.consultedSources);
+      await reflect();
+    };
+    const messageRefs: EvidenceRef[] = normalizedChatMessages.filter(m => m.id).map(m => ({ kind: 'message', id: m.id!,
+      version: m.contentRevision ?? m.sourceRevision ?? 'legacy', relation: sourceIds.includes(m.id!) ? 'basis' : 'context' }));
+    const otherRefs: EvidenceRef[] = [
+      ...fragments.map(f => ({ kind: 'fragment' as const, id: f.id, version: (f as DailyFragmentEntity & { sourceRevision?: string }).sourceRevision ?? 'legacy' })),
+      ...continuityContext.recentDiaries.map(d => ({ kind: 'diary' as const, id: d.id, version: (d as KumikoDiaryEntity & { sourceRevision?: string }).sourceRevision ?? 'legacy' })),
+      ...(taskContext.consultedSources ?? []),
+    ];
+    const afterDiaryWrite = async () => {
+      const saved = await db.kumikoDiary.get(diary.id);
+      await recordStateProvenance(diary.id, 'diary', (saved as KumikoDiaryEntity & { sourceRevision?: string } | undefined)?.sourceRevision ?? 'legacy',
+        messageRefs.filter(ref => ref.relation === 'basis'), [...messageRefs.filter(ref => ref.relation !== 'basis'), ...otherRefs]);
+    };
+    return await saveDiaryWithIndexJob(diary, { restoreVersion, memoryGeneration, jobContext, commitReflection,
+      afterDiaryWrite, settledFragmentIds: existingDiary ? [] : fragments.map(f => f.id) });
   } catch (e) {
     console.error('[LifeStream] Failed to generate diary:', e);
+    if (jobContext || e instanceof TaskCapacityError || (e instanceof Error && e.name === 'AbortError')) throw e;
     return null;
+  } finally {
+    if (ownTask) await endForegroundActivity(taskContext);
   }
 };
 
@@ -1379,70 +1468,8 @@ export interface EmbedDiaryResult {
 // in-process androidRagService invoker which uses the same Dexie + cloud
 // embedding stack the rest of Android RAG already runs on.
 export const embedDiaryToRAG = async (diary: KumikoDiaryEntity): Promise<EmbedDiaryResult> => {
-  try {
-    const textToEmbed = `[久美子的日记 - ${diary.date}]\n${diary.content}`;
-    // v2.14.28 H12: the vector id used to be `diary-${diary.id}` — row-UUID
-    // based — while canonicalKey was date based. Deleting a diary row and
-    // regenerating it gave the new row a fresh UUID, so the vector id
-    // changed but canonicalKey stayed the same. The RAG dedup check
-    // (shouldSkipCanonicalDuplicate, electron-rag.cjs:1195+) then sees an
-    // existing row with the same canonical_key but a *different* id and
-    // returns "skip" → the new diary never gets indexed, while the old
-    // vector lives on. RAG ends up recalling the OLD diary text for that
-    // date forever.
-    //
-    // Fix: anchor the vector id to the date as well. Both the primary key
-    // (id) and the canonical_key now collide on regenerate, so SQLite's
-    // INSERT OR REPLACE (electron-rag.cjs:2338) and the dedup's
-    // ignoreId branch correctly perform an update.
-    //
-    // Note: any existing rows in the wild with the old `diary-${UUID}`
-    // shape become orphans until the next manual RAG rebuild clears them.
-    // Acceptable for v2.14.28 — settings → RAG → Rebuild handles it.
-    const payload = {
-      id: `diary-${diary.date}`,
-      text: textToEmbed,
-      timestamp: diary.timestamp,
-      tier: 'core' as const,
-      source: 'diary' as const,
-      canonicalKey: `diary:${diary.date}`,
-      role: 'system' as const,
-    };
-
-    if (window.electronAPI) {
-      const result = await window.electronAPI.invoke('rag:save', payload);
-      if (!result?.success) {
-        const message = result?.error || 'Failed to save diary into local RAG';
-        console.error('[LifeStream] Failed to embed diary to RAG (electron):', message);
-        return { ok: false, reason: 'failed', error: message };
-      }
-      console.log(`[LifeStream] Embedded diary ${diary.date} into RAG (electron)`);
-      return { ok: true };
-    }
-
-    // v2.14.1 F.1: Capacitor (Android) — call the local invoker that
-    // backs the rest of Android RAG. Dynamic import keeps Electron
-    // bundles slim (the androidRagService pulls Dexie + ragApiService
-    // and isn't needed on PC).
-    if (isCapacitorNative()) {
-      const { invokeAndroidRag } = await import('./androidRagService');
-      const result = await invokeAndroidRag<{ success: boolean; error?: string }>('rag:save', payload);
-      if (!result?.success) {
-        const message = result?.error || 'Failed to save diary into Android RAG';
-        console.error('[LifeStream] Failed to embed diary to RAG (capacitor):', message);
-        return { ok: false, reason: 'failed', error: message };
-      }
-      console.log(`[LifeStream] Embedded diary ${diary.date} into RAG (capacitor)`);
-      return { ok: true };
-    }
-
-    // Pure web / dev preview — no RAG backend at all.
-    return { ok: false, reason: 'skipped' };
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    console.error('[LifeStream] Failed to embed diary to RAG:', e);
-    return { ok: false, reason: 'failed', error: message };
-  }
+  try { return await indexSavedDiary(diary); }
+  catch (error) { return { ok: false, reason: 'failed', error: error instanceof Error ? error.message : String(error) }; }
 };
 
 const getJSTMidnightUTC = (dateStr: string): number => {
@@ -1471,6 +1498,7 @@ const getChatMessagesForDate = async (dateStr: string): Promise<DiaryChatMessage
   return messages
     .sort((a, b) => a.timestamp - b.timestamp)
     .map(message => ({
+      id: message.id,
       role: message.role,
       text: message.text,
       timestamp: message.timestamp,
@@ -1608,7 +1636,7 @@ export const batchGenerateDiaries = async (
       if (!embedResult.ok && embedResult.reason === 'failed') {
         embedFailures.push(dateStr);
       }
-      await db.dailyFragments.where('date').equals(dateStr).delete();
+      // Included fragments were settled atomically with the diary and pending index job.
       generated++;
     }
   }

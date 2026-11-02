@@ -1,5 +1,9 @@
 import type { EmotionType, TtsConfig } from '../types';
 import { TtsError, type TtsSynthesisResult } from './fishAudioService';
+import { hasNativeCredentials } from './nativeCredentials';
+import { requestTts } from './ttsCredentials';
+import { TaskCapacityError, type TaskContext } from './taskRuntime';
+import { runStandaloneTransport, runTaskTransport } from './taskGateway';
 // F2B.3: dropped `isCapacitorNative` + `isMobilePwa` + `httpApi` imports.
 // PWA proxied Vocu through PC Fastify (`tts:vocu-synth`); with the
 // bridge gone, both Electron and Capacitor go direct (CapacitorHttp on
@@ -31,7 +35,11 @@ export async function synthesizeWithVocu(
   text: string,
   config: TtsConfig,
   emotion: EmotionType = 'neutral',
+  signal?: AbortSignal,
+  taskContext?: TaskContext,
+  assertConfigCurrent: () => void = () => {},
 ): Promise<TtsSynthesisResult> {
+  if (!hasNativeCredentials() && config.vocuApiKey?.startsWith('vault:')) throw new Error('Protected credential is unavailable on this device.');
   // F2B.3: simplified to direct fetch only. Electron desktop + Capacitor
   // APK both make the network call themselves; CapacitorHttp on Android
   // re-routes through native OkHttp to bypass Vocu's CORS preflight
@@ -63,25 +71,27 @@ export async function synthesizeWithVocu(
 
   let res: Response;
   try {
-    res = await fetch(VOCU_ENDPOINT, {
+    const send = (requestSignal?: AbortSignal) => hasNativeCredentials() ? requestTts('vocu', config.vocuApiKey, JSON.stringify(body), undefined, requestSignal) : fetch(VOCU_ENDPOINT, {
       method: 'POST',
+      redirect: 'error',
       headers: {
         'Authorization': `Bearer ${config.vocuApiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(90_000),
+      signal: requestSignal ? AbortSignal.any([requestSignal, AbortSignal.timeout(90_000)]) : AbortSignal.timeout(90_000),
     });
+    const target = { provider: 'vocu', operation: 'tts', configRevision: 'captured' };
+    res = taskContext ? await runTaskTransport({ ...taskContext, signal }, target, send, assertConfigCurrent) : await runStandaloneTransport(target, send, assertConfigCurrent, signal);
   } catch (err) {
+    if (err instanceof TaskCapacityError || signal?.aborted) throw err;
     throw new TtsError('network', `Vocu network error: ${(err as Error).message}`);
   }
 
   if (!res.ok) {
-    let detail = '';
-    try { detail = await res.text(); } catch { /* ignore */ }
     throw new TtsError(
       vocuStatusToKind(res.status),
-      `Vocu AI TTS failed (${res.status}): ${detail.slice(0, 300)}`,
+      `Vocu AI TTS failed (${res.status})`,
       res.status,
     );
   }
@@ -100,13 +110,19 @@ export async function synthesizeWithVocu(
     || json?.audio
     || json?.streamUrl;
   if (!audioUrl || typeof audioUrl !== 'string') {
-    throw new TtsError('unknown', `Vocu response missing audio URL: ${JSON.stringify(json).slice(0, 300)}`);
+    throw new TtsError('unknown', 'Vocu response missing audio URL.');
+  }
+  if (!config.vocuApiKey.startsWith('vault:') && audioUrl.includes(config.vocuApiKey)) {
+    throw new TtsError('unknown', 'Vocu returned an unsafe audio URL.');
   }
 
   let audioRes: Response;
   try {
-    audioRes = await fetch(audioUrl, { signal: AbortSignal.timeout(90_000) });
+    const download = (requestSignal?: AbortSignal) => fetch(audioUrl, { signal: requestSignal ? AbortSignal.any([requestSignal, AbortSignal.timeout(90_000)]) : AbortSignal.timeout(90_000) });
+    const target = { provider: 'vocu', operation: 'tts-audio', configRevision: 'captured' };
+    audioRes = taskContext ? await runTaskTransport({ ...taskContext, signal }, target, download, assertConfigCurrent) : await runStandaloneTransport(target, download, assertConfigCurrent, signal);
   } catch (err) {
+    if (err instanceof TaskCapacityError || signal?.aborted) throw err;
     throw new TtsError('network', `Vocu audio fetch network error: ${(err as Error).message}`);
   }
   if (!audioRes.ok) {

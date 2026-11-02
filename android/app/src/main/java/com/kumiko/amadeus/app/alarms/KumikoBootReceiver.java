@@ -101,15 +101,16 @@ public class KumikoBootReceiver extends BroadcastReceiver {
                     String text = row.optString("text", event);
                     boolean wantsCall = row.optBoolean("wantsCall", false);
                     String ringtoneFileId = row.optString("ringtoneFileId", "");
+                    String version = row.optString("version", "legacy");
                     boolean ok = KumikoAlarmsPlugin.scheduleAlarmInternal(
-                        context, am, reminderId, at, event, text, wantsCall, ringtoneFileId, /*isPrewarm*/ false
+                        context, am, reminderId, at, event, text, wantsCall, ringtoneFileId, version, /*isPrewarm*/ false
                     );
                     if (ok) scheduled++;
                     if (KumikoAlarmsPlugin.isXiaomiHyperOs() && (at - System.currentTimeMillis()) >= 10L * 60_000L) {
                         long prewarmAt = at - 5L * 60_000L;
                         KumikoAlarmsPlugin.scheduleAlarmInternal(
                             context, am, reminderId + KumikoAlarmsPlugin.PREWARM_REMINDER_SUFFIX, prewarmAt,
-                            event, text, wantsCall, ringtoneFileId, /*isPrewarm*/ true
+                            event, text, wantsCall, ringtoneFileId, version, /*isPrewarm*/ true
                         );
                     }
                 } catch (Throwable t) {

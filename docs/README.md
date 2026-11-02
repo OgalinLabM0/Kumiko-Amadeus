@@ -7,10 +7,12 @@
 | 我们要造什么、先做什么、做到什么算完成 | [建设方案](plans/rebuild-roadmap.md) |
 | 现在完成了什么、暂停后从哪里继续 | [当前状态](worklog/CURRENT.md) |
 | 原项目有哪些问题 | [审视报告](reviews/2026-09-12-project-audit.md) |
+| HDS Interlude有哪些值得借鉴、哪些不能照搬 | [外部项目对照审视](reviews/2026-11-01-hds-interlude.md) |
 | 15组可靠性问题改了什么、还有哪些验证边界 | [修复记录](worklog/2026-09-12-reliability.md) |
 | 已有 VPS 是否可用、以后用户怎样自托管 | [部署与安全](architecture/hosting-security.md) |
 | 为什么版本归零还要保留内部序号 | [版本重启决策](decisions/0001-version-restart.md) |
 | 久美子怎样知道你在哪里、怎样理解提醒时间 | [位置认知与提醒](decisions/0002-user-location-knowledge.md) |
+| 主聊天、理解、记忆、核验怎样分工；调用、失败恢复和迁移怎样安排 | [分工设计与意图、行动、记忆补强方案](plans/intent-and-memory-reliability.md) |
 | 截图中的多 agent、hooks、上下文是否值得采用 | [协作与上下文](guides/agent-workflow.md) |
 | 怎样准备发行、哪些事情当前不能跳过 | [发布指南](guides/releasing.md) |
 

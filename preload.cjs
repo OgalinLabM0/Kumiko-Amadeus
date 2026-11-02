@@ -1,4 +1,10 @@
 const { contextBridge, ipcRenderer } = require('electron');
+// Bound to this renderer load. A reset changes this value and forces reload;
+// an old async callback cannot silently adopt the new dataset generation.
+let mediaGeneration = '';
+let memoryGeneration = 'initial';
+try { memoryGeneration = localStorage.getItem('kumiko_memory_generation_v1') || 'initial'; } catch { memoryGeneration = 'unavailable'; }
+try { mediaGeneration = localStorage.getItem('kumiko_media_reset_generation_v1') || ''; } catch { /* fail closed after a reset */ }
 
 contextBridge.exposeInMainWorld('electronAPI', {
   // Exposed so the renderer can branch UI by host OS (e.g. show the Linux-specific
@@ -7,6 +13,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
   platform: process.platform,
   invoke: (channel, data) => {
     const validChannels = [
+      'memory:managed-backups',
+      'memory:purge-files',
+      'credentials:clear-user-credentials',
+      'credentials:store',
+      'credentials:gemini',
+      'credentials:request',
+      'credentials:tavily',
+      'credentials:cancel',
       'quit-app',
       'app:get-data-directory-info',
       'app:set-background-throttling',
@@ -50,14 +64,24 @@ contextBridge.exposeInMainWorld('electronAPI', {
       'backup:get-file-info',
       'backup:parse-import-file',
       'backup:build-zip-from-payload',
+      'backup:protection-status',
+      'backup:protection-set',
+      'backup:clear-protection',
       'rag:embed',
       'rag:save',
+      'rag:diary-lease',
+      'rag:artifact-stage',
+      'rag:artifact-commit',
+      'rag:artifact-get',
+      'rag:artifact-list',
+      'rag:get-by-id',
       'rag:search',
       'rag:expand-context',
       'rag:sync-messages',
       'rag:get-messages',
       'rag:get-all',
       'rag:restore',
+      'rag:restore-lock',
       'rag:clear-all',
       // `rag:clear-message-vectors` has no renderer wrapper in
       // services/localRagService.ts as of Plan 4 — the main-process handler
@@ -96,6 +120,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
       // would hang forever since no ipcMain.handle exists. Stay on send() only via setBgColor.
     ];
     if (validChannels.includes(channel)) {
+      if (channel.startsWith('rag:') && channel !== 'rag:restore-lock') {
+        if (channel === 'rag:embed' && typeof data === 'string') data = { text: data };
+        else if (channel === 'rag:restore' && Array.isArray(data)) data = { vectors: data };
+        else if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
+        data = { ...data, dataMemoryGeneration: memoryGeneration, dataResetGeneration: mediaGeneration };
+      }
+      if (['images:save', 'voice:save', 'ringtone:save'].includes(channel)) {
+        data = { ...data, dataResetGeneration: mediaGeneration };
+      }
+      if (['images:save', 'voice:save', 'ringtone:save', 'backup:write-file', 'backup:build-zip-from-payload'].includes(channel)) data = { ...data, dataMemoryGeneration: memoryGeneration };
       return ipcRenderer.invoke(channel, data);
     }
     return Promise.reject(new Error(`Unauthorized IPC invoke channel: ${channel}`));

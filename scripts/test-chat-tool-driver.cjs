@@ -30,7 +30,7 @@ function compile(code, filename) {
 function load(file, dependencies = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(compile(fs.readFileSync(path.join(root, file), 'utf8'), file), {
-    module, exports: module.exports, console: silent, AbortController, setTimeout, clearTimeout,
+    module, exports: module.exports, console: silent, AbortController, URL, setTimeout, clearTimeout,
     require(id) {
       if (Object.hasOwn(dependencies, id)) return dependencies[id];
       throw new Error(`Unexpected dependency ${id} in ${file}`);
@@ -43,7 +43,8 @@ function load(file, dependencies = {}, globals = {}) {
 const declarationCode = compile(sourceRange('    const viewHistoricalImageTool:', '    const enableInternetSearch =')
   + '\nglobalThis.toolDeclarations = [viewHistoricalImageTool, recallMemoryTool, searchInternetTool, knownUserWeatherTool];', 'main-tool-declarations.ts');
 const driverCode = compile('globalThis.runDriver = async function () { let result; '
-  + sourceRange('    const availableTools =', '    const locationExtraction =')
+  + sourceRange('  const subjectCall =', '  const isSystemDrivenTurn =')
+  + sourceRange('    let executionContext =', '    const locationExtraction =')
   + '\nreturn result; };', 'main-tool-driver.ts');
 const img = { mimeType: 'image/png', data: 'SU1BR0VfRVZJREVOQ0U=' };
 const firstCalls = [
@@ -60,13 +61,42 @@ function assertJsonSchema(schema) {
 
 async function run(kind, sdk, options = {}) {
   const requests = [];
+  const requestSignals = [];
+  const executorSignals = [];
+  const toolCalls = [];
+  const controller = new AbortController();
+  let modelCalls = 0;
+  let insideModelCall = false;
+  let locationContext = 'LOCATION_BEFORE_TOOLS';
+  let refreshes = 0;
+  const turnRuntime = options.runtime ? {
+    signal: controller.signal,
+    publicContext: () => `EXECUTION_RECEIPTS_${toolCalls.length}`,
+    modelCall: async work => {
+      modelCalls++;
+      insideModelCall = true;
+      try { return await work(); } finally { insideModelCall = false; }
+    },
+    executeTool: async (call, execute) => {
+      toolCalls.push(call.id);
+      const result = await execute();
+      locationContext = `LOCATION_AFTER_TOOL_${toolCalls.length}`;
+      if (options.abortDuringTool) controller.abort();
+      return result;
+    },
+  } : undefined;
+  const observeRequest = signal => {
+    if (turnRuntime) assert.ok(insideModelCall, 'every actual subject transport request must be inside runtime.modelCall');
+    requestSignals.push(signal);
+  };
   let step = 0;
   let searched = 0;
   const chooseCalls = () => options.disabledSearch
     ? (step === 1 ? [{ id: 'forbidden-search', name: 'search_internet', args: { query: 'must stay local' } }] : [])
     : (step === 1 ? firstCalls : step === 2 ? followCalls : []);
-  const provider = load('services/llmProviderService.ts', { '@google/genai': sdk, './appConfig': {} }, {
+  const provider = load('services/llmProviderService.ts', { '@google/genai': sdk, './appConfig': {}, './nativeCredentials': { hasNativeCredentials: () => false } }, {
     fetch: async (_url, options) => {
+      observeRequest(options.signal);
       requests.push(JSON.parse(options.body));
       step++;
       const calls = chooseCalls();
@@ -85,6 +115,7 @@ async function run(kind, sdk, options = {}) {
   });
   const ai = new sdk.GoogleGenAI({ apiKey: 'test-only' });
   ai.models.generateContent = async params => {
+    observeRequest(params.config?.abortSignal);
     requests.push(params);
     step++;
     const calls = chooseCalls();
@@ -96,19 +127,32 @@ async function run(kind, sdk, options = {}) {
     return response;
   };
   const executor = load('services/chatToolExecution.ts', {
+    './taskRuntime': { TaskCapacityError: class TaskCapacityError extends Error {} },
+    './taskGateway': { runTaskTransport: async (ctx, _target, work) => work(ctx.signal) }, './llmCore': { getCurrentAIConfig: () => ({ provider: kind, activeKey: 'primary', apiKey_primary: 'test-only', useVisionHelper: !!options.visionFailure }) },
+    './taskModelRouter': { resolveRoleConnection: config => ({ config, model: 'test', revision: 'fixture' }) },
     './userKnownLocation': { queryKnownUserLocationWeather: async () => ({ success: false, status: 'unknown' }) },
     './llmProviderService': { callVisionHelper: async () => { throw new Error('vision unavailable'); } },
     './imageService': { imageService: { getImage: async () => `data:${img.mimeType};base64,${img.data}` } },
     './localRagService': { searchLocalRagMemoryDetailed: async () => ({ blocks: ['actual memory evidence'] }) },
+    './tavilyCredentials': { requestTavily: async () => { searched++; throw new Error('unexpected external search'); } },
   }, {
     localStorage: { getItem: () => 'test-only' },
     fetch: async () => { searched++; throw new Error('unexpected external search'); },
   });
   const context = {
     ...provider, ...executor, ...load('services/chatToolLoop.ts'),
-    Type: sdk.Type, language: 'zh', transportProvider: kind,
+    Type: sdk.Type, AbortSignal, language: 'zh', transportProvider: kind,
     config: { provider: kind, activeKey: 'primary', apiKey_primary: 'test-only', useVisionHelper: !!options.visionFailure },
-    currentModel: 'test', dynamicSystemInstruction: 'system',
+    currentModel: 'test', dynamicSystemInstruction: 'system\nLOCATION_BEFORE_TOOLS',
+    knownUserLocationContext: 'LOCATION_BEFORE_TOOLS', turnRuntime,
+    activeTaskContext: turnRuntime ? { signal: controller.signal } : undefined,
+    subjectSignal: turnRuntime?.signal, baseConfig: {}, subjectTarget: { revision: 'fixture' }, signature: 'fixture',
+    runTaskTransport: async (ctx, _target, work) => work(ctx.signal),
+    buildUserKnownLocationContext: async language => { assert.equal(language, 'zh'); refreshes++; return locationContext; },
+    createChatToolExecutor: (...args) => {
+      const execute = executor.createChatToolExecutor(...args);
+      return (call, signal) => { executorSignals.push(signal); return execute(call, signal); };
+    },
     formattedHistory: [{ role: 'user', parts: [{ text: 'earlier user line' }] }, { role: 'model', parts: [{ text: 'earlier reply' }] }],
     promptToSend: [{ text: 'look and recall' }], tavilyGroundingSources: [], finalTemperature: .7,
     getGenAI: () => ai,
@@ -116,11 +160,49 @@ async function run(kind, sdk, options = {}) {
   vm.runInNewContext(declarationCode, context);
   context.toolsConfig = [{ functionDeclarations: context.toolDeclarations.filter(tool => !options.disabledSearch || tool.name !== 'search_internet') }];
   vm.runInNewContext(driverCode, context);
+  if (options.abortDuringTool) {
+    await assert.rejects(context.runDriver(), /Tool query cancelled/);
+    assert.equal(modelCalls, 1, 'cancelled turn must not issue a follow-up subject request');
+    assert.equal(requests.length, 1);
+    assert.deepEqual(toolCalls, ['memory-1'], 'cancellation prevents the remaining requested tools');
+    assert.equal(executorSignals.length, 1);
+    assert.equal(executorSignals[0].aborted, true, 'runtime abort propagates to the real loop executor signal');
+    assert.equal(requestSignals[0], controller.signal);
+    return;
+  }
   const final = await context.runDriver();
   assert.equal(final.text, 'final answer');
   assert.ok(!final.text.includes('PRIVATE_REASONING_SENTINEL'));
   assert.equal(requests.length, options.disabledSearch ? 2 : 3);
   assert.equal(searched, 0, 'disabled/unsolicited search must never reach its transport');
+  const expectedCalls = options.disabledSearch ? ['forbidden-search'] : ['memory-1', 'image-1', 'memory-2'];
+  assert.equal(executorSignals.length, expectedCalls.length);
+  assert.ok(executorSignals.every(signal => signal instanceof AbortSignal && !signal.aborted), 'real executor receives the loop cancellation signal');
+  assert.ok(requestSignals.every((signal, index) => index === 0 && !turnRuntime
+    ? signal === undefined : signal instanceof AbortSignal && !signal.aborted), 'each follow-up transport receives cancellation signal');
+  if (turnRuntime) {
+    assert.equal(modelCalls, requests.length, 'all initial and follow-up requests go through runtime.modelCall');
+    assert.deepEqual(toolCalls, expectedCalls, 'all actual tool calls go through runtime.executeTool exactly once');
+    assert.equal(requestSignals[0], controller.signal, 'initial provider request receives the runtime signal');
+    assert.equal(refreshes, requests.length - 1, 'refresh public context before every follow-up');
+    const systemText = request => kind === 'openai' ? request.messages[0].content
+      : kind === 'anthropic' ? request.system : request.config.systemInstruction;
+    assert.ok(JSON.stringify(systemText(requests[0])).includes('LOCATION_BEFORE_TOOLS'));
+    assert.ok(JSON.stringify(systemText(requests[0])).includes('EXECUTION_RECEIPTS_0'));
+    const afterFirstRound = options.disabledSearch ? 1 : 2;
+    for (let index = 1; index < requests.length; index++) {
+      const expectedCount = index === 1 ? afterFirstRound : 3;
+      const system = JSON.stringify(systemText(requests[index]));
+      assert.ok(system.includes(`LOCATION_AFTER_TOOL_${expectedCount}`), 'follow-up observes updated location');
+      assert.ok(system.includes(`EXECUTION_RECEIPTS_${expectedCount}`), 'follow-up observes current execution receipts');
+      assert.ok(!system.includes('LOCATION_BEFORE_TOOLS'), 'stale location removed from follow-up system context');
+      assert.ok(!system.includes('EXECUTION_RECEIPTS_0'), 'stale execution context replaced');
+    }
+  } else {
+    assert.equal(modelCalls, 0);
+    assert.deepEqual(toolCalls, []);
+    assert.equal(refreshes, 0, 'ordinary no-runtime caller retains compatibility');
+  }
 
   if (kind !== 'gemini') {
     for (const request of requests) {
@@ -165,11 +247,14 @@ async function run(kind, sdk, options = {}) {
 async function main() {
   const sdk = await import('@google/genai');
   for (const kind of ['openai', 'anthropic', 'gemini']) {
-    await run(kind, sdk);
-    await run(kind, sdk, { disabledSearch: true });
-    await run(kind, sdk, { visionFailure: true });
+    for (const runtime of [false, true]) {
+      await run(kind, sdk, { runtime });
+      await run(kind, sdk, { runtime, disabledSearch: true });
+      await run(kind, sdk, { runtime, visionFailure: true });
+    }
+    await run(kind, sdk, { runtime: true, abortDuringTool: true });
   }
-  console.log('actual chat tool driver regressions passed (3 transports, real declarations, real Gemini SDK, no external calls)');
+  console.log('actual chat tool driver regressions passed (21 cases, 3 transports, runtime/no-runtime, cancellation/context probes, real Gemini SDK, no external calls)');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

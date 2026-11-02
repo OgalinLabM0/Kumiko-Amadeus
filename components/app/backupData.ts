@@ -1,6 +1,7 @@
 import { AnchorEntry, EmotionType, Language, LocationConfig, Message, SummaryArchiveState, WorldBookEntry } from '../../types';
 import { DailyFragmentEntity, KumikoDiaryEntity, PsycheStateEntity, WorldCharacterStatusMap } from '../../services/db';
 import type { UserKnownLocation } from '../../services/userKnownLocation';
+import { parseTurnExecutionState, type TurnExecutionStateBackup } from '../../services/turnStateBackup';
 
 export interface RelativeReminderBackup {
   id: string;
@@ -41,6 +42,9 @@ export interface AutoZipMeta {
 }
 
 export interface BackupPayload {
+  memoryAssetRevisions?: Record<string, string>;
+  executionRevision?: number;
+  executionState?: TurnExecutionStateBackup;
   userKnownLocation?: UserKnownLocation | null;
   messages: Message[];
   coreMemory: string;
@@ -62,6 +66,8 @@ export interface BackupPayload {
 }
 
 interface BuildBackupDataParams {
+  executionRevision?: number;
+  executionState?: TurnExecutionStateBackup;
   userKnownLocation?: UserKnownLocation | null;
   messages: Message[];
   coreMemory: string;
@@ -106,6 +112,8 @@ export const sanitizeWorldBookForBackup = (
 };
 
 export const buildBackupData = ({
+  executionRevision,
+  executionState,
   userKnownLocation,
   messages,
   coreMemory,
@@ -127,6 +135,8 @@ export const buildBackupData = ({
   defaultWorldBook,
   localizedWorldBook,
 }: BuildBackupDataParams): BackupPayload => ({
+  executionRevision,
+  executionState,
   userKnownLocation,
   messages,
   coreMemory,
@@ -153,6 +163,10 @@ export const validateBackupData = (
   localizedWorldBook: Record<Language, WorldBookEntry[]>,
   defaultWorldBook: WorldBookEntry[]
 ): boolean => {
+  try { parseTurnExecutionState(data?.executionState); } catch {
+    console.warn('[Save Validation] Invalid execution state. Write blocked.');
+    return false;
+  }
   if (!data?.worldBook || !Array.isArray(data.worldBook)) {
     console.warn('[Save Validation] Missing worldBook array');
     return false;

@@ -50,6 +50,7 @@ export interface PromptRequestInit {
   confirmText?: string;
   cancelText?: string;
   icon?: DialogIcon;
+  secret?: boolean;
 }
 
 export interface DialogRequest {
@@ -58,6 +59,7 @@ export interface DialogRequest {
   title?: string;
   message: string;
   placeholder?: string;
+  secret?: boolean;
   defaultValue?: string;
   confirmText?: string;
   cancelText?: string;
@@ -166,12 +168,13 @@ export const dialogService = {
   prompt(init: PromptRequestInit | string): Promise<string | null> {
     const base: PromptRequestInit =
       typeof init === 'string' ? { message: init } : init;
-    if (!host) return fallbackPrompt(base);
+    if (!host) return base.secret ? Promise.resolve(null) : fallbackPrompt(base);
     return enqueue<string | null>({
       kind: 'prompt',
       title: base.title,
       message: base.message,
       placeholder: base.placeholder,
+      secret: base.secret,
       defaultValue: base.defaultValue,
       confirmText: base.confirmText,
       cancelText: base.cancelText,

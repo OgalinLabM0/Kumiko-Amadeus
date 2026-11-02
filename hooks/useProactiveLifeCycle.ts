@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, type MutableRefObject } from 'react';
 import { getAmbientEnvironmentContext } from '../components/app/ambientContext';
-import { getDiaryHoliday, getJSTDiaryDate, getNightlyDiaryDate, selectDiaryMessages } from '../services/diarySettlement';
+import { getDataRestoreVersion } from '../services/dataRestoreGate';
+import { getMemoryGeneration } from '../services/memoryMaintenanceGate';
+import { getNightlyDiaryDate } from '../services/diarySettlement';
 import {
   addMessageToStore,
   triggerNativeProactiveMessage as triggerNativeProactiveMessageAction,
@@ -83,6 +85,16 @@ export function useProactiveLifeCycle(
   const welcomeTriggeredRef = useRef<boolean>(false);
   const diarySettlementsInFlightRef = useRef(new Set<string>());
 
+  useEffect(() => {
+    if (flowState !== 'APP') return;
+    let stopped = false;
+    let stop: (() => void) | undefined;
+    void import('../services/backgroundMaintenance').then(({ startBackgroundMaintenance }) => {
+      if (!stopped) stop = startBackgroundMaintenance();
+    }).catch(() => console.warn('[Background] Maintenance could not start.'));
+    return () => { stopped = true; stop?.(); };
+  }, [flowState]);
+
   // v2.14.29 cold-boot FSM reconstruction (paired with the boot-time
   // currentEmotion override in useInitialLoadBootstrap.ts).
   //
@@ -155,34 +167,10 @@ export function useProactiveLifeCycle(
               const existingDiary = await db.kumikoDiary.where('date').equals(dateStr).first();
               if (!existingDiary) {
                 console.log(`[LifeStream] Triggering daily diary settlement for ${dateStr}`);
-                const { generateDailyDiary } = await import('../services/lifeStreamService');
-                const diaryMessages = selectDiaryMessages(messages, dateStr);
-                // Previous-day settlement must not borrow today's weather or
-                // calendar facts. Omitted weather is fetched historically by date.
-                if (dateStr === getJSTDiaryDate(now)) {
-                  ambientEnvironmentContext = await getAmbientEnvironmentContext();
-                }
-                const diaryHoliday = await getDiaryHoliday(dateStr);
-                const diary = await generateDailyDiary(
-                  dateStr,
-                  diaryMessages.map(message => ({
-                    role: message.role,
-                    text: message.text,
-                    timestamp: message.timestamp,
-                  })),
-                  undefined,
-                  dateStr === getJSTDiaryDate(Date.now()) ? ambientEnvironmentContext : undefined,
-                  diaryHoliday,
-                  false
-                );
-                if (diary) {
-                  // Clear only the settled date's fragments.
-                  await db.dailyFragments.where('date').equals(dateStr).delete();
-
-                  // Embed diary into RAG
-                  const { embedDiaryToRAG } = await import('../services/lifeStreamService');
-                  await embedDiaryToRAG(diary);
-                }
+                const { enqueueDailyDiary } = await import('../services/diaryGenerationJobs');
+                // The worker resolves weather and the calendar for the target
+                // date through the background network budget.
+                await enqueueDailyDiary(dateStr);
               }
             } catch (error) {
               console.warn(`[LifeStream] Diary settlement failed for ${dateStr}:`, error);
@@ -329,7 +317,12 @@ export function useProactiveLifeCycle(
           if (gapHours < 3) return;
 
           // --- STATE MACHINE DRIVEN PROACTIVE ---
-          ambientEnvironmentContext ??= await getAmbientEnvironmentContext();
+          try {
+            const id = crypto.randomUUID();
+            ambientEnvironmentContext ??= await getAmbientEnvironmentContext({ taskId: id, rootId: id, role: 'proactive',
+              lane: 'background', deadlineAt: Date.now() + 180_000, epoch: getDataRestoreVersion(),
+              memoryGeneration: getMemoryGeneration(), modelRevisions: {}, consultedSources: [] });
+          } catch { return; }
           const isHoliday = ambientEnvironmentContext.includes('今日特殊历法：日本法定节假日');
           const { getCurrentKumikoState } = await import('../services/kumikoStateMachine');
           const stateCtx = getCurrentKumikoState(locationConfig.modelTimezone, isHoliday);

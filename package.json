@@ -134,6 +134,8 @@
       "rag-worker.cjs",
       "electron/**/*",
       "services/ragRebuildCore.js",
+      "services/portableBackupCrypto.mjs",
+      "services/backupArchiveValidation.mjs",
       "public/**/*",
       "!public/sovits-ref/**",
       "!node_modules/hnswlib-wasm/**"

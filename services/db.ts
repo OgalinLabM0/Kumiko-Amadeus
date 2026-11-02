@@ -1,6 +1,12 @@
 import Dexie, { Table } from 'dexie';
+import { assertDataTransactionAllowed, isDataRestoreBlocked } from './dataRestoreGate';
+import { assertMemoryTransactionAllowed } from './memoryMaintenanceGate';
+import type { RuntimeJobEntity, RuntimeRequestAttempt, StateCommitEntity, MemoryDependency, MemoryCorrection, MessageView } from './runtimeEntities';
 
 export interface MessageEntity {
+  sourceRefs?: import('./runtimeEntities').EvidenceRef[];
+  sourceRevision?: string;
+  contentRevision?: string;
   id: string;
   role: 'user' | 'model';
   text: string;
@@ -23,6 +29,7 @@ export interface MessageEntity {
 
 export interface ImageEntity {
   id: string;
+  sourceIds?: string[]; // Known source message IDs; an empty array means unknown.
   base64Data: string; // PC: full compressed image bytes. Android v2.14.4+: '' (binary lives on disk; see relativePath).
   mimeType: string;
   timestamp: number;
@@ -69,6 +76,7 @@ export interface EpisodeEntity {
 }
 
 export interface KeyValEntity {
+  sourceRevision?: string;
   key: string;
   value: any;
 }
@@ -165,6 +173,12 @@ export class AppDatabase extends Dexie {
   psycheState!: Table<PsycheStateEntity, string>;
   kumikoMood!: Table<KumikoMoodEntity, string>;
   kumikoAffection!: Table<KumikoAffectionEntity, string>;
+  runtimeJobs!: Table<RuntimeJobEntity, string>;
+  runtimeRequestAttempts!: Table<RuntimeRequestAttempt, string>;
+  stateCommits!: Table<StateCommitEntity, string>;
+  memoryDependencies!: Table<MemoryDependency, string>;
+  memoryCorrections!: Table<MemoryCorrection, string>;
+  messageViews!: Table<MessageView, string>;
 
   constructor() {
     super('KumikoDB');
@@ -287,6 +301,27 @@ export class AppDatabase extends Dexie {
       kumikoMood: 'id',
       kumikoAffection: 'id',
     });
+    this.version(13).stores({
+      runtimeJobs: 'id, kind, status, epoch, sourceId, retryAt, [status+retryAt], [kind+status+retryAt], [epoch+kind]',
+      runtimeRequestAttempts: 'id, rootId, taskId, lane, status, startedAt, [lane+status], [rootId+startedAt]',
+      stateCommits: 'id, kind, epoch, committedAt',
+      memoryDependencies: 'id, artifactId, artifactKind, sourceId, [sourceKind+sourceId], [artifactId+artifactVersion]',
+      memoryCorrections: 'id, status, createdAt, generation, *messageIds',
+      messageViews: 'id, locallyDeletedAt',
+    }).upgrade(async tx => {
+      const rows = await tx.table('keyval').where('key').startsWith('kumiko_background_job_v1:').toArray();
+      for (const row of rows) {
+        const old = row.value;
+        if (!old || typeof old.id !== 'string' || typeof old.kind !== 'string') throw new Error('Invalid saved background task; migration stopped.');
+        const job = { ...old, memoryGeneration: 'initial' };
+        if (job.status === 'running') {
+          job.status = 'retrying'; job.retryAt = Date.now();
+          delete job.owner; delete job.token; delete job.leaseUntil;
+        }
+        await tx.table('runtimeJobs').put(job);
+        await tx.table('keyval').delete(row.key);
+      }
+    });
   }
 
   async getVal<T>(key: string, defaultValue: T): Promise<T> {
@@ -307,6 +342,42 @@ export class AppDatabase extends Dexie {
 }
 
 export const db = new AppDatabase();
+db.on('versionchange', () => {
+  db.close();
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event('kumiko:database-upgraded'));
+});
+// Every source mutation receives a new revision, including edit-and-undo.
+// Restoration keeps snapshot revisions; its separate epoch fences old work.
+for (const name of ['messages', 'dailyFragments', 'kumikoDiary', 'psycheState', 'kumikoMood', 'kumikoAffection']) {
+  db.table(name).hook('creating', (_key: unknown, value: any) => {
+    if (!isDataRestoreBlocked()) {
+      value.sourceRevision = crypto.randomUUID();
+      if (name === 'messages') value.contentRevision = crypto.randomUUID();
+    }
+  });
+  db.table(name).hook('updating', (changes: any, _key: unknown, previous: any) => {
+    if (isDataRestoreBlocked()) return undefined;
+    const update: Record<string, string> = { sourceRevision: crypto.randomUUID() };
+    if (name === 'messages' && Object.keys(changes).some(key => ['text', 'role', 'timestamp', 'imageId', 'imageCaption', 'quote', 'isHidden'].some(field => key === field || key.startsWith(field + '.')))) update.contentRevision = crypto.randomUUID();
+    else if (name === 'messages') update.contentRevision = previous.contentRevision || previous.sourceRevision || 'legacy';
+    return update;
+  });
+}
+const versionedPreferences = new Set(['world_character_status', 'kumiko_core_memory', 'kumiko_notebook', 'kumiko_anchors', 'user_known_location_v1']);
+db.keyval.hook('creating', (_key, value) => { if (versionedPreferences.has(value.key) && !isDataRestoreBlocked()) value.sourceRevision = crypto.randomUUID(); });
+db.keyval.hook('updating', (_mods, key) => versionedPreferences.has(key) && !isDataRestoreBlocked() ? { sourceRevision: crypto.randomUUID() } : undefined);
+// Fence writes at the storage boundary, including delayed background work and
+// other windows. Only explicitly owned restore transactions bypass the latch.
+db.use({ stack: 'dbcore', name: 'data-restore-fence', create(core) {
+  return { ...core, table(name) {
+    const table = core.table(name);
+    return { ...table, mutate(request) {
+      assertDataTransactionAllowed(request.trans);
+      assertMemoryTransactionAllowed(request.trans);
+      return table.mutate(request);
+    } };
+  } };
+} });
 
 export const INITIAL_WORLD_CHARACTER_STATUS: WorldCharacterStatusMap = {
   shuichi: {

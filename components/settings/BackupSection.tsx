@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { enableProtection, protectionStatus, requiresSessionBackupPassword } from '../../services/backupProtection';
 import {
   AlertCircle,
   AlertTriangle,
@@ -105,6 +106,23 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
   // buttons, Auto ZIP toggle) and only show the universal "manual export
   // / import ZIP" actions plus a hint to save to cloud or SD card.
   const isAndroid = isCapacitorNative();
+  const [protectedBackup, setProtectedBackup] = useState(false);
+  const [needsPassword, setNeedsPassword] = useState(false);
+  const [password, setPassword] = useState('');
+  const [confirmation, setConfirmation] = useState('');
+  const [protectionMessage, setProtectionMessage] = useState('');
+  useEffect(() => {
+    const refresh = () => { void protectionStatus().then(enabled => {
+      setProtectedBackup(enabled); setNeedsPassword(requiresSessionBackupPassword());
+    }).catch(() => setProtectionMessage(language === 'zh' ? '无法读取备份保护状态' : 'Cannot read backup protection status')); };
+    refresh(); window.addEventListener('storage', refresh);
+    return () => window.removeEventListener('storage', refresh);
+  }, [language]);
+  const configureProtection = async () => {
+    if (password !== confirmation || password.length < 12) { setProtectionMessage(language === 'zh' ? '两次密码须一致，且至少 12 个字符。' : 'Passwords must match and contain at least 12 characters.'); return; }
+    try { await enableProtection(password); setProtectedBackup(true); setNeedsPassword(false); setPassword(''); setConfirmation(''); setProtectionMessage(''); }
+    catch { setProtectionMessage(language === 'zh' ? '无法安全保存密码，备份保护未启用。' : 'Secure storage failed; backup protection was not enabled.'); }
+  };
   return (
     <div className={`flex flex-col rounded-[1.2rem] border overflow-hidden transition-all duration-300 flex-shrink-0 ${sectionBorder}`}>
       <button onClick={onToggle} className="flex items-center justify-between px-4 py-[1.05rem] w-full">
@@ -123,6 +141,17 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
       <Collapse isOpen={isOpen}>
         <div className="px-4 pb-4 pt-0 overflow-visible">
           <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#cdbca9]' : 'text-[#7c6245]'}`}>{t.backupDesc}</p>
+          <div className="py-3 border-t border-gray-500/10 space-y-2">
+            <p className="ka-setting-item-title">{language === 'zh' ? '可带走的加密备份' : 'Portable encrypted backup'} · {protectedBackup ? (language === 'zh' ? '已启用' : 'Enabled') : (language === 'zh' ? '未启用' : 'Off')}</p>
+            <p className="ka-copy-sm">{language === 'zh' ? '请妥善保存密码；换设备恢复时需要它，遗失后无法找回。已有明文备份不会自动删除。手机和网页关闭后需重新输入本次会话密码。' : 'Keep this password safe; it is required to restore on another device and cannot be recovered. Existing plaintext backups are retained. On mobile and web it lasts only for this session.'}</p>
+            {needsPassword && <p role="status" className="ka-copy-sm">{language === 'zh' ? '本次会话尚未输入密码，加密备份已暂停。' : 'Enter your password for this session to resume encrypted backups.'}</p>}
+            {(!protectedBackup || needsPassword) && <>
+              <input type="password" autoComplete="new-password" value={password} onChange={e => setPassword(e.target.value)} placeholder={language === 'zh' ? '设置备份密码（至少 12 字符）' : 'Backup password (12+ characters)'} className="w-full p-2 rounded text-gray-900" />
+              <input type="password" autoComplete="new-password" value={confirmation} onChange={e => setConfirmation(e.target.value)} placeholder={language === 'zh' ? '再次输入密码' : 'Confirm password'} className="w-full p-2 rounded text-gray-900" />
+              <button type="button" onClick={() => void configureProtection()} className="px-3 py-2 rounded bg-blue-700 text-white">{language === 'zh' ? (needsPassword ? '为本次会话输入密码' : '启用加密备份') : (needsPassword ? 'Use password for this session' : 'Enable encrypted backups')}</button>
+            </>}
+            {protectionMessage && <p role="alert" className="ka-copy-sm text-red-500">{protectionMessage}</p>}
+          </div>
 
           {/* F2A.4: PC-only — depends on File System Access API
               (window.showSaveFilePicker / showOpenFilePicker), which is

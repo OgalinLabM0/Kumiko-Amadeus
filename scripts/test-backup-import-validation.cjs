@@ -121,10 +121,21 @@ function loadBackupActionsForInvalidRestore() {
     '../../services/db': { db: { transaction: async () => { databaseWrites += 1; } } },
     '../../services/appConfig': {},
     '../../services/userKnownLocation': {},
+    '../../services/turnStateBackup': {},
+    '../../services/backupRestoreSession': {
+      runBackupRestoreSession: () => { throw new Error('Invalid import must not begin a restore session'); },
+    },
+    '../../services/dataRestoreGate': {},
+    '../../services/backupMediaStaging': {},
+    '../../services/reminderNativeCancellation': {},
     '../../services/desktopBackupService': {},
     '../../services/environment': {},
     '../../services/capacitorBackupNative': {},
     '../../services/dialogService': {},
+    '../../services/backupProtection': {},
+    '../../services/portableBackupCrypto.mjs': {},
+    '../../services/backupArchiveValidation.mjs': {},
+    '../../services/mediaWriteFence': {},
     '../../services/temporalEpisodeService': {},
     '../../services/imageService': {},
     '../../services/voiceFileService': {},
@@ -203,12 +214,20 @@ async function testZipParserValidatesBeforeMediaWrite() {
     const validZip = new JSZip();
     validZip.file('data.json', JSON.stringify(currentExport()));
     validZip.file('voice/valid.mp3', Buffer.from('fixture-audio'));
+    validZip.file('ringtone/custom.mp3', Buffer.from('fixture-ringtone'));
+    fs.mkdirSync(path.join(tempRoot, 'user-data', 'voice'), { recursive: true });
+    fs.mkdirSync(path.join(tempRoot, 'user-data', 'ringtone'), { recursive: true });
+    fs.writeFileSync(path.join(tempRoot, 'user-data', 'voice', 'valid.mp3'), 'old-voice');
+    fs.writeFileSync(path.join(tempRoot, 'user-data', 'ringtone', 'custom.mp3'), 'old-ringtone');
     const validPath = path.join(tempRoot, 'valid.zip');
     fs.writeFileSync(validPath, await validZip.generateAsync({ type: 'nodebuffer' }));
     const parsed = await parseBackupImportFile(validPath);
     assert.equal(parsed.success, true);
     assert.equal(parsed.json.data.messages.length, 0, 'valid empty export restores as an explicit empty backup');
-    assert.deepEqual(fs.readFileSync(path.join(tempRoot, 'user-data', 'voice', 'valid.mp3')), Buffer.from('fixture-audio'));
+    assert.deepEqual(Buffer.from(parsed.voices[0].base64, 'base64'), Buffer.from('fixture-audio'));
+    assert.deepEqual(Buffer.from(parsed.ringtone.base64, 'base64'), Buffer.from('fixture-ringtone'));
+    assert.equal(fs.readFileSync(path.join(tempRoot, 'user-data', 'voice', 'valid.mp3'), 'utf8'), 'old-voice');
+    assert.equal(fs.readFileSync(path.join(tempRoot, 'user-data', 'ringtone', 'custom.mp3'), 'utf8'), 'old-ringtone');
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }

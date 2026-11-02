@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { ChatBubble } from '../ChatBubble';
 import { Language, Message } from '../../types';
 import { isMobileLikeRuntime } from '../../services/environment';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { db } from '../../services/db';
 
 // Mobile perf: cache the mobile-runtime flag once at module load. Keeps
 // the runtime check out of the per-frame scroll + resize hot paths.
@@ -234,9 +236,11 @@ export const AppMessageList: React.FC<AppMessageListProps> = ({
     [isMobileRuntime],
   );
 
+  const localViews = useLiveQuery(() => db.messageViews.toArray(), []);
+  const localDeleted = useMemo(() => new Set((localViews || []).map(row => row.id)), [localViews]);
   const visibleMessages = useMemo(
-    () => messages.filter((msg) => !msg.isHidden),
-    [messages]
+    () => localViews ? messages.filter((msg) => !msg.isHidden && !localDeleted.has(msg.id)) : [],
+    [messages, localDeleted, localViews]
   );
 
   const itemHeights = useMemo(

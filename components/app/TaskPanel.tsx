@@ -2,11 +2,18 @@ import React, { useEffect, useState } from 'react';
 import { BellOff, CalendarClock, Clock3, Hourglass, Inbox, Pause, Play, Repeat, ShieldOff, Trash2, X } from 'lucide-react';
 import { Language } from '../../types';
 import { useAppStore } from '../../store';
+import { db } from '../../services/db';
+import { REMINDER_NATIVE_CANCEL_KEY } from '../../services/reminderNativeCancellation';
+import { REMINDER_OCCURRENCES_STORAGE_KEY } from '../../services/reminderOccurrences';
+import type { ReminderLateGraceMinutes } from '../../store/slices/reminderSlice';
 
 type RelativeReminderItem = {
   id: string;
   event: string;
   dueAt: number;
+  paused?: boolean;
+  version?: number;
+  lateGraceMinutes?: ReminderLateGraceMinutes;
 };
 
 type DailyReminderItem = {
@@ -16,6 +23,8 @@ type DailyReminderItem = {
   minute: number;
   timeZone: string;
   paused?: boolean;
+  version?: number;
+  lateGraceMinutes?: ReminderLateGraceMinutes;
 };
 
 interface TaskPanelProps {
@@ -126,11 +135,49 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
   const busyFollowUp = useAppStore(s => s.busyFollowUp);
   const pendingApology = useAppStore(s => s.pendingApology);
   const blockRuntime = useAppStore(s => s.blockRuntime);
+  const missedReminders = useAppStore(s => s.missedReminders);
+  const [policyPending, setPolicyPending] = useState<string | null>(null);
+  const [policyError, setPolicyError] = useState<string | null>(null);
+  const policyControl = (kind: 'once' | 'daily', reminder: RelativeReminderItem | DailyReminderItem) => (
+    <label className={`mt-3 flex flex-wrap items-center gap-2 ka-copy-sm ${textClass}`}>
+      <span>{language === 'zh' ? '迟到处理' : 'Late delivery'}</span>
+      <select aria-label={language === 'zh' ? `${reminder.event}的迟到处理` : `Late delivery for ${reminder.event}`}
+        className={`rounded border px-2 py-1 ${isDarkMode ? 'bg-[#211b15]' : 'bg-white'}`}
+        value={reminder.lateGraceMinutes === undefined ? 'default' : String(reminder.lateGraceMinutes)} disabled={policyPending === reminder.id}
+        onChange={event => {
+          const value = event.target.value === 'default' ? undefined : Number(event.target.value) as ReminderLateGraceMinutes;
+          setPolicyError(null); setPolicyPending(reminder.id);
+          void useAppStore.getState().setReminderLateGrace(kind, reminder.id, reminder.version ?? 0, value).then(result => {
+            if (result.status !== 'saved' && result.status !== 'existing') setPolicyError(language === 'zh' ? '设置未保存，请重试。' : 'Setting was not saved. Please retry.');
+          }).catch(() => setPolicyError(language === 'zh' ? '设置未保存，请重试。' : 'Setting was not saved. Please retry.'))
+            .finally(() => setPolicyPending(null));
+        }}>
+        <option value="default">{language === 'zh' ? '默认（普通30分钟，叫醒10分钟）' : 'Default (30 min; wake-up 10 min)'}</option>
+        <option value="0">{language === 'zh' ? '仅按时（允许1分钟系统误差）' : 'On time only (1 min tolerance)'}</option>
+        {[10, 30, 60].map(n => <option key={n} value={n}>{language === 'zh' ? `迟到${n}分钟内补发` : `Deliver up to ${n} min late`}</option>)}
+      </select>
+    </label>
+  );
 
   // Polling clock so countdowns update live while the panel is open.
   // We tick every 1 s but only when `isOpen` is true so the panel
   // doesn't waste cycles in the background.
   const [, setNowTick] = useState(Date.now());
+  const [deliveryState, setDeliveryState] = useState({ cancelling: 0, unknown: 0 });
+  useEffect(() => {
+    if (!isOpen) return;
+    let active = true;
+    const refresh = async () => {
+      try {
+        const cancelling = await db.getVal<any[]>(REMINDER_NATIVE_CANCEL_KEY, []);
+        const occurrences = await db.getVal<any[]>(REMINDER_OCCURRENCES_STORAGE_KEY, []);
+        if (active) setDeliveryState({ cancelling: cancelling.length, unknown: occurrences.filter(x => x.status === 'unknown' || x.status === 'sending').length });
+      } catch { /* Retain the last known state. */ }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 5000);
+    return () => { active = false; clearInterval(timer); };
+  }, [isOpen]);
   useEffect(() => {
     if (!isOpen) return;
     const id = setInterval(() => setNowTick(Date.now()), 1000);
@@ -253,6 +300,12 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
       </div>
 
       <div data-resize-heavy className="flex-1 overflow-y-auto p-3 space-y-3 scrollbar-thin">
+        {deliveryState.cancelling > 0 && <div className={`rounded border p-3 ka-copy-sm ${pillClass}`}>
+          {language === 'zh' ? `${deliveryState.cancelling} 项系统提醒撤销待确认，应用会继续重试。` : `${deliveryState.cancelling} system cancellations await confirmation and will be retried.`}
+        </div>}
+        {deliveryState.unknown > 0 && <div className={`rounded border p-3 ka-copy-sm ${pillClass}`}>
+          {language === 'zh' ? `${deliveryState.unknown} 次提醒的送达结果待确认，不会自动重复响铃。` : `${deliveryState.unknown} reminder deliveries are unconfirmed and will not ring again automatically.`}
+        </div>}
         {/* Phase 7 Part t9_task_msgcenter: the stat strip used a
             fixed `p-3` which left the English "Recurring" label
             clipped on a 360px phone. Shrink to `p-2` on narrow
@@ -397,9 +450,17 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
                         <span className={`ka-copy break-words ${textClass}`}>{reminder.event}</span>
                       </div>
                       <div className={`mt-2 ka-copy-sm ${textClass} opacity-70`}>
-                        {formatCountdown(reminder.dueAt, language)}
+                        {reminder.paused ? (language === 'zh' ? '暂停中，请核对后恢复' : 'Paused; review before resuming') : formatCountdown(reminder.dueAt, language)}
                       </div>
                     </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => { void useAppStore.getState().toggleRelativeReminderPaused(reminder.id); }}
+                      className={`rounded-full p-1.5 transition-colors ${secondaryActionClass}`}
+                      title={reminder.paused ? (language === 'zh' ? '恢复任务' : 'Resume task') : (language === 'zh' ? '暂停任务' : 'Pause task')}
+                    >
+                      {reminder.paused ? <Play size={16} /> : <Pause size={16} />}
+                    </button>
                     <button
                       onClick={() => onDeleteRelativeReminder(reminder.id)}
                       className={`shrink-0 rounded-full p-1.5 transition-colors ${textClass} ${actionButtonClass}`}
@@ -407,7 +468,9 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
                     >
                       <Trash2 size={16} />
                     </button>
+                    </div>
                   </div>
+                  {policyControl('once', reminder)}
                 </div>
               ))}
           </section>
@@ -456,10 +519,26 @@ export const TaskPanel: React.FC<TaskPanelProps> = ({
                       </button>
                     </div>
                   </div>
+                  {policyControl('daily', reminder)}
                 </div>
               ))}
           </section>
         )}
+        {policyError && <p role="alert" className={textClass}>{policyError}</p>}
+        {missedReminders.length > 0 && <section className="space-y-3">
+          <div className={`ka-kicker ${labelClass}`}>{language === 'zh' ? '错过的提醒' : 'Missed reminders'}</div>
+          {missedReminders.map(item => <div key={item.id} className={`rounded border p-3 ${cardClass}`}>
+            <div className={`flex justify-between gap-3 ${textClass}`}><span className="break-words">{item.event}</span>
+              <button type="button" className={secondaryActionClass} onClick={() => { void useAppStore.getState().removeMissedReminder(item.id); }}
+                aria-label={language === 'zh' ? `清除${item.event}的遗漏记录` : `Dismiss missed ${item.event}`}><X size={16} /></button></div>
+            <div className={`mt-1 ka-copy-sm ${textClass} opacity-70`}>
+              {language === 'zh' ? `错过 ${item.count ?? 1} 次` : `Missed ${item.count ?? 1} time(s)`}
+              {' · '}{new Date(item.firstDueAt ?? item.originalDueAt).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', { timeZone: item.timeZone || 'UTC' })}
+              {item.lastDueAt && item.lastDueAt !== (item.firstDueAt ?? item.originalDueAt) ? ` – ${new Date(item.lastDueAt).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-US', { timeZone: item.timeZone || 'UTC' })}` : ''}
+              {` (${item.timeZone || 'UTC'})`}
+            </div>
+          </div>)}
+        </section>}
       </div>
 
       <div className={`px-4 py-2 border-t flex items-center justify-between ka-micro ${footerClass}`}>

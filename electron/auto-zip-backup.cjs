@@ -32,6 +32,7 @@ const { readConfigValue, writeConfigValue } = require('./user-config.cjs');
 const { getLastWrittenBackupPath } = require('./backup-ipc.cjs');
 const { isUpdateInstalling } = require('./app-updater.cjs');
 const { buildBackupZip } = require('./backup-zip-builder.cjs');
+const { isDataRestoreActive, getDataRestoreGeneration } = require('../electron-rag.cjs');
 
 // Renderer target for `app:auto-zip-progress` progress messages.
 // Injected via setAutoZipProgressTarget(mainWindow) from electron-main.cjs
@@ -74,6 +75,12 @@ function handleGetAutoZip() {
 
 function runAutoZipBeforeQuit(event) {
   if (isAutoBackupDone || isUpdateInstalling()) return;
+  // A restore may be replacing ringtone/media while the last JSON still
+  // describes the previous dataset. Preserve the existing ZIP and let the
+  // durable restore journal recover on the next launch.
+  if (isDataRestoreActive()) return;
+  const backupGeneration = getDataRestoreGeneration();
+  const canCommit = () => !isDataRestoreActive() && getDataRestoreGeneration() === backupGeneration;
   try {
     const autoZipVal = readConfigValue('AutoZipBackupEnabled');
     if (autoZipVal !== '1') return;
@@ -86,17 +93,18 @@ function runAutoZipBeforeQuit(event) {
 
     let latestJson = null;
 
-    const lastWritten = getLastWrittenBackupPath();
+    const requiredMemoryGeneration = readConfigValue('MemoryMaintenanceGeneration');
+    const lastWritten = getLastWrittenBackupPath(requiredMemoryGeneration);
     if (lastWritten && fs.existsSync(lastWritten)) {
       latestJson = lastWritten;
-    } else {
+    } else if (!requiredMemoryGeneration) {
       const searchDirs = [app.getPath('documents'), app.getPath('userData')];
       let latestMtime = 0;
       for (const dir of searchDirs) {
         try {
           const files = fs.readdirSync(dir);
           for (const file of files) {
-            if (file.startsWith('kumiko_backup_') && file.endsWith('.json')) {
+            if (file.startsWith('kumiko_backup_') && (file.endsWith('.json') || (file.endsWith('.kab') && file !== 'kumiko_backup_auto.kab'))) {
               const fullPath = path.join(dir, file);
               const stat = fs.statSync(fullPath);
               if (stat.mtimeMs > latestMtime) {
@@ -128,8 +136,23 @@ function runAutoZipBeforeQuit(event) {
       return;
     }
 
-    const outputPath = path.join(path.dirname(latestJson), 'kumiko_backup_auto.zip');
-    buildBackupZip({ dataJsonString, mode: 'auto', outputPath })
+    let outputPath = path.join(path.dirname(latestJson), 'kumiko_backup_auto.zip');
+    const protection = require('./backup-protection.cjs');
+    const job = protection.enabled() ? (async () => {
+      const password = await protection.key();
+      const crypto = await import('../services/portableBackupCrypto.mjs');
+      if (crypto.isEncryptedBackup(dataJsonString)) {
+        if (!password) throw new Error('Backup protection key unavailable.');
+        const decoded = await crypto.decryptPortableBackup(dataJsonString, password);
+        if (decoded.kind !== 'json') throw new Error('Expected a JSON backup.');
+        dataJsonString = new TextDecoder().decode(decoded.bytes);
+      }
+      if (password) outputPath = path.join(path.dirname(latestJson), 'kumiko_backup_auto.kab');
+      return buildBackupZip({ dataJsonString, mode: 'auto', outputPath, password, canCommit });
+    })() : dataJsonString.startsWith('KUMIKO-BACKUP-1\n')
+      ? Promise.reject(new Error('Backup protection key unavailable.'))
+      : buildBackupZip({ dataJsonString, mode: 'auto', outputPath, canCommit });
+    job
       .then((result) => {
         if (result.success) {
           console.log('[AUTO BACKUP] Auto ZIP backup created:', path.basename(outputPath), {

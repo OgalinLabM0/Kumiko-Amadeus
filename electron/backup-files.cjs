@@ -13,11 +13,7 @@
 // renderer cannot grow the authorization set, so a compromised renderer
 // cannot redirect backup IO to arbitrary disk locations.
 //
-// Zero behavior changes vs. the prior inline implementation in
-// electron-main.cjs: file names, temp-file naming, ZIP layout, voice /
-// ringtone unpacking targets (userData/voice/, userData/ringtone/), and
-// the console.warn prefix for legacy kumiko_backup.json detection are all
-// byte-identical.
+// Legacy kumiko_backup.json archives remain readable.
 
 'use strict';
 
@@ -114,16 +110,26 @@ function getBackupFileInfo(filePath) {
   };
 }
 
-async function parseBackupImportFile(filePath) {
+async function parseBackupImportFile(filePath, password) {
   const { validateBackupImportPayload } = await import('./backup-import-validation.mjs');
   const normalizedPath = normalizeBackupFilePath(filePath);
   assertBackupPathAllowed(normalizedPath);
   const fileName = path.basename(normalizedPath);
-  const extension = path.extname(normalizedPath).toLowerCase();
+  if (fs.statSync(normalizedPath).size > 720 * 1024 * 1024) throw new Error('Backup is too large');
+  let extension = path.extname(normalizedPath).toLowerCase();
+  let source = fs.readFileSync(normalizedPath);
+  const crypto = await import('../services/portableBackupCrypto.mjs');
+  if (crypto.isEncryptedBackup(source.subarray(0, 16).toString('utf8'))) {
+    const decoded = await crypto.decryptPortableBackup(source.toString('utf8'), password);
+    source = Buffer.from(decoded.bytes);
+    extension = decoded.kind === 'zip' ? '.zip' : '.json';
+  }
 
   if (extension === '.zip') {
-    const zipBuffer = fs.readFileSync(normalizedPath);
+    const zipBuffer = source;
     const zip = await JSZip.loadAsync(zipBuffer);
+    const { createBackupArchiveReader } = await import('../services/backupArchiveValidation.mjs');
+    const reader = createBackupArchiveReader(zip);
     let dataFile = zip.file('data.json');
     if (!dataFile) {
       dataFile = zip.file('kumiko_backup.json');
@@ -136,7 +142,7 @@ async function parseBackupImportFile(filePath) {
       throw new Error('data.json not found in ZIP');
     }
 
-    const jsonText = await dataFile.async('string');
+    const jsonText = await reader.read(dataFile, 'string');
     const json = JSON.parse(jsonText);
     const validation = validateBackupImportPayload(json);
     if (!validation.valid) {
@@ -146,12 +152,12 @@ async function parseBackupImportFile(filePath) {
     const imagesFolder = zip.folder('images');
 
     if (imagesFolder) {
-      const imageFiles = Object.keys(imagesFolder.files).filter((name) => !imagesFolder.files[name].dir);
+      const imageFiles = Object.keys(imagesFolder.files).filter((name) => name.startsWith('images/') && !imagesFolder.files[name].dir);
       for (const imageName of imageFiles) {
         const imageFile = imagesFolder.files[imageName];
-        const base64Data = await imageFile.async('base64');
+        const base64Data = await reader.read(imageFile, 'base64');
         const ext = imageName.split('.').pop()?.toLowerCase();
-        const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
+        const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
         const id = imageName.split('/').pop()?.split('.')[0];
 
         if (!id) continue;
@@ -163,27 +169,24 @@ async function parseBackupImportFile(filePath) {
       }
     }
 
+    // Parsing is read-only: restore commits media only after validation.
+    const voices = [];
     const voiceFolder = zip.folder('voice');
     if (voiceFolder) {
-      const voiceDir = path.join(app.getPath('userData'), 'voice');
-      if (!fs.existsSync(voiceDir)) fs.mkdirSync(voiceDir, { recursive: true });
-      const voiceFiles = Object.keys(voiceFolder.files).filter(n => !voiceFolder.files[n].dir && n.endsWith('.mp3'));
-      for (const vfName of voiceFiles) {
-        const buf = await voiceFolder.files[vfName].async('nodebuffer');
-        const id = vfName.split('/').pop();
-        if (id) fs.writeFileSync(path.join(voiceDir, id), buf);
+      for (const name of Object.keys(voiceFolder.files).filter(n => n.startsWith('voice/') && !voiceFolder.files[n].dir && /\.mp3$/i.test(n))) {
+        const id = name.split('/').pop()?.replace(/\.mp3$/i, '');
+        if (id) voices.push({ id, base64: await reader.read(voiceFolder.files[name], 'base64') });
       }
     }
-
     const ringtoneFolder = zip.folder('ringtone');
+    let ringtone;
     if (ringtoneFolder) {
-      const ringtoneDir = path.join(app.getPath('userData'), 'ringtone');
-      if (!fs.existsSync(ringtoneDir)) fs.mkdirSync(ringtoneDir, { recursive: true });
-      const rtFiles = Object.keys(ringtoneFolder.files).filter(n => !ringtoneFolder.files[n].dir);
-      for (const rtName of rtFiles) {
-        const buf = await ringtoneFolder.files[rtName].async('nodebuffer');
-        const fName = rtName.split('/').pop();
-        if (fName) fs.writeFileSync(path.join(ringtoneDir, fName), buf);
+      const audio = Object.keys(ringtoneFolder.files).filter(n => n.startsWith('ringtone/') && !ringtoneFolder.files[n].dir && /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(n));
+      if (audio.length > 1) throw new Error('Backup has multiple custom ringtones');
+      if (audio.length) {
+        const meta = ringtoneFolder.file('custom.meta.json');
+        const parsed = meta ? JSON.parse(await reader.read(meta, 'string')) : null;
+        ringtone = { base64: await reader.read(ringtoneFolder.files[audio[0]], 'base64'), ext: audio[0].split('.').pop(), originalName: parsed?.originalName || audio[0].split('/').pop() };
       }
     }
 
@@ -193,11 +196,13 @@ async function parseBackupImportFile(filePath) {
       fileName,
       json,
       images,
+      voices,
+      ringtone,
       imageCount: images.length,
     };
   }
 
-  const content = fs.readFileSync(normalizedPath, 'utf8');
+  const content = source.toString('utf8');
   const json = JSON.parse(content);
   const validation = validateBackupImportPayload(json);
   if (!validation.valid) {
@@ -223,6 +228,7 @@ function getDefaultBackupFilePath(defaultFileName) {
 }
 
 module.exports = {
+  assertBackupPathAllowed,
   writeBackupFile,
   readBackupFile,
   getBackupFileInfo,

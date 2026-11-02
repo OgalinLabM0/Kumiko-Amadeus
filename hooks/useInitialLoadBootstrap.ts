@@ -1,6 +1,10 @@
 import { useEffect, type MutableRefObject } from 'react';
 import { loadRawHistoryMessages } from '../components/app/rawHistorySync';
 import { recalculateTurnCountFromMessages, sanitizeRelativeReminderRecord, sanitizeDailyReminderRecord, sanitizeMessageAlertRecord, sanitizeMissedReminderRecord, sanitizeWorldCharacterStatusRecord, sanitizeKumikoDiaryRecord, sanitizeDailyFragmentRecord, sanitizePsycheStateRecord, sanitizeKumikoMoodRecord, sanitizeKumikoAffectionRecord, sanitizeKumikoBlockRuntime } from '../components/app/backupHelpers';
+import { isDataRestoreBlocked } from '../services/dataRestoreGate';
+import { recoverInterruptedBackupRestore } from '../services/backupRestoreSession';
+import { recoverInterruptedDataReset } from '../services/dataResetSession';
+import { recoverMemoryMaintenance } from '../services/memoryMaintenance';
 import { normalizeSummaryArchiveState, resolveCoreMemoryFromSummaryArchive } from '../components/app/summaryCycle';
 import { normalizeMemoryQuerySession } from '../components/app/ragRecallHelpers';
 import {
@@ -242,6 +246,9 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
   useEffect(() => {
     const loadData = async () => {
       try {
+        await recoverInterruptedDataReset();
+        await recoverInterruptedBackupRestore();
+        await recoverMemoryMaintenance();
         const loadedMessages = await loadRawHistoryMessages();
         const loadedTurnCount = recalculateTurnCountFromMessages(loadedMessages);
         const loadedSummaryArchiveState = normalizeSummaryArchiveState(
@@ -379,7 +386,8 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
         //
         // The MissedReminderRecord array also gets a 7-day TTL sweep here so
         // entries don't accumulate indefinitely; the inbox itself caps at 50.
-        const RESCUE_LATE_CHAT_GRACE_MS = 3 * 24 * 60 * 60 * 1000;       // ≤ 3d → Branch 1 (chat)
+        if (isDataRestoreBlocked()) throw new Error('Data restore is in progress');
+        const RESCUE_LATE_CHAT_GRACE_MS = 0; // Expired records are handled by the shared dispatcher.
         const MISSED_REMINDER_CONTEXT_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // 7d  → drop from prompt context
 
         const loadedLanguage = (await db.getVal('kumiko_language', 'zh')) as Language;
@@ -425,7 +433,7 @@ export const useInitialLoadBootstrap = (params: UseInitialLoadBootstrapParams): 
         // Apply TTL sweep on existing missedReminders + merge in any new ones from this boot.
         const existingMissedRaw = (await db.getVal(KUMIKO_MISSED_REMINDERS_STORAGE_KEY, [])) as any[];
         const existingMissed = (existingMissedRaw.map(sanitizeMissedReminderRecord).filter(Boolean) as MissedReminderRecord[])
-            .filter(r => bootNow - r.recordedAt < MISSED_REMINDER_CONTEXT_TTL_MS);
+            .filter(r => (r.count ?? 0) > 0 || bootNow - r.recordedAt < MISSED_REMINDER_CONTEXT_TTL_MS);
         const mergedMissed = dedupeMissedReminderRecords([...pendingMissedRecords, ...existingMissed]);
         setMissedReminders(mergedMissed);
         // Persist back so the TTL drop and de-dup survive across restarts

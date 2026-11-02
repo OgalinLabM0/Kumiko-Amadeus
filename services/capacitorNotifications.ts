@@ -51,6 +51,27 @@ export interface PostNotificationOptions {
   body: string;
   kind: KumikoNotificationKind;
   messageId?: string;
+  notificationId?: number;
+}
+
+export function reminderNotificationId(messageId: string): number {
+  let hash = 2166136261;
+  for (let i = 0; i < messageId.length; i++) hash = Math.imul(hash ^ messageId.charCodeAt(i), 16777619);
+  return 1000 + ((hash >>> 0) % 2147482647);
+}
+
+export async function cancelReminderNotification(id: number): Promise<boolean> {
+  if (!isCapacitorNative()) return false;
+  try {
+    const { LocalNotifications } = await import('@capacitor/local-notifications');
+    await LocalNotifications.cancel({ notifications: [{ id }] });
+    const delivered = await LocalNotifications.getDeliveredNotifications();
+    await LocalNotifications.removeDeliveredNotifications({ notifications: delivered.notifications.filter(item => item.id === id) });
+    return true;
+  } catch (error) {
+    console.warn('[REMINDER] notification cancellation failed', error);
+    return false;
+  }
 }
 
 // v2.14.24: bumped to *_v3, native plugin owns creation/migration.
@@ -144,7 +165,7 @@ export async function postKumikoNotification(opts: PostNotificationOptions): Pro
     await LocalNotifications.schedule({
       notifications: [
         {
-          id: deriveNotificationId(),
+          id: opts.notificationId ?? (opts.kind === 'reminder' && opts.messageId ? reminderNotificationId(opts.messageId) : deriveNotificationId()),
           title: opts.title,
           body: opts.body,
           channelId,

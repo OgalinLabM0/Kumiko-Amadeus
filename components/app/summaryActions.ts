@@ -110,6 +110,21 @@ const persistPendingArchive = (
 
 export async function triggerAutoSummary(
   refs: TriggerAutoSummaryRefs,
+  _helpers: TriggerAutoSummaryHelpers,
+  params: TriggerAutoSummaryParams,
+) {
+  try {
+    const { enqueueSummaryJob } = await import('../../services/summaryJobs');
+    await enqueueSummaryJob(refs.messagesRef.current, params);
+  } catch (error) {
+    console.warn('[Summary] Could not queue memory archival:', error);
+    const state = useAppStore.getState();
+    state.setSystemNotice(state.language === 'zh' ? '记忆整理未能排队，请稍后重试。' : 'Memory archival could not be queued. Please retry.');
+  }
+}
+
+async function triggerAutoSummaryLegacy(
+  refs: TriggerAutoSummaryRefs,
   helpers: TriggerAutoSummaryHelpers,
   params: TriggerAutoSummaryParams,
 ) {
@@ -322,7 +337,7 @@ export async function triggerAutoSummary(
       console.log(`[AUTO-SUMMARY] Will retry in ${delayMs / 1000}s...`);
       state.setSystemNotice(language === 'zh' ? '记忆整理暂时失败，正在重试……' : 'Memory archival failed, retrying...');
       setTimeout(() => {
-        void triggerAutoSummary(refs, helpers, {
+        void triggerAutoSummaryLegacy(refs, helpers, {
           ...params,
           retryCount: retryCount + 1,
         });

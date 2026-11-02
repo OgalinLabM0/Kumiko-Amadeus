@@ -7,6 +7,10 @@
 - archive/2026-09-12/build-cache：退役dev-dist。
 - archive/2026-09-12/history：旧提示历史；按本地私人资料处理，不读取到项目报告，不提交。
 - archive/2026-09-12/move-manifest.json：本次23项移动的原位置、新位置、类型和文件大小，方便恢复。
+- research/：外部公开项目的只读研究副本，不安装或自动执行其脚本。
+- evaluations/：合成模型评测输入、应用测试桥、截图与数据库验证结果；不放真实聊天或凭据。
+- verification/：按日期分组的回归日志与结果清单。
+- tools/、android-sdk/：当前机器的开发检查工具和Android组件，均不进入Git，不是软件发行内容。
 
 未来成品统一放 installers/<轨道>/<版本>/<平台架构>/，不要改成“新exe”“最终版2”。release/继续作为构建暂存；release/win-unpacked由诊断脚本依赖，当前保留。dist、Android构建缓存、node_modules已有明确位置，不为了表面整齐打乱构建。
 

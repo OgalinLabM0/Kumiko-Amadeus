@@ -273,7 +273,7 @@ export const sanitizeRelativeReminderRecord = (record: any): RelativeReminder | 
   }
 
   const event = normalizeReminderEvent(record.event);
-  if (!event || !Number.isFinite(record.dueAt) || record.dueAt <= Date.now()) {
+  if (!event || !Number.isFinite(record.dueAt) || record.dueAt <= 0) {
     return null;
   }
 
@@ -281,6 +281,9 @@ export const sanitizeRelativeReminderRecord = (record: any): RelativeReminder | 
     id: typeof record.id === 'string' ? record.id : `${record.createdAt}-${Math.random().toString(36).slice(2, 8)}`,
     event,
     dueAt: record.dueAt,
+    lateGraceMinutes: [0, 10, 30, 60].includes(record.lateGraceMinutes) ? record.lateGraceMinutes : undefined,
+    version: Number.isSafeInteger(record.version) && record.version >= 0 ? record.version : 0,
+    paused: !!record.paused,
     createdAt: record.createdAt,
     timeZone: validReminderTimeZone(record.timeZone),
     sourceText: typeof record.sourceText === 'string' ? record.sourceText : undefined,
@@ -320,6 +323,10 @@ export const sanitizeMissedReminderRecord = (record: any): MissedReminderRecord 
     sourceText: typeof record.sourceText === 'string' ? record.sourceText : undefined,
     originalDueAt: record.originalDueAt,
     recordedAt: record.recordedAt,
+    ...(Number.isSafeInteger(record.count) && record.count > 0 && Number.isFinite(record.firstDueAt)
+      && Number.isFinite(record.lastDueAt) && record.firstDueAt > 0 && record.lastDueAt >= record.firstDueAt
+      ? { count: record.count, firstDueAt: record.firstDueAt, lastDueAt: record.lastDueAt,
+        timeZone: validReminderTimeZone(record.timeZone) } : {}),
   };
 };
 
@@ -338,10 +345,13 @@ export const sanitizeDailyReminderRecord = (record: any): DailyReminder | null =
     event,
     hour: Math.round(record.hour),
     minute: Math.round(record.minute),
+    lateGraceMinutes: [0, 10, 30, 60].includes(record.lateGraceMinutes) ? record.lateGraceMinutes : undefined,
     timeZone: typeof record.timeZone === 'string' && record.timeZone.trim() ? record.timeZone : 'Asia/Tokyo',
     createdAt: record.createdAt,
+    activeSince: Number.isFinite(record.activeSince) && record.activeSince > 0 ? record.activeSince : undefined,
     paused: !!record.paused,
     lastTriggeredDate: typeof record.lastTriggeredDate === 'string' ? record.lastTriggeredDate : undefined,
+    version: Number.isSafeInteger(record.version) && record.version >= 0 ? record.version : 0,
     sourceText: typeof record.sourceText === 'string' ? record.sourceText : undefined,
     retryAt: typeof record.retryAt === 'number' ? record.retryAt : undefined,
   };

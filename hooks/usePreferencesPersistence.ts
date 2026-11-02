@@ -56,7 +56,6 @@ export function usePreferencesPersistence(params: UsePreferencesPersistenceParam
     summaryArchiveState,
     relativeReminders,
     dailyReminders,
-    anchors,
     messageAlerts,
   } = params;
 
@@ -119,11 +118,6 @@ export function usePreferencesPersistence(params: UsePreferencesPersistenceParam
     if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
     db.setVal(DAILY_REMINDER_STORAGE_KEY, dailyReminders);
   }, [dailyReminders, isDataLoaded]);
-
-  useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
-    db.setVal('kumiko_anchors', anchors);
-  }, [anchors, isDataLoaded]);
 
   useEffect(() => {
     if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;

@@ -88,6 +88,7 @@ export const GlobalDialogHost: React.FC = () => {
       message={current?.message ?? ''}
       type={current?.kind ?? 'alert'}
       inputPlaceholder={current?.placeholder}
+      inputSecret={current?.secret}
       inputDefaultValue={current?.defaultValue}
       confirmText={current?.confirmText}
       cancelText={current?.cancelText}

@@ -1,4 +1,9 @@
 import React from 'react';
+import { runBackupRestoreSession } from '../../services/backupRestoreSession';
+import { getDataRestoreVersion, isDataRestoreBlocked, permitDataRestoreTransaction } from '../../services/dataRestoreGate';
+import type { PreparedBackupMediaHooks } from '../../services/backupMediaStaging';
+import { captureReminderNativeCancellationsForRestore, mergeReminderNativeCancellationsAfterRestore,
+  drainReminderNativeCancellations } from '../../services/reminderNativeCancellation';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { useAppStore } from '../../store';
@@ -18,11 +23,13 @@ import {
 } from '../../constants';
 import {
   normalizeImportedBackupMessages,
+  mapMessageToEntity,
 } from './messageMappers';
 import {
   recalculateTurnCountFromMessages,
   sanitizeRelativeReminderRecord,
   sanitizeDailyReminderRecord,
+  sanitizeMissedReminderRecord,
   sanitizeWorldCharacterStatusRecord,
   sanitizeKumikoDiaryRecord,
   sanitizeDailyFragmentRecord,
@@ -62,21 +69,27 @@ import { isCapacitorNative } from '../../services/environment';
 // on the PC; both endpoints are gone with the rest of the bridge.
 import { exportBackupZipNative } from '../../services/capacitorBackupNative';
 import { dialogService } from '../../services/dialogService';
-import { syncTemporalEpisodes } from '../../services/temporalEpisodeService';
+import { getSessionBackupPassword, protectionStatus } from '../../services/backupProtection';
+import { encryptPortableBackup, decryptPortableBackup, isEncryptedBackup } from '../../services/portableBackupCrypto.mjs';
+import { createBackupArchiveReader, validateBackupArchive } from '../../services/backupArchiveValidation.mjs';
+import { withMediaWriteFence } from '../../services/mediaWriteFence';
+import { syncTemporalEpisodes, buildTemporalEpisodes } from '../../services/temporalEpisodeService';
 import { imageService } from '../../services/imageService';
+import type { BackupMedia } from '../../services/backupMediaStaging';
 import {
   isVoiceServiceAvailable,
 } from '../../services/voiceFileService';
 import {
   getAllVectors,
-  restoreVectors,
 } from '../../services/localRagService';
 import { RAG_HISTORY_DIRTY_STORAGE_KEY } from '../../store/slices/ragSlice';
 import type { RelativeReminder, DailyReminder } from '../../store/slices/reminderSlice';
 import { RELATIVE_REMINDER_STORAGE_KEY, DAILY_REMINDER_STORAGE_KEY } from '../../store/slices/reminderSlice';
 import { getUserKnownLocation, sanitizeUserKnownLocation, USER_KNOWN_LOCATION_KEY } from '../../services/userKnownLocation';
+import { exportTurnExecutionState, getBackupExecutionState, replaceTurnExecutionState, validateExecutionStateIntegrity, executionStateEntries } from '../../services/turnStateBackup';
 import {
   SUMMARY_ARCHIVE_STATE_STORAGE_KEY,
+  MEMORY_QUERY_SESSION_STORAGE_KEY,
 } from './appConstants';
 
 // ---------------------------------------------------------------------------
@@ -89,10 +102,12 @@ export interface PersistBackupRefs {
 }
 
 export interface RestoreBackupDeps {
+  mediaHooks?: PreparedBackupMediaHooks;
+  expectedVersion?: string;
   isBulkRestoreInProgressRef: React.MutableRefObject<boolean>;
   rawHistorySyncedIdsRef: React.MutableRefObject<Set<string>>;
   forceRawHistoryResyncRef: React.MutableRefObject<boolean>;
-  updateMemoryQuerySession: (next: unknown) => void;
+  updateMemoryQuerySession: (next: unknown, options?: { persist?: boolean }) => void;
   setWorldCharacterStatus: React.Dispatch<React.SetStateAction<WorldCharacterStatusMap>>;
   setAutoSavedKumikoDiary: React.Dispatch<React.SetStateAction<KumikoDiaryEntity[]>>;
   setAutoSavedDailyFragments: React.Dispatch<React.SetStateAction<DailyFragmentEntity[]>>;
@@ -109,6 +124,8 @@ export interface ImportBackupDeps {
   restoreParsedBackupPayload: (
     json: any,
     importedImages?: Array<{ id: string; dataUrl: string }>,
+    media?: BackupMedia,
+    expectedVersion?: string,
   ) => Promise<any>;
   updateBaseline: (ts: number, data?: any) => void;
 }
@@ -122,6 +139,7 @@ export function normalizeBackupData(source: any) {
   const language = state.language;
 
   const root = source.data ?? source;
+  const executionState = getBackupExecutionState(source);
   const targetMessages = root.messages;
   const normalizedBackupMessages = normalizeImportedBackupMessages(
     Array.isArray(targetMessages) ? targetMessages : []
@@ -185,6 +203,11 @@ export function normalizeBackupData(source: any) {
   const hasKnownLocation = root.userKnownLocation !== undefined || source.userKnownLocation !== undefined;
 
   return {
+    executionState,
+    memoryAssetRevisions: root.memoryAssetRevisions && typeof root.memoryAssetRevisions === 'object' ? root.memoryAssetRevisions : {},
+    missedReminders: ((executionStateEntries(executionState).find(row => row.key === 'kumiko_missed_reminders')?.value as any[]) || [])
+      .map(sanitizeMissedReminderRecord).filter(Boolean),
+    vectors: Array.isArray(root.vectors) ? root.vectors : Array.isArray(source.vectors) ? source.vectors : undefined,
     userKnownLocation: hasKnownLocation
       ? sanitizeUserKnownLocation(root.userKnownLocation !== undefined ? root.userKnownLocation : source.userKnownLocation)
       : undefined,
@@ -200,11 +223,11 @@ export function normalizeBackupData(source: any) {
     anchors: Array.isArray(root.anchors) ? root.anchors : state.anchors,
     kumikoNotebook: typeof root.kumikoNotebook === 'string' ? root.kumikoNotebook : state.kumikoNotebook,
     relativeReminders: Array.isArray(root.relativeReminders)
-      ? root.relativeReminders.map(sanitizeRelativeReminderRecord).filter(Boolean)
-      : state.relativeReminders,
+      ? root.relativeReminders.map(sanitizeRelativeReminderRecord).filter(Boolean).map(r => ({ ...r, paused: true }))
+      : (state.relativeReminders || []).map(r => ({ ...r, paused: true })),
     dailyReminders: Array.isArray(root.dailyReminders)
-      ? root.dailyReminders.map(sanitizeDailyReminderRecord).filter(Boolean)
-      : state.dailyReminders,
+      ? root.dailyReminders.map(sanitizeDailyReminderRecord).filter(Boolean).map(r => ({ ...r, paused: true }))
+      : (state.dailyReminders || []).map(r => ({ ...r, paused: true })),
     worldCharacterStatus: hasWorldCharacterStatus
       ? sanitizeWorldCharacterStatusRecord(root.worldCharacterStatus ?? source.worldCharacterStatus)
       : undefined,
@@ -236,7 +259,10 @@ export function normalizeBackupData(source: any) {
 export async function persistNormalizedBackupData(
   normalizedData: any,
   refs: PersistBackupRefs,
+  restoreId?: string,
 ) {
+  // Reject malformed execution state before changing raw history or tables.
+  const executionState = await validateExecutionStateIntegrity(normalizedData.executionState);
   const normalizedMessages: Message[] = Array.isArray(normalizedData.messages) ? normalizedData.messages : [];
   const recalculatedTurnCount = recalculateTurnCountFromMessages(normalizedMessages);
   const normalizedSummaryState = normalizeSummaryArchiveState(
@@ -248,27 +274,21 @@ export async function persistNormalizedBackupData(
     normalizedData.coreMemory,
   );
 
-  await syncRawHistoryMessages(normalizedMessages, { forceFull: true });
-  if (Array.isArray(normalizedData.episodes)) {
+  const episodes = normalizedData.episodes ?? buildTemporalEpisodes(normalizedMessages);
+  // No network, filesystem or UI work belongs in this transaction. Raw
+  // history and its legacy key must commit with the rest of the dataset.
+  await db.transaction('rw', db.tables, async tx => {
+    if (restoreId) permitDataRestoreTransaction(tx, restoreId);
+    const nativeCancelBeforeRestore = await captureReminderNativeCancellationsForRestore();
+    await db.messages.clear();
+    if (normalizedMessages.length) await db.messages.bulkPut(normalizedMessages.map(mapMessageToEntity));
     await db.episodes.clear();
-    if (normalizedData.episodes.length > 0) {
-      await db.episodes.bulkPut(normalizedData.episodes);
+    if (episodes.length) await db.episodes.bulkPut(episodes);
+    if (!isDesktopElectron()) {
+      const vectors = normalizedData.vectors || [];
+      await db.vectors.clear();
+      if (vectors.length) await db.vectors.bulkPut(vectors.map(v => ({ ...v, vector: new Float32Array(v.vector) })));
     }
-  } else {
-    await syncTemporalEpisodes(normalizedMessages);
-  }
-  refs.rawHistorySyncedIdsRef.current = new Set(normalizedMessages.map((message: Message) => message.id));
-  refs.forceRawHistoryResyncRef.current = false;
-  await yieldToMainThread();
-
-  // v2.14.28 M16: wrap the rest of the backup-restore writes in one
-  // Dexie transaction so a partial failure (e.g. quota exhaustion mid-
-  // bulkPut) rolls back instead of leaving the keyval row updated but
-  // diary/psyche tables half-cleared. The earlier syncRawHistoryMessages
-  // / syncTemporalEpisodes calls live outside this transaction because
-  // they manage their own internal sync state and would deadlock if
-  // nested.
-  await db.transaction('rw', db.kumikoDiary, db.dailyFragments, db.psycheState, db.keyval, async () => {
     if (normalizedData.kumikoDiary !== undefined) {
       await db.kumikoDiary.clear();
       if (normalizedData.kumikoDiary.length > 0) {
@@ -294,6 +314,7 @@ export async function persistNormalizedBackupData(
     // directly (instead of db.setVal which itself opens a tiny rw
     // transaction) so Dexie merges everything into a single commit.
     const keyvalRows: Array<{ key: string; value: any }> = [
+      { key: 'kumiko_chat_history', value: normalizedMessages },
       { key: 'kumiko_core_memory', value: normalizedCoreMemory },
       { key: 'kumiko_world_book', value: normalizedData.worldBook },
       { key: 'kumiko_context_limit', value: normalizedData.contextLimit },
@@ -306,6 +327,15 @@ export async function persistNormalizedBackupData(
       { key: 'kumiko_notebook', value: normalizedData.kumikoNotebook },
       { key: RELATIVE_REMINDER_STORAGE_KEY, value: normalizedData.relativeReminders || [] },
       { key: DAILY_REMINDER_STORAGE_KEY, value: normalizedData.dailyReminders || [] },
+      // In-flight drafts/unread ledgers from the live dataset cannot be
+      // carried across a restore. Explicit received-turn records are restored
+      // by replaceTurnExecutionState under the new facts-only policy.
+      { key: 'kumiko_busy_followup', value: null },
+      { key: 'kumiko_pending_apology', value: null },
+      { key: 'kumiko_busy_slot_runtime', value: null },
+      { key: MEMORY_QUERY_SESSION_STORAGE_KEY, value: null },
+      { key: RAG_HISTORY_DIRTY_STORAGE_KEY, value: !normalizedData.vectors },
+      { key: 'kumiko_turn_archive_status_v1', value: null },
     ];
 
     if (normalizedData.worldCharacterStatus !== undefined) {
@@ -315,8 +345,12 @@ export async function persistNormalizedBackupData(
       keyvalRows.push({ key: USER_KNOWN_LOCATION_KEY, value: normalizedData.userKnownLocation });
     }
 
-    await db.keyval.bulkPut(keyvalRows);
+    await db.keyval.bulkPut(keyvalRows.map(row => ({ ...row, ...(typeof normalizedData.memoryAssetRevisions?.[row.key] === 'string' ? { sourceRevision: normalizedData.memoryAssetRevisions[row.key] } : {}) })));
+    await replaceTurnExecutionState(executionState);
+    await mergeReminderNativeCancellationsAfterRestore(nativeCancelBeforeRestore);
   });
+  refs.rawHistorySyncedIdsRef.current = new Set(normalizedMessages.map(message => message.id));
+  refs.forceRawHistoryResyncRef.current = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,6 +364,10 @@ export async function restoreBackupData(
   const validation = validateBackupImportPayload(backup);
   if (!validation.valid) {
     console.warn('[RESTORE] Backup rejected before state writes:', validation.reason);
+    return null;
+  }
+  try { getBackupExecutionState(backup); } catch {
+    console.warn('[RESTORE] Backup rejected before state writes: invalid execution state.');
     return null;
   }
 
@@ -349,9 +387,12 @@ export async function restoreBackupData(
   } = deps;
 
   const s = useAppStore.getState();
+  const previousSyncedIds = new Set(rawHistorySyncedIdsRef.current);
+  const previousForceSync = forceRawHistoryResyncRef.current;
 
   console.log('[RESTORE] Normalizing backup data summary:', summarizeBackupPayloadForLog(backup));
-  const normalizedData = normalizeBackupData(backup);
+  const { applyMemoryCorrectionsToBackup } = await import('../../services/memoryCorrectionBackup');
+  const normalizedData = normalizeBackupData(await applyMemoryCorrectionsToBackup(backup));
   console.log('[RESTORE] Normalized Data Messages count:', normalizedData.messages.length);
 
   const restoredTurnCount = recalculateTurnCountFromMessages(
@@ -372,13 +413,11 @@ export async function restoreBackupData(
   isBulkRestoreInProgressRef.current = true;
 
   try {
-    await yieldToMainThread();
-
-    React.startTransition(() => {
+    await runBackupRestoreSession(normalizedData,
+      id => persistNormalizedBackupData(normalizedData, { rawHistorySyncedIdsRef, forceRawHistoryResyncRef }, id),
+      () => {
       if (Array.isArray(normalizedData.messages)) {
-        forceRawHistoryResyncRef.current = true;
-        rawHistorySyncedIdsRef.current = new Set();
-        updateMemoryQuerySession(null);
+        updateMemoryQuerySession(null, { persist: false });
         s.setMessages(normalizedData.messages);
       }
       s.setCoreMemory(normalizedData.coreMemory);
@@ -393,6 +432,10 @@ export async function restoreBackupData(
       s.setKumikoNotebook(normalizedData.kumikoNotebook);
       s.setRelativeReminders(normalizedData.relativeReminders || []);
       s.setDailyReminders(normalizedData.dailyReminders || []);
+      s.setMissedReminders(normalizedData.missedReminders || []);
+      s.setBusyFollowUp(null);
+      s.setPendingApology(null);
+      s.setBusySlotRuntime(null);
       if (normalizedData.worldCharacterStatus !== undefined) {
         setWorldCharacterStatus(normalizedData.worldCharacterStatus);
       }
@@ -405,13 +448,27 @@ export async function restoreBackupData(
       if (normalizedData.psycheState !== undefined) {
         setAutoSavedPsycheState(normalizedData.psycheState);
       }
+      s.setDataLoadError(null);
+      s.setIsRagHistoryDirty(!normalizedData.vectors);
+    }, deps.mediaHooks, deps.expectedVersion);
+    const { synchronizeMemoryMaintenanceGate } = await import('../../services/memoryMaintenanceGate');
+    await synchronizeMemoryMaintenanceGate(true);
+    // Platform acknowledgements must not hold a completed restore open. Pending
+    // cancellations remain visible in TaskPanel and retry after restart.
+    void drainReminderNativeCancellations().catch(error => {
+      console.warn('[RESTORE] System reminder cancellation remains pending', error);
     });
-
-    await yieldToMainThread(2);
-    await persistNormalizedBackupData(normalizedData, { rawHistorySyncedIdsRef, forceRawHistoryResyncRef });
     return resolvedData;
+  } catch (error) {
+    if (isDataRestoreBlocked()) {
+      s.setDataLoadError('恢复尚未完成，写入已暂停保护数据。请重新启动以继续恢复。');
+    } else {
+      rawHistorySyncedIdsRef.current = previousSyncedIds;
+      forceRawHistoryResyncRef.current = previousForceSync;
+    }
+    throw error;
   } finally {
-    isBulkRestoreInProgressRef.current = false;
+    isBulkRestoreInProgressRef.current = isDataRestoreBlocked();
   }
 }
 
@@ -427,7 +484,7 @@ export async function restoreBackupData(
 // electron/backup-zip-builder.cjs attaches on the desktop path.
 async function buildWebBackupZipBlob(dataJsonString: string): Promise<Blob> {
   const zip = new JSZip();
-  zip.file('data.json', dataJsonString);
+  zip.file('data.json', new TextEncoder().encode(dataJsonString));
 
   const imagesFolder = zip.folder('images');
   if (imagesFolder) {
@@ -462,7 +519,7 @@ async function buildWebBackupZipBlob(dataJsonString: string): Promise<Blob> {
         if (ringtoneFolder) {
           ringtoneFolder.file(rtResult.fileName, rtResult.buffer);
           if (rtResult.displayName && rtResult.displayName !== rtResult.fileName) {
-            ringtoneFolder.file('custom.meta.json', JSON.stringify({ originalName: rtResult.displayName }, null, 2));
+            ringtoneFolder.file('custom.meta.json', new TextEncoder().encode(JSON.stringify({ originalName: rtResult.displayName }, null, 2)));
           }
         }
       }
@@ -471,7 +528,9 @@ async function buildWebBackupZipBlob(dataJsonString: string): Promise<Blob> {
     }
   }
 
-  return zip.generateAsync({ type: 'blob' });
+  const result = await zip.generateAsync({ type: 'blob' });
+  validateBackupArchive(await JSZip.loadAsync(await result.arrayBuffer()));
+  return result;
 }
 
 // F2A.5: removed `buildAndroidAutoBackupBlob` (was the consumer of
@@ -485,20 +544,33 @@ async function buildWebBackupZipBlob(dataJsonString: string): Promise<Blob> {
 // is unrelated to this helper and remains in place.
 
 export async function handleExportBackup(backupData: any) {
+  const version = getDataRestoreVersion();
+  try { await withMediaWriteFence(version, () => handleExportBackupOwned(backupData)); }
+  catch (error) {
+    console.warn('[EXPORT] Backup cancelled because data changed or safe locking is unavailable.', error);
+    const language = useAppStore.getState().language;
+    void dialogService.alert({ message: language === 'zh' ? '备份已取消：数据正在变化或安全锁不可用。请重试。' : 'Backup cancelled because data changed or safe locking is unavailable. Please retry.', icon: 'error' });
+  }
+}
+async function handleExportBackupOwned(backupData: any) {
+  const { captureRuntimeBackupData } = await import('../../services/runtimeBackupSnapshot');
+  backupData = await captureRuntimeBackupData(backupData);
   const state = useAppStore.getState();
   const language = state.language;
 
   try {
-    const [vectors, kumikoDiaryExport, dailyFragmentsExport, psycheStateExport, episodesExport, userKnownLocationExport] = await Promise.all([
+    const [vectors, kumikoDiaryExport, dailyFragmentsExport, psycheStateExport, episodesExport, userKnownLocationExport, executionStateExport] = await Promise.all([
       getAllVectors(),
-      db.kumikoDiary.orderBy('date').toArray(),
-      db.dailyFragments.orderBy('timestamp').toArray(),
-      db.psycheState.get('current'),
-      db.episodes.orderBy('startTimestamp').toArray(),
-      getUserKnownLocation(),
+      Promise.resolve(backupData.kumikoDiary),
+      Promise.resolve(backupData.dailyFragments),
+      Promise.resolve(backupData.psycheState),
+      Promise.resolve(backupData.episodes),
+      Promise.resolve(backupData.userKnownLocation),
+      Promise.resolve(backupData.executionState),
     ]);
     const lightweightBackupData = {
       ...backupData,
+      executionState: executionStateExport,
       userKnownLocation: userKnownLocationExport,
       kumikoDiary: undefined,
       dailyFragments: undefined,
@@ -516,7 +588,8 @@ export async function handleExportBackup(backupData: any) {
       episodes: episodesExport,
     };
     const jsonString = JSON.stringify(fullBackup, null, 2);
-    const defaultFileName = `kumiko_backup_${new Date().toISOString().slice(0, 10)}.zip`;
+    const protectedBackup = await protectionStatus();
+    const defaultFileName = `kumiko_backup_${new Date().toISOString().slice(0, 10)}.${protectedBackup ? 'kab' : 'zip'}`;
 
     // Desktop: hand off to the main-process shared zip builder via IPC.
     // Main drives the native save dialog + userData media snapshot; we
@@ -551,7 +624,12 @@ export async function handleExportBackup(backupData: any) {
     // No PC dependency — A4 cuts the third bridge to PC. PWA path below
     // is bit-identical to before because PWAs are still PC-companion.
     if (isCapacitorNative()) {
-      const blob = await buildWebBackupZipBlob(jsonString);
+      let blob = await buildWebBackupZipBlob(jsonString);
+      if (protectedBackup) {
+        const password = getSessionBackupPassword();
+        if (!password) throw new Error('Backup password unavailable');
+        blob = new Blob([await encryptPortableBackup(new Uint8Array(await blob.arrayBuffer()), password, 'zip')], { type: 'application/octet-stream' });
+      }
       const result = await exportBackupZipNative(blob, defaultFileName);
       if (!result.ok) {
         const detail = result.error ? ` (${result.error})` : '';
@@ -581,7 +659,12 @@ export async function handleExportBackup(backupData: any) {
 
     // Web fallback (no electron, no Capacitor): renderer-side JSZip
     // + file-saver download. Rare — just dev-server previews.
-    const content = await buildWebBackupZipBlob(jsonString);
+    let content = await buildWebBackupZipBlob(jsonString);
+    if (protectedBackup) {
+      const password = getSessionBackupPassword();
+      if (!password) throw new Error('Backup password unavailable');
+      content = new Blob([await encryptPortableBackup(new Uint8Array(await content.arrayBuffer()), password, 'zip')], { type: 'application/octet-stream' });
+    }
     saveAs(content, defaultFileName);
     state.setSystemNotice(language === 'zh' ? '备份导出成功！' : 'Backup exported successfully!');
   } catch (e) {
@@ -602,6 +685,8 @@ export async function handleImportBackup(
   deps: ImportBackupDeps,
 ): Promise<boolean> {
   if (!file) return false;
+  if (isDataRestoreBlocked()) return false;
+  const expectedVersion = getDataRestoreVersion();
 
   const state = useAppStore.getState();
   const language = state.language;
@@ -643,23 +728,37 @@ export async function handleImportBackup(
   }
 
   try {
+    if (file.size > 720 * 1024 * 1024) throw new Error('Backup is too large');
     let jsonStr = '';
     let parsedJson: any = null;
     let importedImages: Array<{ id: string; dataUrl: string }> = [];
+    let media: BackupMedia = {};
     const desktopFilePath = isDesktopElectron() ? (file as File & { path?: string }).path : undefined;
+    const encrypted = isEncryptedBackup(await file.slice(0, 16).text());
+    const password = encrypted ? await dialogService.prompt({ message: language === 'zh' ? '输入该备份的密码。' : 'Enter the password for this backup.', secret: true }) : undefined;
+    if (encrypted && !password) return false;
+    let importFile: Blob = file;
+    let importKind = file.name.toLowerCase().endsWith('.zip') ? 'zip' : 'json';
+    if (encrypted && !desktopFilePath) {
+      const decoded = await decryptPortableBackup(await file.text(), password!);
+      importKind = decoded.kind;
+      importFile = new Blob([decoded.bytes as BlobPart]);
+    }
 
     if (desktopFilePath) {
-      const parsedResult = await parseDesktopBackupImportFile(desktopFilePath);
+      const parsedResult = await parseDesktopBackupImportFile(desktopFilePath, password || undefined);
       if (!parsedResult.success || !parsedResult.json) {
         throw new Error(parsedResult.error || 'Failed to parse desktop backup import file.');
       }
       parsedJson = parsedResult.json;
       importedImages = parsedResult.images || [];
-    } else if (file.name.endsWith('.zip')) {
+      media = { voices: parsedResult.voices, ringtone: parsedResult.ringtone };
+    } else if (importKind === 'zip') {
       // F2B.3: removed the PWA `httpBackupImport` upload branch. The PC
       // /api/backup/import endpoint is gone; Capacitor + plain web both
       // parse the ZIP locally with JSZip below.
-      const zip = await JSZip.loadAsync(file);
+      const zip = await JSZip.loadAsync(importFile);
+      const reader = createBackupArchiveReader(zip);
       let dataFile = zip.file('data.json');
       if (!dataFile) {
         dataFile = zip.file('kumiko_backup.json');
@@ -670,8 +769,9 @@ export async function handleImportBackup(
       if (!dataFile) {
         throw new Error('data.json not found in ZIP');
       }
-      jsonStr = await dataFile.async('string');
+      jsonStr = await reader.read(dataFile, 'string');
       parsedJson = JSON.parse(jsonStr);
+      getBackupExecutionState(parsedJson);
       const validation = validateBackupImportPayload(parsedJson);
       if (!validation.valid) {
         throw new Error(`Invalid backup payload: ${validation.reason || 'unrecognized structure'}`);
@@ -679,72 +779,39 @@ export async function handleImportBackup(
 
       const imagesFolder = zip.folder('images');
       if (imagesFolder) {
-        const imageFiles = Object.keys(imagesFolder.files).filter(name => !imagesFolder.files[name].dir);
-        for (let imageIndex = 0; imageIndex < imageFiles.length; imageIndex += 1) {
-          const imgName = imageFiles[imageIndex];
-          const imgFile = imagesFolder.files[imgName];
-          const base64Data = await imgFile.async('base64');
-          const ext = imgName.split('.').pop()?.toLowerCase();
-          const mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
-          const dataUrl = `data:${mimeType};base64,${base64Data}`;
-
-          const id = imgName.split('/').pop()?.split('.')[0];
-          if (id) {
-            await imageService.saveImageWithId(id, dataUrl);
-          }
-
-          if ((imageIndex + 1) % 8 === 0) {
-            await yieldToMainThread();
-          }
+        for (const name of Object.keys(imagesFolder.files).filter(n => n.startsWith('images/') && !imagesFolder.files[n].dir)) {
+          const id = name.split('/').pop()?.split('.')[0];
+          if (!id) continue;
+          const ext = name.split('.').pop()?.toLowerCase();
+          const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
+          importedImages.push({ id, dataUrl: `data:${mime};base64,${await reader.read(imagesFolder.files[name], 'base64')}` });
         }
       }
-
-      if (isVoiceServiceAvailable()) {
-        try {
-          const { saveVoiceFile: saveVF, saveRingtoneFile: saveRT } = await import('../../services/voiceFileService');
-          const voiceFolder = zip.folder('voice');
-          if (voiceFolder) {
-            const voiceFileKeys = Object.keys(voiceFolder.files).filter(n => !voiceFolder.files[n].dir && n.endsWith('.mp3'));
-            for (const vfName of voiceFileKeys) {
-              const buf = await voiceFolder.files[vfName].async('arraybuffer');
-              const id = vfName.split('/').pop()?.replace(/\.mp3$/, '');
-              if (id) await saveVF(id, buf);
-            }
-          }
-          const ringtoneFolder = zip.folder('ringtone');
-          if (ringtoneFolder) {
-            const rtAudioKey = Object.keys(ringtoneFolder.files).find(n => {
-              if (ringtoneFolder.files[n].dir) return false;
-              return /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(n);
-            });
-            if (rtAudioKey) {
-              const buf = await ringtoneFolder.files[rtAudioKey].async('arraybuffer');
-              const ext = rtAudioKey.split('.').pop() || 'mp3';
-              let originalName: string | undefined;
-              const metaFile = ringtoneFolder.file('custom.meta.json');
-              if (metaFile) {
-                try {
-                  const parsedMeta = JSON.parse(await metaFile.async('string'));
-                  if (typeof parsedMeta?.originalName === 'string' && parsedMeta.originalName.trim()) {
-                    originalName = parsedMeta.originalName.trim();
-                  }
-                } catch {
-                  // Ignore malformed ringtone metadata in imported backups.
-                }
-              }
-              await saveRT(buf, ext, originalName || rtAudioKey.split('/').pop());
-            }
-          }
-        } catch (e) {
-          console.warn('[IMPORT] Failed to restore voice files:', e);
+      const voiceFolder = zip.folder('voice');
+      if (voiceFolder) {
+        media.voices = [];
+        for (const name of Object.keys(voiceFolder.files).filter(n => n.startsWith('voice/') && !voiceFolder.files[n].dir && /\.mp3$/i.test(n))) {
+          const id = name.split('/').pop()?.replace(/\.mp3$/i, '');
+          if (id) media.voices.push({ id, base64: await reader.read(voiceFolder.files[name], 'base64') });
+        }
+      }
+      const ringtoneFolder = zip.folder('ringtone');
+      if (ringtoneFolder) {
+        const audio = Object.keys(ringtoneFolder.files).filter(n => n.startsWith('ringtone/') && !ringtoneFolder.files[n].dir && /\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(n));
+        if (audio.length > 1) throw new Error('Backup has multiple custom ringtones');
+        if (audio.length) {
+          const meta = ringtoneFolder.file('custom.meta.json');
+          const parsed = meta ? JSON.parse(await reader.read(meta, 'string')) : null;
+          media.ringtone = { base64: await reader.read(ringtoneFolder.files[audio[0]], 'base64'), ext: audio[0].split('.').pop()!, originalName: parsed?.originalName || audio[0].split('/').pop() };
         }
       }
     } else {
-      jsonStr = await file.text();
+      jsonStr = await importFile.text();
     }
 
     await yieldToMainThread();
     const json = parsedJson ?? JSON.parse(jsonStr);
+    getBackupExecutionState(json);
     const validation = validateBackupImportPayload(json);
     if (!validation.valid) {
       throw new Error(`Invalid backup payload: ${validation.reason || 'unrecognized structure'}`);
@@ -777,108 +844,20 @@ export async function handleImportBackup(
       }
     }
 
-    if (!file.name.endsWith('.zip') && !desktopFilePath?.endsWith('.zip')) {
-      const dataToRestore = json.data || json;
-      const msgs = dataToRestore.messages || [];
-      const voiceCount = msgs.filter((m: any) => m.isVoiceMessage).length;
 
-      if (voiceCount > 0 && isVoiceServiceAvailable()) {
-        const { listVoiceFiles } = await import('../../services/voiceFileService');
-        const voiceFiles = await listVoiceFiles();
-        if (voiceFiles.length === 0) {
-          const confirmMsg = language === 'zh'
-            ? `检测到您的备份包含 ${voiceCount} 条语音记录，但当前数据目录中没有音频文件。导入后语音将无法播放。\n\n建议您导入完整的 ZIP 备份，或稍后手动将音频文件放入数据目录。\n\n是否继续仅导入文本？`
-            : `Your backup contains ${voiceCount} voice messages, but no audio files were found in the current data directory. Voices will not play after import.\n\nIt is recommended to import a full ZIP backup, or manually place the audio files in the data directory later.\n\nContinue importing text only?`;
-
-          const proceed = await dialogService.confirm({
-            message: confirmMsg,
-            variant: 'danger',
-          });
-          if (!proceed) {
-            return false;
-          }
-        }
-      }
-    }
-
-    const restoredData = await deps.restoreParsedBackupPayload(json, importedImages);
+    if (isDataRestoreBlocked() || getDataRestoreVersion() !== expectedVersion) throw new Error('Data changed while the backup was being prepared.');
+    const restoredData = await deps.restoreParsedBackupPayload(json, importedImages, media, expectedVersion);
     if (restoredData) {
-      // Plan 14 Phase A (P2 #6 Phase 2 finale): hydrate any legacy inline
-      // `message.image` that still ships in an older backup JSON into the
-      // `imageId` + file-store pipeline. Runtime code no longer reads
-      // `message.image` at all (MessageEntity dropped the field in Dexie
-      // V11), so this pass is the only place that legacy inline data can
-      // survive an import — and it must run before autosave or
-      // mapMessageToEntity sees the messages, otherwise the inline payload
-      // is silently discarded with no image rendered.
-      //
-      // Failure mode on individual hydrate errors: the message loses its
-      // image entirely (no imageId, no inline). This is acceptable because
-      // the alternative — keeping the inline field alive just for the UI —
-      // reintroduces exactly the dual-shape problem Phase 2 just removed.
-      try {
-        const legacyInlineMessages = Array.isArray(restoredData.messages)
-          ? restoredData.messages.filter((m: any) => m?.image && !m?.imageId)
-          : [];
-        if (legacyInlineMessages.length > 0) {
-          const hydratedIds = new Map<string, string>();
-          for (const m of legacyInlineMessages) {
-            try {
-              const newId = `img_legacy_${m.id}`;
-              await imageService.saveImageWithId(newId, m.image);
-              hydratedIds.set(m.id, newId);
-            } catch (err) {
-              console.warn('[IMPORT] Inline image hydrate failed for', m.id, err);
-            }
-          }
-          // Clear `image` on every legacy row (hydrated or not) so nothing
-          // downstream ever observes the transient shape.
-          const legacyIds = new Set(legacyInlineMessages.map((m: any) => m.id));
-          state.setMessages(prev => prev.map(m => {
-            if (!legacyIds.has(m.id)) return m;
-            const newId = hydratedIds.get(m.id);
-            return newId
-              ? { ...m, imageId: newId, image: undefined }
-              : { ...m, image: undefined };
-          }));
-          if (hydratedIds.size > 0) {
-            console.log(`[IMPORT] Hydrated ${hydratedIds.size} legacy inline image(s) into imageId.`);
-          }
-        }
-      } catch (hydrateErr) {
-        console.warn('[IMPORT] Inline image hydrate pass failed:', hydrateErr);
-      }
-
-      let ragRestoreFailed = false;
-      if (json.vectors) {
-        await yieldToMainThread();
-        // P1 #13 follow-up (Plan 4): restoreVectors now returns a structured
-        // result. Surface partial/failed restores via a non-blocking notice so
-        // the user can choose to rebuild the memory bank from the UI. Restore
-        // continues regardless.
-        const restoreResult = await restoreVectors(json.vectors);
-        if (!restoreResult?.ok) {
-          ragRestoreFailed = true;
-          console.warn('[IMPORT] RAG vectors restore was partial or failed:', restoreResult);
-          state.setSystemNotice(
-            language === 'zh'
-              ? '聊天已恢复，但长期记忆恢复失败或不完整。请重试或重建记忆库。'
-              : 'Chat was restored, but long-term memory restoration failed or was incomplete. Retry or rebuild the memory bank.'
-          );
-          state.setIsRagHistoryDirty(true);
-        } else {
-          state.setRagDirtyNoticeShown(false);
-          state.setIsRagHistoryDirty(false);
-        }
-      } else if (backupConfig.ragEnabled && Array.isArray(restoredData.messages) && restoredData.messages.length > 0) {
-        state.setIsRagHistoryDirty(true);
-        console.warn('[LOCAL RAG] Imported backup restored messages without vector snapshots. Rebuild recommended.');
-      }
       deps.updateBaseline(json.timestamp || Date.now(), restoredData);
-      if (flowState === 'APP' && !ragRestoreFailed) {
+      if (flowState === 'APP') {
         state.setSystemNotice(language === 'zh' ? '备份恢复成功！' : 'Backup restored successfully!');
       }
-      if (autoZipDegradedMessage && !ragRestoreFailed) {
+      if (restoredData.__missingMediaCount > 0) {
+        const count = restoredData.__missingMediaCount;
+        state.setSystemNotice(language === 'zh'
+          ? `备份已恢复，但有 ${count} 个图片或语音附件缺失，相关记录无法显示或播放附件。`
+          : `Backup restored, but ${count} image or voice attachments are missing.`);
+      } else if (autoZipDegradedMessage) {
         state.setSystemNotice(autoZipDegradedMessage);
       }
       return true;
@@ -893,12 +872,12 @@ export async function handleImportBackup(
     }
   } catch (e) {
     console.error('Failed to import backup', e);
-    if (flowState === 'APP') {
-      void dialogService.alert({
-        message: language === 'zh' ? '导入备份失败：不是有效的 JSON 或 ZIP 文件。' : 'Failed to import backup: Not a valid JSON or ZIP file.',
-        icon: 'error',
-      });
-    }
+    void dialogService.alert({
+      message: e instanceof Error && /Wrong backup password or corrupted backup/i.test(e.message)
+        ? (language === 'zh' ? '密码错误或备份已损坏，当前数据没有更改。' : 'Wrong password or corrupted backup. Current data was not changed.')
+        : (language === 'zh' ? '导入备份失败，请检查备份文件和存储空间后重试。' : 'Backup import failed. Check the backup file and available storage, then retry.'),
+      icon: 'error',
+    });
     return false;
   }
 }

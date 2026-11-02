@@ -13,6 +13,7 @@ import androidx.core.view.WindowCompat;
 import com.getcapacitor.BridgeActivity;
 import com.kumiko.amadeus.app.alarms.KumikoAlarmReceiver;
 import com.kumiko.amadeus.app.alarms.KumikoAlarmsPlugin;
+import com.kumiko.amadeus.app.security.KumikoCredentialsPlugin;
 
 public class MainActivity extends BridgeActivity {
 
@@ -27,6 +28,7 @@ public class MainActivity extends BridgeActivity {
         // drainPendingActions to the services/androidAlarmService.ts JS
         // wrapper.
         registerPlugin(KumikoAlarmsPlugin.class);
+        registerPlugin(KumikoCredentialsPlugin.class);
         super.onCreate(savedInstanceState);
 
         // v2.14.27: handle silent alarm wakes that the receiver dispatches

@@ -1,6 +1,41 @@
 import { AIConfig, Message, WorldBookEntry, LocationConfig, AnchorEntry, Language } from "../types";
 import { GoogleGenAI } from "@google/genai";
-import { getDefaultVisionModel, isOpenAICompatibleProvider, resolveTransportProvider } from "./appConfig";
+import { getDefaultEndpoint, getDefaultVisionModel, isOpenAICompatibleProvider, resolveTransportProvider } from "./appConfig";
+import { hasNativeCredentials, invokeCredential } from './nativeCredentials';
+
+function assertCredentialEndpoint(raw: string): void {
+    let url: URL;
+    try { url = new URL(raw); } catch { throw new Error('Invalid API endpoint.'); }
+    if (url.protocol !== 'https:' || url.username || url.password || Array.from(url.searchParams.keys()).some(key => /key|token|secret|authorization/i.test(key))) {
+        throw new Error('API credentials require an HTTPS endpoint without embedded credentials.');
+    }
+}
+
+async function protectedProviderFetch(config: AIConfig, url: string, key: string, purpose: 'openai' | 'anthropic', body: string, signal?: AbortSignal): Promise<Response> {
+    if (!hasNativeCredentials() && key.startsWith('vault:')) throw new Error('Protected credential is unavailable on this device.');
+    if (!hasNativeCredentials()) return fetch(url, { method: 'POST', redirect: 'error', signal, headers: {
+        'Content-Type': 'application/json', ...(purpose === 'openai' ? { Authorization: `Bearer ${key}` }
+          : { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerously-allow-browser': 'true' }),
+    }, body });
+    if (!key.startsWith('vault:')) {
+        const { getCurrentAIConfig, setAIConfig } = await import('./llmCore');
+        const before = localStorage.getItem('kumiko_ai_config');
+        const current = getCurrentAIConfig();
+        if ((current.activeKey === 'backup' ? current.apiKey_backup : current.apiKey_primary) !== key) throw new Error('Save the API key before validation.');
+        const saved = await setAIConfig(current, before);
+        if (!saved.ok) throw new Error(saved.error || 'Secure credential migration failed.');
+        const refreshed = getCurrentAIConfig();
+        key = (refreshed.activeKey === 'backup' ? refreshed.apiKey_backup : refreshed.apiKey_primary) || '';
+    }
+    if (!key.startsWith('vault:')) throw new Error('Secure credential migration failed.');
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    const reply = await invokeCredential('request', { handle: key.slice(6), purpose, expectedEndpoint: url, body }, signal);
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    if (!reply?.success) throw new Error(reply?.error || 'Protected API request failed.');
+    const binary = atob(reply.result.body);
+    const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+    return new Response(bytes, { status: reply.result.status, headers: { 'content-type': reply.result.contentType } });
+}
 
 export interface ProviderResponse {
     text: string;
@@ -214,22 +249,13 @@ export const callOpenAI = async (
         payload.tool_choice = "auto";
     }
 
-    console.log(`[OpenAI Call] 正在请求: ${fetchUrl} | 模型: ${model}`);
+    console.log(`[OpenAI Call] 模型: ${model}`);
 
-    const response = await fetch(fetchUrl, {
-        method: 'POST',
-        signal: toolContext?.signal,
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(payload)
-    });
+    assertCredentialEndpoint(fetchUrl);
+    const response = await protectedProviderFetch(config, fetchUrl, apiKey, 'openai', JSON.stringify(payload), toolContext?.signal);
 
     if (!response.ok) {
-        const errText = await response.text();
-        console.error(`[OpenAI API Error Payload]:`, errText);
-        throw new Error(`OpenAI API Error: ${response.status} ${errText}`);
+        throw new Error(`OpenAI API Error: ${response.status}`);
     }
 
     const data = await response.json();
@@ -301,7 +327,7 @@ export const callAnthropic = async (
         })) });
     }
 
-    console.log(`[Anthropic Call] 正在请求: ${fetchUrl} | 模型: ${model}`);
+    console.log(`[Anthropic Call] 模型: ${model}`);
 
     const payload: any = {
         model: model,
@@ -319,22 +345,11 @@ export const callAnthropic = async (
         }));
     }
 
-    const response = await fetch(fetchUrl, {
-        method: 'POST',
-        signal: toolContext?.signal,
-        headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': apiKey,
-            'anthropic-version': '2023-06-01',
-            'anthropic-dangerously-allow-browser': 'true'
-        },
-        body: JSON.stringify(payload)
-    });
+    assertCredentialEndpoint(fetchUrl);
+    const response = await protectedProviderFetch(config, fetchUrl, apiKey, 'anthropic', JSON.stringify(payload), toolContext?.signal);
 
     if (!response.ok) {
-        const errText = await response.text();
-        console.error(`[Anthropic API Error Payload]:`, errText);
-        throw new Error(`Anthropic API Error: ${response.status} ${errText}`);
+        throw new Error(`Anthropic API Error: ${response.status}`);
     }
 
     const data = await response.json();
@@ -356,7 +371,8 @@ export const callVisionHelper = async (
     config: AIConfig,
     imageBase64: string,
     mimeType: string,
-    language: Language
+    language: Language,
+    signal?: AbortSignal,
 ): Promise<string> => {
     const provider = config.visionProvider || config.provider || 'gemini';
     const model = config.model_vision || getDefaultVisionModel(provider);
@@ -367,6 +383,18 @@ export const callVisionHelper = async (
     }
     
     if (!apiKey) throw new Error("Vision Helper API Key is missing");
+    if (hasNativeCredentials() && !apiKey.startsWith('vault:')) {
+        const { getCurrentAIConfig, setAIConfig } = await import('./llmCore');
+        const before = localStorage.getItem('kumiko_ai_config');
+        const current = getCurrentAIConfig();
+        const currentKey = current.visionApiKey || (current.activeKey === 'primary' ? current.apiKey_primary : current.apiKey_backup);
+        if (currentKey !== apiKey) throw new Error('Save the vision API key before use.');
+        const saved = await setAIConfig(current, before);
+        if (!saved.ok) throw new Error(saved.error || 'Secure vision credential migration failed.');
+        const refreshed = getCurrentAIConfig();
+        apiKey = refreshed.visionApiKey || (refreshed.activeKey === 'primary' ? refreshed.apiKey_primary : refreshed.apiKey_backup);
+        if (!apiKey?.startsWith('vault:')) throw new Error('Secure vision credential migration failed.');
+    }
 
     const prompt = language === 'zh' 
         ? "请详细描述这张图片的内容，包括人物、场景、动作、文字等细节。你的描述将被转述给一个无法看到图片的AI，所以请尽可能详细和准确。" 
@@ -377,34 +405,39 @@ export const callVisionHelper = async (
     const useCustomEndpoint = config.useVisionCustomEndpoint ?? config.useCustomEndpoint;
     const customEndpoint = config.visionCustomEndpoint ?? config.customEndpoint;
     const transportProvider = resolveTransportProvider(provider, useCustomEndpoint ? customEndpoint : undefined);
+    if (!hasNativeCredentials() && !config.visionApiKey
+      && (provider !== (config.provider || 'gemini') || !!useCustomEndpoint !== !!config.useCustomEndpoint
+        || (useCustomEndpoint && customEndpoint !== config.customEndpoint))) {
+        throw new Error('Configure a separate vision credential for a different endpoint.');
+    }
 
     if (transportProvider === 'gemini') {
         const options: any = { apiKey };
         if (useCustomEndpoint && customEndpoint) {
             options.httpOptions = { baseUrl: customEndpoint.trim().replace(/\/v1beta\/?$/, '').replace(/\/v1alpha\/?$/, '').replace(/\/v1\/?$/, '').replace(/\/$/, '') };
+            assertCredentialEndpoint(options.httpOptions.baseUrl);
         }
-        const ai = new GoogleGenAI(options);
-        const response = await ai.models.generateContent({
+        const input = {
             model: model,
             contents: [
                 { text: prompt },
                 { inlineData: { mimeType, data: imageBase64 } }
-            ]
-        });
+            ],
+            config: { abortSignal: signal },
+        };
+        const response = apiKey.startsWith('vault:')
+          ? await (await import('./llmCore')).protectedGeminiGenerate(apiKey,
+            options.httpOptions?.baseUrl ? options.httpOptions.baseUrl + '/' : 'https://generativelanguage.googleapis.com/', input)
+          : await (await import('./llmCore')).createSessionGemini({ ...config, provider, useCustomEndpoint, customEndpoint }, apiKey).models.generateContent(input);
         return response.text || "[Vision Helper returned no description]";
     } else if (isOpenAICompatibleProvider(transportProvider)) {
-        let fetchUrl = (useCustomEndpoint && customEndpoint) ? customEndpoint.replace(/\/$/, '') : 'https://api.openai.com/v1/chat/completions';
+        let fetchUrl = (useCustomEndpoint && customEndpoint) ? customEndpoint.replace(/\/$/, '') : getDefaultEndpoint(provider);
         if (!useCustomEndpoint && transportProvider === 'openrouter') {
             fetchUrl = 'https://openrouter.ai/api/v1/chat/completions';
         }
         
-        const response = await fetch(fetchUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
+        assertCredentialEndpoint(fetchUrl);
+        const response = await protectedProviderFetch(config, fetchUrl, apiKey, 'openai', JSON.stringify({
                 model: model,
                 messages: [
                     {
@@ -416,12 +449,10 @@ export const callVisionHelper = async (
                     }
                 ],
                 max_tokens: 1000
-            })
-        });
+            }), signal);
         
         if (!response.ok) {
-            const errText = await response.text();
-            throw new Error(`Vision Helper OpenAI Error: ${response.status} ${errText}`);
+            throw new Error(`Vision Helper OpenAI Error: ${response.status}`);
         }
         const data = await response.json();
         // v2.14.28 M21: vision helper output goes straight into the main
@@ -434,15 +465,8 @@ export const callVisionHelper = async (
     } else if (transportProvider === 'anthropic') {
         let fetchUrl = (useCustomEndpoint && customEndpoint) ? customEndpoint.replace(/\/$/, '') : 'https://api.anthropic.com/v1/messages';
         
-        const response = await fetch(fetchUrl, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'anthropic-dangerously-allow-browser': 'true'
-            },
-            body: JSON.stringify({
+        assertCredentialEndpoint(fetchUrl);
+        const response = await protectedProviderFetch(config, fetchUrl, apiKey, 'anthropic', JSON.stringify({
                 model: model,
                 messages: [
                     {
@@ -457,12 +481,10 @@ export const callVisionHelper = async (
                     }
                 ],
                 max_tokens: 1000
-            })
-        });
+            }), signal);
         
         if (!response.ok) {
-            const errText = await response.text();
-            throw new Error(`Vision Helper Anthropic Error: ${response.status} ${errText}`);
+            throw new Error(`Vision Helper Anthropic Error: ${response.status}`);
         }
         const data = await response.json();
         return data.content?.[0]?.text || "[Vision Helper returned no description]";

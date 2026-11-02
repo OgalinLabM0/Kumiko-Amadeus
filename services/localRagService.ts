@@ -2,6 +2,9 @@ import { db } from './db';
 import { Message } from '../types';
 import { isCapacitorNative } from './environment';
 import { invokeAndroidRag } from './androidRagService';
+import { TaskCapacityError, type TaskContext } from './taskRuntime';
+import type { EvidenceRef } from './runtimeEntities';
+import { assertMemoryAvailable, getMemoryGeneration } from './memoryMaintenanceGate';
 
 // --- Electron IPC Bridge ---
 // In Electron, embedding generation and vector search run in the main process (bge-m3 ONNX + SQLite).
@@ -22,7 +25,7 @@ const getIpcRenderer = () => {
 // On a plain web preview build neither is available; helper returns null.
 type RagInvoker = {
   kind: 'electron' | 'android-native';
-  invoke: <T = any>(channel: string, payload?: any) => Promise<T>;
+  invoke: <T = any>(channel: string, payload?: any, taskContext?: TaskContext) => Promise<T>;
 };
 
 const getRagInvoker = (): RagInvoker | null => {
@@ -30,13 +33,25 @@ const getRagInvoker = (): RagInvoker | null => {
   if (ipc) {
     return {
       kind: 'electron',
-      invoke: <T = any>(channel: string, payload?: any) => ipc.invoke(channel, payload) as Promise<T>,
+      invoke: async <T = any>(channel: string, payload?: any, taskContext?: TaskContext): Promise<T> => {
+        const generation = taskContext?.memoryGeneration ?? getMemoryGeneration();
+        assertMemoryAvailable(generation);
+        const result = await ipc.invoke(channel, payload);
+        assertMemoryAvailable(generation);
+        return result as T;
+      },
     };
   }
   if (isCapacitorNative()) {
     return {
       kind: 'android-native',
-      invoke: <T = any>(channel: string, payload?: any) => invokeAndroidRag<T>(channel, payload),
+      invoke: async <T = any>(channel: string, payload?: any, taskContext?: TaskContext): Promise<T> => {
+        const generation = taskContext?.memoryGeneration ?? getMemoryGeneration();
+        assertMemoryAvailable(generation);
+        const result = await invokeAndroidRag<T>(channel, payload, taskContext);
+        assertMemoryAvailable(generation);
+        return result;
+      },
     };
   }
   return null;
@@ -308,23 +323,24 @@ export const syncRawHistoryMessagesToMain = async (
 // ==========================================
 // EMBEDDING GENERATION
 // ==========================================
-export const generateEmbedding = async (text: string, retries = 5, backoff = 2000): Promise<Float32Array> => {
+export const generateEmbedding = async (text: string, retries = 1, backoff = 2000, taskContext?: TaskContext): Promise<Float32Array> => {
   // Embeddings come from the desktop's bge-m3 ONNX runtime — either
   // directly (Electron) or via HTTP IPC (mobile PWA proxies through
   // the desktop's renderer-side handler).
   const invoker = getRagInvoker();
   if (invoker) {
       try {
-          const result = await invoker.invoke<any>('rag:embed', text);
+          const result = await invoker.invoke<any>('rag:embed', text, taskContext);
           if (result.success) {
               return new Float32Array(result.vector);
           }
           throw new Error(result.error || 'Local embedding failed');
       } catch (e) {
+          if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
           if (retries > 0) {
             console.warn(`[LOCAL RAG] Local embedding failed, retrying in ${backoff}ms... (${retries} retries left)`, e);
             await new Promise(resolve => setTimeout(resolve, backoff));
-            return generateEmbedding(text, retries - 1, backoff * 2);
+            return generateEmbedding(text, retries - 1, backoff * 2, taskContext);
           }
           throw e;
       }
@@ -339,7 +355,8 @@ export const generateEmbedding = async (text: string, retries = 5, backoff = 200
 export const saveLocalRagMemory = async (
   text: string,
   messageId?: string,
-  metadata: LocalRagMemoryMetadata = {}
+  metadata: LocalRagMemoryMetadata = {},
+  taskContext?: TaskContext,
 ) => {
   try {
     const { quiet = false, ...persistedMetadata } = metadata;
@@ -348,7 +365,7 @@ export const saveLocalRagMemory = async (
       // Both desktop Electron and mobile PWA target the same SQLite
       // store on the desktop side; the mobile path differs only in
       // transport (HTTP IPC vs in-process).
-      const result = await invoker.invoke<any>('rag:save', { text, messageId, ...persistedMetadata });
+      const result = await invoker.invoke<any>('rag:save', { text, messageId, ...persistedMetadata }, taskContext);
       if (result.success) {
         if (result.skipped) {
           if (!quiet) {
@@ -775,7 +792,7 @@ const appendRawHistoryWindow = (
   return true;
 };
 
-const expandContextBatch = async (candidates: { text: string, messageId?: string, source?: string, timestamp?: number }[]): Promise<string[]> => {
+const expandContextBatch = async (candidates: { text: string, messageId?: string, source?: string, timestamp?: number }[], taskContext?: TaskContext): Promise<string[]> => {
   // Preserve each hit together with its proven context, so topK cannot
   // accidentally keep the neighbors while dropping the retrieved fact.
   const rawMessages = candidates.some(candidate => candidate.messageId)
@@ -788,6 +805,18 @@ const expandContextBatch = async (candidates: { text: string, messageId?: string
       const rawIndex = rawMessages.findIndex(message => message.id === candidate.messageId);
       const messageMap = new Map<string, RagMessage>();
       if (rawIndex >= 0 && appendRawHistoryWindow(messageMap, rawMessages, rawIndex)) {
+        if (taskContext) {
+          const refs = taskContext.consultedSources || (taskContext.consultedSources = []);
+          for (const [id, item] of messageMap) {
+            const stored = await db.messages.get(id);
+            if (!stored || stored.text !== item.text || stored.timestamp !== item.timestamp || stored.role !== item.role) {
+              messageMap.delete(id);
+              continue;
+            }
+            const version = stored.contentRevision ?? (stored as any).sourceRevision ?? 'legacy';
+            if (!refs.some(ref => ref.kind === 'message' && ref.id === id && ref.version === version)) refs.push({ kind: 'message', id, version, relation: 'context' });
+          }
+        }
         const context = formatContextBlock(Array.from(messageMap.values()));
         block = rawMessages[rawIndex].text === candidate.text
           ? context
@@ -840,6 +869,7 @@ function formatContextBlock(msgs: RagMessage[]): string {
 // (warning fires) is preserved for ad-hoc callers.
 export interface SearchLocalRagMemoryOptions {
   suppressEmptyWarning?: boolean;
+  taskContext?: TaskContext;
 }
 
 export const searchLocalRagMemory = async (
@@ -865,19 +895,21 @@ export const searchLocalRagMemoryDetailed = async (
   try {
     let rawCandidates: {
       text: string;
+      canonicalKey?: string;
       messageId?: string;
       source?: string;
       timestamp?: number;
       tier?: 'core' | 'episodic' | 'background' | 'lore';
       role?: string;
       score?: number;
+      sourceRefs?: EvidenceRef[];
     }[] = [];
     
     const invoker = getRagInvoker();
     if (invoker) {
       const ipcPayload: Record<string, unknown> = { query, topK: 15, ...temporalFilters, memoryIntent };
       if (keywords && keywords.length > 0) ipcPayload.keywords = keywords;
-      const result = await invoker.invoke<any>('rag:search', ipcPayload);
+      const result = await invoker.invoke<any>('rag:search', ipcPayload, options?.taskContext);
       // Defensive: result.results may legitimately be missing/undefined when the
       // SQLite vector table is empty or during race conditions. Accessing `.length`
       // on undefined would throw and the outer catch would mask the real "no results"
@@ -950,6 +982,7 @@ export const searchLocalRagMemoryDetailed = async (
           .slice(0, topK);
         rawCandidates = recentVectors.map(v => ({
           text: v.text,
+          canonicalKey: v.canonicalKey,
           messageId: v.messageId,
           source: v.source,
           timestamp: v.timestamp,
@@ -959,6 +992,10 @@ export const searchLocalRagMemoryDetailed = async (
         }));
     }
 
+    // Artifact vectors can be staged before their authoritative source checks
+    // finish. Only current, active evidence may enter the model context.
+    const { filterValidArtifactCandidates } = await import('./artifactIndexService');
+    rawCandidates = await filterValidArtifactCandidates(rawCandidates);
     if (rawCandidates.length === 0) {
       return {
         blocks: [],
@@ -1048,12 +1085,25 @@ export const searchLocalRagMemoryDetailed = async (
 
     // Expand context for candidates (Parent-Document Retrieval)
     // Batch expansion properly groups them by timeline
-    let consolidatedBlocks = await expandContextBatch(rawCandidates);
+    if (options?.taskContext) {
+      const refs = options.taskContext.consultedSources || (options.taskContext.consultedSources = []);
+      for (const candidate of rawCandidates) {
+        const candidateRefs = [...(candidate.sourceRefs || [])];
+        if (candidate.messageId) {
+          const message = await db.messages.get(candidate.messageId);
+          if (message) candidateRefs.push({ kind: 'message', id: message.id, version: message.contentRevision ?? (message as any).sourceRevision ?? 'legacy', relation: 'context' });
+        }
+        for (const ref of candidateRefs) {
+          if (!refs.some(existing => existing.kind === ref.kind && existing.id === ref.id && existing.version === ref.version)) refs.push(ref);
+        }
+      }
+    }
+    let consolidatedBlocks = await expandContextBatch(rawCandidates, options?.taskContext);
     const groupedBlocks: LocalRagGroupedRecallSection[] = [];
     for (const kind of LOCAL_RAG_ENTRY_KIND_ORDER) {
       const kindCandidates = rawCandidates.filter(candidate => getMemoryEntryKindFromCandidate(candidate) === kind);
       if (kindCandidates.length === 0) continue;
-      const kindBlocks = await expandContextBatch(kindCandidates);
+      const kindBlocks = await expandContextBatch(kindCandidates, options?.taskContext);
       if (kindBlocks.length === 0) continue;
       groupedBlocks.push({
         kind,
@@ -1078,6 +1128,7 @@ export const searchLocalRagMemoryDetailed = async (
     };
   } catch (e) {
     console.error("Failed to search local RAG memory", e);
+    if (e instanceof TaskCapacityError || options?.taskContext?.signal?.aborted) throw e;
     return {
       blocks: [],
       groupedBlocks: [],
@@ -1093,3 +1144,5 @@ export const searchLocalRagMemoryDetailed = async (
     };
   }
 };
+
+export { saveIndexedArtifact } from './artifactIndexService';

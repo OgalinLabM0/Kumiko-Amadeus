@@ -20,6 +20,8 @@
 // so the slice setter is only used for hydration / direct UI updates.
 
 import { useAppStore } from '../store';
+import { db } from './db';
+import { commitResponseEffect, type ResponseEffectGuard } from './responseEffectCommit';
 import { isCapacitorNative, getCapacitorPlatform } from './environment';
 import { scheduleAndroidAlarm, cancelAndroidAlarm } from './androidAlarmService';
 import type { KumikoBlockRuntime } from '../types';
@@ -50,6 +52,70 @@ const sanitizeReason = (r: string | undefined): string => {
   return r.slice(0, 25);
 };
 
+export const createBlockRuntime = (input: StartBlockInput): KumikoBlockRuntime => {
+  const now = Date.now();
+  return { activeUntilMs: now + sanitizeMinutes(input.minutes) * 60_000, startedAt: now,
+    reason: sanitizeReason(input.reason), triggerMessageId: input.triggerMessageId,
+    capturedUnreadIds: [], expiryAcked: false };
+};
+
+/** A durable scheduling obligation is written in the same transaction as the block. */
+export const blockOutboxKey = (eventId: string) => `kumiko_block_outbox_v1:${eventId}`;
+
+async function withBlockNativeLock(work: () => Promise<void>): Promise<boolean> {
+  if (!isCapacitorNative() || getCapacitorPlatform() !== 'android') return true;
+  // The single named lock serializes all renderer windows before any native
+  // schedule/cancel, including a late completion from an older block.
+  if (typeof navigator === 'undefined' || !navigator.locks) return false;
+  await navigator.locks.request('kumiko-block-native-alarm-v1', work);
+  return true;
+}
+
+export async function resumeCommittedBlock(eventId: string, runtime: KumikoBlockRuntime): Promise<void> {
+  const key = blockOutboxKey(eventId);
+  const row = await db.keyval.get(key);
+  if (!row) return;
+  const current = (await db.keyval.get('kumiko_block_runtime'))?.value as KumikoBlockRuntime | undefined;
+  if (!current || current.startedAt !== runtime.startedAt || current.activeUntilMs !== runtime.activeUntilMs) {
+    await db.keyval.delete(key);
+    return;
+  }
+  useAppStore.getState().setBlockRuntime(current);
+  // Schedule failure remains pending; a later startup/retry can resume it.
+  let scheduled = true;
+  const locked = await withBlockNativeLock(async () => {
+    const latest = (await db.keyval.get('kumiko_block_runtime'))?.value as KumikoBlockRuntime | undefined;
+    if (!latest || latest.startedAt !== runtime.startedAt || latest.activeUntilMs !== runtime.activeUntilMs) return;
+    const result = await scheduleAndroidAlarm({ reminderId: BLOCK_EXPIRY_ALARM_ID, at: runtime.activeUntilMs,
+      version: `${runtime.startedAt}:${runtime.activeUntilMs}`, event: 'block_release', text: 'Kumiko · 拉黑解除', wantsCall: false });
+    scheduled = result.scheduled === true;
+  });
+  if (!locked || !scheduled) return;
+  await db.keyval.delete(key);
+}
+
+export async function resumePendingBlockSchedules(): Promise<void> {
+  const entries = await db.keyval.filter(row => row.key.startsWith('kumiko_block_outbox_v1:')).toArray();
+  for (const entry of entries) {
+    const runtime = (await db.keyval.get('kumiko_block_runtime'))?.value as KumikoBlockRuntime | undefined;
+    if (entry.value?.operation === 'cancel') {
+      if (runtime) { await db.keyval.delete(entry.key); continue; }
+      let cancelled = true;
+      const locked = await withBlockNativeLock(async () => {
+        const latest = (await db.keyval.get('kumiko_block_runtime'))?.value as KumikoBlockRuntime | null | undefined;
+        if (!latest) cancelled = await cancelAndroidAlarm(BLOCK_EXPIRY_ALARM_ID);
+      });
+      if (locked && cancelled) await db.keyval.delete(entry.key);
+      continue;
+    }
+    if (!runtime || runtime.startedAt !== entry.value?.startedAt || runtime.activeUntilMs <= Date.now()) {
+      await db.keyval.delete(entry.key);
+      continue;
+    }
+    await resumeCommittedBlock(entry.value.eventId, runtime);
+  }
+}
+
 const tryScheduleAndroidExpiryAlarm = async (
   runtime: KumikoBlockRuntime,
 ): Promise<void> => {
@@ -59,24 +125,14 @@ const tryScheduleAndroidExpiryAlarm = async (
     // (LocalNotifications); the regulator will pick the JS-side alarm
     // event up in foreground, so the notification text is just a
     // failsafe for users with the app fully killed.
-    await scheduleAndroidAlarm({
-      reminderId: BLOCK_EXPIRY_ALARM_ID,
-      at: runtime.activeUntilMs,
-      event: 'block_release',
-      text: 'Kumiko · 拉黑解除',
-      wantsCall: false,
+    await withBlockNativeLock(async () => {
+      const latest = (await db.keyval.get('kumiko_block_runtime'))?.value as KumikoBlockRuntime | undefined;
+      if (!latest || latest.startedAt !== runtime.startedAt || latest.activeUntilMs !== runtime.activeUntilMs) return;
+      await scheduleAndroidAlarm({ reminderId: BLOCK_EXPIRY_ALARM_ID, at: runtime.activeUntilMs,
+        version: `${runtime.startedAt}:${runtime.activeUntilMs}`, event: 'block_release', text: 'Kumiko · 拉黑解除', wantsCall: false });
     });
   } catch (e) {
     console.warn('[BlockRuntime] Android expiry alarm schedule failed:', e);
-  }
-};
-
-const tryCancelAndroidExpiryAlarm = async (): Promise<void> => {
-  if (!isCapacitorNative() || getCapacitorPlatform() !== 'android') return;
-  try {
-    await cancelAndroidAlarm(BLOCK_EXPIRY_ALARM_ID);
-  } catch (e) {
-    console.warn('[BlockRuntime] Android expiry alarm cancel failed:', e);
   }
 };
 
@@ -86,7 +142,8 @@ const tryCancelAndroidExpiryAlarm = async (): Promise<void> => {
 // too, so the UI banner reflects the latest cause.
 export const startBlock = async (
   input: StartBlockInput,
-): Promise<KumikoBlockRuntime> => {
+  guard?: ResponseEffectGuard,
+): Promise<KumikoBlockRuntime | null> => {
   const minutes = sanitizeMinutes(input.minutes);
   const reason = sanitizeReason(input.reason);
   const now = Date.now();
@@ -98,7 +155,30 @@ export const startBlock = async (
     capturedUnreadIds: [],
     expiryAcked: false,
   };
-  await useAppStore.getState().persistBlockRuntime(runtime);
+  if (guard) {
+    const result = await commitResponseEffect(guard, 'block', [], async () => {
+      await db.keyval.put({ key: 'kumiko_block_runtime', value: runtime });
+      return runtime;
+    });
+    if (!result.committed) {
+      // A stopped reply may have committed the block before its UI mirror or
+      // platform alarm ran. Resume those consequences only while that exact
+      // block is still current; never resurrect a replacement or cleared block.
+      const existing = (await db.keyval.get('kumiko_block_runtime'))?.value as KumikoBlockRuntime | undefined;
+      await guard.check();
+      if (!existing || existing.triggerMessageId !== input.triggerMessageId || existing.activeUntilMs <= Date.now()) return null;
+      useAppStore.getState().setBlockRuntime(existing);
+      await guard.check();
+      await tryScheduleAndroidExpiryAlarm(existing);
+      return existing;
+    }
+    // This mirror reflects a committed event even if typing was just stopped.
+    if (!guard.isActive()) return runtime;
+    useAppStore.getState().setBlockRuntime(runtime);
+    await guard.check();
+  } else {
+    await useAppStore.getState().persistBlockRuntime(runtime);
+  }
   await tryScheduleAndroidExpiryAlarm(runtime);
   return runtime;
 };
@@ -157,6 +237,14 @@ export const markBlockExpiryAcked = async (): Promise<void> => {
 // stay stuck on "未送达" forever, which contradicts the proactive line.
 export const clearBlock = async (): Promise<void> => {
   const runtime = useAppStore.getState().blockRuntime;
+  const cleared = await db.transaction('rw', db.keyval, async () => {
+    const current = (await db.keyval.get('kumiko_block_runtime'))?.value as KumikoBlockRuntime | null | undefined;
+    if (current && (!runtime || current.startedAt !== runtime.startedAt || current.activeUntilMs !== runtime.activeUntilMs)) return false;
+    await db.keyval.put({ key: 'kumiko_block_runtime', value: null });
+    await db.keyval.put({ key: blockOutboxKey('cancel'), value: { operation: 'cancel', status: 'pending', startedAt: runtime?.startedAt } });
+    return true;
+  });
+  if (!cleared) return;
   const capturedIds = runtime?.capturedUnreadIds ?? [];
   if (capturedIds.length > 0) {
     const idSet = new Set(capturedIds);
@@ -166,8 +254,8 @@ export const clearBlock = async (): Promise<void> => {
         : m,
     ));
   }
-  await useAppStore.getState().persistBlockRuntime(null);
-  await tryCancelAndroidExpiryAlarm();
+  useAppStore.getState().setBlockRuntime(null);
+  await resumePendingBlockSchedules();
 };
 
 // Boot-time helper: returns 'fire_expiry' if the block already lapsed

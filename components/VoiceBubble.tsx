@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Play, Pause, AlertTriangle, RefreshCw } from 'lucide-react';
 import { loadVoiceFile } from '../services/voiceFileService';
+import { getMemoryGeneration } from '../services/memoryMaintenanceGate';
+import { registerMemorySensitiveMedia } from '../hooks/useMemoryMaintenanceMediaStop';
 // F2B.3: dropped `isCapacitorNative`, `isMobilePwa`, `getHttpVoiceUrl`. PWA
 // used to stream voices straight from PC's `/media/voices/{id}`; both
 // runtimes (Electron + Capacitor) now load the bytes through `loadVoiceFile`
@@ -63,6 +65,7 @@ export const VoiceBubble: React.FC<VoiceBubbleProps> = ({
   const [progress, setProgress] = useState(0);
   const [audioError, setAudioError] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const unregisterMediaRef = useRef<(() => void) | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const animFrameRef = useRef<number>(0);
 
@@ -86,6 +89,7 @@ export const VoiceBubble: React.FC<VoiceBubbleProps> = ({
   }, [revealedChars, text.length, messageId, hasPlayed]);
 
   const cleanup = useCallback(() => {
+    unregisterMediaRef.current?.(); unregisterMediaRef.current = null;
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.src = '';
@@ -101,6 +105,7 @@ export const VoiceBubble: React.FC<VoiceBubbleProps> = ({
   useEffect(() => cleanup, [cleanup]);
 
   const togglePlay = useCallback(async () => {
+    const memoryGeneration = getMemoryGeneration();
     if (isPlaying && audioRef.current) {
       audioRef.current.pause();
       setIsPlaying(false);
@@ -110,6 +115,7 @@ export const VoiceBubble: React.FC<VoiceBubbleProps> = ({
     if (!voiceFileId) return;
 
     try {
+      if (audioRef.current && !audioRef.current.getAttribute('src')) cleanup();
       if (!audioRef.current) {
         // F2B.3: unified to `loadVoiceFile` for both runtimes. Electron
         // reads the bytes via IPC fs; Capacitor reads them via
@@ -135,7 +141,9 @@ export const VoiceBubble: React.FC<VoiceBubbleProps> = ({
         const url = URL.createObjectURL(blob);
         objectUrlRef.current = url;
         const audio = new Audio(url);
+        unregisterMediaRef.current = registerMemorySensitiveMedia(audio, memoryGeneration, () => { cleanup(); setIsPlaying(false); });
         audioRef.current = audio;
+        audio.addEventListener('pause', () => setIsPlaying(false));
 
         audio.onended = () => {
           setIsPlaying(false);
@@ -147,6 +155,7 @@ export const VoiceBubble: React.FC<VoiceBubbleProps> = ({
         };
       }
 
+      unregisterMediaRef.current = registerMemorySensitiveMedia(audioRef.current, memoryGeneration, () => { cleanup(); setIsPlaying(false); });
       await audioRef.current.play();
       setIsPlaying(true);
       if (!hasPlayed) {

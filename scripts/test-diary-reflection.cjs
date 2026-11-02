@@ -1,0 +1,11 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const ts = require('typescript');
+const {webcrypto} = require('node:crypto');
+const rows = { messages:{ m:{id:'m',role:'user',text:'hello',timestamp:1,isRead:true} }, keyval:{ world_character_status:{key:'world_character_status',value:{friend:{current_attitude:'old',current_status:'known'}}} }, stateCommits:{} };
+const db={}; for(const name of Object.keys(rows)) db[name]={ async get(id){return structuredClone(rows[name][id]);}, async put(v){rows[name][v.id??v.key]=structuredClone(v);} };
+let n=0;
+const deps={'./db':{db,updateWorldCharacterStatus:async x=>{for(const k of Object.keys(x)) Object.assign(rows.keyval.world_character_status.value[k],x[k]);}},'./psycheStateService':{applyDiaryPsycheDelta:async()=>{n++;}}};
+const m={exports:{}}; vm.runInNewContext(ts.transpileModule(fs.readFileSync('services/diaryReflection.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module:m,exports:m.exports,require:id=>deps[id],crypto:webcrypto,TextEncoder,Uint8Array,Number,Date,JSON,Error});
+(async()=>{const create=m.exports.createDiaryReflection; const input={date:'2026-01-01',sourceMessages:[{id:'m',role:'user',text:'hello',timestamp:1}],updatesText:JSON.stringify({friend:{current_attitude:'better',current_status:'invented'},other:{current_attitude:'invented'}}),psycheDeltaText:'{"stress":2}',reflect:true};const commit=await create(input);await commit();await commit();assert.equal(n,1);assert.equal(rows.keyval.world_character_status.value.friend.current_status,'known');assert.equal(rows.keyval.world_character_status.value.friend.current_attitude,'better');assert.equal(rows.keyval.world_character_status.value.other,undefined);const changed=await create({...input,psycheDeltaText:'{\"stress\":3}'});await assert.rejects(changed(),/different payload/);rows.messages.m.text='changed';await assert.rejects(commit(),/changed/);console.log('diary reflection evidence, once-only and subjective-field checks passed');})().catch(e=>{console.error(e);process.exitCode=1});

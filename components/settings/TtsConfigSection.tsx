@@ -4,6 +4,10 @@ import { ThemedSelect, type ThemedSelectOption } from '../common/ThemedSelect';
 import type { TtsConfig, VoiceMode, Language, TtsBackend } from '../../types';
 import { UI_TRANSLATIONS, DEFAULT_TTS_CONFIG } from '../../constants';
 import { synthesizeSpeech, type TtsErrorKind } from '../../services/fishAudioService';
+import { getDataRestoreVersion } from '../../services/dataRestoreGate';
+import { storeTtsCredential } from '../../services/ttsCredentials';
+import { isCapacitorNative } from '../../services/environment';
+import { hasNativeCredentials } from '../../services/nativeCredentials';
 import { checkGenieHealth, isSovitsV3V4Model } from '../../services/genieAudioService';
 import { SettingsToggle } from './SettingsToggle';
 import { SovitsRefPromptEditorModal } from './SovitsRefPromptEditorModal';
@@ -20,7 +24,6 @@ import {
 import { Collapse } from '../Collapse';
 import { openExternalUrl } from '../../utils/openExternal';
 import { primeAudioForUserGesture } from '../../utils/audioUnlock';
-import { isCapacitorNative } from '../../services/environment';
 import { ComposableInput } from '../common/ComposableInput';
 // F2B.3: dropped `isMobilePwa` + `httpApi` imports. The PWA used to mirror
 // PC's GPT-SoVITS process state via `genie:status` HTTP IPC + `genie:state`
@@ -97,6 +100,20 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   const CUSTOM_RINGTONE_PREVIEW_ID = '__custom__';
   const t = UI_TRANSLATIONS[language];
   const [isTesting, setIsTesting] = useState(false);
+  const [fishKeyDraft, setFishKeyDraft] = useState('');
+  const [vocuKeyDraft, setVocuKeyDraft] = useState('');
+  const [keySaveError, setKeySaveError] = useState('');
+  const latestTtsConfig = useRef(ttsConfig);
+  latestTtsConfig.current = ttsConfig;
+  const saveVoiceKey = async (purpose: 'fish' | 'vocu', value: string) => {
+    try {
+      const credential = await storeTtsCredential(purpose, value);
+      const field = purpose === 'fish' ? 'fishAudioApiKey' : 'vocuApiKey';
+      onTtsConfigChange({ ...latestTtsConfig.current, [field]: credential });
+      if (purpose === 'fish') setFishKeyDraft(''); else setVocuKeyDraft('');
+      setKeySaveError('');
+    } catch (error) { setKeySaveError(error instanceof Error ? error.message : 'Secure storage failed.'); }
+  };
   const [testStatus, setTestStatus] = useState<'idle' | 'playing' | 'error'>('idle');
   const [testError, setTestError] = useState<TtsTestErrorInfo | null>(null);
   const [hasRingtone, setHasRingtone] = useState(false);
@@ -684,9 +701,10 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
   const handleRingtoneUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const version = getDataRestoreVersion();
     const ext = file.name.split('.').pop()?.toLowerCase() || 'mp3';
     const buf = await file.arrayBuffer();
-    const ok = await saveRingtoneFile(buf, ext, file.name);
+    const ok = await saveRingtoneFile(buf, ext, file.name, version);
     if (ok) {
       const customId = `custom.${ext}`;
       stopRingtonePlayback();
@@ -1294,8 +1312,12 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
             <>
           <div>
             <label className={fieldLabelClass}>{t.ttsFishApiKey}</label>
-            <ComposableInput type="password" value={ttsConfig.fishAudioApiKey} onChange={e => update({ fishAudioApiKey: e.target.value })}
-              className={`${inputClass} w-full mt-1`} placeholder="sk-..." />
+            <ComposableInput type="password" value={fishKeyDraft} onChange={e => setFishKeyDraft(e.target.value)}
+              className={`${inputClass} w-full mt-1`} placeholder={ttsConfig.fishAudioApiKey ? '已配置 / Configured' : 'sk-...'} />
+            <button type="button" disabled={!fishKeyDraft.trim()} onClick={() => void saveVoiceKey('fish', fishKeyDraft)} className="ka-copy-sm mt-2 underline disabled:opacity-50">{language === 'zh' ? '保存密钥' : 'Save key'}</button>
+            {ttsConfig.fishAudioApiKey && (ttsConfig.fishAudioApiKey.startsWith('vault:') || !hasNativeCredentials()) && <button type="button" className="ka-copy-sm ml-3 underline" onClick={() => update({ fishAudioApiKey: '' })}>{language === 'zh' ? '移除此配置' : 'Remove from configuration'}</button>}
+            {!hasNativeCredentials() && <p className={helperClass}>{language === 'zh' ? '新密钥仅用于当前会话；旧存储副本单独保留。' : 'New keys remain in this session only; older stored copies are retained separately.'}</p>}
+            {keySaveError && <p className="ka-copy-sm text-red-500">{keySaveError}</p>}
             <p className={`${helperClass} mt-1`}>
               {language === 'zh'
                 ? 'Fish Audio 仅支持一个 API Key（与 AI 设置里"主/备 Key + ACTIVE 标签"的多源轮换无关）；这里填的就是合成时实际使用的那条。'
@@ -1434,11 +1456,15 @@ export const TtsConfigSection: React.FC<TtsConfigSectionProps> = ({
                 <label className={fieldLabelClass}>{(t as any).ttsVocuApiKey || 'Vocu AI API Key'}</label>
                 <ComposableInput
                   type="password"
-                  value={ttsConfig.vocuApiKey || ''}
-                  onChange={e => update({ vocuApiKey: e.target.value })}
+                  value={vocuKeyDraft}
+                  onChange={e => setVocuKeyDraft(e.target.value)}
                   className={`${inputClass} w-full mt-1`}
-                  placeholder="voc-..."
+                  placeholder={ttsConfig.vocuApiKey ? '已配置 / Configured' : 'voc-...'}
                 />
+                <button type="button" disabled={!vocuKeyDraft.trim()} onClick={() => void saveVoiceKey('vocu', vocuKeyDraft)} className="ka-copy-sm mt-2 underline disabled:opacity-50">{language === 'zh' ? '保存密钥' : 'Save key'}</button>
+                {ttsConfig.vocuApiKey && (ttsConfig.vocuApiKey.startsWith('vault:') || !hasNativeCredentials()) && <button type="button" className="ka-copy-sm ml-3 underline" onClick={() => update({ vocuApiKey: '' })}>{language === 'zh' ? '移除此配置' : 'Remove from configuration'}</button>}
+                {!hasNativeCredentials() && <p className={helperClass}>{language === 'zh' ? '新密钥仅用于当前会话；旧存储副本单独保留。' : 'New keys remain in this session only; older stored copies are retained separately.'}</p>}
+                {keySaveError && <p className="ka-copy-sm text-red-500">{keySaveError}</p>}
               </div>
 
               <div>

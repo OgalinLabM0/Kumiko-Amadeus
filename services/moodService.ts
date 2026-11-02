@@ -15,6 +15,7 @@
 // "reactive_mood_affection_block".
 
 import { db, KumikoMoodEntity } from './db';
+import { commitResponseEffect, type ResponseEffectGuard } from './responseEffectCommit';
 import type { MoodBand } from '../types';
 
 const DEFAULT_MOOD_STATE: KumikoMoodEntity = {
@@ -72,11 +73,16 @@ export const applyMoodDelta = async (
 // race the read-modify-write cycle on `kumikoMood`; queueing chains
 // them so later writes always see the earlier write's row state.
 let moodDeltaQueue: Promise<unknown> = Promise.resolve();
-export const applyMoodDeltaQueued = (delta: number): Promise<KumikoMoodEntity | null> => {
+export const applyMoodDeltaQueued = (delta: number, guard?: ResponseEffectGuard): Promise<KumikoMoodEntity | null> => {
   const task = moodDeltaQueue
     .catch(() => undefined)
-    .then(() => applyMoodDelta(delta))
+    .then(async () => {
+      if (!guard) return applyMoodDelta(delta);
+      const result = await commitResponseEffect(guard, 'mood', [db.kumikoMood], () => applyMoodDelta(delta));
+      return result.value ?? null;
+    })
     .catch(e => {
+      if (guard) throw e;
       console.warn('[Mood] Queued delta failed:', e);
       return null as KumikoMoodEntity | null;
     });
@@ -91,7 +97,7 @@ export const applyMoodDeltaQueued = (delta: number): Promise<KumikoMoodEntity | 
 export const tickMoodDecay = async (
   affectionScore: number,
   now: number = Date.now(),
-): Promise<KumikoMoodEntity> => {
+): Promise<KumikoMoodEntity> => db.transaction('rw', db.kumikoMood, async () => {
   const state = await getMoodState();
   const minutesElapsed = Math.max(0, (now - state.lastUpdated) / 60_000);
   if (minutesElapsed < 1) return state;
@@ -107,7 +113,7 @@ export const tickMoodDecay = async (
   };
   await db.kumikoMood.put(next);
   return next;
-};
+});
 
 // Five-band classification used by both the prompt builder and the
 // ProfilePanel UI. Note the deliberately friend-coded vocabulary at

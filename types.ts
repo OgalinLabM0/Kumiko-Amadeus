@@ -1,5 +1,8 @@
 
 export interface Message {
+  sourceRevision?: string;
+  contentRevision?: string;
+  sourceRefs?: import('./services/runtimeEntities').EvidenceRef[];
   id: string;
   role: 'user' | 'model';
   text: string;
@@ -68,7 +71,25 @@ export interface BackupConfig {
 // NEW: AI Configuration Interface
 export type AIProvider = 'gemini' | 'openai' | 'anthropic' | 'deepseek' | 'grok' | 'openrouter' | 'volcengine' | 'dashscope' | 'zhipu' | 'moonshot' | 'qianfan' | 'hunyuan' | 'spark' | 'minimax';
 
+export interface ModelConnectionProfile {
+  id: string;
+  provider: AIProvider;
+  baseUrl?: string;
+  credentialRefs: { primary?: string; backup?: string };
+  activeKey: 'primary' | 'backup';
+  revision: number;
+}
+
+export interface ModelRoleBinding {
+  profileId?: string;
+  model?: string;
+  revision: number;
+}
+
 export interface AIConfig {
+  modelConnections?: ModelConnectionProfile[];
+  modelRoleBindings?: Partial<Record<'subject' | 'understanding' | 'memory' | 'verification' | 'diary' | 'recall' | 'translation' | 'vision', ModelRoleBinding>>;
+  modelConfigRevisions?: Partial<Record<'subject' | 'understanding' | 'memory' | 'verification' | 'diary' | 'recall' | 'translation' | 'vision', string>>;
   provider?: AIProvider; // NEW: AI Provider selection
   apiKey_primary: string;
   apiKey_backup: string;

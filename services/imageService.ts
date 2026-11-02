@@ -8,6 +8,8 @@ import {
 import { useAppStore } from '../store';
 import { isDesktopElectron } from './desktopBackupService';
 import { isCapacitorNative } from './environment';
+import { getDataRestoreVersion } from './dataRestoreGate';
+import { assertMediaGeneration, withMediaWriteFence } from './mediaWriteFence';
 import {
   capacitorImageWrite,
   capacitorImageRead,
@@ -98,6 +100,8 @@ async function saveImageToBackend(
 }
 
 export const compressAndSaveImage = async (file: File): Promise<string> => {
+  const version = getDataRestoreVersion();
+  return withMediaWriteFence(version, async () => {
   const cfg = currentPresetConfig();
   // The 'original' preset keeps the source file untouched; every other preset
   // runs it through the compressor with the preset's bounds.
@@ -121,6 +125,7 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
     try {
       const dataUrl = await blobToDataUrl(processed);
       const rawBase64 = dataUrl.split(',')[1] || '';
+      assertMediaGeneration(version);
       const result = await saveImageToBackend(imageId, ext, rawBase64);
       if (!result?.success) throw new Error(result?.error || 'images:save failed');
       // Keep a metadata-only row so things like imageService.getAllImages()
@@ -133,6 +138,7 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
       });
       return imageId;
     } catch (err) {
+      assertMediaGeneration(version);
       console.warn('[imageService] Filesystem save failed, falling back to Dexie:', err);
       // Fall through to the Dexie path below.
     }
@@ -147,6 +153,7 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
     try {
       const dataUrl = await blobToDataUrl(processed);
       const rawBase64 = dataUrl.split(',')[1] || '';
+      assertMediaGeneration(version);
       const result = await capacitorImageWrite(imageId, ext, rawBase64);
       if (!result.success || !result.relativePath) {
         throw new Error(result.error || 'capacitorImageWrite failed');
@@ -160,6 +167,7 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
       });
       return imageId;
     } catch (err) {
+      assertMediaGeneration(version);
       console.warn('[imageService] Capacitor filesystem save failed, falling back to Dexie:', err);
       // Fall through to the Dexie path below.
     }
@@ -169,6 +177,7 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
   // behaviour. Self-contained inside IndexedDB; no filesystem available
   // in plain browser.
   const dataUrl = await blobToDataUrl(processed);
+  assertMediaGeneration(version);
   await db.images.add({
     id: imageId,
     base64Data: dataUrl,
@@ -176,6 +185,7 @@ export const compressAndSaveImage = async (file: File): Promise<string> => {
     timestamp: Date.now(),
   });
   return imageId;
+  });
 };
 
 // Resolve a URL we can put into <img src> for a given imageId.
@@ -268,10 +278,15 @@ export const getAllImages = async () => {
   return out;
 };
 
-export const saveImageWithId = async (id: string, base64Data: string) => {
+export const saveImageWithId = async (id: string, base64Data: string, strict = false, expectedVersion?: string, sourceIds?: string[]): Promise<void> => {
+  if (expectedVersion !== undefined) return withMediaWriteFence(expectedVersion, () => saveImageWithId(id, base64Data, strict, undefined, sourceIds));
   const match = base64Data.match(/^data:(.*);base64,(.*)$/);
   const mimeType = match ? match[1] : 'image/jpeg';
   const rawBase64 = match ? match[2] : base64Data;
+  // Imported IDs are new. Persist the provenance before touching native files,
+  // so an interrupted write remains discoverable by maintenance.
+  if (sourceIds !== undefined) await db.images.add({ id, base64Data: '', mimeType, timestamp: Date.now(), sourceIds: [...sourceIds] });
+  const provenance = sourceIds === undefined ? {} : { sourceIds: [...sourceIds] };
 
   // F2B.3: filesystem path. Electron desktop plus, since v2.14.4 F.3,
   // Capacitor APK. Dev-server / web preview still falls through to the
@@ -286,11 +301,14 @@ export const saveImageWithId = async (id: string, base64Data: string) => {
           base64Data: '',
           mimeType,
           timestamp: Date.now(),
+          ...provenance,
         });
         return;
       }
+      if (strict) throw new Error(result?.error || 'images:save failed');
       console.warn('[imageService] images:save fallback to Dexie:', result?.error);
     } catch (err) {
+      if (strict) throw err;
       console.warn('[imageService] images:save threw, falling back to Dexie:', err);
     }
   }
@@ -306,11 +324,14 @@ export const saveImageWithId = async (id: string, base64Data: string) => {
           mimeType,
           timestamp: Date.now(),
           relativePath: result.relativePath,
+          ...provenance,
         });
         return;
       }
+      if (strict) throw new Error(result.error || 'capacitorImageWrite failed');
       console.warn('[imageService] capacitorImageWrite fallback to Dexie:', result.error);
     } catch (err) {
+      if (strict) throw err;
       console.warn('[imageService] capacitorImageWrite threw, falling back to Dexie:', err);
     }
   }
@@ -320,6 +341,7 @@ export const saveImageWithId = async (id: string, base64Data: string) => {
     base64Data,
     mimeType,
     timestamp: Date.now(),
+    ...provenance,
   });
 };
 

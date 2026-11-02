@@ -252,7 +252,7 @@ export const ProfilePanel: React.FC<ProfilePanelProps> = ({
 
         {/* Footer */}
         <div className={`p-3 bg-opacity-30 flex justify-end ${isDarkMode ? 'bg-black' : 'bg-gray-50'}`}>
-           <span className={`ka-micro ${isDarkMode ? 'text-yellow-900/50' : 'text-gray-400'}`}>AMADEUS DATABASE // VER 3.04</span>
+           <span className={`ka-micro ${isDarkMode ? 'text-yellow-900/50' : 'text-gray-400'}`}>AMADEUS DATABASE // VER {typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'}</span>
         </div>
       </div>
     </div>

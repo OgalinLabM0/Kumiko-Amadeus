@@ -29,10 +29,17 @@ const getKumikoLocalRag = (language?: Language) =>
   language === 'en' ? KUMIKO_LOCAL_RAG_EN : KUMIKO_LOCAL_RAG_ZH;
 import { setAIConfig } from '../../services/llmCore';
 import { dialogService } from '../../services/dialogService';
-import { extractReminderIntentLLM } from '../../services/reminderIntentRetry';
+import { createTurnCoordinator, type TurnRuntime } from '../../services/turnCoordinator';
+import { receiveUnreadTurn, readReceivedTurns, seedReceivedTurns, hasUnreadReceivedTurns } from '../../services/receivedTurns';
+import { isDataRestoreBlocked, getDataRestoreVersion } from '../../services/dataRestoreGate';
+import { getMemoryGeneration, assertMemoryGenerationCurrent } from '../../services/memoryMaintenanceGate';
+import { beginForegroundActivity, endForegroundActivity, assertTaskModelRevisionsCurrent, TaskCapacityError, type TaskContext } from '../../services/taskRuntime';
+import { createResponseEffectGuard, commitResponseEffect, responsePayloadSignature, type ResponseEffectGuard } from '../../services/responseEffectCommit';
+import { recordStateProvenance } from '../../services/stateProvenance';
+import type { EvidenceRef } from '../../services/runtimeEntities';
+import { assertSourceRefsCurrent } from '../../services/artifactIndexService';
+import { registerMemorySensitiveMedia } from '../../hooks/useMemoryMaintenanceMediaStop';
 import { buildTimedReminderSystemPrompt, type TimedReminderContext } from '../../services/reminderPrompt';
-import { getClockReminderAt, getExplicitReminderTimeZone, resolveReminderTimeZone } from '../../services/reminderTime';
-import { commitUserKnownLocationDisclosure, validateUserLocationDisclosure, resolveUserKnownLocation } from '../../services/userKnownLocation';
 import {
   sendMessageToGemini,
   getCurrentAIConfig,
@@ -53,6 +60,7 @@ import {
 } from '../../services/desktopBackupService';
 import {
   consumeReminderPrewarm,
+  readReminderPrewarm,
   startReminderPrewarm,
   cancelReminderPrewarm,
   type ReminderPrewarmEntry,
@@ -69,11 +77,10 @@ import { loadTemporalEpisodesForRange } from '../../services/temporalEpisodeServ
 import { db } from '../../services/db';
 import { commitVisibleResponsePsyche } from '../../services/responsePsycheCommit';
 import { mapMessageToEntity } from './messageMappers';
+import { commitStandaloneReminderVoice } from '../../services/reminderVoiceCommit';
 import { getAmbientEnvironmentContext } from './ambientContext';
 import { yieldToMainThread } from './appUtils';
 import {
-  parseRelativeReminderRequest,
-  parseDailyReminderRequest,
   recalculateTurnCountFromMessages,
 } from './backupHelpers';
 import {
@@ -309,15 +316,51 @@ export function addMessageToStore(
   return newMessage.id;
 }
 
+type SourceVersion = { id: string; contentRevision?: string };
+type StandaloneResponse = ChatResponse & { memoryGeneration?: string; restoreVersion?: string; sourceVersions?: SourceVersion[]; basisSourceIds?: string[]; modelRevisions?: Record<string, string>; consultedSources?: EvidenceRef[] };
+async function captureSourceVersions(messages: Message[]): Promise<SourceVersion[]> {
+  const result: SourceVersion[] = [];
+  for (const message of messages) {
+    const current = await db.messages.get(message.id);
+    if (!current || current.role !== message.role || current.text !== message.text || current.timestamp !== message.timestamp ||
+      (current.imageId || '') !== (message.imageId || '')) continue;
+    result.push({ id: current.id, contentRevision: current.contentRevision ?? current.sourceRevision ?? 'legacy' });
+  }
+  return result;
+}
+async function assertSourceVersions(sources: SourceVersion[]): Promise<void> {
+  for (const source of sources) {
+    const current = await db.messages.get(source.id);
+    if (!current || (current.contentRevision ?? current.sourceRevision ?? 'legacy') !== source.contentRevision) throw new Error('Response context source changed or was removed');
+  }
+}
+function createStandaloneContext(lane: 'foreground' | 'background'): TaskContext {
+  const id = crypto.randomUUID();
+  return { taskId: id, rootId: id, role: 'subject', lane, deadlineAt: Date.now() + 180_000,
+    epoch: getDataRestoreVersion(), memoryGeneration: getMemoryGeneration(), modelRevisions: {}, consultedSources: [], signal: new AbortController().signal };
+}
+
 async function commitAcceptedResponsePsyche(
-  response: Pick<ChatResponse, 'responseEventId' | 'psycheDelta'>,
+  response: Pick<StandaloneResponse, 'responseEventId' | 'psycheDelta' | 'memoryGeneration' | 'restoreVersion' | 'sourceVersions' | 'basisSourceIds' | 'modelRevisions' | 'consultedSources'>,
   messageId: string,
+  guard?: ResponseEffectGuard,
 ): Promise<void> {
   const message = useAppStore.getState().messages.find(m => m.id === messageId);
   if (!message) return;
   try {
-    await commitVisibleResponsePsyche(response, mapMessageToEntity(message));
+    if (!guard && response.memoryGeneration && response.restoreVersion) {
+      guard = await createResponseEffectGuard({ eventId: response.responseEventId || messageId, isCancelled: () => false,
+        sources: [], versionedSources: response.sourceVersions, expectedMemoryGeneration: response.memoryGeneration, expectedRestoreVersion: response.restoreVersion });
+      guard.modelRevisions = response.modelRevisions;
+      const basisIds = new Set(response.basisSourceIds ?? []);
+      guard.sourceRefs = (response.sourceVersions ?? []).filter(source => basisIds.has(source.id)).map(source => ({ kind: 'message', id: source.id,
+        version: source.contentRevision ?? 'legacy', relation: 'basis' }));
+      guard.consultedSources = [...(response.consultedSources ?? []), ...(response.sourceVersions ?? []).filter(source => !basisIds.has(source.id)).map(source => ({ kind: 'message' as const, id: source.id,
+        version: source.contentRevision ?? 'legacy', relation: 'context' as const }))];
+    }
+    await commitVisibleResponsePsyche(response, mapMessageToEntity(message), guard);
   } catch (error) {
+    if (guard) throw error;
     console.warn('[Psyche] Visible response commit failed', response.responseEventId, error);
   }
 }
@@ -408,6 +451,16 @@ export function showBackgroundNotification(
   }
 }
 
+async function currentReadEpoch(): Promise<string> {
+  return (await db.keyval.get('kumiko_turn_epoch_v1'))?.value ?? 'initial';
+}
+
+function markCaughtUpRead(ids: string[]): void {
+  const set = new Set(ids);
+  useAppStore.getState().setMessages((messages: Message[]) => messages.map(message =>
+    set.has(message.id) ? { ...message, isRead: true, blockedDuringSend: false, sendStatus: undefined, failReason: undefined } : message));
+}
+
 // ---------------------------------------------------------------------------
 // triggerNativeProactiveMessage
 // ---------------------------------------------------------------------------
@@ -432,6 +485,7 @@ export async function triggerNativeProactiveMessage(
   // the other modes.
   mode: 'proactive_life' | 'sleep_command' | 'block_release' = 'proactive_life',
 ): Promise<boolean> {
+  if (isDataRestoreBlocked()) return false;
   const state = useAppStore.getState();
   const { isTalking, isThinking, messages, coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, language, missedReminders } = state;
 
@@ -517,10 +571,23 @@ export async function triggerNativeProactiveMessage(
   state.setIsThinking(true);
 
   try {
-    const recentMessages = messages.slice(-contextLimit);
+    const readEpoch = await currentReadEpoch();
+    const taskContext = createStandaloneContext('background');
+    let readContexts: string[] = [];
+    if (mode === 'block_release') {
+      await seedReceivedTurns(state.blockRuntime?.capturedUnreadIds || []);
+      readContexts = await readReceivedTurns({ language, privateTimeZone: locationConfig.userTimezone, reminders: useAppStore.getState(), isCancelled: isDataRestoreBlocked, onRead: markCaughtUpRead, relevantIds: state.blockRuntime?.capturedUnreadIds || [] });
+      if (isDataRestoreBlocked()) throw new Error('Restore in progress');
+    }
+    const candidates = messages.filter(message => (mode === 'block_release' && state.blockRuntime?.capturedUnreadIds.includes(message.id)) || messages.slice(-contextLimit).includes(message));
+    const sourceVersions = await captureSourceVersions(candidates);
+    if (mode === 'block_release' && (state.blockRuntime?.capturedUnreadIds ?? []).some(id => !sourceVersions.some(source => source.id === id))) {
+      throw new Error('Block-release source is unavailable');
+    }
+    const recentMessages = candidates.filter(message => messages.slice(-contextLimit).includes(message) && sourceVersions.some(source => source.id === message.id));
 
     const response = await sendMessageToGemini(
-      systemPrompt,
+      systemPrompt + (readContexts.length ? '\n' + readContexts.join('\n') : ''),
       coreMemory,
       [...worldBook, ...getKumikoLocalRag(language)],
       recentMessages,
@@ -533,20 +600,39 @@ export async function triggerNativeProactiveMessage(
       // block was designed for — Kumiko spontaneously checking in after
       // a gap. Pass the records through so she may pick one up.
       missedReminders,
+      undefined, undefined, undefined, undefined, taskContext,
     );
 
+    await assertMemoryGenerationCurrent(taskContext.memoryGeneration);
+    await assertSourceVersions(sourceVersions);
+    await assertTaskModelRevisionsCurrent(taskContext);
+    await assertSourceRefsCurrent(taskContext.consultedSources ?? []);
+    if (getDataRestoreVersion() !== taskContext.epoch) throw new Error('Data restored during reply');
+    const accepted = response as StandaloneResponse;
+    accepted.memoryGeneration = taskContext.memoryGeneration; accepted.restoreVersion = taskContext.epoch;
+    accepted.sourceVersions = sourceVersions;
+    accepted.basisSourceIds = mode === 'block_release' ? state.blockRuntime?.capturedUnreadIds ?? [] : [];
+    accepted.modelRevisions = taskContext.modelRevisions;
+    accepted.consultedSources = taskContext.consultedSources;
+    if (isDataRestoreBlocked() || await currentReadEpoch() !== readEpoch) throw new Error('Data changed during reply');
     useAppStore.getState().setIsThinking(false);
     useAppStore.getState().setIsTalking(true);
 
     const msgText = response.textParts[0];
     const proactiveMessageId = addMessageToStore('model', msgText, undefined, undefined, undefined, undefined, undefined, response.emotion);
-    await commitAcceptedResponsePsyche(response, proactiveMessageId);
+    await commitAcceptedResponsePsyche(accepted, proactiveMessageId);
     showBackgroundNotification(msgText, 'proactive', proactiveMessageId);
 
     if (response.textParts.length > 1) {
       for (let i = 1; i < response.textParts.length; i++) {
         await new Promise(r => setTimeout(r, 1000));
-        addMessageToStore('model', response.textParts[i], undefined, undefined, undefined, undefined, undefined, response.emotion);
+        if (isDataRestoreBlocked() || await currentReadEpoch() !== readEpoch) break;
+        await assertMemoryGenerationCurrent(taskContext.memoryGeneration);
+        await assertSourceVersions(sourceVersions);
+        await assertTaskModelRevisionsCurrent(taskContext);
+        await assertSourceRefsCurrent(taskContext.consultedSources ?? []);
+        const partId = addMessageToStore('model', response.textParts[i], undefined, undefined, undefined, undefined, undefined, response.emotion);
+        await commitAcceptedResponsePsyche(accepted, partId);
       }
     }
 
@@ -577,13 +663,14 @@ export async function triggerNativeProactiveMessage(
 // Returns null on API failure so the regulator can track retry count.
 export async function prepareBusyFollowUpResponse(
   followUp: BusyFollowUp,
-): Promise<Pick<ChatResponse, 'textParts' | 'emotion' | 'responseEventId' | 'psycheDelta'> | null> {
+): Promise<(Pick<StandaloneResponse, 'textParts' | 'emotion' | 'responseEventId' | 'psycheDelta'> & { memoryGeneration: string; restoreVersion: string; sourceVersions: SourceVersion[]; modelRevisions: Record<string, string>; consultedSources: EvidenceRef[] }) | null> {
+  if (isDataRestoreBlocked()) return null;
   const state = useAppStore.getState();
   const { coreMemory, worldBook, contextLimit, locationConfig, anchors, kumikoNotebook, language, messages, missedReminders } = state;
 
   const unreadIds = new Set(followUp.unreadUserMessageIds);
   const unreadMessages = messages.filter(m => unreadIds.has(m.id));
-  const recentMessages = messages.slice(-contextLimit);
+  let recentMessages = messages.slice(-contextLimit);
 
   const now = new Date();
   const hoursSinceEnd = followUp.slotEndAtMs
@@ -642,8 +729,16 @@ export async function prepareBusyFollowUpResponse(
       6. If an unread message carries clear emotion (worry, irritation, affection), acknowledge it briefly.`;
 
   try {
+    const readEpoch = await currentReadEpoch();
+    const taskContext = createStandaloneContext('background');
+    await seedReceivedTurns(followUp.unreadUserMessageIds);
+    const readContexts = await readReceivedTurns({ language, privateTimeZone: locationConfig.userTimezone, reminders: useAppStore.getState(), isCancelled: isDataRestoreBlocked, onRead: markCaughtUpRead, relevantIds: followUp.unreadUserMessageIds });
+    if (isDataRestoreBlocked()) throw new Error('Restore in progress');
+    const sourceVersions = await captureSourceVersions([...new Map([...recentMessages, ...unreadMessages].map(message => [message.id, message])).values()]);
+    if (followUp.unreadUserMessageIds.some(id => !sourceVersions.some(source => source.id === id))) throw new Error('Busy follow-up source is unavailable');
+    recentMessages = recentMessages.filter(message => sourceVersions.some(source => source.id === message.id));
     const response = await sendMessageToGemini(
-      systemPrompt,
+      systemPrompt + (readContexts.length ? '\n' + readContexts.join('\n') : ''),
       coreMemory,
       [...worldBook, ...getKumikoLocalRag(language)],
       recentMessages,
@@ -656,12 +751,18 @@ export async function prepareBusyFollowUpResponse(
       // up after being away" moment — natural place to surface a missed
       // reminder if it fits the unread thread.
       missedReminders,
+      undefined, undefined, undefined, undefined, taskContext,
     );
+    await assertMemoryGenerationCurrent(taskContext.memoryGeneration);
+    await assertSourceVersions(sourceVersions);
+    if (getDataRestoreVersion() !== taskContext.epoch) throw new Error('Data restored during reply');
+    if (isDataRestoreBlocked() || await currentReadEpoch() !== readEpoch) throw new Error('Data changed during reply');
     const cleanedParts = (response.textParts || [])
       .map(t => (t || '').trim())
       .filter(t => t.length > 0);
     if (cleanedParts.length === 0) return null;
-    return { textParts: cleanedParts, emotion: response.emotion, responseEventId: response.responseEventId, psycheDelta: response.psycheDelta };
+    return { textParts: cleanedParts, emotion: response.emotion, responseEventId: response.responseEventId, psycheDelta: response.psycheDelta,
+      memoryGeneration: taskContext.memoryGeneration, restoreVersion: taskContext.epoch, sourceVersions, modelRevisions: taskContext.modelRevisions ?? {}, consultedSources: taskContext.consultedSources ?? [] };
   } catch (e) {
     console.warn('[BUSY-PREPARE] Draft generation failed', e);
     return null;
@@ -678,19 +779,45 @@ export async function prepareBusyFollowUpResponse(
 export async function displayPreparedProactiveMessage(
   followUp: BusyFollowUp,
 ): Promise<boolean> {
+  if (isDataRestoreBlocked()) return false;
   if (!followUp.preparedTextParts || followUp.preparedTextParts.length === 0) {
     return false;
   }
   const storeState = useAppStore.getState();
+  const readEpoch = await currentReadEpoch();
   if (storeState.isTalking || storeState.isThinking) {
     return false;
   }
-  const combined = followUp.preparedTextParts.join(' ');
+  try {
+    await seedReceivedTurns(followUp.unreadUserMessageIds);
+    if (!followUp.preparedMemoryGeneration || !followUp.preparedRestoreVersion || !followUp.preparedSourceRevisions || !followUp.preparedModelRevisions || await hasUnreadReceivedTurns()) {
+      const refreshed = await prepareBusyFollowUpResponse(followUp);
+      if (!refreshed || isDataRestoreBlocked()) return false;
+      followUp = { ...followUp, preparedTextParts: refreshed.textParts, preparedEmotion: refreshed.emotion,
+        preparedResponseEventId: refreshed.responseEventId, preparedPsycheDelta: refreshed.psycheDelta,
+        preparedMemoryGeneration: refreshed.memoryGeneration, preparedRestoreVersion: refreshed.restoreVersion,
+        preparedSourceRevisions: refreshed.sourceVersions, preparedModelRevisions: refreshed.modelRevisions, preparedConsultedSources: refreshed.consultedSources };
+    }
+  } catch (error) {
+    console.warn('[BUSY-DISPLAY] Unable to read pending messages', error);
+    return false;
+  }
+  const combined = followUp.preparedTextParts!.join(' ');
   const typingMs = Math.max(2000, Math.min(8000, 1500 + combined.length * 60));
   const latestUserId = storeState.messages.filter(m => m.role === 'user').at(-1)?.id;
   useAppStore.getState().setIsThinking(true);
   await new Promise(r => setTimeout(r, typingMs));
-  if (useAppStore.getState().busyFollowUp?.id !== followUp.id) {
+  try {
+    await assertMemoryGenerationCurrent(followUp.preparedMemoryGeneration!);
+    await assertSourceVersions(followUp.preparedSourceRevisions!);
+    await assertTaskModelRevisionsCurrent({ modelRevisions: followUp.preparedModelRevisions } as TaskContext);
+    await assertSourceRefsCurrent(followUp.preparedConsultedSources ?? []);
+    if (getDataRestoreVersion() !== followUp.preparedRestoreVersion) throw new Error('Prepared reply expired after restore');
+  } catch {
+    if (useAppStore.getState().messages.filter(m => m.role === 'user').at(-1)?.id === latestUserId) useAppStore.getState().setIsThinking(false);
+    return false;
+  }
+  if (isDataRestoreBlocked() || await currentReadEpoch() !== readEpoch || useAppStore.getState().busyFollowUp?.id !== followUp.id) {
     // A user turn may have converted this draft to an apology during typing.
     // The discarded draft has no accepted response event.
     if (useAppStore.getState().messages.filter(m => m.role === 'user').at(-1)?.id === latestUserId) {
@@ -702,17 +829,32 @@ export async function displayPreparedProactiveMessage(
   useAppStore.getState().setIsTalking(true);
 
   const emotion = followUp.preparedEmotion || 'neutral';
-  const firstText = followUp.preparedTextParts[0];
+  const firstText = followUp.preparedTextParts![0];
   const firstMsgId = addMessageToStore('model', firstText, undefined, undefined, undefined, undefined, undefined, emotion);
   await commitAcceptedResponsePsyche({
     responseEventId: followUp.preparedResponseEventId,
     psycheDelta: followUp.preparedPsycheDelta,
+    memoryGeneration: followUp.preparedMemoryGeneration, restoreVersion: followUp.preparedRestoreVersion,
+    sourceVersions: followUp.preparedSourceRevisions,
+    basisSourceIds: followUp.unreadUserMessageIds,
+    modelRevisions: followUp.preparedModelRevisions,
+    consultedSources: followUp.preparedConsultedSources,
   }, firstMsgId);
   showBackgroundNotification(firstText, 'proactive', firstMsgId);
 
-  for (let i = 1; i < followUp.preparedTextParts.length; i++) {
+  for (let i = 1; i < followUp.preparedTextParts!.length; i++) {
     await new Promise(r => setTimeout(r, 900 + Math.random() * 1200));
-    addMessageToStore('model', followUp.preparedTextParts[i], undefined, undefined, undefined, undefined, undefined, emotion);
+    if (isDataRestoreBlocked() || await currentReadEpoch() !== readEpoch) break;
+    await assertMemoryGenerationCurrent(followUp.preparedMemoryGeneration!);
+    await assertSourceVersions(followUp.preparedSourceRevisions!);
+    await assertTaskModelRevisionsCurrent({ modelRevisions: followUp.preparedModelRevisions } as TaskContext);
+    await assertSourceRefsCurrent(followUp.preparedConsultedSources ?? []);
+    const partId = addMessageToStore('model', followUp.preparedTextParts![i], undefined, undefined, undefined, undefined, undefined, emotion);
+    await commitAcceptedResponsePsyche({ responseEventId: followUp.preparedResponseEventId, psycheDelta: followUp.preparedPsycheDelta,
+      memoryGeneration: followUp.preparedMemoryGeneration, restoreVersion: followUp.preparedRestoreVersion,
+      sourceVersions: followUp.preparedSourceRevisions, modelRevisions: followUp.preparedModelRevisions,
+      basisSourceIds: followUp.unreadUserMessageIds,
+      consultedSources: followUp.preparedConsultedSources }, partId);
   }
 
   setTimeout(() => useAppStore.getState().setIsTalking(false), 2000);
@@ -842,12 +984,16 @@ export async function prewarmTimedReminderMessage(
   const { language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook } = state;
 
   try {
+    const taskContext = createStandaloneContext('background');
+    taskContext.signal = entry.abort.signal;
     const systemPrompt = buildTimedReminderSystemPrompt(
       reminder,
       language,
       reminder.dueAt,
     );
-    const recentMessages = refs.messagesRef.current.slice(-contextLimit);
+    const candidates = refs.messagesRef.current.slice(-contextLimit);
+    const sourceVersions = await captureSourceVersions(candidates);
+    const recentMessages = candidates.filter(message => sourceVersions.some(source => source.id === message.id));
     const response = await sendMessageToGemini(
       systemPrompt,
       coreMemory,
@@ -857,7 +1003,16 @@ export async function prewarmTimedReminderMessage(
       undefined, undefined, 0, undefined, [], undefined, [], anchors, kumikoNotebook,
       undefined,
       language,
+      undefined, undefined, undefined, undefined, undefined, undefined, taskContext,
     );
+    await assertMemoryGenerationCurrent(taskContext.memoryGeneration);
+    await assertSourceVersions(sourceVersions);
+    if (getDataRestoreVersion() !== taskContext.epoch) throw new Error('Data restored during reminder generation');
+    (response as StandaloneResponse).memoryGeneration = taskContext.memoryGeneration;
+    (response as StandaloneResponse).restoreVersion = taskContext.epoch;
+    (response as StandaloneResponse).sourceVersions = sourceVersions;
+    (response as StandaloneResponse).modelRevisions = taskContext.modelRevisions;
+    (response as StandaloneResponse).consultedSources = taskContext.consultedSources;
     if (entry.abort.signal.aborted) return;
     entry.response = response;
     entry.llmDoneAt = Date.now();
@@ -880,8 +1035,12 @@ export async function prewarmTimedReminderMessage(
       'reminder-prewarm-' + reminder.id,
       combinedReminderText,
       response.emotion,
+      undefined, entry.abort.signal, taskContext, sourceVersions.map(source => source.id),
     );
-    if (entry.abort.signal.aborted) return;
+    if (entry.abort.signal.aborted || readReminderPrewarm(reminder.id) !== entry) {
+      if (voiceResult.success && voiceResult.voiceFileId) await import('../../services/orphanVoiceCleanup').then(service => service.discardUnreferencedVoice(voiceResult.voiceFileId));
+      return;
+    }
     if (voiceResult.success) {
       entry.voice = {
         voiceFileId: voiceResult.voiceFileId!,
@@ -924,6 +1083,7 @@ export async function triggerTimedReminderMessage(
   // hit holds only the LLM response (status === 'llm-ready'), TTS still runs
   // here — but the model round-trip is saved.
   reminderId?: string,
+  deliveryGuard?: { begin: () => Promise<boolean>; current: () => Promise<boolean>; commit: (message: import('../../services/db').MessageEntity) => Promise<boolean>; messageId: string },
 ): Promise<boolean> {
   const state = useAppStore.getState();
   const { language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook } = state;
@@ -936,19 +1096,29 @@ export async function triggerTimedReminderMessage(
 
   state.setIsThinking(true);
 
+  const foregroundTask = createStandaloneContext('foreground');
+  let generatedVoiceId = prewarmHit?.voice?.voiceFileId;
+  let deliveryFinished = false;
+  const discardVoice = async (id?: string) => {
+    if (id) await import('../../services/orphanVoiceCleanup').then(service => service.discardUnreferencedVoice(id)).catch(error => console.warn('[TTS] Uncommitted reminder voice cleanup failed:', error));
+  };
   try {
-    let response: ChatResponse;
+    await beginForegroundActivity(foregroundTask);
+    let response: StandaloneResponse;
     let prewarmedVoice: ReminderPrewarmVoicePayload | undefined;
     if (prewarmHit && prewarmHit.response) {
       // v2.14.28 H17.A: prewarmed payload from T-60s pipeline. Skip the live
       // LLM call entirely and reuse the response. If TTS was also prewarmed
       // (status was 'ready'), `voice` is non-null and the delivery branch
       // below short-circuits the runVoicePipeline call too.
-      response = prewarmHit.response;
+      response = prewarmHit.response as StandaloneResponse;
       prewarmedVoice = prewarmHit.voice;
       console.log(`[REMINDER PREWARM] Cache hit for ${reminderId} (status=${prewarmHit.status}, voice=${prewarmedVoice ? 'cached' : 'fresh'})`);
     } else {
-      const recentMessages = refs.messagesRef.current.slice(-contextLimit);
+      const taskContext = foregroundTask;
+      const candidates = refs.messagesRef.current.slice(-contextLimit);
+      const sourceVersions = await captureSourceVersions(candidates);
+      const recentMessages = candidates.filter(message => sourceVersions.some(source => source.id === message.id));
       response = await sendMessageToGemini(
         systemPrompt,
         coreMemory,
@@ -958,9 +1128,26 @@ export async function triggerTimedReminderMessage(
         undefined, undefined, 0, undefined, [], undefined, [], anchors, kumikoNotebook,
         undefined,
         language,
+        undefined, undefined, undefined, undefined, undefined, undefined, taskContext,
       );
+      response.memoryGeneration = taskContext.memoryGeneration;
+      response.restoreVersion = taskContext.epoch;
+      response.sourceVersions = sourceVersions;
+      response.modelRevisions = taskContext.modelRevisions;
+      response.consultedSources = taskContext.consultedSources;
     }
 
+    if (!response.memoryGeneration || !response.restoreVersion || !response.sourceVersions) throw new Error('Reminder draft lacks its source generation');
+    await assertMemoryGenerationCurrent(response.memoryGeneration);
+    await assertSourceVersions(response.sourceVersions);
+    await assertTaskModelRevisionsCurrent({ modelRevisions: response.modelRevisions } as TaskContext);
+    await assertSourceRefsCurrent(response.consultedSources ?? []);
+    if (getDataRestoreVersion() !== response.restoreVersion) throw new Error('Data restored during reminder generation');
+
+    if (deliveryGuard && !await deliveryGuard.begin()) {
+      useAppStore.getState().setIsThinking(false);
+      return false;
+    }
     const s = useAppStore.getState();
     s.setCurrentEmotion(response.emotion);
     if (response.systemNotice) {
@@ -970,6 +1157,27 @@ export async function triggerTimedReminderMessage(
     const firstText = response.textParts[0] || (language === 'zh' ? `喂$该去${reminder.event}了吧` : `Hey. Time to ${reminder.event}.`);
     const combinedReminderText = response.textParts.join(' ');
     const currentTtsCfg = refs.ttsConfigRef.current;
+    const assertReminderCurrent = async () => {
+      await assertMemoryGenerationCurrent(response.memoryGeneration!);
+      await assertSourceVersions(response.sourceVersions!);
+      await assertTaskModelRevisionsCurrent({ modelRevisions: response.modelRevisions } as TaskContext);
+      await assertSourceRefsCurrent(response.consultedSources ?? []);
+      if (getDataRestoreVersion() !== response.restoreVersion) throw new Error('Data restored during reminder delivery');
+    };
+    const commitMessage = async (text: string, voiceExtras?: Partial<Pick<Message, 'isVoiceMessage' | 'voiceFileId' | 'voiceDuration' | 'japaneseText'>>): Promise<string | null> => {
+      await assertReminderCurrent();
+      if (!deliveryGuard && voiceExtras?.voiceFileId) {
+        const message: Message = { id: crypto.randomUUID(), role: 'model', text, timestamp: Date.now(), storedEmotion: response.emotion, ...voiceExtras };
+        await commitStandaloneReminderVoice(message, assertReminderCurrent);
+        useAppStore.getState().setMessages(prev => prev.some(item => item.id === message.id) ? prev : [...prev, message]);
+        return message.id;
+      }
+      if (!deliveryGuard) return addMessageToStore('model', text, undefined, undefined, undefined, undefined, undefined, response.emotion, undefined, voiceExtras);
+      const message: Message = { id: deliveryGuard.messageId, role: 'model', text, timestamp: Date.now(), storedEmotion: response.emotion, ...voiceExtras };
+      if (!await deliveryGuard.commit(mapMessageToEntity(message))) return null;
+      useAppStore.getState().setMessages(prev => prev.some(m => m.id === message.id) ? prev : [...prev, message]);
+      return message.id;
+    };
 
     if (currentTtsCfg.voiceMode !== 'text' && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'sovits' || (currentTtsCfg.ttsBackend === 'vocu' && !!currentTtsCfg.vocuApiKey && !!currentTtsCfg.vocuVoiceId)) && isVoiceServiceAvailable()) {
       useAppStore.getState().setIsThinking(false);
@@ -1012,14 +1220,21 @@ export async function triggerTimedReminderMessage(
         // audio payload at T-60s.
         const voiceResult = prewarmedVoice
           ? { success: true as const, voiceFileId: prewarmedVoice.voiceFileId, voiceDuration: prewarmedVoice.voiceDuration, japaneseText: prewarmedVoice.japaneseText }
-          : await helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion);
+          : await helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion, undefined, foregroundTask.signal, foregroundTask, response.sourceVersions?.map(source => source.id));
+        if (voiceResult.success) generatedVoiceId = voiceResult.voiceFileId;
+        if (deliveryGuard && !await deliveryGuard.current()) {
+          useAppStore.getState().setIsTalking(false);
+          return false;
+        }
         if (voiceResult.success) {
-          const messageId = addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion, undefined, {
+          const messageId = await commitMessage(combinedReminderText, {
             isVoiceMessage: true, voiceFileId: voiceResult.voiceFileId, voiceDuration: voiceResult.voiceDuration, japaneseText: voiceResult.japaneseText,
           });
+          if (!messageId) { useAppStore.getState().setIsTalking(false); return false; }
           await commitAcceptedResponsePsyche(response, messageId);
         } else {
-          const messageId = addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion);
+          const messageId = await commitMessage(combinedReminderText);
+          if (!messageId) { useAppStore.getState().setIsTalking(false); return false; }
           await commitAcceptedResponsePsyche(response, messageId);
         }
         setTimeout(() => useAppStore.getState().setIsTalking(false), 2000);
@@ -1039,7 +1254,14 @@ export async function triggerTimedReminderMessage(
       // the rest of the function (which awaits voiceResultPromise) is unchanged.
       let voiceResultPromise = prewarmedVoice
         ? Promise.resolve({ success: true as const, voiceFileId: prewarmedVoice.voiceFileId, voiceDuration: prewarmedVoice.voiceDuration, japaneseText: prewarmedVoice.japaneseText })
-        : helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion, undefined, reminderAbortCtrl?.signal);
+        : helpers.runVoicePipeline('reminder-' + Date.now(), combinedReminderText, response.emotion, undefined, reminderAbortCtrl?.signal, foregroundTask, response.sourceVersions?.map(source => source.id));
+      voiceResultPromise = voiceResultPromise.then(async result => {
+        if (result.success && result.voiceFileId) {
+          generatedVoiceId = result.voiceFileId;
+          if (deliveryFinished) await discardVoice(result.voiceFileId);
+        }
+        return result;
+      });
 
       // v2.14.26: only fire a system notification when MainActivity
       // is actually backgrounded. If forceOverlay was set because the
@@ -1070,8 +1292,9 @@ export async function triggerTimedReminderMessage(
           // (and as heads-up + vibration) the same way the locked-screen
           // KumikoAlarmReceiver path does.
           try {
-            const { postKumikoNotification, vibrateForKind } = await import('../../services/capacitorNotifications');
-            await postKumikoNotification({ title: notifTitle, body: notifBody, kind: 'incoming-call' });
+            const { postKumikoNotification, reminderNotificationId, vibrateForKind } = await import('../../services/capacitorNotifications');
+            if (deliveryGuard && !await deliveryGuard.current()) return false;
+            await postKumikoNotification({ title: notifTitle, body: notifBody, kind: 'incoming-call', notificationId: deliveryGuard ? reminderNotificationId(deliveryGuard.messageId) : undefined });
             await vibrateForKind('incoming-call');
           } catch (e) {
             console.warn('[chatActions] capacitor incoming-call notification failed:', e);
@@ -1085,13 +1308,26 @@ export async function triggerTimedReminderMessage(
 
       let callCancelled = false;
       let callAccepted = false;
-      return new Promise<boolean>((resolve) => {
+      return await new Promise<boolean>((resolve) => {
+        const validityTimer = deliveryGuard ? setInterval(() => {
+          void deliveryGuard.current().then(valid => {
+            if (valid || callCancelled) return;
+            callCancelled = true;
+            clearInterval(validityTimer);
+            try { reminderAbortCtrl?.abort('reminder_changed'); } catch { /* noop */ }
+            if (isDesktopElectron()) window.electronAPI?.send('app:close-call-notification');
+            useAppStore.getState().setVoiceCallOverlayData(null);
+            useAppStore.getState().setIsTalking(false);
+            resolve(false);
+          }).catch(() => {});
+        }, 1000) : undefined;
         useAppStore.getState().setVoiceCallOverlayData({
           reminderEvent: reminder.event,
           reminderText: combinedReminderText,
           emotion: response.emotion,
           onAccept: async () => {
             if (callCancelled || callAccepted) return;
+            if (deliveryGuard && !await deliveryGuard.current()) { resolve(false); return; }
             callAccepted = true;
             useAppStore.getState().setIsTalking(true);
             useAppStore.getState().setVoiceCallOverlayData((prev: any) => prev ? { ...prev, isConnecting: true } : null);
@@ -1099,13 +1335,16 @@ export async function triggerTimedReminderMessage(
 
             const voiceResult = await voiceResultPromise;
             if (callCancelled) return;
+            if (deliveryGuard && !await deliveryGuard.current()) { resolve(false); return; }
+            if (validityTimer) clearInterval(validityTimer);
 
             if (voiceResult.success) {
-              const voiceMsgId = addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion, undefined, {
+              const voiceMsgId = await commitMessage(combinedReminderText, {
                 isVoiceMessage: true, voiceFileId: voiceResult.voiceFileId, voiceDuration: voiceResult.voiceDuration, japaneseText: voiceResult.japaneseText,
               });
+              if (!voiceMsgId) { resolve(false); return; }
               await commitAcceptedResponsePsyche(response, voiceMsgId);
-              showBackgroundNotification(combinedReminderText, 'reminder', voiceMsgId);
+              if (!deliveryGuard) showBackgroundNotification(combinedReminderText, 'reminder', voiceMsgId);
               const buf = await (await import('../../services/voiceFileService')).loadVoiceFile(voiceResult.voiceFileId!);
               if (buf) {
                 // Phase 5 Part D: mirror voiceFileId into the overlay
@@ -1125,12 +1364,19 @@ export async function triggerTimedReminderMessage(
                 const blob = new Blob([buf], { type: 'audio/mpeg' });
                 const url = URL.createObjectURL(blob);
                 const audio = new Audio(url);
+                const unregisterMedia = registerMemorySensitiveMedia(audio, response.memoryGeneration!, () => {
+                  URL.revokeObjectURL(url);
+                  useAppStore.getState().setVoiceCallOverlayData(null);
+                  useAppStore.getState().setIsTalking(false);
+                });
                 audio.onended = () => {
+                  unregisterMedia();
                   URL.revokeObjectURL(url);
                   useAppStore.getState().setVoiceCallOverlayData((prev: any) => prev ? { ...prev, isPlayingVoice: false, isEnded: true } : null);
                   useAppStore.getState().setIsTalking(false);
                 };
                 audio.play().catch(() => {
+                  unregisterMedia(); URL.revokeObjectURL(url);
                   useAppStore.getState().setVoiceCallOverlayData(null);
                   useAppStore.getState().setIsTalking(false);
                   resolve(true);
@@ -1141,7 +1387,8 @@ export async function triggerTimedReminderMessage(
                 resolve(true);
               }
             } else {
-              const messageId = addMessageToStore('model', combinedReminderText, undefined, undefined, undefined, undefined, undefined, response.emotion);
+              const messageId = await commitMessage(combinedReminderText);
+              if (!messageId) { resolve(false); return; }
               await commitAcceptedResponsePsyche(response, messageId);
               useAppStore.getState().setVoiceCallOverlayData(null);
               useAppStore.getState().setIsTalking(false);
@@ -1150,6 +1397,7 @@ export async function triggerTimedReminderMessage(
           },
           onReject: () => {
             callCancelled = true;
+            if (validityTimer) clearInterval(validityTimer);
             if (isDesktopElectron()) window.electronAPI?.send('app:close-call-notification');
             // v2.14.28 H17.B: abort the in-flight TTS pipeline so the
             // remaining HTTP calls (Fish/SoVITS/Vocu) bail instead of
@@ -1162,6 +1410,7 @@ export async function triggerTimedReminderMessage(
           },
           onClose: () => {
             callCancelled = true;
+            if (validityTimer) clearInterval(validityTimer);
             try { reminderAbortCtrl?.abort('user_closed_call'); } catch { /* noop */ }
             useAppStore.getState().setVoiceCallOverlayData(null);
             useAppStore.getState().setIsTalking(false);
@@ -1193,14 +1442,24 @@ export async function triggerTimedReminderMessage(
     useAppStore.getState().setIsThinking(false);
     useAppStore.getState().setIsTalking(true);
 
-    const reminderMessageId = addMessageToStore('model', firstText, undefined, undefined, undefined, undefined, undefined, response.emotion);
+    const reminderMessageId = await commitMessage(deliveryGuard ? (combinedReminderText || firstText) : firstText);
+    if (!reminderMessageId) { useAppStore.getState().setIsTalking(false); return false; }
     await commitAcceptedResponsePsyche(response, reminderMessageId);
     showBackgroundNotification(firstText, 'reminder', reminderMessageId);
 
-    if (response.textParts.length > 1) {
+    if (!deliveryGuard && response.textParts.length > 1) {
       for (let i = 1; i < response.textParts.length; i++) {
         await new Promise(r => setTimeout(r, 1000));
-        addMessageToStore('model', response.textParts[i], undefined, undefined, undefined, undefined, undefined, response.emotion);
+        await assertMemoryGenerationCurrent(response.memoryGeneration!);
+        await assertSourceVersions(response.sourceVersions!);
+        await assertTaskModelRevisionsCurrent({ modelRevisions: response.modelRevisions } as TaskContext);
+        await assertSourceRefsCurrent(response.consultedSources ?? []);
+        if (deliveryGuard && !await deliveryGuard.current()) {
+          useAppStore.getState().setIsTalking(false);
+          return false;
+        }
+        const partId = addMessageToStore('model', response.textParts[i], undefined, undefined, undefined, undefined, undefined, response.emotion);
+        await commitAcceptedResponsePsyche(response, partId);
       }
     }
 
@@ -1212,6 +1471,10 @@ export async function triggerTimedReminderMessage(
     useAppStore.getState().setIsThinking(false);
     useAppStore.getState().setIsTalking(false);
     return false;
+  } finally {
+    deliveryFinished = true;
+    await discardVoice(generatedVoiceId);
+    await endForegroundActivity(foregroundTask);
   }
 }
 
@@ -1330,7 +1593,7 @@ export async function executeSend(
 //   A-7  Life stream & psyche state injection
 //   A-8  Voice policy
 //   A-9  sendMessageToGemini — model call with all context
-//   A-10 Reminders + anchors extracted from model reply
+//   A-10 Reminder receipts + legacy anchor proposals
 //   A-11 Voice / text delivery
 //   A-12 RAG indexing + summary boundary evaluation
 //
@@ -1342,8 +1605,24 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
   const state = useAppStore.getState();
   const { coreMemory, worldBook, contextLimit, locationConfig, backupConfig, anchors, kumikoNotebook, turnCount, language, summaryArchiveState, missedReminders } = state;
   // Capture before the model round trip; later settings/zone changes cannot move this promise.
-  const reminderRequestAt = Date.now();
   const reminderUserZone = locationConfig.userTimezone;
+  let turnRuntime: TurnRuntime | undefined;
+  let replyGuard: ResponseEffectGuard | undefined;
+  const restoreVersion = getDataRestoreVersion();
+  const rootTaskContext = createStandaloneContext('foreground');
+  const rootAbort = new AbortController();
+  rootTaskContext.signal = rootAbort.signal;
+  rootTaskContext.inputSources = [];
+  let rootActivityStarted = false;
+  let rootCancelPoll: ReturnType<typeof setInterval> | undefined;
+  const isReplyActive = () => !ctx.isCancelled() && !isDataRestoreBlocked()
+    && getDataRestoreVersion() === restoreVersion;
+  const replyStep = async <T,>(pending: Promise<T>): Promise<T> => {
+    const value = await pending;
+    if (!isReplyActive()) throw new Error('Reply cancelled or data restored');
+    await replyGuard?.check();
+    return value;
+  };
 
   const {
     combinedText,
@@ -1357,6 +1636,30 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
   const isImageMessage = !!finalImage;
 
   try {
+    const actualSources = ctx.getMessagesSnapshot()
+      .filter(message => message.role === 'user' && !message.isHidden
+        && (currentPendingIds.has(message.id) || message.id === currentTurnStartMessageId))
+      .sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
+    await db.transaction('rw', db.messages, async () => {
+      for (const source of actualSources) {
+        const existing = await db.messages.get(source.id);
+        if (existing && (existing.role !== 'user' || existing.text !== source.text || existing.timestamp !== source.timestamp)) {
+          throw new Error('User message changed before processing');
+        }
+        if (!existing) await db.messages.put(mapMessageToEntity(source));
+      }
+    });
+    if (!isReplyActive()) throw new Error('Reply cancelled or data restored');
+    replyGuard = await createResponseEffectGuard({ eventId: currentTurnStartMessageId || actualSources[0]?.id || 'reply',
+      isCancelled: () => !isReplyActive(), sources: actualSources });
+    rootTaskContext.rootId = 'turn-source:' + (currentTurnStartMessageId || actualSources[0]?.id || rootTaskContext.rootId);
+    rootTaskContext.inputSources = [...(replyGuard.sourceRefs || [])];
+    replyGuard.modelRevisions = rootTaskContext.modelRevisions;
+    replyGuard.consultedSources = rootTaskContext.consultedSources;
+    await beginForegroundActivity(rootTaskContext);
+    rootActivityStarted = true;
+    rootCancelPoll = setInterval(() => { if (!isReplyActive()) rootAbort.abort(); }, 150);
+
     // v2.14.29 Reactive: block runtime intercept. If Kumiko is currently
     // "blocking" the user (LLM-driven, emitted via `[Block: minutes=N,
     // reason="..."]` last turn or earlier), we short-circuit before any
@@ -1377,6 +1680,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       const { getActiveBlock, appendBlockUnread } = await import('../../services/blockRuntimeService');
       const activeBlock = getActiveBlock();
       if (activeBlock) {
+        await receiveUnreadTurn(actualSources);
         const earlyTrackedMsgId = currentTurnStartMessageId
           || Array.from(ctx.pendingMessageIds || [])[0]
           || null;
@@ -1415,9 +1719,15 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
 
     const historyMap = new Map<string, Message>();
     [...pinnedMessages, ...recentMessages].forEach(m => historyMap.set(m.id, m));
-    const historySlice = Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+    const historyCandidates = Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+    const historyVersions = await captureSourceVersions(historyCandidates);
+    const historySlice = historyCandidates.filter(message => historyVersions.some(version => version.id === message.id));
+    for (const source of historyVersions) {
+      const refs = rootTaskContext.consultedSources!;
+      if (!refs.some(ref => ref.kind === 'message' && ref.id === source.id)) refs.push({ kind: 'message', id: source.id, version: source.contentRevision ?? 'legacy', relation: 'context' });
+    }
 
-    const ambientEnvironmentContext = await getAmbientEnvironmentContext();
+    const ambientEnvironmentContext = await replyStep(getAmbientEnvironmentContext(rootTaskContext));
     const isCurrentHoliday = ambientEnvironmentContext.includes('今日特殊历法：日本法定节假日');
 
     // --- A-2 RETROACTIVE LIFE STREAM GENERATION ---
@@ -1515,6 +1825,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       const decision = busyStore.ensureBusySlot(slotCtx, scheduleSlot.interceptChance, nowMs);
 
       if (decision !== 'allow') {
+        await receiveUnreadTurn(actualSources);
         const runtime = useAppStore.getState().busySlotRuntime;
         const upgradedByRound = runtime?.reason === 'round_limit';
         const pickBusyReply = (): string => {
@@ -1619,10 +1930,36 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           }
         }
 
-        ctx.markPendingRead();
+        ctx.markPendingSending();
+        ctx.clearPendingBuffers();
         return;
       }
     }
+
+    const catchUpState = useAppStore.getState();
+    await replyStep(seedReceivedTurns([...(catchUpState.busyFollowUp?.unreadUserMessageIds || []),
+      ...(catchUpState.pendingApology?.sources.flatMap(source => source.unreadUserMessageIds) || []),
+      ...(catchUpState.blockRuntime?.capturedUnreadIds || [])]));
+    const catchUpContexts = await replyStep(readReceivedTurns({ language, privateTimeZone: reminderUserZone,
+      reminders: useAppStore.getState(), isCancelled: () => ctx.isCancelled() || isDataRestoreBlocked(), onRead: markCaughtUpRead, relevantIds: [
+        ...(catchUpState.busyFollowUp?.unreadUserMessageIds || []),
+        ...(catchUpState.pendingApology?.sources.flatMap(source => source.unreadUserMessageIds) || []),
+        ...(catchUpState.blockRuntime?.capturedUnreadIds || []),
+      ] }));
+    if (isDataRestoreBlocked()) throw new Error('Restore in progress');
+    const understandingCandidates = ctx.getMessagesSnapshot().filter(message => !message.isHidden).slice(-6);
+    const understandingVersions = await captureSourceVersions(understandingCandidates);
+    for (const source of understandingVersions) {
+      const refs = rootTaskContext.consultedSources!;
+      if (!refs.some(ref => ref.kind === 'message' && ref.id === source.id)) refs.push({ kind: 'message', id: source.id, version: source.contentRevision ?? 'legacy', relation: 'context' });
+    }
+    turnRuntime = await createTurnCoordinator({ sources: actualSources,
+      recentMessages: understandingCandidates.filter(message => understandingVersions.some(version => version.id === message.id)), language, privateTimeZone: reminderUserZone,
+      reminders: useAppStore.getState(), isCancelled: () => ctx.isCancelled() || isDataRestoreBlocked(), taskContext: rootTaskContext });
+    replyGuard.modelRevisions = turnRuntime.taskContext.modelRevisions;
+    replyGuard.consultedSources = turnRuntime.taskContext.consultedSources;
+
+    await replyGuard.check();
 
     // --- A-4 MEMORY / RAG RESOLUTION ---
     const currentLooksHistoryLike = isLikelyHistoricalRecallQuery(userTextForRag)
@@ -1647,10 +1984,11 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       || historyQueryContextResolution.source !== 'self'
       || isMemoryQuerySessionActive(ctx.getMemoryQuerySession());
     if (shouldRewriteHistoricalQuery) {
-      const rewriteResult = await rewriteHistoricalRecallQueryDetailed(rawHistoryQueryContext, locationConfig, {
+      const rewriteResult = await replyStep(rewriteHistoricalRecallQueryDetailed(rawHistoryQueryContext, locationConfig, {
         bypassGate: ctx.getMemoryQuerySession()?.kind === 'topic_search',
         recentMessages: allMessages.slice(-6),
-      });
+        taskContext: turnRuntime.taskContext,
+      }));
       historyQueryRewrite = rewriteResult.rewrite;
       historyQueryRewriteError = rewriteResult.errorMessage;
       if (historyQueryRewrite?.rewrittenQuery) {
@@ -1663,7 +2001,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       || historicalQueryIntent === 'temporal'
       || (isMemoryQuerySessionActive(ctx.getMemoryQuerySession()) && historyQueryContextResolution.source !== 'self');
     const historyEvidenceMessages = shouldLoadHistoryEvidence
-      ? await buildHistoryEvidenceMessages(allMessages)
+      ? await replyStep(buildHistoryEvidenceMessages(allMessages))
       : allMessages;
     const historyEvidenceSource = shouldLoadHistoryEvidence
       ? (historyEvidenceMessages.length > 0 ? 'db_messages_only' : 'live_state_only')
@@ -1725,7 +2063,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           } : null,
         });
         const temporalAnalysisResult = shouldAnalyzeTemporal
-          ? await analyzeTemporalQueryDetailed(historyQueryContext, locationConfig)
+          ? await replyStep(analyzeTemporalQueryDetailed(historyQueryContext, locationConfig, turnRuntime.taskContext))
           : null;
         temporalIntent = temporalAnalysisResult?.analysis ?? null;
         temporalDiagnostics = temporalAnalysisResult?.diagnostics ?? null;
@@ -1750,7 +2088,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           };
         }
         const temporalEpisodes = shouldAnalyzeTemporal && temporalIntent?.isTemporalQuery
-          ? await loadTemporalEpisodesForRange(temporalIntent.startTimestampJST, temporalIntent.endTimestampJST, { limit: 8 })
+          ? await replyStep(loadTemporalEpisodesForRange(temporalIntent.startTimestampJST, temporalIntent.endTimestampJST, { limit: 8 }))
           : [];
         temporalEpisodeCount = temporalEpisodes.length;
         const temporalHistoryLookup = shouldAnalyzeTemporal
@@ -1772,13 +2110,13 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
             || (sessionForKeywords?.kind === 'topic_search'
                 ? extractTopicFallbackKeywords(userTextForRag)
                 : undefined);
-          const semanticRecall = await searchLocalRagMemoryDetailed(
+          const semanticRecall = await replyStep(searchLocalRagMemoryDetailed(
             semanticSearchQuery,
             3,
             semanticRoleConstraint !== 'any' ? { role: semanticRoleConstraint } : undefined,
             'semantic_recall',
             effectiveKeywords,
-          );
+          ));
           semanticEntryKindSummary = semanticRecall.entryKindSummary;
           semanticDominantEntryKind = semanticRecall.dominantEntryKind;
           const semanticEvidenceSummary = formatSemanticEntryKindSummary(semanticRecall.entryKindSummary);
@@ -1933,12 +2271,12 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     const checkActiveReminders = async (): Promise<string[]> => {
       try {
         const today = new Date().toISOString().slice(0, 10);
-        const existingEvents = await db.getVal('kumiko_schedule_events', []);
+        const existingEvents = await replyStep(db.getVal('kumiko_schedule_events', []));
         return existingEvents.filter((e: any) => e.date === today).map((e: any) => e.event);
       } catch { return []; }
     };
 
-    const activeReminders = await checkActiveReminders();
+    const activeReminders = await replyStep(checkActiveReminders());
     const modelHistorySlice = strictEvidenceTurn ? historySlice.slice(-4) : historySlice;
     const modelCoreMemory = strictEvidenceTurn ? '' : coreMemory;
     const modelWorldBook = strictEvidenceTurn ? [] : [...worldBook, ...getKumikoLocalRag(language)];
@@ -1965,7 +2303,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
 
     // --- STATE MACHINE INJECTION ---
     const isCurrentHolidayState = ambientEnvironmentContext.includes('今日特殊历法：日本法定节假日');
-    const { getCurrentKumikoState, getDetailedScheduleSlot: getScheduleForPrompt } = await import('../../services/kumikoStateMachine');
+    const { getCurrentKumikoState, getDetailedScheduleSlot: getScheduleForPrompt } = await replyStep(import('../../services/kumikoStateMachine'));
     const currentStateCtx = getCurrentKumikoState(locationConfig.modelTimezone, isCurrentHolidayState);
     const scheduleForPrompt = getScheduleForPrompt(locationConfig.modelTimezone, isCurrentHolidayState);
 
@@ -1988,18 +2326,18 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
 
     // --- LIFE STREAM & PSYCHE STATE INJECTION ---
     if (!strictEvidenceTurn) {
-      const { getPsycheState, getPsycheModePrompt } = await import('../../services/psycheStateService');
-      const psycheState = await getPsycheState();
+      const { getPsycheState, getPsycheModePrompt } = await replyStep(import('../../services/psycheStateService'));
+      const psycheState = await replyStep(getPsycheState());
       const psychePrompt = getPsycheModePrompt(psycheState);
       modelRagContext.push(`\n${psychePrompt}`);
 
-      const { getDailyFragments, getRecentDiaries } = await import('../../services/lifeStreamService');
+      const { getDailyFragments, getRecentDiaries } = await replyStep(import('../../services/lifeStreamService'));
       const now = Date.now();
       const jstDate = new Date(new Date(now).toLocaleString('en-US', { timeZone: 'Asia/Tokyo' }));
       const dateStr = `${jstDate.getFullYear()}-${String(jstDate.getMonth() + 1).padStart(2, '0')}-${String(jstDate.getDate()).padStart(2, '0')}`;
 
-      const recentDiaries = await getRecentDiaries(2);
-      const todayFragments = await getDailyFragments(dateStr);
+      const recentDiaries = await replyStep(getRecentDiaries(2));
+      const todayFragments = await replyStep(getDailyFragments(dateStr));
 
       let lifeStreamPrompt = `\n[近期生活轨迹]\n`;
       if (recentDiaries.length > 0) {
@@ -2068,7 +2406,11 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     const promptAffection = reactiveSnapshot.affection?.score;
     const promptLastEmotion = reactiveSnapshot.currentEmotion;
 
-    const response: ChatResponse = await sendMessageToGemini(
+    if (catchUpContexts.length) modelRagContext.push(...catchUpContexts);
+    await replyStep(turnRuntime.prepare());
+
+    const resumedResponse = turnRuntime.getResponse();
+    const response: ChatResponse = resumedResponse || await replyStep(sendMessageToGemini(
       combinedText,
       modelCoreMemory,
       modelWorldBook,
@@ -2090,9 +2432,14 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       promptMood,
       promptAffection,
       promptLastEmotion,
-    );
+      turnRuntime,
+    ));
+    if (!resumedResponse) {
+      await replyStep(turnRuntime.finishResponse(response));
+      await replyStep(turnRuntime.saveResponse(response));
+    }
 
-    if (ctx.isCancelled()) {
+    if (!isReplyActive()) {
       // v2.14.28 H11: when a turn is cancelled mid-flight (user navigated away,
       // generationId rotated, etc.), the user bubble was previously left in the
       // "未读" state forever — H18 cleared sendStatus on entry, and this early
@@ -2105,6 +2452,8 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       return;
     }
 
+    replyGuard.eventId = response.responseEventId || turnRuntime.responseMessageId(0);
+    await replyGuard.check();
     const s2 = useAppStore.getState();
     // v2.14.28 H18 (second cut): the post-model markPendingRead() call used to
     // live here, which made the user bubble flip to "已读" immediately when the
@@ -2114,21 +2463,22 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     // moved down to the A-11 delivery start, so "对方正在输入" lights up first
     // and the small status text flips to "已读" at the same moment.
 
+    {
     // --- Teaching-slot round counter bookkeeping ---
     // Each successful allow-mode AI reply in a teaching slot counts as
     // one round-trip. Once we hit 2 round-trips, the NEXT user message
     // in the same slot triggers the round-limit block (see
     // `ensureBusySlot`), regardless of the initial dice roll.
-    if (scheduleSlot.slotKey && scheduleSlot.slotType === 'teaching') {
+    if (!resumedResponse && scheduleSlot.slotKey && scheduleSlot.slotType === 'teaching') {
       const runtime = s2.busySlotRuntime;
       if (runtime && runtime.mode === 'allow' && runtime.slotKey === scheduleSlot.slotKey) {
-        await s2.incrementBusySlotRound(scheduleSlot.slotKey);
+        await replyStep(s2.incrementBusySlotRound(scheduleSlot.slotKey));
       }
     }
 
     // --- Clear pending apology after successful burst compensation ---
-    if (apologyInjectedThisTurn) {
-      await s2.clearPendingApology();
+    if (!resumedResponse && apologyInjectedThisTurn) {
+      await replyStep(s2.clearPendingApology());
     }
 
     s2.setIsDisconnected(false);
@@ -2149,19 +2499,24 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       let effectiveMoodDelta = moodDeltaRaw;
       let effectiveAffectionDelta = affectionDeltaRaw;
       let effectiveBlock: typeof blockDirective = blockDirective;
+      let auditedAgainst: { mood: string; affection: string } | undefined;
 
       if (auditNeeded) {
-        const { reviewAffectionDirective } = await import('../../services/affectionAuditService');
-        const auditState = useAppStore.getState();
-        const audit = await reviewAffectionDirective({
+        const { reviewAffectionDirective } = await replyStep(import('../../services/affectionAuditService'));
+        const { getMoodState } = await replyStep(import('../../services/moodService'));
+        const { getAffectionState } = await replyStep(import('../../services/affectionService'));
+        const moodState = await replyStep(getMoodState());
+        const affectionState = await replyStep(getAffectionState());
+        auditedAgainst = { mood: JSON.stringify(moodState), affection: JSON.stringify(affectionState) };
+        const audit = await replyStep(reviewAffectionDirective({
           userText: userTextForRag,
           modelReplyText: (response.textParts || []).join(' '),
           proposedMoodDelta: moodDeltaRaw,
           proposedAffectionDelta: affectionDeltaRaw,
           proposedBlock: blockDirective,
-          currentMood: auditState.mood?.mood ?? 0,
-          currentAffection: auditState.affection?.score ?? 50,
-        });
+          currentMood: moodState.mood,
+          currentAffection: affectionState.score,
+        }, turnRuntime.taskContext));
         if (!audit.approved) {
           if (audit.clampedMoodDelta !== undefined) effectiveMoodDelta = audit.clampedMoodDelta;
           if (audit.clampedAffectionDelta !== undefined) effectiveAffectionDelta = audit.clampedAffectionDelta;
@@ -2172,37 +2527,19 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
         }
       }
 
-      if (typeof effectiveMoodDelta === 'number' && effectiveMoodDelta !== 0) {
-        const { applyMoodDeltaQueued } = await import('../../services/moodService');
-        const moodResult = await applyMoodDeltaQueued(effectiveMoodDelta);
-        if (moodResult) useAppStore.getState().setMood(moodResult);
-      }
-      if (typeof effectiveAffectionDelta === 'number' && effectiveAffectionDelta !== 0) {
-        const { applyAffectionDeltaQueued } = await import('../../services/affectionService');
-        const affectionResult = await applyAffectionDeltaQueued(effectiveAffectionDelta);
-        if (affectionResult) useAppStore.getState().setAffection(affectionResult);
-      }
-      if (effectiveBlock) {
-        const { startBlock } = await import('../../services/blockRuntimeService');
-        const trackedBlockTriggerId = currentTurnStartMessageId
-          || Array.from(ctx.pendingMessageIds || [])[0]
-          || undefined;
-        const startedRuntime = await startBlock({
-          minutes: effectiveBlock.minutes,
-          reason: effectiveBlock.reason,
-          triggerMessageId: trackedBlockTriggerId,
-        });
-        const remainingMinutes = Math.max(1, Math.round((startedRuntime.activeUntilMs - Date.now()) / 60_000));
-        const toastZh = `已被拉黑 · ${remainingMinutes < 60
-          ? `${String(remainingMinutes).padStart(2, '0')}:00`
-          : `${Math.floor(remainingMinutes / 60)}:${String(remainingMinutes % 60).padStart(2, '0')}`} 后自动解除`;
-        const toastEn = `Blocked · auto-clears in ${remainingMinutes} min`;
-        useAppStore.getState().setSystemNotice(language === 'en' ? toastEn : toastZh);
+      if (effectiveMoodDelta || effectiveAffectionDelta || effectiveBlock) {
+        const { commitReactiveCandidate } = await replyStep(import('../../services/stateCommit'));
+        await replyStep(commitReactiveCandidate(replyGuard, {
+          mood: effectiveMoodDelta, affection: effectiveAffectionDelta,
+          block: effectiveBlock ? { minutes: effectiveBlock.minutes, reason: effectiveBlock.reason,
+            triggerMessageId: currentTurnStartMessageId || Array.from(ctx.pendingMessageIds || [])[0] || undefined } : null,
+        }, auditedAgainst));
       }
     } catch (reactiveErr) {
       console.warn('[Reactive] Mood/affection/block post-processing failed (non-fatal):', reactiveErr);
     }
 
+    await replyGuard.check();
     if (response.systemNotice) {
       s2.setSystemNotice(response.systemNotice);
     }
@@ -2218,259 +2555,36 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
 
     // Only an actual user message in this turn may update what she knows.
     // Proactive/prewarm/rewrite prompts never enter this persistence path.
-    if (response.userLocationDisclosure) {
-      const source = ctx.getMessagesSnapshot()
-        .filter(message => message.role === 'user' && !message.isHidden
-          && (currentPendingIds.has(message.id) || message.id === currentTurnStartMessageId))
-        .sort((a, b) => b.timestamp - a.timestamp)
-        .find(message => validateUserLocationDisclosure(response.userLocationDisclosure, message.text));
-      if (source) {
-        try {
-          await commitUserKnownLocationDisclosure(response.userLocationDisclosure, source, { isActualUserTurn: true });
-        } catch (error) {
-          console.warn('[USER LOCATION] Could not persist the disclosed location:', error);
-        }
-      }
-    }
-
-    // --- REMINDERS & ANCHORS ---
-    const hasReminderIntent = /(?:提醒|叫|喊)(?:一下)?我|记得.+(?:提醒|叫|喊)|remind me|ping me|tell me|wake me up/i.test(userTextForRag);
-    const modelReminderAckText = (response.textParts || []).join(' ').replace(/\s+/g, ' ').trim();
-    const hasModelAcknowledgedReminder =
-      /(?:开始计时|倒计时|计时|到时候.{0,12}(?:提醒你|喊你|叫你)|(?:提醒你|喊你|叫你).{0,12}(?:分钟|秒|小时|分|秒钟|钟头)|remind you|ping you|timer|countdown)/i
-        .test(modelReminderAckText);
-    const parsedRelativeReminder = parseRelativeReminderRequest(userTextForRag);
-    const parsedDailyReminder = parseDailyReminderRequest(userTextForRag);
-    const reminderKnownLocation = hasReminderIntent || response.scheduleTrigger || hasModelAcknowledgedReminder
-      ? await resolveUserKnownLocation() : null;
-    const timingFor = (explicitZone?: string) => ({
-      referenceAt: reminderRequestAt,
-      timeZone: resolveReminderTimeZone(userTextForRag, reminderKnownLocation?.timeZone || reminderUserZone, explicitZone),
-    });
-    let invalidReminderClock = false;
-    let unknownReminderPlace = false;
-    const canResolveClock = (explicitZone?: string) => {
-      if (reminderKnownLocation && !reminderKnownLocation.timeZone && !getExplicitReminderTimeZone(userTextForRag, explicitZone)) {
-        unknownReminderPlace = true;
-        return false;
-      }
-      return true;
-    };
-    const saveDailyReminder = async (event: string, hour: number, minute: number, explicitZone?: string) => {
-      if (!canResolveClock(explicitZone)) return false;
-      if (!Number.isInteger(hour) || hour < 0 || hour > 23 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
-        invalidReminderClock = true;
-        return false;
-      }
-      await s2.saveDailyReminder(event, hour, minute, userTextForRag, timingFor(explicitZone).timeZone);
-      return true;
-    };
-    const saveClockReminder = async (event: string, hour: number, minute: number, daysOffset?: number, explicitZone?: string) => {
-      if (!canResolveClock(explicitZone)) return false;
-      const timing = timingFor(explicitZone);
-      const dueAt = getClockReminderAt(hour, minute, timing.timeZone, reminderRequestAt, daysOffset);
-      if (dueAt === null) { invalidReminderClock = true; return false; }
-      await s2.saveRelativeReminder(event, 1, userTextForRag, { ...timing, dueAt });
-      return true;
-    };
-    let createdReminderThisTurn = false;
-    // v2.14.23: structured pipeline log. Gate 1 = turn-start. Lets us see in
-    // logcat exactly which path hit / missed without sprinkling ad-hoc
-    // console.logs that drift across releases. The five subsequent gates
-    // (llm-trigger / local-regex / dfallback-* / dropped) log the same
-    // shape so a quick `adb logcat -s ReactNative.JS | grep "\\[REMINDER\\]"`
-    // gives a complete trace.
-    console.log('[REMINDER] gate=turn-start', {
-      userText: userTextForRag.slice(0, 200),
-      hasReminderIntent,
-      hasModelAcknowledgedReminder,
-      modelAckPreview: modelReminderAckText.slice(0, 120),
-      llmScheduleTrigger: response.scheduleTrigger ? Object.keys(response.scheduleTrigger) : null,
-      parsedRelativeReminderEvent: parsedRelativeReminder?.event,
-      parsedRelativeReminderDelaySec: parsedRelativeReminder?.delaySeconds,
-      parsedDailyReminderEvent: parsedDailyReminder?.event,
-      parsedDailyReminderHour: parsedDailyReminder?.hour,
-      parsedDailyReminderMinute: parsedDailyReminder?.minute,
-    });
-
-    // Two-phase reminder creation (v2.14.16, originally landed in v2.14.14).
-    //
-    // The old single-tier `if (response.scheduleTrigger?.event) {...} else if (parsedDailyReminder) {...} else if (parsedRelativeReminder) {...}`
-    // had a silent failure mode: when the LLM returned `scheduleTrigger: { event: "X" }`
-    // but omitted `delay_seconds` / `hour` / `minute` / `days_offset` (very common
-    // on the 2nd or 3rd turn — the model assumes the user already established the
-    // timing earlier and just acknowledges with "OK"), the outer `if` was truthy
-    // but every inner branch missed → the entire `else if` chain was skipped →
-    // no reminder created and no fall-through to local-parsed `parsedRelativeReminder`.
-    //
-    // New flow: first try the LLM signal, then if nothing was created fall through
-    // to local regex parsing. When the LLM gave us an event string but missed the
-    // timing, we combine: LLM event text (more natural than regex extract) +
-    // local-parsed timing. Optional `days_offset` writes the schedule_events row
-    // and is allowed to fall through too — schedule_events is a calendar entry,
-    // not a reminder, and creating both for "明天提醒我..." is valid.
-    if (response.scheduleTrigger?.event) {
-      const { event, days_offset, delay_seconds, recurrence, hour, minute, time_zone } = response.scheduleTrigger;
-      if (recurrence === 'daily' && typeof hour === 'number' && typeof minute === 'number') {
-        createdReminderThisTurn = await saveDailyReminder(event, parsedDailyReminder?.hour ?? hour, parsedDailyReminder?.minute ?? minute, time_zone);
-        console.log('[REMINDER] gate=llm-trigger-hit', { kind: 'daily', event, hour, minute });
-      } else if (typeof hour === 'number' && typeof minute === 'number') {
-        createdReminderThisTurn = await saveClockReminder(event, hour, minute, days_offset, time_zone);
-      } else if (typeof delay_seconds === 'number' && delay_seconds > 0) {
-        await s2.saveRelativeReminder(event, delay_seconds, userTextForRag, timingFor(time_zone));
-        createdReminderThisTurn = true;
-        console.log('[REMINDER] gate=llm-trigger-hit', { kind: 'relative', event, delay_seconds });
-      } else {
-        console.log('[REMINDER] gate=llm-trigger-incomplete', {
-          event,
-          recurrence,
-          hour,
-          minute,
-          delay_seconds,
-          reason: 'scheduleTrigger has event but timing fields missing or invalid; falling through to local regex',
-        });
-      }
-      if (typeof days_offset === 'number') {
-        try {
-          const targetDate = new Date();
-          targetDate.setDate(targetDate.getDate() + days_offset);
-          const dateKey = targetDate.toISOString().slice(0, 10);
-          const existingEvents = await db.getVal('kumiko_schedule_events', []);
-          existingEvents.push({ event, date: dateKey });
-          await db.setVal('kumiko_schedule_events', existingEvents);
-        } catch (schedErr) {
-          console.error('[SCHEDULE] Failed to save event', schedErr);
-        }
-      }
-    }
-
-    if (!createdReminderThisTurn) {
-      const llmEvent = response.scheduleTrigger?.event;
-      if (parsedDailyReminder) {
-        const eventText = llmEvent || parsedDailyReminder.event;
-        createdReminderThisTurn = await saveDailyReminder(eventText, parsedDailyReminder.hour, parsedDailyReminder.minute);
-        console.log('[REMINDER] gate=local-regex-hit', { kind: 'daily', event: eventText, hour: parsedDailyReminder.hour, minute: parsedDailyReminder.minute });
-      } else if (parsedRelativeReminder) {
-        const eventText = llmEvent || parsedRelativeReminder.event;
-        await s2.saveRelativeReminder(eventText, parsedRelativeReminder.delaySeconds, userTextForRag, timingFor());
-        createdReminderThisTurn = true;
-        console.log('[REMINDER] gate=local-regex-hit', { kind: 'relative', event: eventText, delaySec: parsedRelativeReminder.delaySeconds });
-      }
-    }
-
-    // D-fallback (v2.14.17, broadened in v2.14.20): when the user text,
-    // main-pass scheduleTrigger, or the model's own natural-language reply
-    // indicates a reminder but no usable task was created, fire a triggered
-    // second-opinion LLM pass via reminderIntentRetry. This covers the real
-    // Android failure case where the visible user text was truncated to "3"
-    // but the main model still replied "那我三分钟后喊你" — previously the
-    // retry was gated only by hasReminderIntent on the truncated user text.
-    let llmRetryResult: import('../../services/reminderIntentRetry').ReminderIntentRetryResult | null = null;
-    const hasIncompleteLlmSchedule = !!response.scheduleTrigger?.event && !createdReminderThisTurn;
-    const shouldRetryReminderIntent =
-      !createdReminderThisTurn &&
-      (hasReminderIntent || hasModelAcknowledgedReminder || hasIncompleteLlmSchedule);
-    if (shouldRetryReminderIntent) {
-      const retryInput = (hasModelAcknowledgedReminder || hasIncompleteLlmSchedule) && modelReminderAckText
-        ? `用户原文: ${userTextForRag}\n模型回复: ${modelReminderAckText}`
-        : userTextForRag;
-      console.log('[REMINDER] gate=dfallback-start', {
-        retryInputLen: retryInput.length,
-        hasIncompleteLlmSchedule,
-        hasModelAcknowledgedReminder,
-      });
-      llmRetryResult = await extractReminderIntentLLM(retryInput, language);
-      console.log('[REMINDER] gate=dfallback-result', {
-        isReminder: llmRetryResult?.isReminder,
-        recurrence: llmRetryResult?.recurrence,
-        delaySeconds: llmRetryResult?.delaySeconds,
-        hour: llmRetryResult?.hour,
-        minute: llmRetryResult?.minute,
-        event: llmRetryResult?.event,
-      });
-      if (llmRetryResult?.isReminder && llmRetryResult.event) {
-        if (
-          llmRetryResult.recurrence === 'daily' &&
-          typeof llmRetryResult.hour === 'number' &&
-          typeof llmRetryResult.minute === 'number'
-        ) {
-          createdReminderThisTurn = await saveDailyReminder(llmRetryResult.event, llmRetryResult.hour, llmRetryResult.minute, llmRetryResult.timeZone);
-          console.log('[REMINDER] gate=dfallback-hit', { kind: 'daily', event: llmRetryResult.event, hour: llmRetryResult.hour, minute: llmRetryResult.minute });
-        } else if (typeof llmRetryResult.hour === 'number' && typeof llmRetryResult.minute === 'number') {
-          createdReminderThisTurn = await saveClockReminder(llmRetryResult.event, llmRetryResult.hour, llmRetryResult.minute, llmRetryResult.daysOffset, llmRetryResult.timeZone);
-        } else if (typeof llmRetryResult.delaySeconds === 'number' && llmRetryResult.delaySeconds > 0) {
-          await s2.saveRelativeReminder(llmRetryResult.event, llmRetryResult.delaySeconds, userTextForRag, timingFor(llmRetryResult.timeZone));
-          createdReminderThisTurn = true;
-          console.log('[REMINDER] gate=dfallback-hit', { kind: 'relative', event: llmRetryResult.event, delaySec: llmRetryResult.delaySeconds });
-        }
-      }
-    }
-
-    if (shouldRetryReminderIntent && !createdReminderThisTurn) {
-      // v2.14.23: classify why nothing got created so the dropped log gives
-      // an actionable hint, not just a soup of fields. The user-facing
-      // SystemToast below uses the same reason buckets so the UI is
-      // consistent with what dev logs say.
-      const reason = (() => {
-        if (llmRetryResult?.isReminder && !llmRetryResult.event) return 'intent-no-event';
-        if (llmRetryResult?.isReminder
-          && typeof llmRetryResult.delaySeconds !== 'number'
-          && (llmRetryResult.recurrence !== 'daily' || typeof llmRetryResult.hour !== 'number' || typeof llmRetryResult.minute !== 'number'))
-          return 'intent-no-timing';
-        if (llmRetryResult && llmRetryResult.isReminder === false) return 'intent-rejected-by-llm';
-        if (!llmRetryResult) return 'dfallback-null';
-        return 'unclassified';
-      })();
-      console.warn('[REMINDER] gate=dropped', {
-        reason,
-        text: userTextForRag.slice(0, 200),
-        modelReminderAckText: modelReminderAckText.slice(0, 200),
-        hasLlmScheduleTrigger: !!response.scheduleTrigger,
-        llmScheduleTriggerKeys: response.scheduleTrigger ? Object.keys(response.scheduleTrigger) : null,
-        parsedDailyReminder,
-        parsedRelativeReminder,
-        llmRetryResult,
-      });
-      // v2.14.23: surface intent-no-timing to the user. Previous behaviour
-      // was: user says "晚点提醒我", model agrees, nothing fires, user is
-      // confused. Now they at least see "时间没听清" and can rephrase.
-      // Other reasons stay silent (rejected-by-llm means the ask wasn't
-      // actually a reminder; null/unclassified are usually transient).
-      if (unknownReminderPlace) {
-        s2.setSystemNotice(language === 'zh'
-          ? '你告诉久美子的地区还没确认清楚，请补充城市或明确按哪个地区的时间提醒。'
-          : 'Please clarify the city you told Kumiko about, or explicitly name the reminder’s timezone.');
-      } else if (invalidReminderClock) {
-        s2.setSystemNotice(language === 'zh'
-          ? '这个提醒的日期或钟点已经过去，或在约定时区不存在，请换一个明确的时间。'
-          : 'That date/time has passed or does not exist in the agreed timezone. Please choose a valid time.');
-      } else if (reason === 'intent-no-timing' || reason === 'intent-no-event') {
-        const toastZh = reason === 'intent-no-timing'
-          ? '听到了「提醒我」，但没听清是几分钟还是几点。可以再说一遍具体时间吗？'
-          : '听到了时间，但没听清要提醒做什么，可以再说一次吗？';
-        const toastEn = reason === 'intent-no-timing'
-          ? 'I heard "remind me" but missed the time. Could you repeat the duration or hour?'
-          : 'I heard the time but missed what to remind about. Could you say it again?';
-        s2.setSystemNotice(language === 'en' ? toastEn : toastZh);
-      }
-    }
+    // Reminders and immediate facts have one coordinator-owned write path.
+    // Generated tags/acknowledgements are proposals, never execution receipts.
 
     if (response.anchorAction) {
       const action = response.anchorAction;
-      if (action.type === 'add') {
-        const newAnchor: AnchorEntry = {
-          id: Date.now().toString(),
-          content: action.content,
-          timestamp: Date.now(),
-          emotion: response.emotion,
-        };
-        s2.setAnchors((prev: AnchorEntry[]) => [newAnchor, ...prev]);
-      } else if (action.type === 'delete') {
-        s2.setAnchors((prev: AnchorEntry[]) => prev.filter(a => !a.content.includes(action.content)));
-      }
+      const anchorSignature = await replyStep(responsePayloadSignature(action));
+      const anchorCommit = await replyStep(commitResponseEffect(replyGuard, 'anchor', [], async () => {
+        const previous: AnchorEntry[] = (await db.keyval.get('kumiko_anchors'))?.value ?? [];
+        const exactId = previous.find(a => a.id === action.content)?.id;
+        const exactContent = previous.filter(a => a.content === action.content);
+        const deleteId = exactId ?? (exactContent.length === 1 ? exactContent[0].id : undefined);
+        const next = action.type === 'add'
+          ? [{ id: 'anchor:' + replyGuard!.eventId, content: action.content, timestamp: Date.now(), emotion: response.emotion }, ...previous]
+          // Deletion is by exact stable id only. Old tags containing a text
+          // fragment are proposals and cannot authorize a broad deletion.
+          : previous.filter(a => a.id !== deleteId);
+        await db.keyval.put({ key: 'kumiko_anchors', value: next });
+        if (action.type === 'add') await recordStateProvenance('anchor:' + replyGuard!.eventId, 'anchor', replyGuard!.eventId,
+          replyGuard!.sourceRefs, replyGuard!.consultedSources);
+        return next;
+      }, anchorSignature));
+      const currentAnchors = anchorCommit.committed ? anchorCommit.value! : await replyStep(db.getVal<AnchorEntry[]>('kumiko_anchors', []));
+      s2.setAnchors(currentAnchors);
+      if (anchorCommit.committed) void import('../../services/preferencesSync').then(({ noteKeyvalPreferenceWrite }) => noteKeyvalPreferenceWrite('kumiko_anchors', currentAnchors)).catch(() => {});
     }
+    }
+    const createdReminderThisTurn = turnRuntime.createdReminder();
 
     // --- A-11 VOICE / TEXT DELIVERY ---
+    await replyStep(turnRuntime.checkDelivery());
     // v2.14.28 H18 (second cut): mark "已读" right before delivery branches.
     // Both the voice path (line ~2044) and the text segment path (line ~2084)
     // immediately call setIsThinking(true) — this is when "对方正在输入"
@@ -2486,14 +2600,23 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     const isVoiceTurn = currentTtsCfg.voiceMode === 'full'
       || (currentTtsCfg.voiceMode === 'hybrid' && response.voiceMode === true);
 
-    if (isVoiceTurn && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'sovits' || (currentTtsCfg.ttsBackend === 'vocu' && !!currentTtsCfg.vocuApiKey && !!currentTtsCfg.vocuVoiceId)) && isVoiceServiceAvailable()) {
+    const responseAlreadyVisible = (index: number) => ctx.getMessagesSnapshot().some(message => message.id === turnRuntime!.responseMessageId(index));
+    // The single voice bubble occupies slot 0. Text segments retain their own
+    // slots, so a retry continues exactly after the already visible prefix.
+    const firstVisiblePart = ctx.getMessagesSnapshot().find(message => message.id === turnRuntime!.responseMessageId(0));
+    if (firstVisiblePart) await replyStep(commitAcceptedResponsePsyche(response, firstVisiblePart.id, replyGuard));
+    const wholeResponseAlreadyVisible = !!firstVisiblePart && firstVisiblePart.text === response.textParts.join(' ');
+    const priorTextSegments = !!firstVisiblePart || response.textParts.some((_, index) => index > 0 && responseAlreadyVisible(index));
+    if (!wholeResponseAlreadyVisible) {
+    if (isVoiceTurn && !priorTextSegments && (currentTtsCfg.fishAudioApiKey || currentTtsCfg.ttsBackend === 'sovits' || (currentTtsCfg.ttsBackend === 'vocu' && !!currentTtsCfg.vocuApiKey && !!currentTtsCfg.vocuVoiceId)) && isVoiceServiceAvailable()) {
+      if (!responseAlreadyVisible(0)) {
       const combinedVoiceText = response.textParts.join(' ');
       useAppStore.getState().setIsThinking(true);
 
       const isDocumentHidden = typeof document !== 'undefined' ? (document.hidden || !document.hasFocus()) : false;
       if (isDocumentHidden && Math.random() < 0.4) {
         const asyncDelay = 15000 + Math.random() * 30000;
-        await new Promise(r => setTimeout(r, asyncDelay));
+        await replyStep(new Promise(r => setTimeout(r, asyncDelay)));
       }
 
       const quoteData = response.quote ? {
@@ -2502,29 +2625,45 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
         role: 'user' as const,
       } : undefined;
 
-      const voiceResult = await ctx.runVoicePipeline('pending-' + Date.now(), combinedVoiceText, response.emotion, response.voiceVariant);
+      await replyStep(turnRuntime.checkDelivery());
+      const voiceResult = await ctx.runVoicePipeline('pending-' + Date.now(), combinedVoiceText, response.emotion, response.voiceVariant, turnRuntime.signal, turnRuntime.taskContext, [...(replyGuard?.sourceRefs ?? []), ...(replyGuard?.consultedSources ?? [])].map(ref => ref.id));
+      let voiceCommitted = false;
+      try {
+      await replyStep(Promise.resolve(voiceResult));
       if (ctx.isCancelled()) { useAppStore.getState().setIsThinking(false); return; }
+      await replyStep(turnRuntime.checkDelivery());
       useAppStore.getState().setIsThinking(false);
 
       if (voiceResult.success) {
         const voiceMsgId = addMessageToStore(
-          'model', combinedVoiceText, undefined, undefined, undefined, undefined,
+          'model', combinedVoiceText, undefined, undefined, turnRuntime.responseMessageId(0), undefined,
           quoteData, response.emotion, undefined,
           { isVoiceMessage: true, voiceFileId: voiceResult.voiceFileId, voiceDuration: voiceResult.voiceDuration, japaneseText: voiceResult.japaneseText },
         );
-        await commitAcceptedResponsePsyche(response, voiceMsgId);
+        await replyStep(commitAcceptedResponsePsyche(response, voiceMsgId, replyGuard));
+        voiceCommitted = true;
         showBackgroundNotification(combinedVoiceText, 'reply', voiceMsgId);
       } else {
         const textMsgId = addMessageToStore(
-          'model', combinedVoiceText, undefined, undefined, undefined, undefined,
+          'model', combinedVoiceText, undefined, undefined, turnRuntime.responseMessageId(0), undefined,
           quoteData, response.emotion, undefined,
         );
-        await commitAcceptedResponsePsyche(response, textMsgId);
+        await replyStep(commitAcceptedResponsePsyche(response, textMsgId, replyGuard));
         showBackgroundNotification(combinedVoiceText, 'reply', textMsgId);
+      }
+      } finally {
+        if (voiceResult.success && voiceResult.voiceFileId && voiceCommitted) {
+          await import('../../services/voiceWriteLedger').then(service => service.finishVoiceWrite(voiceResult.voiceFileId!)).catch(error => console.warn('[TTS] Voice cleanup registration remains pending:', error));
+        }
+        if (voiceResult.success && voiceResult.voiceFileId && !voiceCommitted) {
+          await import('../../services/orphanVoiceCleanup').then(service => service.discardUnreferencedVoice(voiceResult.voiceFileId)).catch(error => console.warn('[TTS] Uncommitted voice cleanup failed:', error));
+        }
+      }
       }
     } else {
       for (let i = 0; i < response.textParts.length; i++) {
         if (ctx.isCancelled()) break;
+        if (responseAlreadyVisible(i)) continue;
 
         const textContent = response.textParts[i];
         let delay = 0;
@@ -2535,18 +2674,19 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           const isDocumentHidden = typeof document !== 'undefined' ? (document.hidden || !document.hasFocus()) : false;
           if (isDocumentHidden && Math.random() < 0.4) {
             const asyncDelay = 15000 + Math.random() * 30000;
-            await new Promise(r => setTimeout(r, asyncDelay));
+            await replyStep(new Promise(r => setTimeout(r, asyncDelay)));
           }
 
           if (Math.random() < 0.05) {
             console.log('%c[BEHAVIOR] Hesitation Triggered (She is rewriting...)', 'color: pink; font-weight: bold;');
-            await new Promise(r => setTimeout(r, 1500 + Math.random() * 1000));
+            await replyStep(new Promise(r => setTimeout(r, 1500 + Math.random() * 1000)));
             useAppStore.getState().setIsThinking(false);
 
             const recallNotice = language === 'zh' ? '【黄前久美子撤回了一条消息】' : '[Kumiko recalled a message]';
+            await replyStep(turnRuntime.checkDelivery());
             addMessageToStore('model', recallNotice, undefined, undefined, 'recall-' + Date.now());
 
-            await new Promise(r => setTimeout(r, 3000 + Math.random() * 2000));
+            await replyStep(new Promise(r => setTimeout(r, 3000 + Math.random() * 2000)));
             if (ctx.isCancelled()) break;
             useAppStore.getState().setIsThinking(true);
           }
@@ -2558,9 +2698,10 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           delay = Math.min(8000, delay);
         }
 
-        await new Promise(r => setTimeout(r, delay));
+        await replyStep(new Promise(r => setTimeout(r, delay)));
 
         if (ctx.isCancelled()) break;
+        await replyStep(turnRuntime.checkDelivery());
 
         if (i === 0 && ['angry', 'confused', 'surprised', 'shy'].includes(response.emotion) && Math.random() < 0.25) {
           const originalText = textContent;
@@ -2572,17 +2713,18 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
             useAppStore.getState().setIsTalking(true);
             const typoId = addMessageToStore('model', typoText, undefined, undefined, 'typo-' + Date.now());
 
-            await new Promise(r => setTimeout(r, 600));
+            await replyStep(new Promise(r => setTimeout(r, 600)));
 
             useAppStore.getState().setMessages((prev: Message[]) => prev.filter(m => m.id !== typoId));
             useAppStore.getState().setIsTalking(false);
             useAppStore.getState().setIsThinking(true);
 
-            await new Promise(r => setTimeout(r, 400));
+            await replyStep(new Promise(r => setTimeout(r, 400)));
           }
         }
 
         if (ctx.isCancelled()) break;
+        await replyStep(turnRuntime.checkDelivery());
         if (i === 0) {
           useAppStore.getState().setIsThinking(false);
           useAppStore.getState().setIsTalking(true);
@@ -2599,23 +2741,25 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           response.textParts[i],
           undefined,
           undefined,
-          undefined,
+          turnRuntime.responseMessageId(i),
           undefined,
           quoteData,
           response.emotion,
         );
 
+        await replyStep(commitAcceptedResponsePsyche(response, modelMessageId, replyGuard));
         if (i === 0) {
-          await commitAcceptedResponsePsyche(response, modelMessageId);
           showBackgroundNotification(response.textParts[i], 'reply', modelMessageId);
         }
       }
     }
 
+    }
     if (!ctx.isCancelled()) {
-      setTimeout(() => useAppStore.getState().setIsTalking(false), 2000);
+      setTimeout(() => { if (isReplyActive()) useAppStore.getState().setIsTalking(false); }, 2000);
     }
 
+    await replyGuard.check();
     if (response.activateSleepMode) {
       console.log('[SLEEP MODE] Activating after topic-ending reply.');
       ctx.setHasGoneToSleep(true);
@@ -2657,10 +2801,10 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           canonicalKey: memoryDecision.canonicalKey,
           role: 'mixed',
         }).then(() => {
-          useAppStore.getState().setRagStatus('IDLE');
+          if (isReplyActive()) useAppStore.getState().setRagStatus('IDLE');
         }).catch(ragErr => {
           console.warn('[RAG] Local Save Error', ragErr);
-          useAppStore.getState().setRagStatus('ERROR');
+          if (isReplyActive()) useAppStore.getState().setRagStatus('ERROR');
         });
       }
     }
@@ -2707,7 +2851,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     };
 
     if (!boundaryDecision.shouldSummarize && boundaryDecision.turnsInSegment >= SUMMARY_SOFT_THRESHOLD) {
-      const semanticSignal = await calculateSummarySemanticSignalStandalone(messagesSnapshotRef, summaryEmbedCacheRef, workingSummaryState);
+      const semanticSignal = await replyStep(calculateSummarySemanticSignalStandalone(messagesSnapshotRef, summaryEmbedCacheRef, workingSummaryState, turnRuntime.taskContext));
       boundaryDecision = evaluateSummaryBoundary({
         currentTurnCount: newCount,
         archiveState: workingSummaryState,
@@ -2720,7 +2864,7 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
     }
 
     if (boundaryDecision.shouldSummarize && boundaryDecision.reason) {
-      const continuationSignal = await calculateSummaryContinuationSignalStandalone(messagesSnapshotRef, summaryEmbedCacheRef, workingSummaryState);
+      const continuationSignal = await replyStep(calculateSummaryContinuationSignalStandalone(messagesSnapshotRef, summaryEmbedCacheRef, workingSummaryState, turnRuntime.taskContext));
       const effectiveArchiveState = continuationSignal?.shouldContinue && workingSummaryState.carryoverStartMessageId
         ? {
             ...workingSummaryState,
@@ -2746,7 +2890,8 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       };
 
       setTimeout(() => {
-        void triggerAutoSummary(summaryRefs, summaryHelpers, {
+        if (!isReplyActive()) return;
+        void replyGuard!.check().then(() => { if (!isReplyActive()) return; return triggerAutoSummary(summaryRefs, summaryHelpers, {
           currentCount: newCount,
           currentMemory: coreMemory,
           archiveState: effectiveArchiveState,
@@ -2757,14 +2902,15 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
           endBeforeMessageId,
           nextSegmentStartTurn,
           nextSegmentStartMessageId,
-        });
+        }); }).catch(error => console.warn('[Summary] Stale reply job discarded:', error));
       }, 1000);
     }
 
   } catch (e: unknown) {
     const err = e instanceof Error ? e : new Error(String(e));
+    if (!isReplyActive()) return;
     console.error('ExecuteSend Error:', err);
-    if (err.message === 'RATE_LIMIT_EXCEEDED') {
+    if (err.message === 'RATE_LIMIT_EXCEEDED' && !turnRuntime) {
       const config = getCurrentAIConfig();
       if (config.activeKey === 'primary' && config.apiKey_backup) {
         console.warn('[KEY_SWITCH] Primary key rate limited. Switching to backup key.');
@@ -2798,7 +2944,8 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       const s4 = useAppStore.getState();
       s4.setIsThinking(false);
       s4.setIsTalking(false);
-      const failMsg = err.message || 'Unknown error';
+      const failMsg = await turnRuntime?.failureNotice() || err.message || 'Unknown error';
+      if (!isReplyActive()) return;
       ctx.markPendingFailed(failMsg);
       s4.setIsDisconnected(true);
     } else {
@@ -2809,12 +2956,16 @@ async function executeSendCore(ctx: ExecuteSendCoreContext): Promise<void> {
       useAppStore.getState().setIsThinking(false);
     }
   } finally {
+    await turnRuntime?.dispose().catch(error => console.warn('[Turn] Cleanup deferred:', error));
+    rootAbort.abort();
+    if (rootCancelPoll) clearInterval(rootCancelPoll);
+    if (rootActivityStarted) await endForegroundActivity(rootTaskContext).catch(error => console.warn('[Turn] Activity cleanup deferred:', error));
     // v2.14.26: belt-and-suspenders. Some throw paths (RATE_LIMIT
     // → ctx.onRetry) early-return without touching isThinking, and
     // a few await points between catch and finally can be raced by
     // a fresh user send. A single setIsThinking(false) here is
     // idempotent and guarantees the typing indicator never sticks.
-    try { useAppStore.getState().setIsThinking(false); } catch { /* ignore */ }
+    try { if (isReplyActive()) useAppStore.getState().setIsThinking(false); } catch { /* ignore */ }
   }
 }
 
@@ -2991,6 +3142,7 @@ function rememberRecentRagDedupeKeyRef(
 async function getCachedSummaryEmbeddingStandalone(
   cacheRef: React.MutableRefObject<Map<string, Float32Array>>,
   text: string,
+  taskContext?: TaskContext,
 ) {
   const normalized = text.trim();
   if (!normalized) return null;
@@ -2999,7 +3151,7 @@ async function getCachedSummaryEmbeddingStandalone(
   const cached = cache.get(normalized);
   if (cached) return cached;
 
-  const vector = await generateEmbedding(normalized, 0);
+  const vector = await generateEmbedding(normalized, 0, undefined, taskContext);
   cache.set(normalized, vector);
 
   if (cache.size > SUMMARY_SEMANTIC_CACHE_LIMIT) {
@@ -3014,13 +3166,14 @@ async function calculateSummarySemanticSignalStandalone(
   messagesRef: React.MutableRefObject<Message[]>,
   cacheRef: React.MutableRefObject<Map<string, Float32Array>>,
   archiveState: SummaryArchiveState,
+  taskContext?: TaskContext,
 ): Promise<SummarySemanticSignal | null> {
   const semanticWindows = getSummarySemanticWindowPayload(messagesRef.current, archiveState);
   if (!semanticWindows) return null;
 
   try {
-    const previousVector = await getCachedSummaryEmbeddingStandalone(cacheRef, semanticWindows.previousWindowText);
-    const recentVector = await getCachedSummaryEmbeddingStandalone(cacheRef, semanticWindows.recentWindowText);
+    const previousVector = await getCachedSummaryEmbeddingStandalone(cacheRef, semanticWindows.previousWindowText, taskContext);
+    const recentVector = await getCachedSummaryEmbeddingStandalone(cacheRef, semanticWindows.recentWindowText, taskContext);
 
     if (!previousVector || !recentVector) return null;
 
@@ -3028,7 +3181,7 @@ async function calculateSummarySemanticSignalStandalone(
     let currentSimilarity: number | null = null;
 
     if (hasRichSemanticText(semanticWindows.currentUserText)) {
-      const currentVector = await getCachedSummaryEmbeddingStandalone(cacheRef, semanticWindows.currentUserText);
+      const currentVector = await getCachedSummaryEmbeddingStandalone(cacheRef, semanticWindows.currentUserText, taskContext);
       if (currentVector) {
         currentSimilarity = dotSimilarity(previousVector, currentVector);
       }
@@ -3055,6 +3208,7 @@ async function calculateSummarySemanticSignalStandalone(
       driftScore,
     };
   } catch (error) {
+    if (error instanceof TaskCapacityError || (error instanceof Error && error.name === 'AbortError')) throw error;
     console.warn('[AUTO-SUMMARY] Semantic drift check unavailable, falling back to rule-only boundary detection.', error);
     return null;
   }
@@ -3064,6 +3218,7 @@ async function calculateSummaryContinuationSignalStandalone(
   messagesRef: React.MutableRefObject<Message[]>,
   cacheRef: React.MutableRefObject<Map<string, Float32Array>>,
   archiveState: SummaryArchiveState,
+  taskContext?: TaskContext,
 ) {
   const continuationPayload = getSummaryContinuationPayload(messagesRef.current, archiveState);
   if (!continuationPayload || !hasRichSemanticText(continuationPayload.currentText)) {
@@ -3071,8 +3226,8 @@ async function calculateSummaryContinuationSignalStandalone(
   }
 
   try {
-    const carryoverVector = await getCachedSummaryEmbeddingStandalone(cacheRef, continuationPayload.carryoverText);
-    const currentVector = await getCachedSummaryEmbeddingStandalone(cacheRef, continuationPayload.currentText);
+    const carryoverVector = await getCachedSummaryEmbeddingStandalone(cacheRef, continuationPayload.carryoverText, taskContext);
+    const currentVector = await getCachedSummaryEmbeddingStandalone(cacheRef, continuationPayload.currentText, taskContext);
     if (!carryoverVector || !currentVector) return null;
 
     const similarity = dotSimilarity(carryoverVector, currentVector);
@@ -3086,6 +3241,7 @@ async function calculateSummaryContinuationSignalStandalone(
 
     return { shouldContinue, similarity };
   } catch (error) {
+    if (error instanceof TaskCapacityError || (error instanceof Error && error.name === 'AbortError')) throw error;
     console.warn('[AUTO-SUMMARY] Continuation check unavailable, skipping carryover stitching.', error);
     return null;
   }

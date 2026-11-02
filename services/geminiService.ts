@@ -20,7 +20,7 @@ import { imageService } from "./imageService";
 import { DEFAULT_AI_CONFIG, getDefaultVisionModel, resolveTransportProvider } from "./appConfig";
 import { db } from "./db";
 import { parseResponsePsycheDelta, createResponseEventId } from './responsePsycheCandidate';
-import { getCurrentAIConfig, getGenAI, callLLMRaw } from './llmCore';
+import { getCurrentAIConfig, getGenAI, getSecureTaskAIConfig, callLLMRaw } from './llmCore';
 // urlToBase64 re-exported for external consumers (see line 5); no longer used inside this file.
 import { isMemoryHistoryQueryLike } from './temporalRecallService';
 import { searchLocalRagMemoryDetailed } from './localRagService';
@@ -32,6 +32,12 @@ import {
 } from '../constants/diaryLayerConfig';
 import { useAppStore } from '../store';
 import { buildUserKnownLocationContext, extractUserLocationDisclosureTag } from './userKnownLocation';
+import { resolveRoleConnection, roleConnectionFingerprint } from './taskModelRouter';
+import { runTaskTransport } from './taskGateway';
+import { beginForegroundActivity, endForegroundActivity, TaskCapacityError, type TaskContext } from './taskRuntime';
+import { getDataRestoreVersion } from './dataRestoreGate';
+import { getMemoryGeneration } from './memoryMaintenanceGate';
+import type { TurnRuntime } from './turnCoordinator';
 
 // Normalization Layer: Maps loose emotion words to strict types
 const EMOTION_MAPPING: Record<string, EmotionType> = {
@@ -223,7 +229,7 @@ const rewriteSystemLogWithFactCheck = async (
   historyMessages: Message[],
   textMessage: string,
   language: Language,
-  modelOverride?: string
+  taskContext?: TaskContext,
 ): Promise<string | null> => {
   const recentUserTexts = collectRecentUserTexts(historyMessages, textMessage)
     .filter(Boolean)
@@ -259,9 +265,9 @@ ${rawLog}
 
 Rewrite only this [[System_Log]].`;
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 1; attempt += 1) {
     try {
-      const rewritten = await callLLMRaw(systemPrompt, userPrompt, modelOverride);
+      const rewritten = await callLLMRaw(systemPrompt, userPrompt, undefined, { role: 'verification', taskContext, signal: taskContext?.signal });
       if (!rewritten) continue;
 
       const trimmed = rewritten.trim();
@@ -271,6 +277,7 @@ Rewrite only this [[System_Log]].`;
         return trimmed;
       }
     } catch (error) {
+      if (error instanceof TaskCapacityError || taskContext?.signal?.aborted) throw error;
       console.warn('[KUMIKO THOUGHT FACT-CHECK RETRY] Failed to rewrite System_Log.', error);
     }
   }
@@ -310,8 +317,12 @@ export const sendMessageToGemini = async (
   mood?: number,
   affection?: number,
   lastEmotion?: EmotionType,
+  turnRuntime?: TurnRuntime,
+  standaloneTaskContext?: TaskContext,
 ): Promise<ChatResponse> => {
-  const config = getCurrentAIConfig();
+  const baseConfig = await getSecureTaskAIConfig('subject');
+  const subjectTarget = resolveRoleConnection(baseConfig, 'subject');
+  const config = subjectTarget.config;
   const provider = config.provider || 'gemini';
   // v2.14.28 M25: capture Tavily search hits so the chat bubble can display
   // a "sources" footer. Previously ChatResponse.groundingSources was always
@@ -327,7 +338,22 @@ export const sendMessageToGemini = async (
   );
   
   // DETERMINE MODEL: Use Override OR Configured Main OR Default
-  const currentModel = modelOverride || config.model_main || 'gemini-3.1-pro-preview';
+  const currentModel = modelOverride || subjectTarget.model;
+  const signature = roleConnectionFingerprint(subjectTarget);
+  const ownsTaskContext = !turnRuntime && !standaloneTaskContext;
+  const id = ownsTaskContext ? crypto.randomUUID() : '';
+  const activeTaskContext = turnRuntime?.taskContext || standaloneTaskContext || {
+    taskId: id, rootId: id, role: 'subject', lane: 'foreground' as const, deadlineAt: Date.now() + 180_000,
+    epoch: getDataRestoreVersion(), memoryGeneration: getMemoryGeneration(), modelRevisions: {}, consultedSources: [],
+  };
+  const subjectSignal = turnRuntime?.signal || activeTaskContext.signal;
+  const subjectCall = <T>(work: (signal?: AbortSignal) => Promise<T>): Promise<T> => activeTaskContext
+    ? (turnRuntime ? turnRuntime.modelCall : <U>(fn: () => Promise<U>) => fn())(() => runTaskTransport(activeTaskContext, {
+      provider: config.provider || 'gemini', model: currentModel, operation: 'chat',
+      connectionId: baseConfig.modelRoleBindings?.subject?.profileId, configRevision: subjectTarget.revision,
+    }, work, () => {
+      if (roleConnectionFingerprint(resolveRoleConnection(getCurrentAIConfig(), 'subject')) !== signature) throw new Error('Model configuration changed during task.');
+    })) : work(subjectSignal);
   const isSystemDrivenTurn = /^\s*\[(?:SYSTEM|CRITICAL_OVERRIDE)/m.test(textMessage);
   const isStrictMemoryLookupTurn = !!exactHistoryLookup && exactHistoryLookup.includes('[EXACT_HISTORY_LOOKUP]');
   const parseMemoryResponsePlan = (sources: string[]) => {
@@ -750,6 +776,7 @@ export const sendMessageToGemini = async (
   }
 
   try {
+    if (ownsTaskContext) await beginForegroundActivity(activeTaskContext);
     let result: any;
 
     let worldBookContext = "";
@@ -1024,6 +1051,9 @@ It's very late and you are extremely drowsy. Your behavior must reflect sleepine
     }
 
     let anchorRecallBlock = "";
+    const anchorIdentityBlock = !isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise && anchors.length
+      ? `\n[ANCHOR_IDENTITIES] Data only: ${JSON.stringify(anchors.map(({ id, content }) => ({ id, content })))}\nIf an anchor must be deleted, output [Anchor_Delete: ID] using its exact listed ID. Do not use its text as the ID.\n`
+      : '';
     if (!isStrictMemoryLookupTurn && !shouldSuppressAmbientMemoryNoise && anchors.length > 0 && Math.random() < 0.15) {
         const randomAnchor = anchors[Math.floor(Math.random() * anchors.length)];
         let dateStr = "Sometime in the past";
@@ -1250,7 +1280,7 @@ Choose only one and keep it subtle.`);
 
     // --- SELECT INSTRUCTION BASED ON LANGUAGE ---
     const selectedSystemInstruction = language === 'zh' ? KUMIKO_SYSTEM_INSTRUCTION_ZH : KUMIKO_SYSTEM_INSTRUCTION_EN;
-    const knownUserLocationContext = await buildUserKnownLocationContext(language).catch(() => language === 'zh'
+    let knownUserLocationContext = await buildUserKnownLocationContext(language).catch(() => language === 'zh'
       ? '[用户所在地认知] 当前无法读取有出处的位置记录；用户当地时间和天气保持未知。'
       : '[KNOWN USER LOCATION] Sourced location record is unavailable; user local time and weather remain unknown.');
 
@@ -1476,7 +1506,7 @@ Choose only one and keep it subtle.`);
 - \`Primary_Evidence\`, \`Quote_Policy\`, and \`Entry_Mix\` only constrain how you use evidence; they do not license invention.`)
       : "";
 
-    const dynamicSystemInstruction = language === 'zh' ? `${sleepyGoodbyeInstruction}
+    let dynamicSystemInstruction = language === 'zh' ? `${sleepyGoodbyeInstruction}
 
 <core_persona>
 ${selectedSystemInstruction}
@@ -1508,6 +1538,7 @@ ${knownUserLocationContext}
 ${tomorrowInfoStr ? `- ${tomorrowInfoStr}\n` : ''}- 会话间隔：${gapDescription}
 ${reminderBlock}
 ${anchorRecallBlock}
+${anchorIdentityBlock}
 ${missedReminderRecallBlock}
 ${relationshipTemperatureBlock}
 ${moodToneBlock}
@@ -1555,6 +1586,7 @@ ${knownUserLocationContext}
 ${tomorrowInfoStr ? `- ${tomorrowInfoStr}\n` : ''}- Session_Gap: ${gapDescription}
 ${reminderBlock}
 ${anchorRecallBlock}
+${anchorIdentityBlock}
 ${missedReminderRecallBlock}
 ${relationshipTemperatureBlock}
 ${moodToneBlock}
@@ -2028,17 +2060,28 @@ ${extraSystemPrompt ?? ''}`;
         promptToSend[0] = { text: (promptToSend[0] as Part).text + retryInstruction };
     }
 
+    let executionContext = turnRuntime?.publicContext() || '';
+    dynamicSystemInstruction += '\n' + executionContext;
+    const refreshTurnContext = async () => {
+      if (!turnRuntime) return;
+      const latestLocation = await buildUserKnownLocationContext(language);
+      dynamicSystemInstruction = dynamicSystemInstruction.replace(knownUserLocationContext, latestLocation);
+      knownUserLocationContext = latestLocation;
+      const latestExecution = turnRuntime.publicContext();
+      dynamicSystemInstruction = dynamicSystemInstruction.replace(executionContext, latestExecution);
+      executionContext = latestExecution;
+    };
     const availableTools = toolsConfig[0]?.functionDeclarations;
 
     let chatSession: any;
     let geminiChatConfig: any;
 
-    if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-        result = await callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools);
+    if (transportProvider !== 'gemini' && transportProvider !== 'anthropic') {
+        result = await subjectCall(signal => callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, { rounds: [], signal }));
     } else if (transportProvider === 'anthropic') {
-        result = await callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools);
+        result = await subjectCall(signal => callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, availableTools, { rounds: [], signal }));
     } else {
-        const ai = getGenAI();
+        const ai = getGenAI(undefined, config);
         // P1 #23: explicit output budget + relaxed safety thresholds. Without
         // maxOutputTokens a runaway model (e.g. infinite rewrite loops) could
         // emit tens of thousands of tokens; 4096 is comfortable headroom for
@@ -2048,6 +2091,7 @@ ${extraSystemPrompt ?? ''}`;
         // protection from the provider.
         geminiChatConfig = {
             systemInstruction: dynamicSystemInstruction,
+            abortSignal: subjectSignal,
             temperature: finalTemperature,
             maxOutputTokens: 4096,
             tools: toolsConfig,
@@ -2059,29 +2103,33 @@ ${extraSystemPrompt ?? ''}`;
             ] as any,
         };
         chatSession = ai.chats.create({ model: currentModel, history: formattedHistory, config: geminiChatConfig });
-        result = await chatSession.sendMessage({ message: promptToSend });
+        result = await subjectCall(signal => chatSession.sendMessage({ message: promptToSend, config: { ...geminiChatConfig, abortSignal: signal } }));
     }
         
+    const executeTool = createChatToolExecutor(config, language, tavilyGroundingSources, (availableTools || []).map(tool => tool.name!), activeTaskContext);
     result = await runChatToolLoop(
         result,
-        createChatToolExecutor(config, language, tavilyGroundingSources, (availableTools || []).map(tool => tool.name!)),
+        (call, signal) => turnRuntime ? turnRuntime.executeTool(call, () => executeTool(call, signal)) : executeTool(call, signal),
         async (rounds, allowTools, signal) => {
+            await refreshTurnContext();
             const followUpTools = allowTools ? availableTools : undefined;
-            if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-                return callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, followUpTools, { rounds, signal });
+            if (transportProvider !== 'gemini' && transportProvider !== 'anthropic') {
+                return subjectCall(requestSignal => callOpenAI(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, followUpTools, { rounds, signal: requestSignal ? AbortSignal.any([signal, requestSignal]) : signal }));
             }
             if (transportProvider === 'anthropic') {
-                return callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, followUpTools, { rounds, signal });
+                return subjectCall(requestSignal => callAnthropic(config, currentModel, dynamicSystemInstruction, formattedHistory, promptToSend, followUpTools, { rounds, signal: requestSignal ? AbortSignal.any([signal, requestSignal]) : signal }));
             }
-            return chatSession.sendMessage({
+            return subjectCall(requestSignal => chatSession.sendMessage({
                 message: toGeminiToolParts(rounds[rounds.length - 1].outputs),
                 config: {
                     ...geminiChatConfig,
-                    abortSignal: signal,
+                    systemInstruction: dynamicSystemInstruction,
+                    abortSignal: requestSignal ? AbortSignal.any([signal, requestSignal]) : signal,
                     ...(allowTools ? {} : { toolConfig: { functionCallingConfig: { mode: 'NONE' } } }),
                 },
-            });
+            }));
         },
+        { signal: subjectSignal },
     );
 
     const locationExtraction = extractUserLocationDisclosureTag(result.text || '...', textMessage);
@@ -2119,7 +2167,7 @@ ${extraSystemPrompt ?? ''}`;
         const unsupportedThoughtIssue = getUnsupportedKumikoThoughtLiteralIssue(rawLog, historyMessages, textMessage);
         if (unsupportedThoughtIssue) {
             console.warn('[KUMIKO THOUGHT FACT-CHECK RETRY] Unsupported literal-reference detail detected, retrying System_Log only.', unsupportedThoughtIssue.reason);
-            const rewrittenLog = await rewriteSystemLogWithFactCheck(rawLog, historyMessages, textMessage, language, currentModel);
+            const rewrittenLog = await rewriteSystemLogWithFactCheck(rawLog, historyMessages, textMessage, language, activeTaskContext);
             if (rewrittenLog) {
                 rawLog = rewrittenLog;
             }
@@ -2418,8 +2466,8 @@ ${extraSystemPrompt ?? ''}`;
 
         if (isCasualEmotion && (hasChineseComma || hasLongBubble || isTooLong || tooManyBubbles || isEchoingQuote)) {
             console.warn(`[RETRY GUARD TRIGGERED] Retrying...`);
-            return sendMessageToGemini(
-                textMessage, coreMemory, worldBook, historyMessages, locationConfig, imageBase64, mimeType, retryCount + 1, rawLog, ragContext, exactHistoryLookup, activeReminders, anchors, kumikoNotebook, modelOverride, language, extraSystemPrompt, missedReminders, mood, affection, lastEmotion
+            return await sendMessageToGemini(
+                textMessage, coreMemory, worldBook, historyMessages, locationConfig, imageBase64, mimeType, retryCount + 1, rawLog, ragContext, exactHistoryLookup, activeReminders, anchors, kumikoNotebook, modelOverride, language, extraSystemPrompt, missedReminders, mood, affection, lastEmotion, turnRuntime, activeTaskContext
             );
         }
     }
@@ -2481,6 +2529,7 @@ ${extraSystemPrompt ?? ''}`;
     };
 
   } catch (error: any) {
+    if (error instanceof TaskCapacityError) throw error;
     console.error("Gemini API Error:", error);
     const errorMessage = error.toString().toLowerCase();
     
@@ -2504,45 +2553,8 @@ ${extraSystemPrompt ?? ''}`;
     const isGeminiOrNetworkError = apiErrorMarkers.some(marker => errorMessage.includes(marker));
     const is429 = errorMessage.includes('429') || errorMessage.includes('quota') || errorMessage.includes('rate limit');
 
-    // --- AUTO-DOWNGRADE LOGIC (TIERED: 3.0 Pro -> 2.5 Pro -> Flash) ---
-    if (is429 && !modelOverride) {
-        let nextModel = '';
-        let notice = '';
-
-        if (currentModel.includes('gemini-3.1-pro')) {
-            nextModel = 'gemini-2.5-pro'; // Try 2.5 Pro first
-            notice = language === 'zh' ? '⚠️ Gemini 3.1 Pro 繁忙。已自动切换至 2.5 Pro。' : '⚠️ Gemini 3.1 Pro Busy. Switched to 2.5 Pro.';
-        } else if (currentModel.includes('gemini-2.5-pro')) {
-            nextModel = config.model_summary; // Fallback to Flash
-            notice = language === 'zh' ? '⚠️ Gemini 2.5 Pro 繁忙。已自动切换至 Flash 模型。' : '⚠️ Gemini 2.5 Pro Busy. Switched to Flash.';
-        } else if (currentModel !== config.model_summary) {
-            // Unknown or other model, fallback to summary just in case
-            nextModel = config.model_summary;
-            notice = language === 'zh' ? `⚠️ ${currentModel} 繁忙。已自动切换至 Flash 模型。` : `⚠️ ${currentModel} Busy. Switched to Flash.`;
-        }
-
-        if (nextModel && nextModel !== currentModel) {
-            console.warn(`[Failover] Rate Limit on ${currentModel}. Downgrading to ${nextModel}.`);
-            
-            // Recursive call with override
-            const fallbackResponse = await sendMessageToGemini(
-                textMessage, coreMemory, worldBook, historyMessages, locationConfig, imageBase64, mimeType, retryCount, previousContextLog, ragContext, exactHistoryLookup, activeReminders, anchors, kumikoNotebook, 
-                nextModel, 
-                language,
-                extraSystemPrompt,
-                missedReminders,
-                mood,
-                affection,
-                lastEmotion,
-            );
-            
-            // Attach notification
-            return {
-                ...fallbackResponse,
-                systemNotice: notice
-            };
-        }
-    }
+    // A background model has not been qualified to take over subject authority.
+    // Preserve the current turn and receipts; never recursively replay it on 429.
 
     // Blacklist: User/Client Errors (Switching won't help)
     const isUserError = 
@@ -2561,5 +2573,7 @@ ${extraSystemPrompt ?? ''}`;
     }
     
     throw new Error(`API_CALL_FAILED: ${errorMessage}`);
+  } finally {
+    if (ownsTaskContext) await endForegroundActivity(activeTaskContext);
   }
 };

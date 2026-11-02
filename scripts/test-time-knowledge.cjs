@@ -26,10 +26,11 @@ function load(file, dependencies) {
   }).outputText;
   vm.runInNewContext(code, {
     module, exports: module.exports, console: silent, Date: Clock, Intl, Math: stableMath,
-    setTimeout, clearTimeout, AbortController,
+    setTimeout, clearTimeout, AbortController, crypto: require('node:crypto').webcrypto,
     localStorage: { getItem() { return null; } },
     fetch() { throw new Error('Network is forbidden in time-knowledge regression'); },
     require(id) {
+      if (id === './taskModelRouter') return taskModelRouter;
       assert.ok(Object.hasOwn(dependencies, id), `Unexpected dependency ${id} in ${file}`);
       return dependencies[id];
     },
@@ -37,9 +38,15 @@ function load(file, dependencies) {
   return module.exports;
 }
 
+const taskModelRouter = load('services/taskModelRouter.ts', {
+  './appConfig': load('services/appConfig.ts', {}),
+  './roleProfiles': { resolveModelSessionCredential: x => x },
+});
+
 const config = { provider: 'openai', model_main: 'fixture', model_summary: 'fixture' };
 const llmCore = {
   getCurrentAIConfig: () => config,
+  getSecureTaskAIConfig: async () => config,
   getGenAI() { throw new Error('No Gemini transport expected'); },
   callLLMRaw() { throw new Error('No extra model call expected'); },
 };
@@ -63,6 +70,9 @@ async function main() {
   const knownLocation = load('services/userKnownLocation.ts', { './db': { db: { getVal: async () => null } } });
   const chat = load('services/geminiService.ts', {
     './userKnownLocation': knownLocation,
+    './taskGateway': { runTaskTransport: async (_context, _target, work) => work(undefined) },
+    './taskRuntime': { TaskCapacityError: class TaskCapacityError extends Error {}, async beginForegroundActivity() {}, async endForegroundActivity() {} },
+    './dataRestoreGate': { getDataRestoreVersion: () => 'initial' }, './memoryMaintenanceGate': { getMemoryGeneration: () => 'initial' },
     './llmCore': llmCore, './aiValidation': {}, './ragApiService': {},
     './conversationSummarizer': {}, './temporalRecallService': { isMemoryHistoryQueryLike: () => false },
     '@google/genai': { Type: { OBJECT: 'OBJECT', STRING: 'STRING' } },
@@ -119,7 +129,10 @@ async function main() {
 
   const summaryPrompts = [];
   const summarizer = load('services/conversationSummarizer.ts', {
-    './llmCore': llmCore, './appConfig': appConfig,
+    './llmCore': { ...llmCore, callLLMRaw: async (_system, prompt) => {
+      summaryPrompts.push(prompt);
+      return '[DIARY_ENTRY]fixture[/DIARY_ENTRY][NOTEBOOK_UPDATE]{}[/NOTEBOOK_UPDATE][MEMORY_CHUNKS]["fixture"][/MEMORY_CHUNKS]';
+    } }, './appConfig': appConfig,
     './llmProviderService': { callOpenAI: async (...args) => {
       summaryPrompts.push(args[4]);
       return { text: '[DIARY_ENTRY]fixture[/DIARY_ENTRY][NOTEBOOK_UPDATE]{}[/NOTEBOOK_UPDATE][MEMORY_CHUNKS]["fixture"][/MEMORY_CHUNKS]' };
@@ -141,7 +154,8 @@ async function main() {
   let response = '';
   const retrievalPrompts = [];
   const retrieval = load('services/temporalRecallService.ts', {
-    './llmCore': llmCore, './appConfig': appConfig,
+    './llmCore': { ...llmCore, callLLMRaw: async (_system, prompt) => { retrievalPrompts.push(prompt); return response; } }, './appConfig': appConfig,
+    './taskRuntime': { TaskCapacityError: class TaskCapacityError extends Error {} },
     './llmProviderService': { callOpenAI: async (...args) => { retrievalPrompts.push(args[4]); return { text: response }; } },
   });
   response = JSON.stringify({ isTemporalQuery: true, normalizedQuery: '昨天当地时间晚上8点 我说了什么',

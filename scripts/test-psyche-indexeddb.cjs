@@ -54,7 +54,7 @@ if (!process.versions.electron) {
   const page = path.join(profile, 'test.html');
   fs.writeFileSync(page, '<!doctype html><meta charset="utf-8"><title>Isolated database test</title>');
   const modules = {};
-  for (const name of ['db', 'kumikoStateMachine', 'psycheStateService', 'responsePsycheCommit']) {
+  for (const name of ['dataRestoreGate', 'memoryMaintenanceGate', 'taskRuntime', 'stateProvenance', 'db', 'kumikoStateMachine', 'psycheStateService', 'responseEffectCommit', 'responsePsycheCommit']) {
     modules[name] = ts.transpileModule(fs.readFileSync(path.join(root, 'services', `${name}.ts`), 'utf8'), {
       compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
     }).outputText;
@@ -69,6 +69,7 @@ if (!process.versions.electron) {
     function load(id) {
       if (id === 'dexie') return require(${JSON.stringify(require.resolve('dexie'))});
       const name = id.startsWith('./') ? id.slice(2) : id;
+      if (name === 'artifactIndexService') return { assertSourceRefsCurrent: async () => {} };
       if (cache[name]) return cache[name].exports;
       if (!source[name]) throw new Error('Unexpected test dependency ' + id);
       const module = { exports: {} }; cache[name] = module;

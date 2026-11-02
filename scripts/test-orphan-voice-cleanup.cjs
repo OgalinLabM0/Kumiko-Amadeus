@@ -1,0 +1,9 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
+let rows=[],deleted=[],fences=0; const records=new Map();
+const keyval={get:async key=>records.has(key)?{key,value:records.get(key)}:undefined,put:async row=>records.set(row.key,row.value),delete:async key=>records.delete(key),toCollection:()=>({each:async fn=>{for(const [key,value] of records)fn({key,value})}})};
+const db={keyval,messages:{toArray:async()=>rows},runtimeJobs:{toArray:async()=>[]},transaction:async(...args)=>args.at(-1)()};
+const locks={request:async(_name,options,fn)=>{if(typeof options==='function')fn=options;return fn({})}};
+const deps={'./db':{db},'./mediaWriteFence':{withMediaResetFence:async fn=>{fences++;return fn()}},'./voiceFileService':{deleteVoiceFile:async id=>{deleted.push(id);return true}},'./dataRestoreGate':{assertDataWritesAllowed(){},isDataRestoreBlocked:()=>false,getDataRestoreVersion:()=> 'test'},'./memoryMaintenanceGate':{assertMemoryAvailable(){},assertMemoryGenerationCurrent:async()=>{},isMemoryMaintenanceBlocked:()=>false}};
+function load(file){const m={exports:{}};vm.runInNewContext(ts.transpileModule(fs.readFileSync('services/'+file+'.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module:m,exports:m.exports,require:id=>{assert.ok(deps[id],id);return deps[id]},navigator:{locks},console});return m.exports;}
+deps['./voiceWriteRecord']=load('voiceWriteRecord');deps['./voiceWriteLedger']=load('voiceWriteLedger');const api=load('orphanVoiceCleanup');
+(async()=>{rows=[{voiceFileId:'shared'}];await api.discardUnreferencedVoice('shared');assert.deepEqual(deleted,[]);await api.discardUnreferencedVoice('orphan');assert.deepEqual(deleted,['orphan']);assert.equal(fences,2);console.log('unreferenced voice cleanup preserves committed shared files');})().catch(e=>{console.error(e);process.exitCode=1});

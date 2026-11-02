@@ -159,17 +159,24 @@ async function assembleZipBuffer({ dataJsonString, mode, userDataDir }) {
     dataJsonPayload = stampAutoZipMeta(dataJsonString, autoZipMeta);
   }
 
-  zip.file('data.json', dataJsonPayload);
+  // Encode before JSZip chunks strings: its chunk boundary can split an emoji
+  // surrogate pair and silently replace the two halves during UTF-8 encoding.
+  zip.file('data.json', Buffer.from(dataJsonPayload, 'utf8'));
 
   const buffer = await zip.generateAsync({
     type: 'nodebuffer',
     compression: 'DEFLATE',
   });
 
+  // Apply the import contract before replacing any existing backup. A highly
+  // compressible oversized entry must not create a file we cannot restore.
+  const { validateBackupArchive } = await import('../services/backupArchiveValidation.mjs');
+  validateBackupArchive(await JSZip.loadAsync(buffer));
+
   return { buffer, imagesResult, autoZipMeta };
 }
 
-async function buildBackupZip({ dataJsonString, mode, outputPath, userDataDir }) {
+async function buildBackupZip({ dataJsonString, mode, outputPath, userDataDir, password, canCommit }) {
   if (typeof dataJsonString !== 'string' || dataJsonString.length === 0) {
     return { success: false, error: 'dataJsonString is required and must be a non-empty string' };
   }
@@ -184,10 +191,26 @@ async function buildBackupZip({ dataJsonString, mode, outputPath, userDataDir })
     const { buffer, imagesResult, autoZipMeta } = await assembleZipBuffer({
       dataJsonString, mode, userDataDir,
     });
-    fs.writeFileSync(outputPath, buffer);
+    let output = buffer;
+    const crypto = await import('../services/portableBackupCrypto.mjs');
+    if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 720 * 1024 * 1024) throw new Error('Existing backup is too large.');
+    const existingEncrypted = fs.existsSync(outputPath) && crypto.isEncryptedBackup(fs.readFileSync(outputPath, 'utf8'));
+    if (!password && existingEncrypted) throw new Error('Protected backup cannot be replaced with plaintext.');
+    if (password) {
+      if (fs.existsSync(outputPath) && !existingEncrypted) throw new Error('Choose a new protected backup file; the existing plaintext backup is preserved.');
+      if (existingEncrypted) await crypto.decryptPortableBackup(fs.readFileSync(outputPath, 'utf8'), password);
+      output = Buffer.from(await crypto.encryptPortableBackup(new Uint8Array(buffer), password, 'zip'), 'utf8');
+    }
+    const tmp = `${outputPath}.${process.pid}.${require('node:crypto').randomBytes(8).toString('hex')}.tmp`;
+    try {
+      fs.writeFileSync(tmp, output, { flag: 'wx' });
+      if (canCommit && !canCommit()) throw new Error('Backup belongs to an earlier dataset.');
+      fs.renameSync(tmp, outputPath);
+    }
+    catch (error) { try { fs.rmSync(tmp, { force: true }); } catch {} throw error; }
     return {
       success: true,
-      bytesWritten: buffer.length,
+      bytesWritten: output.length,
       imagesIncluded: imagesResult.imagesIncluded,
       imagesTotal: imagesResult.imagesTotal,
       autoZipMeta,

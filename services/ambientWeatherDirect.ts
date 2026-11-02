@@ -26,6 +26,8 @@
 // + lifeStreamService.ts for the dispatch.
 
 import { db } from './db';
+import { TaskCapacityError, type TaskContext } from './taskRuntime';
+import { runStandaloneTransport, runTaskTransport } from './taskGateway';
 
 const UJI_LATLON = { lat: 34.8906, lon: 135.8016 };
 const HOLIDAY_CACHE_KEY = 'kumiko_japan_holidays_cache';
@@ -78,11 +80,13 @@ function mapWeatherCodeToChinese(code: number): string {
   return '';
 }
 
-async function fetchJsonWithTimeout<T = unknown>(url: string, timeoutMs = 8000): Promise<T> {
+async function fetchJsonWithTimeout<T = unknown>(url: string, timeoutMs = 8000, signal?: AbortSignal, alreadyReserved = false): Promise<T> {
+  if (!alreadyReserved) return runStandaloneTransport({ provider: new URL(url).hostname, operation: 'weather-calendar', configRevision: 'fixed' },
+    requestSignal => fetchJsonWithTimeout<T>(url, timeoutMs, requestSignal, true), () => {}, signal);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(url, { signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal });
     if (!res.ok) {
       throw new Error(`HTTP ${res.status} ${res.statusText}`);
     }
@@ -92,53 +96,35 @@ async function fetchJsonWithTimeout<T = unknown>(url: string, timeoutMs = 8000):
   }
 }
 
-export async function fetchAmbientWeatherDirect(): Promise<WeatherDirectResult> {
+export async function fetchAmbientWeatherDirect(taskContext?: TaskContext): Promise<WeatherDirectResult> {
   try {
-    const ujiData = await fetchJsonWithTimeout<{ current_weather?: OpenMeteoCurrentWeather }>(
-      `https://api.open-meteo.com/v1/forecast?latitude=${UJI_LATLON.lat}&longitude=${UJI_LATLON.lon}&current_weather=true&timezone=Asia%2FTokyo`,
-    );
-
-    // User location via ipapi.co. Best-effort — failure here just drops
-    // the "user weather" block (PC behaviour, see weather-calendar.cjs).
-    let userWeather: OpenMeteoCurrentWeather | null = null;
-    try {
-      const ipData = await fetchJsonWithTimeout<{ latitude?: number; longitude?: number; lat?: number; lon?: number }>(
-        'https://ipapi.co/json/',
-        5000,
-      );
-      const lat = ipData.latitude ?? ipData.lat;
-      const lon = ipData.longitude ?? ipData.lon;
-      if (typeof lat === 'number' && typeof lon === 'number') {
-        const userWeatherResp = await fetchJsonWithTimeout<{ current_weather?: OpenMeteoCurrentWeather }>(
-          `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true`,
-        );
-        userWeather = userWeatherResp.current_weather || null;
-      }
-    } catch (e) {
-      console.warn('[Weather/direct] user-location weather skipped:', e);
-    }
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${UJI_LATLON.lat}&longitude=${UJI_LATLON.lon}&current_weather=true&timezone=Asia%2FTokyo`;
+    const request = (signal?: AbortSignal) => fetchJsonWithTimeout<{ current_weather?: OpenMeteoCurrentWeather }>(url, 8000, signal, !!taskContext);
+    const ujiData = taskContext ? await runTaskTransport(taskContext, { provider: 'open-meteo', operation: 'ambient-weather', configRevision: 'fixed' }, request, () => {}) : await request();
 
     return {
       success: true,
       uji: ujiData.current_weather || null,
-      user: userWeather,
+      user: null,
     };
   } catch (e) {
+    if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
     const msg = e instanceof Error ? e.message : 'Unknown error';
     console.error('[Weather/direct] fetch failed:', e);
     return { success: false, error: msg };
   }
 }
 
-export async function fetchHistoricalWeatherDirect(dateStr: string): Promise<HistoricalWeatherDirectResult> {
+export async function fetchHistoricalWeatherDirect(dateStr: string, taskContext?: TaskContext): Promise<HistoricalWeatherDirectResult> {
   try {
     if (!dateStr || !/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
       return { success: false, error: 'Invalid date format' };
     }
     const url = `https://archive-api.open-meteo.com/v1/archive?latitude=${UJI_LATLON.lat}&longitude=${UJI_LATLON.lon}&start_date=${dateStr}&end_date=${dateStr}&daily=weathercode,temperature_2m_max,temperature_2m_min&timezone=Asia%2FTokyo`;
-    const data = await fetchJsonWithTimeout<{
+    const request = (signal?: AbortSignal) => fetchJsonWithTimeout<{
       daily?: { weathercode?: number[]; temperature_2m_max?: number[]; temperature_2m_min?: number[] };
-    }>(url);
+    }>(url, 8000, signal, !!taskContext);
+    const data = taskContext ? await runTaskTransport(taskContext, { provider: 'open-meteo', operation: 'historical-weather', configRevision: 'fixed' }, request, () => {}) : await request();
     if (data.daily && Array.isArray(data.daily.weathercode) && data.daily.weathercode.length > 0) {
       const weathercode = data.daily.weathercode[0];
       const tempMax = data.daily.temperature_2m_max?.[0];
@@ -154,13 +140,14 @@ export async function fetchHistoricalWeatherDirect(dateStr: string): Promise<His
     }
     return { success: false, error: 'No data for date' };
   } catch (e) {
+    if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
     const msg = e instanceof Error ? e.message : 'Unknown error';
     console.warn('[Weather/direct] historical fetch failed:', msg);
     return { success: false, error: msg };
   }
 }
 
-export async function fetchJapanHolidaysDirect(): Promise<JapanHolidaysDirectResult> {
+export async function fetchJapanHolidaysDirect(taskContext?: TaskContext): Promise<JapanHolidaysDirectResult> {
   // Try Dexie cache first (24h TTL, mirrors electron/weather-calendar.cjs).
   // Failure here is non-fatal — falls through to network fetch.
   try {
@@ -179,9 +166,8 @@ export async function fetchJapanHolidaysDirect(): Promise<JapanHolidaysDirectRes
   }
 
   try {
-    const data = await fetchJsonWithTimeout<Record<string, string>>(
-      'https://holidays-jp.github.io/api/v1/date.json',
-    );
+    const request = (signal?: AbortSignal) => fetchJsonWithTimeout<Record<string, string>>('https://holidays-jp.github.io/api/v1/date.json', 8000, signal, !!taskContext);
+    const data = taskContext ? await runTaskTransport(taskContext, { provider: 'holidays-jp', operation: 'holiday-calendar', configRevision: 'fixed' }, request, () => {}) : await request();
 
     // Best-effort cache write; never blocks the return.
     try {
@@ -193,6 +179,7 @@ export async function fetchJapanHolidaysDirect(): Promise<JapanHolidaysDirectRes
 
     return { success: true, holidays: data };
   } catch (e) {
+    if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
     const msg = e instanceof Error ? e.message : 'Unknown error';
     console.error('[Holidays/direct] fetch failed:', e);
     return { success: false, error: msg };

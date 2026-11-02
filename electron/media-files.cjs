@@ -336,8 +336,8 @@ function handleVoiceList() {
         return { id: f.replace(/\.mp3$/, ''), size: stat.size, mtime: stat.mtimeMs };
       });
     return { success: true, files };
-  } catch {
-    return { success: true, files: [] };
+  } catch (e) {
+    return { success: false, files: [], error: e.message };
   }
 }
 
@@ -378,8 +378,8 @@ function handleVoiceClearAll() {
     let entries = [];
     try {
       entries = fs.readdirSync(dir).filter(f => f.endsWith('.mp3'));
-    } catch {
-      return { success: true, cleared: 0, errors: 0 };
+    } catch (e) {
+      return { success: false, cleared: 0, errors: 0, error: e.message };
     }
     for (const f of entries) {
       try {

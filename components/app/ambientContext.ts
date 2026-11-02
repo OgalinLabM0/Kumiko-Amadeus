@@ -1,4 +1,5 @@
 import { isCapacitorNative } from '../../services/environment';
+import { TaskCapacityError, type TaskContext } from '../../services/taskRuntime';
 import {
   fetchAmbientWeatherDirect,
   fetchJapanHolidaysDirect,
@@ -16,23 +17,20 @@ let lastEnvironmentFetchTime = 0;
 //     fetch. NO PC dependency.
 type AmbientInvoker = (channel: string, args?: unknown) => Promise<any>;
 
-const resolveAmbientInvoker = (): AmbientInvoker | null => {
+const resolveAmbientInvoker = (taskContext?: TaskContext): AmbientInvoker | null => {
   const api = (typeof window !== 'undefined' ? (window as any).electronAPI : null);
-  if (api && typeof api.invoke === 'function') {
-    return (channel: string, args?: unknown) => api.invoke(channel, args);
-  }
-  if (isCapacitorNative()) {
+  if (isCapacitorNative() || (api && typeof api.invoke === 'function')) {
     return (channel: string) => {
-      if (channel === 'app:get-weather') return fetchAmbientWeatherDirect();
-      if (channel === 'app:get-japan-holidays') return fetchJapanHolidaysDirect();
+      if (channel === 'app:get-weather') return fetchAmbientWeatherDirect(taskContext);
+      if (channel === 'app:get-japan-holidays') return fetchJapanHolidaysDirect(taskContext);
       return Promise.resolve(null);
     };
   }
   return null;
 };
 
-export const getAmbientEnvironmentContext = async (): Promise<string> => {
-  const invoke = resolveAmbientInvoker();
+export const getAmbientEnvironmentContext = async (taskContext?: TaskContext): Promise<string> => {
+  const invoke = resolveAmbientInvoker(taskContext);
   if (!invoke) return '';
 
   const now = Date.now();
@@ -67,6 +65,7 @@ export const getAmbientEnvironmentContext = async (): Promise<string> => {
       // user. Only her own environment belongs in the character context.
     }
   } catch (e) {
+    if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
     console.warn('[Environment] Failed to fetch ambient weather context:', e);
   }
 
@@ -92,6 +91,7 @@ export const getAmbientEnvironmentContext = async (): Promise<string> => {
       hasData = true;
     }
   } catch (e) {
+    if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
     console.warn('[Environment] Failed to fetch holiday/term context:', e);
   }
 

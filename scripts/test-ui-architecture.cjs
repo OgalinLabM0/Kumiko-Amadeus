@@ -1,0 +1,212 @@
+'use strict';
+// Isolated production renderer smoke test; never starts electron-main.
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const crypto = require('node:crypto');
+const root = path.resolve(__dirname, '..');
+const out = path.join(root, 'artifacts', 'verification', 'ui-architecture');
+const receiptPath = path.join(out, 'production-boot-receipt.json');
+if (!process.versions.electron) {
+  const { spawnSync } = require('node:child_process');
+  const tmpRoot = fs.realpathSync(os.tmpdir());
+  const profile = fs.mkdtempSync(path.join(tmpRoot, 'kumiko-production-boot-'));
+  const nonce = crypto.randomUUID();
+  let code = 1;
+  try {
+    const env = { ...process.env, KUMIKO_BOOT_PROFILE: profile, KUMIKO_BOOT_NONCE: nonce };
+    delete env.ELECTRON_RUN_AS_NODE;
+    const child = spawnSync(require('electron'), [__filename], { env, stdio: 'inherit', windowsHide: true, timeout: 60000 });
+    if (child.error) throw child.error;
+    if (child.status !== 0) throw new Error(`Electron test exited with status ${child.status}`);
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
+    if (receipt.nonce !== nonce || receipt.passed !== true) throw new Error('Current test did not produce a matching passing receipt.');
+    code = 0;
+  } catch (error) {
+    console.error('Production boot test failed:', error.message);
+  } finally {
+    // Only remove the exact directory created above, after resolving both it
+    // and its parent. Refuse reparse points or any changed destination.
+    const same = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    try {
+      const stat = fs.lstatSync(profile);
+      const resolved = fs.realpathSync(profile);
+      if (!path.isAbsolute(profile) || !stat.isDirectory() || stat.isSymbolicLink()
+        || !same(resolved, profile) || !same(path.dirname(resolved), tmpRoot)
+        || !path.basename(resolved).startsWith('kumiko-production-boot-')) throw new Error('Temporary profile identity changed; cleanup refused.');
+      fs.rmSync(profile, { recursive: true });
+    } catch (error) {
+      console.error('Temporary profile cleanup failed:', error.message);
+      code = 1;
+    }
+  }
+  process.exitCode = code;
+} else {
+const { app, BrowserWindow, ipcMain, session } = require('electron');
+const profile = process.env.KUMIKO_BOOT_PROFILE;
+const nonce = process.env.KUMIKO_BOOT_NONCE;
+if (!profile || !path.isAbsolute(profile) || !nonce) throw new Error('Run this test through its Node entry point.');
+app.setPath('userData', profile);
+app.setPath('sessionData', profile);
+const errors = [], blocked = [], calls = [];
+let win;
+async function main() {
+  fs.mkdirSync(out, { recursive: true });
+  const preload = path.join(root, 'preload.cjs');
+  const source = fs.readFileSync(preload, 'utf8');
+  const channels = [...source.matchAll(/'([a-z]+:[a-z0-9:-]+)'/g)].map(x => x[1]);
+  let syntheticNativeMessages = [], credentialCount = 0;
+  for (const channel of new Set(channels)) ipcMain.handle(channel, (_event, payload) => {
+    calls.push(channel);
+    if (channel === 'credentials:store') return { success: true, handle: (++credentialCount).toString(16).padStart(64, '0') };
+    if (channel === 'memory:managed-backups') return { success: true, files: [], imageIds: [], voiceIds: [] };
+    if (channel === 'rag:get-all') return { success: true, vectors: [] };
+    if (channel === 'rag:get-messages') return { success: true, messages: syntheticNativeMessages };
+    if (channel === 'rag:sync-messages') { syntheticNativeMessages = Array.isArray(payload) ? payload : payload?.messages || []; return { success: true, count: syntheticNativeMessages.length }; }
+    if (channel === 'rag:restore') return { success: true, count: payload?.vectors?.length || 0 };
+    if (['rag:restore-lock', 'memory:purge-files'].includes(channel)) return { success: true };
+    return { success: false, error: 'Isolated test substitute' };
+  });
+  session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+    const url = new URL(details.url);
+    const deny = !['file:', 'data:', 'blob:', 'devtools:'].includes(url.protocol);
+    if (deny) blocked.push(details.url);
+    callback({ cancel: deny });
+  });
+  win = new BrowserWindow({ width: 1280, height: 900, show: false, webPreferences: { preload, contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false, offscreen: true } });
+  win.webContents.on('console-message', (_event, level, message) => { if (level >= 2) errors.push(message); });
+  win.webContents.on('render-process-gone', (_event, details) => errors.push('renderer gone: ' + JSON.stringify(details)));
+  win.webContents.on('did-fail-load', (_event, code, description, url, mainFrame) => { if (mainFrame) errors.push(`load ${code}: ${description} ${url}`); });
+  await win.loadFile(path.join(root, 'dist', 'index.html'));
+  await new Promise(resolve => setTimeout(resolve, 4000));
+  const before = await win.webContents.executeJavaScript(`({text: document.body.innerText, buttons: [...document.querySelectorAll('button')].map(x => x.innerText.trim()), root: document.querySelector('#root')?.innerHTML || '', preload: !!window.electronAPI})`);
+  await fs.promises.writeFile(path.join(out, 'production-boot-initial.html'), await win.webContents.executeJavaScript('document.documentElement.outerHTML'));
+  await fs.promises.writeFile(path.join(out, 'production-boot-initial.png'), (await win.webContents.capturePage()).toPNG());
+  const clicked = await win.webContents.executeJavaScript(`(() => { const b = [...document.querySelectorAll('button')].find(x => /连接|connect/i.test(x.innerText)); if (!b) return false; b.click(); return true; })()`);
+  await new Promise(resolve => setTimeout(resolve, 2200));
+  const after = await win.webContents.executeJavaScript(`({text: document.body.innerText, buttons: [...document.querySelectorAll('button')].map(x => x.innerText.trim()), inputs: [...document.querySelectorAll('input')].map(x => ({type:x.type, placeholder:x.placeholder})), root: document.querySelector('#root')?.innerHTML || '', preload: !!window.electronAPI})`);
+  await fs.promises.writeFile(path.join(out, 'production-boot-identity.html'), await win.webContents.executeJavaScript('document.documentElement.outerHTML'));
+  await fs.promises.writeFile(path.join(out, 'production-boot-identity.png'), (await win.webContents.capturePage()).toPNG());
+  await win.webContents.executeJavaScript(`document.querySelector('input[type="password"]').focus()`);
+  await win.webContents.insertText('0821');
+  const submitted = await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>/验证并继续|verify/i.test(x.innerText)); if(!b)return false; b.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1})); return true;})()`);
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  const next = await win.webContents.executeJavaScript(`({text:document.body.innerText,buttons:[...document.querySelectorAll('button')].map(x=>x.innerText.trim()),inputs:[...document.querySelectorAll('input')].map(x=>({type:x.type,placeholder:x.placeholder}))})`);
+  await fs.promises.writeFile(path.join(out,'after-identity.png'), (await win.webContents.capturePage()).toPNG());
+  const firstTime = await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>/初次使用|first.time/i.test(x.innerText)); if(!b)return false; b.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1})); return true;})()`);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>/我已知晓|understand/i.test(x.innerText)); if(b)b.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1}));})()`);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const launch = await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>/启动系统|enter system/i.test(x.innerText)); if(!b||b.disabled)return false; b.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1})); return true;})()`);
+  await new Promise(resolve => setTimeout(resolve, 3500));
+  const entered = await win.webContents.executeJavaScript(`({text:document.body.innerText.slice(0,12000),buttons:[...document.querySelectorAll('button')].map(x=>x.innerText.trim()),inputs:[...document.querySelectorAll('input')].map(x=>({type:x.type,placeholder:x.placeholder}))})`);
+  await fs.promises.writeFile(path.join(out,'after-launch.png'), (await win.webContents.capturePage()).toPNG());
+  await win.webContents.executeJavaScript(`document.querySelector('input[type="password"]').focus()`);
+  await win.webContents.insertText('fixture-main-key');
+  await win.webContents.executeJavaScript(`(() => {const d=[...document.querySelectorAll('details')].find(x=>x.innerText.includes('高级：为工位')); if(!d)throw Error('Advanced role settings missing'); d.open=true; const s=d.querySelectorAll('select')[1]; s.value='openai'; s.dispatchEvent(new Event('change',{bubbles:true})); const inputs=d.querySelectorAll('input'); inputs[1].focus();})()`);
+  await win.webContents.insertText('fixture-model');
+  await win.webContents.executeJavaScript(`([...document.querySelectorAll('details')].find(x=>x.innerText.includes('高级：为工位'))).querySelectorAll('input')[2].focus()`);
+  await win.webContents.insertText('fixture-key');
+  await win.webContents.executeJavaScript(`([...document.querySelectorAll('details')].find(x=>x.innerText.includes('高级：为工位'))).querySelector('button').click()`);
+  await new Promise(resolve => setTimeout(resolve, 800));
+  const advancedText = await win.webContents.executeJavaScript(`([...document.querySelectorAll('details')].find(x=>x.innerText.includes('高级：为工位'))).innerText`);
+  await fs.promises.writeFile(path.join(out,'advanced-settings.png'), (await win.webContents.capturePage()).toPNG());
+  await win.webContents.executeJavaScript(`([...document.querySelectorAll('button')].filter(x=>x.innerText.trim()==='启动系统').at(-1)).click()`);
+  await new Promise(resolve => setTimeout(resolve, 3500));
+  const appView = await win.webContents.executeJavaScript(`({text:document.body.innerText.slice(0,12000), buttons:[...document.querySelectorAll('button')].map(x=>({text:x.innerText.trim(), title:x.title, label:x.getAttribute('aria-label')})), inputs:[...document.querySelectorAll('input,textarea')].map(x=>({placeholder:x.placeholder}))})`);
+  await fs.promises.writeFile(path.join(out,'application.png'), (await win.webContents.capturePage()).toPNG());
+  await win.webContents.executeJavaScript(`document.querySelector('input[placeholder="发送消息..."]').focus()`);
+  await win.webContents.insertText('隔离测试消息 alpha');
+  await win.webContents.sendInputEvent({ type:'keyDown', keyCode:'Return' });
+  await win.webContents.sendInputEvent({ type:'keyUp', keyCode:'Return' });
+  await new Promise(resolve => setTimeout(resolve, 3500));
+  const sentView = await win.webContents.executeJavaScript(`({text:document.body.innerText.slice(0,12000),matches:[...document.querySelectorAll('*')].filter(e=>e.children.length===0 && e.textContent.includes('隔离测试消息 alpha')).map(e=>({tag:e.tagName,outer:e.outerHTML.slice(0,600)}))})`);
+  await fs.promises.writeFile(path.join(out,'message-sent.png'), (await win.webContents.capturePage()).toPNG());
+  await win.webContents.executeJavaScript(`(() => {const e=[...document.querySelectorAll('span')].find(x=>x.textContent==='隔离测试消息 alpha'); if(e)e.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,clientX:1200,clientY:600,button:2}));})()`);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  const menuView = await win.webContents.executeJavaScript(`({text:document.body.innerText.slice(-5000),buttons:[...document.querySelectorAll('button')].map(x=>({text:x.innerText.trim(),title:x.title})).filter(x=>x.text||x.title)})`);
+  await fs.promises.writeFile(path.join(out,'message-menu.png'), (await win.webContents.capturePage()).toPNG());
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>x.innerText.trim()==='删除'); if(!b)throw Error('Delete action missing'); b.click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const deletePrompt = await win.webContents.executeJavaScript(`document.body.innerText.slice(-3000)`);
+  await fs.promises.writeFile(path.join(out,'delete-prompt.png'), (await win.webContents.capturePage()).toPNG());
+  const readDb = `new Promise((resolve,reject)=>{const request=indexedDB.open('KumikoDB');request.onerror=()=>reject(request.error);request.onsuccess=()=>{const d=request.result, tx=d.transaction(['messages','messageViews','keyval'],'readonly'), out={};for(const name of ['messages','messageViews']){const r=tx.objectStore(name).getAll();r.onsuccess=()=>out[name]=r.result;}const k=tx.objectStore('keyval').getAll();k.onsuccess=()=>out.keyval=k.result.filter(row=>['kumiko_core_memory','kumiko_notebook'].includes(row.key));tx.oncomplete=()=>{d.close();resolve(out);};tx.onerror=()=>reject(tx.error);};})`;
+  const beforeDelete = await win.webContents.executeJavaScript(readDb);
+  await win.webContents.executeJavaScript(`(() => {const bs=[...document.querySelectorAll('button')].filter(x=>x.innerText.trim()==='删除');if(bs.length<2)throw Error('Confirmation missing');bs.at(-1).click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  const afterDelete = await win.webContents.executeJavaScript(readDb);
+  const afterDeleteText = await win.webContents.executeJavaScript('document.body.innerText.slice(-3000)');
+  const canonicalBefore = beforeDelete.messages.find(m=>m.text==='隔离测试消息 alpha');
+  const canonicalAfter = canonicalBefore && afterDelete.messages.find(m=>m.id===canonicalBefore.id);
+  const hiddenView = canonicalBefore && afterDelete.messageViews.find(m=>m.id===canonicalBefore.id);
+  const deletePreserved = !!canonicalAfter && !!hiddenView && !afterDeleteText.includes('隔离测试消息 alpha');
+  await fs.promises.writeFile(path.join(out,'after-delete.png'), (await win.webContents.capturePage()).toPNG());
+  await win.webContents.executeJavaScript(`document.querySelector('button[title="系统设置"]').click()`);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>x.innerText.trim()==='数据清理');if(!b)throw Error('Data settings missing');b.click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>x.innerText.includes('记忆维护：清除错误内容'));if(!b)throw Error('Maintenance entry missing');b.click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const maintenance = await win.webContents.executeJavaScript(`({text:document.body.innerText.slice(-7000),labels:[...document.querySelectorAll('label')].map(x=>x.innerText).filter(x=>x.includes('隔离测试消息 alpha'))})`);
+  await win.webContents.executeJavaScript(`(() => {const l=[...document.querySelectorAll('label')].find(x=>x.innerText.includes('隔离测试消息 alpha'));if(!l)throw Error('Hidden canonical message missing in maintenance');l.querySelector('input').click();})()`);
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>x.innerText.includes('预览影响范围'));if(!b||b.disabled)throw Error('Preview unavailable');b.click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 1200));
+  const previewText = await win.webContents.executeJavaScript('document.body.innerText.slice(-9000)');
+  await fs.promises.writeFile(path.join(out,'maintenance-preview.png'), (await win.webContents.capturePage()).toPNG());
+  await win.webContents.executeJavaScript(`(() => {const s=[...document.querySelectorAll('section')].find(e=>e.innerText.includes('记忆维护：清除错误内容'));const label=[...s.querySelectorAll('label')].find(e=>e.innerText.includes('我确认以上范围'));if(!label)throw Error('Maintenance confirmation missing');label.querySelector('input').click();const b=[...s.querySelectorAll('button')].find(e=>e.innerText.includes('确认清除并重新载入'));if(!b||b.disabled)throw Error('Maintenance confirmation unavailable');b.click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 4500));
+  const afterMaintenance = await win.webContents.executeJavaScript(readDb);
+  const maintenanceRemoved = !afterMaintenance.messages.some(m=>m.text==='隔离测试消息 alpha') && !afterMaintenance.messageViews.some(m=>m.id===canonicalBefore.id) && !syntheticNativeMessages.some(m=>m.id===canonicalBefore.id);
+  const maintenanceScreen = await win.webContents.executeJavaScript('document.body.innerText.slice(0,8000)');
+  await fs.promises.writeFile(path.join(out,'after-maintenance.png'), (await win.webContents.capturePage()).toPNG());
+  if (!maintenanceRemoved) throw Error('Maintenance did not remove the selected fixture from application and native substitutes');
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>/初始化连接|connect/i.test(x.innerText)); if(b)b.click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 1500));
+  await win.webContents.executeJavaScript(`document.querySelector('input[type="password"]').focus()`);
+  await win.webContents.insertText('0821');
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>/验证并继续|verify/i.test(x.innerText)); if(b)b.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1}));})()`);
+  await new Promise(resolve => setTimeout(resolve, 600));
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>/初次使用|first.time/i.test(x.innerText));if(b)b.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1}));})()`);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>/我已知晓|understand/i.test(x.innerText));if(b)b.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1}));})()`);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>/启动系统|enter system/i.test(x.innerText));if(b&&!b.disabled)b.dispatchEvent(new MouseEvent('click',{bubbles:true,detail:1}));})()`);
+  await new Promise(resolve => setTimeout(resolve, 2200));
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].filter(x=>x.innerText.trim()==='启动系统').at(-1);if(b)b.click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 2500));
+  const reenteredText = await win.webContents.executeJavaScript('document.body.innerText.slice(0,3000)');
+  console.log('[fixture-reentered]', reenteredText);
+  await win.webContents.executeJavaScript(`(() => {const b=document.querySelector('button[title="系统设置"]');if(!b)throw Error('Settings unavailable after reload');b.click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>x.innerText.trim()==='数据备份与同步');if(b)b.click();})()`);
+  const fixtureBackup = { messages: [canonicalBefore, { id: 'fixture-safe-message', role: 'user', text: '可保留的隔离消息', timestamp: Date.now() }], worldBook: [], coreMemory: 'fixture-unverified-old-memory', kumikoNotebook: 'fixture-unverified-notebook' };
+  await win.webContents.executeJavaScript(`(() => {const input=[...document.querySelectorAll('input[type=file]')].filter(x=>x.accept.includes('.json')).at(-1);if(!input)throw Error('Backup input missing');const dt=new DataTransfer();dt.items.add(new File([${JSON.stringify(JSON.stringify(fixtureBackup))}],'fixture-old-backup.json',{type:'application/json'}));input.files=dt.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await new Promise(resolve => setTimeout(resolve, 600));
+  const importFirstPrompt = await win.webContents.executeJavaScript('document.body.innerText.slice(-5000)');
+  console.log('[fixture-import-prompt]', importFirstPrompt);
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>/导入并覆盖|import.*replace/i.test(x.innerText));if(!b)throw Error('Import confirmation missing');b.click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  const unverifiedPrompt = await win.webContents.executeJavaScript('document.body.innerText.slice(-6000)');
+  await fs.promises.writeFile(path.join(out,'old-backup-warning.png'), (await win.webContents.capturePage()).toPNG());
+  const unverifiedShown = unverifiedPrompt.includes('旧备份有无法核对来源的记忆') && unverifiedPrompt.includes('清除这些项目并导入');
+  await win.webContents.executeJavaScript(`(() => {const b=[...document.querySelectorAll('button')].find(x=>x.innerText.includes('清除这些项目并导入'));if(!b)throw Error('Unverified-content confirmation missing');b.click();})()`);
+  await new Promise(resolve => setTimeout(resolve, 3500));
+  const afterImport = await win.webContents.executeJavaScript(readDb);
+  const noRevival = !afterImport.messages.some(m=>m.id===canonicalBefore.id || m.text==='隔离测试消息 alpha') && afterImport.messages.some(m=>m.id==='fixture-safe-message') && !JSON.stringify(afterImport.keyval).includes('fixture-unverified-');
+  const importOutcome = await win.webContents.executeJavaScript('document.body.innerText.slice(-5000)');
+  await fs.promises.writeFile(path.join(out,'after-old-backup-import.png'), (await win.webContents.capturePage()).toPNG());
+  await win.webContents.executeJavaScript(`localStorage.setItem('kumiko_memory_maintenance_v1','fixture-interrupted');window.dispatchEvent(new Event('kumiko:memory-maintenance'));`);
+  await new Promise(resolve => setTimeout(resolve, 500));
+  const protectionText = await win.webContents.executeJavaScript('document.body.innerText');
+  const protectionShown = protectionText.includes('聊天和自动保存已暂停') && protectionText.includes('重新启动并继续');
+  await fs.promises.writeFile(path.join(out,'interrupted-protection.png'), (await win.webContents.capturePage()).toPNG());
+  const version = require(path.join(root, 'package.json')).version;
+  const versionVisible = before.text.includes(`AMADEUS SYSTEM [Ver ${version}]`);
+  const passed = before.preload && versionVisible && clicked && submitted && firstTime && launch && advancedText.includes('已设置') && deletePreserved && previewText.includes('将清除') && maintenanceRemoved && unverifiedShown && noRevival && protectionShown && !appView.text.includes('神经网路配置') && !errors.some(x => /Uncaught|ReferenceError|SyntaxError/i.test(x) || (/TypeError/i.test(x) && !/Failed to fetch/i.test(x)));
+  const receipt = { nonce, passed, version, versionVisible, profile: 'fresh temporary profile', externalRequestsBlocked: blocked, ipcSubstitutesCalled: [...new Set(calls)], clickedConnect: clicked, initialText: before.text, initialButtons: before.buttons, identityText: after.text, identityInputs: after.inputs, submitted, next, firstTime, launch, entered, advancedText, appView, sentView, menuView, deletePrompt, deletePreserved, beforeDelete, afterDelete, afterDeleteText, maintenance, previewText, maintenanceRemoved, afterMaintenance, maintenanceScreen, reenteredText, importFirstPrompt, unverifiedPrompt, unverifiedShown, noRevival, afterImport, importOutcome, protectionShown, protectionText, errors };
+  fs.writeFileSync(receiptPath, JSON.stringify(receipt, null, 2));
+  console.log(JSON.stringify(receipt, null, 2));
+  app.exit(passed ? 0 : 1);
+}
+app.whenReady().then(main).catch(error => { console.error(error); fs.mkdirSync(out, { recursive: true }); fs.writeFileSync(receiptPath, JSON.stringify({ nonce, passed: false, fatal: String(error), errors, blocked }, null, 2)); app.exit(1); });
+}

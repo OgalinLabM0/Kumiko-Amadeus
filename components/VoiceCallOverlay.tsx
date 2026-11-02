@@ -12,6 +12,8 @@ import {
 } from '../utils/audioUnlock';
 import type { Language } from '../types';
 import { UI_TRANSLATIONS } from '../constants';
+import { getMemoryGeneration } from '../services/memoryMaintenanceGate';
+import { registerMemorySensitiveMedia } from '../hooks/useMemoryMaintenanceMediaStop';
 
 interface VoiceCallOverlayProps {
   reminderEvent: string;
@@ -86,6 +88,8 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
   useEffect(() => {
     if (phase !== 'ringing') return;
     let cancelled = false;
+    let unregisterMedia: (() => void) | undefined;
+    const memoryGeneration = getMemoryGeneration();
 
     (async () => {
       try {
@@ -99,6 +103,7 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
           // (`isMobileLikeRuntime() === false`) creates a fresh element
           // because autoplay is unrestricted there.
           const audio = isMobileLikeRuntime() ? getSharedUnlockedAudio() : new Audio(source.src);
+          unregisterMedia = registerMemorySensitiveMedia(audio, memoryGeneration);
           try {
             audio.pause();
             audio.currentTime = 0;
@@ -118,6 +123,7 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
 
     return () => {
       cancelled = true;
+      unregisterMedia?.();
       if (ringtoneRef.current) {
         ringtoneRef.current.pause();
         ringtoneRef.current.src = '';
@@ -140,6 +146,8 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
     if (phase !== 'active' || !voiceFileId) return;
     let cancelled = false;
     let blobUrl: string | null = null;
+    let unregisterMedia: (() => void) | undefined;
+    const memoryGeneration = getMemoryGeneration();
     const audio = getSharedUnlockedAudio();
     try {
       audio.pause();
@@ -151,6 +159,7 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
     const setupAndPlay = async () => {
       const buf = await loadVoiceFile(voiceFileId);
       if (!buf || cancelled) return;
+      unregisterMedia = registerMemorySensitiveMedia(audio, memoryGeneration);
       const blob = new Blob([buf], { type: 'audio/mpeg' });
       blobUrl = URL.createObjectURL(blob);
       if (cancelled) {
@@ -172,10 +181,11 @@ export const VoiceCallOverlay: React.FC<VoiceCallOverlayProps> = ({
         console.warn('[CALL-OVERLAY] mobile voice playback failed:', e);
       }
     };
-    void setupAndPlay();
+    void setupAndPlay().catch(error => console.warn('[CALL-OVERLAY] voice playback cancelled:', error));
 
     return () => {
       cancelled = true;
+      unregisterMedia?.();
       try {
         audio.pause();
         audio.src = '';

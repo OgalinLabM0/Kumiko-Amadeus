@@ -8,6 +8,8 @@ import { getCurrentAIConfig, validateAIConnection, validateModels, validateSearc
 import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel, getDefaultEndpoint } from '../services/appConfig';
 import { setAIConfig } from '../services/llmCore';
 import { isCapacitorNative } from '../services/environment';
+import { hasNativeCredentials } from '../services/nativeCredentials';
+import { ModelRoleSettings } from './settings/ModelRoleSettings';
 // F2B.3: dropped `isMobilePwa` + `httpApi` imports. PWA used to forward
 // validate-connection / validate-models / validate-search through the PC
 // so the phone never held the API key. Capacitor APK is fully standalone:
@@ -391,6 +393,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
           setStatusType('error');
           return;
       }
+      setConfig(getCurrentAIConfig());
       setIsValidating(true);
       setStatus(language === 'zh' ? "正在进行全面验证..." : "Running full validation...");
       setStatusType('neutral');
@@ -404,7 +407,8 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
           setEmbeddingValidation({ status: 'idle' });
           return;
       }
-      const isValid = await validateConnectionUnified(config);
+      const savedConfig = getCurrentAIConfig();
+      const isValid = await validateConnectionUnified(savedConfig);
       if (!isValid) {
           setStatus(t.error_invalid);
           setStatusType('error'); setIsValidating(false);
@@ -412,7 +416,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
           return;
       }
       setIsModelValidating(true);
-      const modelResult = await validateModelsUnified(config);
+      const modelResult = await validateModelsUnified(savedConfig);
       setModelValidationResult(modelResult);
       setIsModelValidating(false);
 
@@ -453,7 +457,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
 
       if (!config.provider || config.provider === 'gemini') {
           setIsSearchValidating(true);
-          const searchResult = await validateSearchUnified(config);
+          const searchResult = await validateSearchUnified(savedConfig);
           setSearchStatus(searchResult.success ? t.searchSuccess : (searchResult.message || t.searchFail));
           setSearchStatusType(searchResult.success ? 'success' : 'error');
           setIsSearchValidating(false);
@@ -469,6 +473,7 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
           setStatusType('error');
           return;
       }
+      setConfig(getCurrentAIConfig());
       setStatus(t.saveSuccess); setStatusType('success');
       setTimeout(() => { setStatus(''); setStatusType('neutral'); }, 2000);
   };
@@ -592,13 +597,16 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                     <div className="space-y-[clamp(10px,1.4vw,16px)]">
                         <div>
                            <label className={`block ka-label ${text65} mb-[clamp(3px,0.5vw,5px)]`}>{t.keyLabel}</label>
-                           <ComposableInput type="password" value={config.apiKey_primary || ''} onChange={(e) => updateConfig('apiKey_primary', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
+                           <ComposableInput type="password" value={config.apiKey_primary?.startsWith('vault:') ? '' : (config.apiKey_primary || '')} onChange={(e) => updateConfig('apiKey_primary', e.target.value)} placeholder={config.apiKey_primary?.startsWith('vault:') ? (language === 'zh' ? '已配置；输入以替换' : 'Configured; enter to replace') : t.keyPlaceHolder} className={inputCls} />
+                           {config.apiKey_primary?.startsWith('vault:') && <button type="button" className="ka-copy-sm underline" onClick={() => updateConfig('apiKey_primary', '')}>{language === 'zh' ? '移除此配置' : 'Remove from configuration'}</button>}
                         </div>
                          <div>
                            <label className={`block ka-label ${text65} mb-[clamp(3px,0.5vw,5px)]`}>{t.keyLabel_backup}</label>
-                           <ComposableInput type="password" value={config.apiKey_backup || ''} onChange={(e) => updateConfig('apiKey_backup', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
+                           <ComposableInput type="password" value={config.apiKey_backup?.startsWith('vault:') ? '' : (config.apiKey_backup || '')} onChange={(e) => updateConfig('apiKey_backup', e.target.value)} placeholder={config.apiKey_backup?.startsWith('vault:') ? (language === 'zh' ? '已配置；输入以替换' : 'Configured; enter to replace') : t.keyPlaceHolder} className={inputCls} />
+                           {config.apiKey_backup?.startsWith('vault:') && <button type="button" className="ka-copy-sm underline" onClick={() => updateConfig('apiKey_backup', '')}>{language === 'zh' ? '移除此配置' : 'Remove from configuration'}</button>}
                         </div>
                         <p className={`ka-copy-sm ${text55} pl-1`}>{t.keyLocalDesc}</p>
+                        {!hasNativeCredentials() && <p className={`ka-copy-sm ${text55}`}>{language === 'zh' ? '新密钥只用于当前会话；旧存储副本被单独保留。' : 'New keys remain in this session only; older stored copies are retained separately.'}</p>}
                     </div>
                     <div className={`pt-[clamp(8px,1.2vw,12px)] border-t ${borderFaint}`}>
                         <div className="flex items-center justify-between mb-[clamp(6px,0.8vw,10px)]">
@@ -627,6 +635,8 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                 </Collapse>
             </div>
 
+            <ModelRoleSettings config={config} onChange={setConfig} language={language === 'zh' ? 'zh' : 'en'} />
+
             {/* Vision Helper */}
             <div className="space-y-[clamp(6px,1vw,10px)]">
                 <SectionHeader label={t.visionHelper} icon={Eye} isOpen={isVisionOpen} onToggle={() => setIsVisionOpen(!isVisionOpen)} />
@@ -653,7 +663,8 @@ export const AIConfigScreen: React.FC<AIConfigScreenProps> = ({ onComplete, lang
                             </div>
                             <div>
                                <label className={`block ka-label ${text65} mb-[clamp(3px,0.5vw,5px)]`}>{t.visionApiKeyLabel}</label>
-                               <ComposableInput type="password" value={config.visionApiKey || ''} onChange={(e) => updateConfig('visionApiKey', e.target.value)} placeholder={t.keyPlaceHolder} className={inputCls} />
+                               <ComposableInput type="password" value={config.visionApiKey?.startsWith('vault:') ? '' : (config.visionApiKey || '')} onChange={(e) => updateConfig('visionApiKey', e.target.value)} placeholder={config.visionApiKey?.startsWith('vault:') ? (language === 'zh' ? '已配置；输入以替换' : 'Configured; enter to replace') : t.keyPlaceHolder} className={inputCls} />
+                               {config.visionApiKey?.startsWith('vault:') && <button type="button" className="ka-copy-sm underline" onClick={() => updateConfig('visionApiKey', '')}>{language === 'zh' ? '移除此配置' : 'Remove from configuration'}</button>}
                             </div>
                             <div className={`pt-[clamp(8px,1.2vw,12px)] border-t ${borderFaint}`}>
                                 <div className="flex items-center justify-between mb-[clamp(6px,0.8vw,10px)]">

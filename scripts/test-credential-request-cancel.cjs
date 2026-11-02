@@ -1,0 +1,4 @@
+'use strict';
+const assert=require('node:assert/strict');const {createCredentialRequestRegistry}=require('../electron/credential-requests.cjs');
+(async()=>{const registry=createCredentialRequestRegistry(),owner={},other={},id='11111111-1111-4111-8111-111111111111';let signal;let done;
+const pending=registry.run(owner,id,s=>{signal=s;return new Promise(resolve=>done=resolve)});assert.equal(registry.cancel(other,id),false);assert.equal(signal.aborted,false);assert.equal(registry.cancel(owner,id),true);assert.equal(signal.aborted,true);done('finished');assert.equal(await pending,'finished');assert.equal(registry.cancel(owner,id),false);await assert.rejects(registry.run(owner,'bad',()=>{}));console.log('Credential request cancellation fixture passed: owner-only cancellation and cleanup.');})().catch(e=>{console.error(e);process.exitCode=1});

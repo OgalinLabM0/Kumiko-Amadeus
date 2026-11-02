@@ -22,6 +22,8 @@ import { Collapse } from '../Collapse';
 // its embedding via the PC RAG main process which has its own UI.
 import { getEmbeddingConfig, type EmbeddingProviderConfig } from '../../services/cloudEmbeddingService';
 import ReembedConfirmDialog from './ReembedConfirmDialog';
+import { readBackgroundJobStatus, retryFailedBackgroundJobs } from '../../services/backgroundJobs';
+import { TURN_ARCHIVE_PREFIX, TURN_ARCHIVE_STATUS_KEY } from '../../services/executionArchive';
 
 export interface DataDirectoryInfo {
   success: boolean;
@@ -106,6 +108,21 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
   } | null>(null);
   const [reembedDialogOpen, setReembedDialogOpen] = useState(false);
   const [embeddingConfig, setEmbeddingConfigState] = useState<EmbeddingProviderConfig | null>(null);
+  const [maintenance, setMaintenance] = useState({ retrying: 0, failed: 0, archived: 0, archiveError: '', readError: false });
+  const refreshMaintenance = useCallback(async () => {
+    try {
+      const [jobs, archived, status] = await Promise.all([readBackgroundJobStatus(),
+        db.keyval.where('key').startsWith(TURN_ARCHIVE_PREFIX).count(), db.keyval.get(TURN_ARCHIVE_STATUS_KEY)]);
+      setMaintenance({ retrying: jobs.retrying, failed: jobs.failed, archived,
+        archiveError: typeof status?.value?.error === 'string' ? status.value.error : '', readError: false });
+    } catch { setMaintenance(value => ({ ...value, readError: true })); }
+  }, []);
+  useEffect(() => {
+    if (!isOpen) return;
+    void refreshMaintenance();
+    const timer = setInterval(() => { void refreshMaintenance(); }, 10_000);
+    return () => clearInterval(timer);
+  }, [isOpen, refreshMaintenance]);
 
   const refreshVoiceStorage = useCallback(async () => {
     if (!voiceAvailable) return;
@@ -480,6 +497,27 @@ export const DataManagementSection: React.FC<DataManagementSectionProps> = ({
       <Collapse isOpen={isOpen}>
         <div className="px-4 pb-4 pt-0 space-y-4">
           <p className={`ka-copy-sm mb-3 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>{t.dataManagementManageLocal}</p>
+
+          <div className={`rounded-lg border p-3 space-y-2 ka-copy-sm ${isDarkMode ? 'border-gray-700 text-gray-300' : 'border-gray-200 text-gray-700'}`}>
+            <p className="font-semibold">{language === 'zh' ? '记录整理' : 'Record maintenance'}</p>
+            <p>{language === 'zh' ? `已归档 ${maintenance.archived} 轮完成的处理记录，原始聊天和执行凭据保留。`
+              : `${maintenance.archived} completed turns archived. Original messages and action receipts are retained.`}</p>
+            {maintenance.retrying > 0 && <p>{language === 'zh' ? `${maintenance.retrying} 项记忆整理或地点核实将在稍后重试，日记正文和地点原话仍保留。`
+              : `${maintenance.retrying} memory or location tasks will retry. Diary text and location disclosures are retained.`}</p>}
+            {maintenance.failed > 0 && <div className="flex flex-wrap items-center gap-2">
+              <span>{language === 'zh' ? `${maintenance.failed} 项整理或地点核实多次失败，原始记录仍保留。` : `${maintenance.failed} maintenance or location tasks need attention. Original records are retained.`}</span>
+              <button className="rounded border px-3 py-1" onClick={async () => {
+                try { await retryFailedBackgroundJobs(); await refreshMaintenance(); }
+                catch { setMaintenance(value => ({ ...value, readError: true })); }
+              }}>{language === 'zh' ? '重试整理' : 'Retry'}</button>
+            </div>}
+            {(maintenance.archiveError || maintenance.readError) && <p className="text-amber-600">{language === 'zh'
+              ? '暂未完成记录整理，原记录仍保留。请检查存储空间，稍后重试备份。'
+              : 'Record maintenance is incomplete. Originals are retained. Check storage and retry the backup.'}</p>}
+          </div>
+          {storageUsage && storageUsage.quota > 0 && storageUsage.usage / storageUsage.quota >= 0.85 &&
+            <p className="ka-copy-sm text-amber-600">{language === 'zh' ? '本地数据库空间接近上限，请先导出备份并检查可用磁盘空间。'
+              : 'Local database storage is nearly full. Export a backup and check free disk space.'}</p>}
 
           {storageUsage && (() => {
             const totalUsage = (storageUsage.usage || 0) + (voiceStorage?.totalBytes || 0) + (ringtoneInfo?.size || 0);

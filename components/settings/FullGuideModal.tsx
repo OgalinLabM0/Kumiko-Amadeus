@@ -162,11 +162,7 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
     });
   };
 
-  // v2.14.1 H.6: split the guide chapters by platform. Android renders
-  // the new "Android 原生 app" chapter in place of the legacy
-  // "MOBILE PWA" pairing dossier; PC keeps the original chapter list
-  // unchanged. The id stays 'mobile' on both branches so any existing
-  // deep links / activeGuideSection state continues to resolve.
+  // Keep chapter identities stable while showing the relevant platform text.
   const sections = getSoftwareGuideSections(language, isCapacitorNative() ? 'mobile' : 'desktop');
   const activeData = sections.find((section) => section.id === activeGuideSection) || sections[0];
   const activeIndex = sections.findIndex((section) => section.id === activeData.id);
@@ -314,8 +310,8 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                 </div>
                 <p className={`mt-1 ka-copy-sm ${mutedClass}`}>
                   {language === 'zh'
-                    ? '功能结构、数据链路、回复逻辑与真实运行行为的完整系统档案。'
-                    : 'Full archive for features, data flow, reply logic, and runtime behavior.'}
+                    ? '聊天、记忆、约定，还有那些不太显眼的设置，都写在这里。'
+                    : 'Chat, memories, promises, and the settings you might have missed.'}
                 </p>
               </div>
             </div>
@@ -340,8 +336,8 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                   </div>
                   <p className={`mt-2 text-[14px] leading-7 md:text-[14.5px] ${mutedClass}`}>
                     {language === 'zh'
-                      ? '这里写的是软件真正如何运转，而不是宣传页摘要。每一章都对应当前软件里的一条实际链路。'
-                      : 'This archive documents how the app actually works, not just what it claims to do.'}
+                      ? '想知道她怎么记住一件事，或某个设置会改什么，可以从左边挑一章慢慢看。'
+                      : 'Wondering how she remembers something, or what a setting changes? Pick a chapter on the left and take your time.'}
                   </p>
                 </div>
               </div>
@@ -436,12 +432,12 @@ export const FullGuideModal: React.FC<FullGuideModalProps> = ({
                   <div className={`px-5 py-3 border-b flex items-center justify-between gap-3 ${isDarkMode ? 'border-[#806033]/25 bg-[#1e1c1a]' : 'border-[#eadfce] bg-[#faf5ee]'}`}>
                     <div className="min-w-0">
                       <div className={`ka-kicker ${titleClass}`}>
-                        {language === 'zh' ? '系统设计说明' : 'SYSTEM DESIGN DOSSIER'}
+                        {language === 'zh' ? '这一章' : 'THIS CHAPTER'}
                       </div>
                       <p className={`mt-1 text-[14px] leading-7 md:text-[14.5px] ${mutedClass}`}>
                         {language === 'zh'
-                          ? '以下内容描述的是软件当前实际执行的结构、条件、数据流与行为规则。'
-                          : 'The sections below describe the current live structure, conditions, data flow, and behavior rules.'}
+                          ? '先从你想知道的地方看起。还没做完、还没试过的事，也会注明。'
+                          : 'Start with whatever you want to know. Anything unfinished or still untested is marked too.'}
                       </p>
                     </div>
                     <div className={`hidden md:flex items-center gap-2 rounded-full px-3 py-1 ka-micro border ${isDarkMode ? 'border-[#4f3b2a] text-[#d4a852] bg-[#211912]' : 'border-[#eadfce] text-[#8f6b12] bg-white'}`}>

@@ -19,6 +19,8 @@ export interface DesktopParsedBackupResult extends DesktopBackupResult {
   json?: any;
   images?: DesktopParsedBackupImage[];
   imageCount?: number;
+  voices?: Array<{ id: string; base64: string }>;
+  ringtone?: { base64: string; ext: string; originalName?: string };
 }
 
 export const pickDesktopBackupSaveFile = async (defaultFileName?: string): Promise<DesktopBackupResult> => {
@@ -46,6 +48,7 @@ export const pickDesktopBackupOpenFile = async (): Promise<DesktopBackupResult> 
 };
 
 export const writeDesktopBackupFile = async (filePath: string, content: string): Promise<DesktopBackupResult> => {
+  assertDataWritesAllowed();
   if (!isDesktopElectron()) {
     return { success: false, error: 'Desktop environment is required.' };
   }
@@ -81,7 +84,7 @@ export const getDesktopBackupFileInfo = async (filePath: string): Promise<Deskto
   return window.electronAPI.invoke('backup:get-file-info', { filePath });
 };
 
-export const parseDesktopBackupImportFile = async (filePath: string): Promise<DesktopParsedBackupResult> => {
+export const parseDesktopBackupImportFile = async (filePath: string, password?: string): Promise<DesktopParsedBackupResult> => {
   if (!isDesktopElectron()) {
     return { success: false, error: 'Desktop environment is required.' };
   }
@@ -90,7 +93,7 @@ export const parseDesktopBackupImportFile = async (filePath: string): Promise<De
     return { success: false, error: 'Desktop IPC is unavailable.' };
   }
 
-  return window.electronAPI.invoke('backup:parse-import-file', { filePath });
+  return window.electronAPI.invoke('backup:parse-import-file', { filePath, password });
 };
 
 export interface DesktopBuildZipResult extends DesktopBackupResult {
@@ -147,3 +150,4 @@ export const refocusDesktopWebContents = async (): Promise<void> => {
     console.warn('[IPC] Failed to refocus web contents:', error);
   });
 };
+import { assertDataWritesAllowed } from './dataRestoreGate';

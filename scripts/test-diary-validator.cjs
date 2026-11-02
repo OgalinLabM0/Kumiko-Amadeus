@@ -19,6 +19,20 @@ function transpile(filename) {
   }).outputText;
 }
 
+function loadRoutingModule(file) {
+  const module = { exports: {} };
+  vm.runInNewContext(transpile(path.join(root, 'services', file)), {
+    module, exports: module.exports,
+    require(id) {
+      if (id === './roleProfiles') return { resolveModelSessionCredential: x => x };
+      assert.equal(id, './appConfig');
+      return loadRoutingModule('appConfig.ts');
+    },
+  });
+  return module.exports;
+}
+const taskModelRouter = loadRoutingModule('taskModelRouter.ts');
+
 function loadValidator(responses, calls) {
   const module = { exports: {} };
   const sandbox = {
@@ -27,10 +41,13 @@ function loadValidator(responses, calls) {
     console: { log() {}, warn() {}, error() {} },
     DOMException,
     require(id) {
+      if (id === './taskModelRouter') return taskModelRouter;
       if (id === './geminiService') {
         return {
-          getCurrentAIConfig: () => ({ model_summary: 'test-model', model_main: 'test-model' }),
-          callLLMRaw: async () => {
+          getCurrentAIConfig: () => ({ model_summary: 'test-summary', model_main: 'test-main' }),
+          callLLMRaw: async (_system, _prompt, model, options) => {
+            assert.equal(model, undefined);
+            assert.ok(['understanding', 'verification'].includes(options.role), 'Validator uses explicit role routing');
             calls.push('llm');
             return responses.shift();
           },

@@ -660,9 +660,6 @@ export async function markDeletedBatch(
     if (hinted) {
       const label = tiers[hinted].vectorIdToLabel.get(id);
       if (label !== undefined) byTier[hinted].push(label);
-      tiers[hinted].labelToVectorId.delete(label!);
-      tiers[hinted].labelToTimestamp.delete(label!);
-      tiers[hinted].vectorIdToLabel.delete(id);
       continue;
     }
     for (const t of TIERS) {
@@ -670,9 +667,6 @@ export async function markDeletedBatch(
       const label = state.vectorIdToLabel.get(id);
       if (label === undefined) continue;
       byTier[t].push(label);
-      state.labelToVectorId.delete(label);
-      state.labelToTimestamp.delete(label);
-      state.vectorIdToLabel.delete(id);
     }
   }
 
@@ -680,17 +674,21 @@ export async function markDeletedBatch(
     const state = tiers[tier];
     const labels = byTier[tier];
     if (labels.length === 0) continue;
-    if (state.mode !== 'hnsw' || !state.index) continue;
-    try {
-      state.index.markDeleteItems(labels);
-      state.deletedCount += labels.length;
-      state.flushDirty = true;
-      if (tierDeletedRatio(state) > HNSW_DELETED_RATIO_THRESHOLD) state.needsRebuild = true;
-    } catch (e) {
-      console.warn(
-        `[androidRagHnsw] tier=${tier} markDeleteItems(${labels.length}) failed:`,
-        e,
-      );
+    if (state.mode === 'hnsw' && state.index) {
+      try {
+        state.index.markDeleteItems(labels);
+        state.deletedCount += labels.length;
+        state.flushDirty = true;
+        if (tierDeletedRatio(state) > HNSW_DELETED_RATIO_THRESHOLD) state.needsRebuild = true;
+      } catch (e) {
+        throw new Error(`[androidRagHnsw] tier=${tier} markDeleteItems failed: ${String(e)}`);
+      }
+    }
+    for (const label of labels) {
+      const id = state.labelToVectorId.get(label);
+      state.labelToVectorId.delete(label);
+      state.labelToTimestamp.delete(label);
+      if (id !== undefined) state.vectorIdToLabel.delete(id);
     }
   }
   scheduleFlush();

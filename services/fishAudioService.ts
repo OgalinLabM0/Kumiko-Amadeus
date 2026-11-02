@@ -1,6 +1,10 @@
 import type { TtsConfig } from '../types';
 import { CapacitorHttp } from '@capacitor/core';
 import { isCapacitorNative } from './environment';
+import { hasNativeCredentials } from './nativeCredentials';
+import { requestTts } from './ttsCredentials';
+import { TaskCapacityError, type TaskContext } from './taskRuntime';
+import { runStandaloneTransport, runTaskTransport } from './taskGateway';
 // F2B.3: dropped `isMobilePwa` + `httpApi` imports.
 // PWA used to proxy Fish TTS through PC's Fastify (`tts:fish-synth`)
 // because the PWA WebView origin can't pass Fish Audio's CORS check;
@@ -58,7 +62,18 @@ export async function synthesizeSpeechStreaming(
     text: string,
     config: TtsConfig,
     onChunk?: (chunk: Uint8Array) => void,
+    signal?: AbortSignal,
+    taskContext?: TaskContext,
+    assertConfigCurrent: () => void = () => {},
+    alreadyReserved = false,
 ): Promise<TtsSynthesisResult> {
+    if (!alreadyReserved) {
+      const target = { provider: 'fish', model: config.fishAudioModel, operation: 'tts', configRevision: 'captured' };
+      const work = (requestSignal: AbortSignal) => synthesizeSpeechStreaming(text, config, onChunk, requestSignal, taskContext, assertConfigCurrent, true);
+      return taskContext ? runTaskTransport({ ...taskContext, signal }, target, work, assertConfigCurrent)
+        : runStandaloneTransport(target, work, assertConfigCurrent, signal);
+    }
+    if (!hasNativeCredentials() && config.fishAudioApiKey?.startsWith('vault:')) throw new Error('Protected credential is unavailable on this device.');
     const url = 'https://api.fish.audio/v1/tts';
 
     const body: Record<string, unknown> = {
@@ -92,7 +107,7 @@ export async function synthesizeSpeechStreaming(
     // through the native OkHttp plugin's binary path (returns base64) and
     // sidesteps the shim. Electron / Web continue to use real fetch +
     // streaming so onChunk callers still work for the desktop TTS path.
-    if (isCapacitorNative()) {
+    if (isCapacitorNative() && !hasNativeCredentials()) {
         const audio = await postFishNative(url, headers, body, config.format || 'mp3');
         return {
             audio,
@@ -100,18 +115,18 @@ export async function synthesizeSpeechStreaming(
         };
     }
 
-    const res = await fetch(url, {
+    const res = hasNativeCredentials() ? await requestTts('fish', config.fishAudioApiKey, JSON.stringify(body), config.fishAudioModel || 's2-pro', signal) : await fetch(url, {
         method: 'POST',
+        redirect: 'error',
+        signal,
         headers,
         body: JSON.stringify(body),
     });
 
     if (!res.ok) {
-        let detail = '';
-        try { detail = await res.text(); } catch { /* ignore */ }
         throw new TtsError(
             statusToErrorKind(res.status),
-            `Fish Audio TTS failed (${res.status}): ${detail}`,
+            `Fish Audio TTS failed (${res.status})`,
             res.status,
         );
     }
@@ -199,6 +214,9 @@ async function postFishNative(
 export async function synthesizeSpeech(
     text: string,
     config: TtsConfig,
+    signal?: AbortSignal,
+    taskContext?: TaskContext,
+    assertConfigCurrent: () => void = () => {},
 ): Promise<TtsSynthesisResult> {
     // F2B.3: simplified to direct fetch only. Electron desktop hits the
     // network natively; Capacitor APK uses CapacitorHttp (configured in
@@ -209,9 +227,11 @@ export async function synthesizeSpeech(
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
-            return await synthesizeSpeechStreaming(text, config);
+            if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+            return await synthesizeSpeechStreaming(text, config, undefined, signal, taskContext, assertConfigCurrent);
         } catch (err) {
             lastError = err;
+            if (signal?.aborted || err instanceof TaskCapacityError || (err as any)?.name === 'AbortError' || /configuration changed/i.test(String(err))) throw err;
             if (err instanceof TtsError && (err.kind === 'auth' || err.kind === 'payment')) {
                 throw err;
             }

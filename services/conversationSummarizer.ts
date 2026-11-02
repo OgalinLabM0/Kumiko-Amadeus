@@ -1,8 +1,7 @@
 
 import { Message, LocationConfig, Language, SummaryBoundaryReason } from "../types";
-import { getCurrentAIConfig, getGenAI } from "./llmCore";
-import { callOpenAI, callAnthropic } from "./llmProviderService";
-import { resolveTransportProvider } from "./appConfig";
+import { callLLMRaw } from "./llmCore";
+import type { TaskContext } from './taskRuntime';
 
 export const summarizeConversation = async (
   recentMessages: Message[], 
@@ -16,15 +15,9 @@ export const summarizeConversation = async (
     isComplete?: boolean;
     isContinuation?: boolean;
     turnsInSegment?: number;
-  }
+  },
+  taskContext?: TaskContext,
 ): Promise<{ diary: string, notebook: string, chunks: string[] }> => {
-  const config = getCurrentAIConfig();
-  const provider = config.provider || 'gemini';
-  const transportProvider = resolveTransportProvider(
-    provider,
-    config.useCustomEndpoint ? config.customEndpoint : undefined
-  );
-
   try {
     const historyText = recentMessages.map(m => {
         const msgDate = new Date(m.timestamp);
@@ -217,35 +210,8 @@ export const summarizeConversation = async (
       [/MEMORY_CHUNKS]
     `;
 
-    let modelName = config.model_summary;
-    if (!modelName) {
-        switch (provider) {
-            case 'openai': modelName = 'gpt-4o-mini'; break;
-            case 'anthropic': modelName = 'claude-3-5-haiku-20241022'; break;
-            case 'deepseek': modelName = 'deepseek-chat'; break;
-            case 'grok': modelName = 'grok-2-latest'; break;
-            default: modelName = 'gemini-2.5-flash';
-        }
-    }
-
-    let text = "";
-    if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-        const result = await callOpenAI(config, modelName, "You are a helpful summarizer.", [], prompt);
-        text = result.text || "";
-    } else if (transportProvider === 'anthropic') {
-        const result = await callAnthropic(config, modelName, "You are a helpful summarizer.", [], prompt);
-        text = result.text || "";
-    } else {
-        const ai = getGenAI();
-        const result = await ai.models.generateContent({
-          model: modelName, 
-          contents: prompt,
-          config: {
-            responseMimeType: 'text/plain',
-          }
-        });
-        text = result.text || "";
-    }
+    let text = await callLLMRaw('You are a helpful summarizer.', prompt, undefined,
+      { taskContext, role: 'memory', signal: taskContext?.signal });
     
     if (!text.trim()) {
       throw new Error('Memory summarization returned an empty response.');

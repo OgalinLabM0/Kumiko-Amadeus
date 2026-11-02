@@ -69,6 +69,10 @@ const cache: Map<string, ReminderPrewarmEntry> = new Map();
 const PREWARM_LEAD_MS = 60_000;
 const PREWARM_KICK_WINDOW_MS = 10_000; // T-60s ~ T-50s detection window in poller
 const PREWARM_RESULT_GRACE_MS = 90_000; // entry stays valid up to 90 s after dueAt
+const discardVoice = (entry: ReminderPrewarmEntry) => {
+  if (entry.voice?.voiceFileId) void import('./orphanVoiceCleanup').then(service => service.discardUnreferencedVoice(entry.voice!.voiceFileId))
+    .catch(error => console.warn('[TTS] Unreferenced prewarm cleanup failed:', error));
+};
 
 /** Returns true when `now` is inside the T-60s..T-50s detection window. */
 export function shouldKickReminderPrewarm(dueAt: number, now: number): boolean {
@@ -88,6 +92,7 @@ export function consumeReminderPrewarm(reminderId: string, now = Date.now()): Re
   if (entry.status !== 'ready' && entry.status !== 'llm-ready') return null;
   if (now > entry.dueAt + PREWARM_RESULT_GRACE_MS) {
     cache.delete(reminderId);
+    discardVoice(entry);
     return null;
   }
   entry.status = 'consumed';
@@ -107,6 +112,7 @@ export function cancelReminderPrewarm(reminderId: string, reason?: string): void
   if (reason) entry.failureReason = reason;
   try { entry.abort.abort(reason); } catch { /* noop */ }
   cache.delete(reminderId);
+  discardVoice(entry);
 }
 
 /**
@@ -140,6 +146,7 @@ export function startReminderPrewarm(
 export function clearAllReminderPrewarm(): void {
   for (const entry of cache.values()) {
     try { entry.abort.abort('cache-cleared'); } catch { /* noop */ }
+    discardVoice(entry);
   }
   cache.clear();
 }

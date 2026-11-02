@@ -1,6 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '../store';
 import { getAmbientEnvironmentContext } from '../components/app/ambientContext';
+import { getDataRestoreVersion } from '../services/dataRestoreGate';
+import { getMemoryGeneration } from '../services/memoryMaintenanceGate';
+import type { TaskContext } from '../services/taskRuntime';
 import {
   getDetailedScheduleSlot,
   getBusyEndTimestamp,
@@ -57,7 +60,10 @@ export function useBusyRegulator(enabled: boolean): void {
         // Holiday / schedule detection is async, but we cache the last
         // result across ticks to avoid thrashing the ambient context
         // every second.
-        const ambient = await getCachedAmbient();
+        const id = crypto.randomUUID();
+        const backgroundContext: TaskContext = { taskId: id, rootId: id, role: 'memory', lane: 'background', deadlineAt: now + 180_000,
+          epoch: getDataRestoreVersion(), memoryGeneration: getMemoryGeneration(), modelRevisions: {}, consultedSources: [] };
+        const ambient = await getCachedAmbient(backgroundContext);
         const isHoliday = ambient.includes('今日特殊历法：日本法定节假日');
         const slot = getDetailedScheduleSlot(locationConfig.modelTimezone, isHoliday);
 
@@ -118,6 +124,11 @@ export function useBusyRegulator(enabled: boolean): void {
               preparedTextParts: result.textParts,
               preparedEmotion: result.emotion,
               preparedResponseEventId: result.responseEventId,
+              preparedMemoryGeneration: result.memoryGeneration,
+              preparedRestoreVersion: result.restoreVersion,
+              preparedSourceRevisions: result.sourceVersions,
+              preparedModelRevisions: result.modelRevisions,
+              preparedConsultedSources: result.consultedSources,
               preparedPsycheDelta: result.psycheDelta,
               preparedAt: Date.now(),
               failureCount: 0,
@@ -220,11 +231,11 @@ export function useBusyRegulator(enabled: boolean): void {
 // overhead minimal; the ambient string only really changes day-to-day.
 let ambientCache: { text: string; at: number } | null = null;
 const AMBIENT_TTL_MS = 5 * 60 * 1000;
-async function getCachedAmbient(): Promise<string> {
+async function getCachedAmbient(taskContext: TaskContext): Promise<string> {
   const now = Date.now();
   if (ambientCache && now - ambientCache.at < AMBIENT_TTL_MS) return ambientCache.text;
   try {
-    const text = await getAmbientEnvironmentContext();
+    const text = await getAmbientEnvironmentContext(taskContext);
     ambientCache = { text, at: now };
     return text;
   } catch {

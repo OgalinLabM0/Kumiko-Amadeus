@@ -1,0 +1,21 @@
+'use strict';
+const fs = require('node:fs'), vm = require('node:vm'), ts = require('typescript'), assert = require('node:assert/strict');
+const source = fs.readFileSync('services/androidRagService.ts', 'utf8');
+const start = source.indexOf('async function handleClearMessageVectors('), end = source.indexOf('\nasync function handleStats(', start);
+assert.ok(start >= 0 && end > start);
+const js = ts.transpileModule(source.slice(start, end) + '\nglobalThis.clearMessages=handleClearMessageVectors;', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+let rows = [{ id: 'vector-a', messageId: 'message-a', tier: 'core' }], fail = true;
+const db = { vectors: { filter: fn => ({ toArray: async () => rows.filter(fn) }), bulkDelete: async ids => { rows = rows.filter(row => !ids.includes(row.id)); } } };
+const hnsw = { normalizeTier: tier => tier, async markDeletedBatch() { if (fail) throw Error('synthetic HNSW failure'); } };
+const sandbox = { db, hnsw, console: { warn() {} }, Map };
+vm.runInNewContext(js, sandbox);
+(async () => {
+  const failed = await sandbox.clearMessages({ messageIds: ['message-a'] });
+  assert.equal(failed.success, false); assert.equal(rows.length, 1, 'retain vector for retry after index failure');
+  fail = false;
+  const success = await sandbox.clearMessages({ messageIds: ['message-a'] });
+  assert.equal(success.success, true); assert.equal(success.removed, 1); assert.equal(success.count, 1); assert.equal(success.deleted, 1); assert.equal(rows.length, 0);
+  const empty = await sandbox.clearMessages({ messageIds: ['message-a'] });
+  assert.equal(empty.removed, 0); assert.equal(empty.count, 0);
+  console.log('Android RAG delete fixture passed: index failure preserves retry source; success returns explicit counts.');
+})().catch(error => { console.error(error); process.exitCode = 1; });

@@ -183,8 +183,8 @@ export const UI_TRANSLATIONS = {
 
     // Guide Section
     guideTitle: "全知全能之书",
-    guideDesc: "功能结构、底层逻辑、记忆链路与行为机制的完整说明书。",
-    viewFullGuide: "打开系统档案",
+    guideDesc: "她怎么记事、约定怎么保存，遇到不明白的地方，可以来这里翻一翻。",
+    viewFullGuide: "翻开这本书",
     
     localBackup: "本地自动备份",
     localStorageHelp: "挂载下方本地 JSON 文件后生效。存档写在你自己磁盘上的 JSON 文件里，卸载或重装软件都不会影响它。",
@@ -756,8 +756,8 @@ export const UI_TRANSLATIONS = {
 
     // Guide Section
     guideTitle: "OMNISCIENT BOOK",
-    guideDesc: "Complete manual for structure, logic, memory flow, and behavior rules.",
-    viewFullGuide: "OPEN SYSTEM DOSSIER",
+    guideDesc: "How she remembers things, how reminders are saved—have a look whenever something is unclear.",
+    viewFullGuide: "OPEN THE BOOK",
 
     localBackup: "Local Storage (Auto)",
     localStorageHelp: "Takes effect once you mount a local JSON file below. Your save data lives on your own disk and survives reinstalls or cache clears.",

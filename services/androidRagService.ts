@@ -22,7 +22,11 @@
 // Electron IPC exactly as before.
 
 import { db, type VectorEntity } from './db';
+import { assertDataWritesAllowed, getDataRestoreVersion } from './dataRestoreGate';
+import { assertBackgroundJobClaim } from './backgroundJobs';
 import { generateCloudEmbedding, getEmbeddingConfig } from './cloudEmbeddingService';
+import { TaskCapacityError, type TaskContext } from './taskRuntime';
+import { getMemoryGeneration } from './memoryMaintenanceGate';
 import * as hnsw from './androidRagHnswIndex';
 import type { RagTier } from './androidRagHnswIndex';
 import {
@@ -172,16 +176,19 @@ async function loadTierRows(tier: RagTier, filters: Filters): Promise<VectorEnti
 // embed / save handlers
 // =====================================================================
 
-async function handleEmbed(text: string): Promise<{ success: boolean; vector?: number[]; error?: string }> {
+async function handleEmbed(text: string, taskContext?: TaskContext): Promise<{ success: boolean; vector?: number[]; error?: string }> {
   try {
-    const result = await generateCloudEmbedding(text);
+    const result = await generateCloudEmbedding(text, undefined, taskContext);
     return { success: true, vector: Array.from(result.vector) };
   } catch (e) {
+    if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
     return { success: false, error: e instanceof Error ? e.message : 'Unknown error' };
   }
 }
 
-async function handleSave(payload: any): Promise<{ success: boolean; id?: string; error?: string }> {
+async function handleSave(payload: any, taskContext?: TaskContext): Promise<{ success: boolean; id?: string; error?: string }> {
+  const restoreVersion = getDataRestoreVersion();
+  assertDataWritesAllowed();
   const {
     id: providedId,
     text,
@@ -203,9 +210,10 @@ async function handleSave(payload: any): Promise<{ success: boolean; id?: string
   let vectorBuf = ensureFloat32(vector);
   if (!vectorBuf) {
     try {
-      const result = await generateCloudEmbedding(text);
+      const result = await generateCloudEmbedding(text, undefined, taskContext);
       vectorBuf = result.vector;
     } catch (e) {
+      if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
       return { success: false, error: e instanceof Error ? e.message : 'Embedding failed' };
     }
   }
@@ -229,7 +237,17 @@ async function handleSave(payload: any): Promise<{ success: boolean; id?: string
   if (typeof role === 'string' && role) entity.role = role;
 
   try {
-    await db.vectors.put(entity);
+    await db.transaction('rw', [db.vectors, db.keyval, db.kumikoDiary], async () => {
+      assertDataWritesAllowed();
+      if (restoreVersion !== getDataRestoreVersion()) throw new Error('RAG write expired after restoration.');
+      if (payload.backgroundJob) {
+        await assertBackgroundJobClaim(payload.backgroundJob.claim);
+        const diary = await db.kumikoDiary.get(payload.backgroundJob.sourceId);
+        if (!diary || text !== `[久美子的日记 - ${diary.date}]\n${diary.content}`
+          || timestamp !== diary.timestamp) throw new Error('Diary changed before vector commit.');
+      }
+      await db.vectors.put(entity);
+    });
   } catch (e) {
     return { success: false, error: e instanceof Error ? e.message : 'Dexie put failed' };
   }
@@ -409,7 +427,7 @@ async function searchByKeywords(
   }));
 }
 
-async function handleSearch(payload: RagSearchPayload): Promise<RagSearchResponse> {
+async function handleSearch(payload: RagSearchPayload, taskContext?: TaskContext): Promise<RagSearchResponse> {
   const { query, topK = 5, keywords = [], memoryIntent = 'default' as MemoryIntent } = payload || ({} as RagSearchPayload);
   if (!query || typeof query !== 'string') {
     return { success: true, results: [] };
@@ -421,9 +439,10 @@ async function handleSearch(payload: RagSearchPayload): Promise<RagSearchRespons
 
   let queryVec: Float32Array;
   try {
-    const result = await generateCloudEmbedding(query);
+    const result = await generateCloudEmbedding(query, undefined, taskContext);
     queryVec = result.vector;
   } catch (e) {
+    if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
     console.warn('[androidRag] embedding query failed, returning empty results:', e);
     return { success: true, results: [] };
   }
@@ -536,11 +555,21 @@ function asResultRow(r: RetrievedResult): RagSearchResultRow {
 
 async function handleGetAll(): Promise<{ success: boolean; vectors: any[] }> {
   const rows = await db.vectors.toArray();
-  const vectors = rows.map((row) => ({
+  const vectors = await Promise.all(rows.map(async (row) => ({
     ...row,
     vector: row.vector ? Array.from(ensureFloat32(row.vector) || []) : [],
-  }));
+    ...(await artifactMetadata(row.canonicalKey)),
+  })));
   return { success: true, vectors };
+}
+
+async function artifactMetadata(canonicalKey?: string): Promise<Record<string, unknown>> {
+  const match = /^ka-artifact:(ka-[a-f0-9]{64}):\d+$/.exec(canonicalKey || '');
+  if (!match) return {};
+  const registry = (await db.keyval.get('kumiko_summary_artifact_v1:' + match[1]))?.value;
+  if (!registry) return { artifactId: match[1], artifactState: 'missing', sourceRefs: [] };
+  return { artifactId: match[1], artifactVersion: registry.version, artifactState: registry.state,
+    sourceRefs: registry.sourceRefs, artifactChunkCount: registry.chunkCount };
 }
 
 async function handleClearAll(): Promise<{ success: boolean }> {
@@ -553,23 +582,24 @@ async function handleClearAll(): Promise<{ success: boolean }> {
   return { success: true };
 }
 
-async function handleClearMessageVectors(payload: any): Promise<{ success: boolean; deleted?: number }> {
+async function handleClearMessageVectors(payload: any): Promise<{ success: boolean; deleted?: number; removed?: number; count?: number; error?: string }> {
   const ids: string[] = Array.isArray(payload?.messageIds) ? payload.messageIds : [];
-  if (ids.length === 0) return { success: true, deleted: 0 };
+  if (ids.length === 0) return { success: true, deleted: 0, removed: 0, count: 0 };
   const matching = await db.vectors.filter((v) => !!v.messageId && ids.includes(v.messageId)).toArray();
-  if (matching.length === 0) return { success: true, deleted: 0 };
+  if (matching.length === 0) return { success: true, deleted: 0, removed: 0, count: 0 };
 
   const vectorIds = matching.map((v) => v.id);
   const tierMap = new Map<string, RagTier>();
   for (const m of matching) tierMap.set(m.id, hnsw.normalizeTier(m.tier));
 
-  await db.vectors.bulkDelete(vectorIds);
   try {
     await hnsw.markDeletedBatch(vectorIds, tierMap);
   } catch (e) {
     console.warn('[androidRag] hnsw.markDeletedBatch threw:', e);
+    return { success: false, error: 'Unable to remove message vectors from the search index.' };
   }
-  return { success: true, deleted: matching.length };
+  await db.vectors.bulkDelete(vectorIds);
+  return { success: true, deleted: matching.length, removed: matching.length, count: matching.length };
 }
 
 async function handleStats(): Promise<{ success: boolean; count: number; totalBytes: number }> {
@@ -868,7 +898,7 @@ function providerFingerprint(): string {
   return `${cfg.provider}|${cfg.model}|${cfg.dimensions ?? 0}`;
 }
 
-async function runReembed(opts: { fromScratch: boolean }): Promise<void> {
+async function runReembed(opts: { fromScratch: boolean; taskContext: TaskContext }): Promise<void> {
   hnsw.setRebuildInProgress(true);
   try {
     let cursor = await db.getVal<number>(KEYVAL_REEMBED_CURSOR, 0);
@@ -921,7 +951,7 @@ async function runReembed(opts: { fromScratch: boolean }): Promise<void> {
         let lastErr: Error | null = null;
         for (let attempt = 0; attempt < REEMBED_RETRY_MAX; attempt += 1) {
           try {
-            const result = await generateCloudEmbedding(row.text);
+            const result = await generateCloudEmbedding(row.text, undefined, opts.taskContext);
             rebuildSnapshot.apiCallsCount = (rebuildSnapshot.apiCallsCount || 0) + 1;
             const tier = hnsw.normalizeTier(row.tier);
             const updated: VectorEntity = { ...row, vector: result.vector, tier };
@@ -931,6 +961,11 @@ async function runReembed(opts: { fromScratch: boolean }): Promise<void> {
             failedSet.delete(row.id);
             break;
           } catch (e) {
+            if (e instanceof TaskCapacityError || opts.taskContext.signal?.aborted) {
+              await db.setVal(KEYVAL_REEMBED_CURSOR, cursor);
+              await db.setVal(KEYVAL_REEMBED_FAILED_IDS, Array.from(failedSet));
+              throw e;
+            }
             lastErr = e instanceof Error ? e : new Error(String(e));
             rebuildSnapshot.error = lastErr.message;
             await new Promise<void>((resolve) =>
@@ -982,7 +1017,7 @@ async function runReembed(opts: { fromScratch: boolean }): Promise<void> {
   }
 }
 
-async function handleReembedStart(payload?: { resume?: boolean }): Promise<{
+async function handleReembedStart(payload?: { resume?: boolean }, taskContext?: TaskContext): Promise<{
   success: boolean;
   started: boolean;
   alreadyRunning: boolean;
@@ -1017,7 +1052,10 @@ async function handleReembedStart(payload?: { resume?: boolean }): Promise<{
     failedCount: (await getStoredFailedIds()).length,
   };
 
-  rebuildPromise = runReembed({ fromScratch }).finally(() => {
+  const id = crypto.randomUUID();
+  const context = taskContext || { taskId: id, rootId: id, role: 'memory', lane: 'background' as const,
+    deadlineAt: Date.now() + 180_000, epoch: getDataRestoreVersion(), memoryGeneration: getMemoryGeneration(), modelRevisions: {}, consultedSources: [] };
+  rebuildPromise = runReembed({ fromScratch, taskContext: context }).finally(() => {
     rebuildPromise = null;
   });
 
@@ -1074,13 +1112,28 @@ async function handleReembedInfo(): Promise<{
 }
 
 interface RagDispatchTable {
-  [channel: string]: (payload?: any) => Promise<any>;
+  [channel: string]: (payload?: any, taskContext?: TaskContext) => Promise<any>;
 }
 
 const dispatch: RagDispatchTable = {
-  'rag:embed': (payload) => handleEmbed(typeof payload === 'string' ? payload : payload?.text || ''),
+  'rag:embed': (payload, taskContext) => handleEmbed(typeof payload === 'string' ? payload : payload?.text || '', taskContext),
   'rag:save': handleSave,
-  'rag:search': handleSearch,
+  'rag:diary-lease': async payload => {
+    assertDataWritesAllowed();
+    if (!payload?.release) await assertBackgroundJobClaim(payload?.claim);
+    return { success: true };
+  },
+  'rag:get-by-id': async payload => {
+    assertDataWritesAllowed();
+    if (typeof payload?.id !== 'string' || payload.id.length > 200 || !payload.id.startsWith('diary-')) return { success: false, error: 'Invalid diary vector id.' };
+    const row = await db.vectors.get(payload.id);
+    return { success: true, row: row ? { id: row.id, text: row.text, timestamp: row.timestamp, canonicalKey: row.canonicalKey } : null };
+  },
+  'rag:search': async (payload, taskContext) => {
+    const result = await handleSearch(payload, taskContext);
+    if (Array.isArray(result.results)) result.results = await Promise.all(result.results.map(async row => ({ ...row, ...(await artifactMetadata(row.canonicalKey)) })));
+    return result;
+  },
   'rag:get-all': handleGetAll,
   'rag:clear-all': handleClearAll,
   'rag:clear-message-vectors': handleClearMessageVectors,
@@ -1103,15 +1156,16 @@ const dispatch: RagDispatchTable = {
  * graceful degraded response (instead of throwing) for any channel we
  * haven't ported, so UIs that expect `success: true / false` keep working.
  */
-export async function invokeAndroidRag<T = any>(channel: string, payload?: any): Promise<T> {
+export async function invokeAndroidRag<T = any>(channel: string, payload?: any, taskContext?: TaskContext): Promise<T> {
   const handler = dispatch[channel];
   if (!handler) {
     console.warn(`[androidRag] unimplemented channel: ${channel}`);
     return { success: false, error: `Channel not available on Android: ${channel}` } as unknown as T;
   }
   try {
-    return (await handler(payload)) as T;
+    return (await handler(payload, taskContext)) as T;
   } catch (e) {
+    if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
     console.error(`[androidRag] channel ${channel} threw:`, e);
     return { success: false, error: e instanceof Error ? e.message : 'Unknown error' } as unknown as T;
   }

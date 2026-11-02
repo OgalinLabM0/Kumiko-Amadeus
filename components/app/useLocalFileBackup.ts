@@ -10,6 +10,9 @@ import {
 import { normalizeBackupConfig } from '../../services/appConfig';
 import { isVoiceServiceAvailable } from '../../services/voiceFileService';
 import { dialogService } from '../../services/dialogService';
+import { openSessionJson, protectionStatus } from '../../services/backupProtection';
+import { isEncryptedBackup } from '../../services/portableBackupCrypto.mjs';
+import { getDataRestoreVersion, isDataRestoreBlocked } from '../../services/dataRestoreGate';
 import { useAppStore } from '../../store';
 import { yieldToMainThread } from './appUtils';
 import { validateBackupImportPayload } from './backupImportValidation';
@@ -31,7 +34,7 @@ export interface UseLocalFileBackupInput {
   setLastBackupTime: (v: number | null) => void;
   updateBaseline: (timestamp?: number, baselineData?: any) => void;
   performFileSave: (handle: any, data: any) => Promise<boolean>;
-  restoreBackupData: (backup: any) => Promise<any>;
+  restoreBackupData: (backup: any, mediaHooks?: undefined, expectedVersion?: string) => Promise<any>;
 }
 
 export interface UseLocalFileBackupResult {
@@ -68,7 +71,7 @@ export const useLocalFileBackup = ({
 }: UseLocalFileBackupInput): UseLocalFileBackupResult => {
   const handleCreateNewLocalFile = useCallback(async (): Promise<boolean> => {
     try {
-      const defaultFileName = `kumiko_backup_${new Date().toISOString().slice(0, 10)}.json`;
+      const defaultFileName = `kumiko_backup_${new Date().toISOString().slice(0, 10)}.${await protectionStatus() ? 'kab' : 'json'}`;
 
       // F2B.1: removed the `if (isMobilePwa())` branch that delegated to
       // MobileRemoteFileBrowser via `pickMobileCreateFile`. PWA is gone;
@@ -99,7 +102,7 @@ export const useLocalFileBackup = ({
         // @ts-ignore -- File System Access API typing
         const handle = await window.showSaveFilePicker({
           suggestedName: defaultFileName,
-          types: [{ description: 'JSON Backup File', accept: { 'application/json': ['.json'] } }],
+          types: [{ description: 'Backup File', accept: { 'application/json': ['.json'], 'application/octet-stream': ['.kab'] } }],
         });
         fileHandleRef.current = handle;
         setConnectedFileName(handle.name);
@@ -135,9 +138,13 @@ export const useLocalFileBackup = ({
   }, []);
 
   const handleOpenLocalFile = useCallback(async (): Promise<boolean> => {
+    if (isDataRestoreBlocked()) return false;
+    const expectedVersion = getDataRestoreVersion();
     try {
       let text = '';
       let parsedJson: any = null;
+      let selectedHandle: any = null;
+      let selectedName: string | null = null;
 
       // F2B.1: removed the `if (isMobilePwa())` branch that delegated to
       // MobileRemoteFileBrowser + `backup:read-desktop-file`.
@@ -152,10 +159,11 @@ export const useLocalFileBackup = ({
           return false;
         }
 
-        fileHandleRef.current = result.filePath;
-        setConnectedFileName(result.fileName || result.filePath.split(/[\\/]/).pop() || result.filePath);
-        localStorage.setItem(LOCAL_BACKUP_PATH_STORAGE_KEY, result.filePath);
-        const parsedResult = await parseDesktopBackupImportFile(result.filePath);
+        selectedHandle = result.filePath;
+        selectedName = result.fileName || result.filePath.split(/[\\/]/).pop() || result.filePath;
+        const password = isEncryptedBackup(result.content) ? await dialogService.prompt({ message: language === 'zh' ? '输入该备份的密码。' : 'Enter the password for this backup.', secret: true }) : undefined;
+        if (isEncryptedBackup(result.content) && !password) return false;
+        const parsedResult = await parseDesktopBackupImportFile(result.filePath, password || undefined);
         if (!parsedResult.success || !parsedResult.json) {
           throw new Error(parsedResult.error || 'Failed to parse desktop backup file.');
         }
@@ -171,16 +179,15 @@ export const useLocalFileBackup = ({
         }
         // @ts-ignore -- File System Access API typing
         const [handle] = await window.showOpenFilePicker({
-          types: [{ description: 'JSON Backup File', accept: { 'application/json': ['.json'] } }],
+          types: [{ description: 'Backup File', accept: { 'application/json': ['.json'], 'application/octet-stream': ['.kab'] } }],
           multiple: false,
         });
-        fileHandleRef.current = handle;
-        setConnectedFileName(handle.name);
-        localStorage.removeItem(LOCAL_BACKUP_PATH_STORAGE_KEY);
+        selectedHandle = handle;
+        selectedName = handle.name;
 
         try {
           const file = await handle.getFile();
-          text = await file.text();
+          text = await openSessionJson(await file.text());
         } catch (readErr) {
           console.log('Error reading file:', readErr);
           void dialogService.alert({
@@ -190,8 +197,6 @@ export const useLocalFileBackup = ({
           return false;
         }
       }
-
-      setBackupConfig((prev) => normalizeBackupConfig({ ...prev, localEnabled: true }));
 
       if (parsedJson || text) {
         await yieldToMainThread();
@@ -225,8 +230,14 @@ export const useLocalFileBackup = ({
           }
         }
 
-        const restoredData = json ? await restoreBackupData(json) : null;
+        if (isDataRestoreBlocked() || getDataRestoreVersion() !== expectedVersion) throw new Error('Data changed while the backup was being prepared.');
+        const restoredData = json ? await restoreBackupData(json, undefined, expectedVersion) : null;
         if (restoredData) {
+          fileHandleRef.current = selectedHandle;
+          setConnectedFileName(selectedName);
+          if (typeof selectedHandle === 'string') localStorage.setItem(LOCAL_BACKUP_PATH_STORAGE_KEY, selectedHandle);
+          else localStorage.removeItem(LOCAL_BACKUP_PATH_STORAGE_KEY);
+          setBackupConfig((prev) => normalizeBackupConfig({ ...prev, localEnabled: true }));
           const restoredAt = json.timestamp || Date.now();
           setLastBackupTime(restoredAt);
           updateBaseline(restoredAt, restoredData);
@@ -247,6 +258,8 @@ export const useLocalFileBackup = ({
   }, [restoreBackupData, updateBaseline, language]);
 
   const handleManualLocalReload = useCallback(async (): Promise<void> => {
+    if (isDataRestoreBlocked()) return;
+    const expectedVersion = getDataRestoreVersion();
     const handle = fileHandleRef.current;
     if (!handle) return;
     const proceed = await dialogService.confirm({
@@ -264,14 +277,19 @@ export const useLocalFileBackup = ({
       // branch — that path used `backup:read-desktop-file` over HTTP IPC,
       // which is gone with the PWA bridge.
       if (isDesktopElectron() && typeof handle === 'string') {
-        const parsedResult = await parseDesktopBackupImportFile(handle);
+        let parsedResult = await parseDesktopBackupImportFile(handle);
+        if (!parsedResult.success && /password|corrupted|key|storage/i.test(parsedResult.error || '')) {
+          const password = await dialogService.prompt({ message: language === 'zh' ? '输入该备份的密码。' : 'Enter the password for this backup.', secret: true });
+          if (!password) return;
+          parsedResult = await parseDesktopBackupImportFile(handle, password);
+        }
         if (!parsedResult.success || !parsedResult.json) {
           throw new Error(parsedResult.error || 'Failed to parse desktop backup file.');
         }
         parsedJson = parsedResult.json;
       } else {
         const file = await handle.getFile();
-        text = await file.text();
+        text = await openSessionJson(await file.text());
       }
 
       if (parsedJson || text) {
@@ -281,7 +299,8 @@ export const useLocalFileBackup = ({
         if (!validation.valid) {
           throw new Error(`Invalid backup payload: ${validation.reason || 'unrecognized structure'}`);
         }
-        const restoredData = await restoreBackupData(json);
+        if (isDataRestoreBlocked() || getDataRestoreVersion() !== expectedVersion) throw new Error('Data changed while the backup was being prepared.');
+        const restoredData = await restoreBackupData(json, undefined, expectedVersion);
         if (restoredData) {
           updateBaseline(json.timestamp || Date.now(), restoredData);
           useAppStore.getState().setSystemNotice(

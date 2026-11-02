@@ -6,19 +6,21 @@ import { UI_TRANSLATIONS } from '../constants';
 import { useAppStore } from '../store';
 import { getCurrentAIConfig, validateAIConnection, validateModels, validateSearchCapability } from '../services/geminiService';
 import { setAIConfig } from '../services/llmCore';
-import { clearAllLocalRagMemory, syncRawHistoryMessagesToMain } from '../services/localRagService';
 import { getDefaultMainModel, getDefaultSummaryModel, getDefaultVisionModel } from '../services/appConfig';
 import { db } from '../services/db';
-import { deleteRingtoneFile, deleteVoiceFile, isVoiceServiceAvailable, listVoiceFiles } from '../services/voiceFileService';
 import { getCapacitorPlatform, isCapacitorNative } from '../services/environment';
-import { capacitorImageDelete, capacitorImageClearAll } from '../services/imageFileService';
+import { capacitorImageDelete } from '../services/imageFileService';
+import { runDataResetSession } from '../services/dataResetSession';
 import { AndroidPermissionsSection } from './settings/AndroidPermissionsSection';
 import { DataManagementSection } from './settings/DataManagementSection';
+import { MemoryMaintenanceSection } from './settings/MemoryMaintenanceSection';
 // F2B.4: removed `MobileAccessSection` + `MobileBrowseRootSection` imports.
 // The PC-side Tailscale-cert + Fastify mobile-bridge UI was deleted along
 // with the rest of the PWA pairing infrastructure.
 import { AccountSection } from './settings/AccountSection';
 import { ApiConfigSection } from './settings/ApiConfigSection';
+import { ModelRoleSettings } from './settings/ModelRoleSettings';
+import { BackgroundMaintenanceSection } from './settings/BackgroundMaintenanceSection';
 import { AppUpdateSection } from './settings/AppUpdateSection';
 import { BackupSection } from './settings/BackupSection';
 import { DiaryLifeSection } from './settings/DiaryLifeSection';
@@ -266,6 +268,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   });
   const {
     tavilyApiKey,
+    hasSavedKey: hasSavedTavilyKey,
+    setTavilyApiKey,
     enableInternetSearch,
     tavilyUsage,
     searchStatus,
@@ -273,6 +277,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     setSearchStatus,
     setSearchStatusType,
     saveConfig: handleSaveTavilyConfig,
+    removeConfig: handleRemoveTavilyConfig,
     testSearch: handleTestTavilySearch,
     refreshUsage: fetchTavilyUsage
   } = useTavilySearchSettings(isOpen, isInternetSearchOpen, language, t, showDialog);
@@ -564,6 +569,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           });
           return;
       }
+      setLocalAiConfig(getCurrentAIConfig());
       showDialog({
         title: language === 'zh' ? "配置已保存" : "Configuration Saved",
         message: language === 'zh' ? "配置已保存并即时生效。" : "Configuration saved and applied.",
@@ -674,46 +680,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                           onConfirm: async (input) => {
                               if (input && input.toLowerCase() === 'yes') {
                                   try {
-                                      if (isVoiceServiceAvailable()) {
-                                          const voiceFiles = await listVoiceFiles();
-                                          await Promise.all(voiceFiles.map(file => deleteVoiceFile(file.id)));
-                                          await deleteRingtoneFile();
-                                      }
-
-                                      // v2.14.4 F.6: wipe Capacitor image
-                                      // files before db.images.clear() drops
-                                      // the metadata that points at them.
-                                      // PC's userData/images/ is wiped via
-                                      // Electron IPC elsewhere in the
-                                      // shutdown path; web/dev has nothing.
-                                      if (isCapacitorNative()) {
-                                          try { await capacitorImageClearAll(); }
-                                          catch (e) { console.warn('[SettingsPanel] Capacitor image wipe failed:', e); }
-                                      }
-
-                                      await Promise.all([
-                                          clearAllLocalRagMemory(),
-                                          syncRawHistoryMessagesToMain([], { replaceAll: true })
-                                      ]);
-
-                                      await Promise.all([
-                                          db.messages.clear(),
-                                          db.images.clear(),
-                                          db.vectors.clear(),
-                                          db.keyval.clear(),
-                                          db.episodes.clear(),
-                                          db.dailyFragments.clear(),
-                                          db.kumikoDiary.clear(),
-                                          db.psycheState.clear()
-                                      ]);
-
-                                      if ('caches' in window) {
-                                          const cacheKeys = await caches.keys();
-                                          await Promise.all(cacheKeys.map(cacheKey => caches.delete(cacheKey)));
-                                      }
-
-                                      localStorage.clear();
-                                      sessionStorage.clear();
+                                      await runDataResetSession();
                                       showDialog({
                                           title: language === 'zh' ? "成功" : "Success",
                                           message: language === 'zh' ? "所有数据已清空。应用程序现在将重新加载。" : "All data cleared. The application will now reload.",
@@ -727,7 +694,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                                       console.error("Failed to clear all data", e);
                                       showDialog({ 
                                           title: language === 'zh' ? "错误" : "Error", 
-                                          message: language === 'zh' ? "清空所有数据失败。" : "Failed to clear all data.", 
+                                          message: language === 'zh' ? "清空尚未完成，数据写入已暂停。请重新启动以继续清理。" : "Clearing is incomplete and data writes are paused. Restart to continue.",
                                           type: 'alert' 
                                       });
                                   }
@@ -1353,6 +1320,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     <>
       {shouldRenderSection('api') && (
       <div id="settings-section-api" >
+        <ModelRoleSettings config={localAiConfig} onChange={setLocalAiConfig} language={language} />
+        <BackgroundMaintenanceSection language={language} isDarkMode={isDarkMode} />
         <ApiConfigSection
           isOpen={isApiConfigOpen}
           onToggle={() => handleSectionToggle('api', isApiConfigOpen)}
@@ -1431,6 +1400,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           inputClass={inputClass}
           t={t}
           tavilyApiKey={tavilyApiKey}
+          hasSavedKey={hasSavedTavilyKey}
+          onKeyChange={setTavilyApiKey}
+          onRemoveConfig={handleRemoveTavilyConfig}
           enableInternetSearch={enableInternetSearch}
           tavilyUsage={tavilyUsage}
           searchStatus={searchStatus}
@@ -1572,6 +1544,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
 
       {shouldRenderSection('data') && (
       <div id="settings-section-data" >
+        <MemoryMaintenanceSection language={language} isDarkMode={isDarkMode} />
         <DataManagementSection
           isOpen={isDataManagementOpen}
           onToggle={() => handleSectionToggle('data', isDataManagementOpen)}
@@ -1969,7 +1942,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         </div>
       </div>
 
-      <input type="file" ref={fileInputRef} className="hidden" accept=".json,.zip" onChange={handleFileChange} />
+      <input type="file" ref={fileInputRef} className="hidden" accept=".json,.zip,.kab" onChange={handleFileChange} />
 
       <FullGuideModal isOpen={showFullGuide} onClose={() => setShowFullGuide(false)} language={language} isDarkMode={isDarkMode} />
       <CustomDialog 

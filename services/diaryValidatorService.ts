@@ -1,5 +1,6 @@
-import { callLLMRaw, getCurrentAIConfig } from './geminiService';
+import { callLLMRaw } from './geminiService';
 import { searchLocalRagMemory } from './localRagService';
+import type { TaskContext } from './taskRuntime';
 
 // Platform note (post F2B.3):
 //   `searchLocalRagMemory` routes through `getRagInvoker()` inside
@@ -28,6 +29,7 @@ export interface DiaryDateMetadata {
 // are optional so existing callers are unaffected.
 export interface VerifyAgainstHistoryOptions {
   signal?: AbortSignal;
+  taskContext?: TaskContext;
   onPhase?: (phase: 'extracting' | 'rag' | 'verifying' | 'retry') => void;
 }
 
@@ -38,7 +40,6 @@ export const verifyAgainstHistory = async (
   dateMetadata?: DiaryDateMetadata,
   options?: VerifyAgainstHistoryOptions,
 ): Promise<string[]> => {
-  const config = getCurrentAIConfig();
   const checkAbort = () => {
     if (options?.signal?.aborted) {
       throw new DOMException('verifyAgainstHistory aborted', 'AbortError');
@@ -63,7 +64,7 @@ ${draftContent}
   const extractionResult = await callLLMRaw(
     extractionPrompt, 
     "请提取日记草稿中的核心主张与前置断言。", 
-    config.model_summary || config.model_main
+    undefined, { signal: options?.signal, taskContext: options?.taskContext, role: 'understanding' }
   );
   
   if (!extractionResult || extractionResult.trim() === '无' || extractionResult.trim() === '') {
@@ -87,7 +88,7 @@ ${draftContent}
       if (claim.length > 3) {
           checkAbort();
           ragChecked++;
-          const results = await searchLocalRagMemory(claim, 3, undefined, 'semantic_recall', undefined, { suppressEmptyWarning: true });
+          const results = await searchLocalRagMemory(claim, 3, undefined, 'semantic_recall', undefined, { suppressEmptyWarning: true, taskContext: options?.taskContext });
           if (results && results.length > 0) {
               ragContext += `【关于 "${claim}" 的历史记忆片段】:\n${results.join('\n')}\n\n`;
               ragHits++;
@@ -143,7 +144,7 @@ ${draftContent}
     const result = await callLLMRaw(
       nudge ? `${verifyPrompt}\n\n【补充提醒】${nudge}` : verifyPrompt,
       '请核对草稿是否存在矛盾与重复。',
-      config.model_summary || config.model_main
+      undefined, { signal: options?.signal, taskContext: options?.taskContext, role: 'verification' }
     );
     return (result || '').trim();
   };

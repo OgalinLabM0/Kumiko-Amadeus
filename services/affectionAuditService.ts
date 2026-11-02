@@ -8,7 +8,7 @@
 //   [Block]. For small / consistent deltas we trust it directly (cheap).
 //   For BIG deltas or any block directive — including the cases where
 //   the user TRIED to push Kumiko into "girlfriend mode" — we want a
-//   cheap secondary check using the summary slot (config.model_summary)
+//   separate verification check using the verification task model
 //   to confirm:
 //     1. The delta magnitude is justified by what the user actually
 //        said (not a hallucinated overreaction);
@@ -26,8 +26,9 @@
 //
 // See plan section "Audit Service Role Expansion".
 
-import { callLLMRaw, getCurrentAIConfig } from './llmCore';
+import { callLLMRaw } from './llmCore';
 import type { MessageBlockDirective } from '../types';
+import type { TaskContext } from './taskRuntime';
 
 export interface AffectionAuditInput {
   userText: string;
@@ -171,25 +172,19 @@ const tryParseAuditJson = (raw: string): {
 
 export const reviewAffectionDirective = async (
   input: AffectionAuditInput,
+  taskContext?: TaskContext,
 ): Promise<AffectionAuditResult> => {
   if (!auditRequired(input.proposedMoodDelta, input.proposedAffectionDelta, input.proposedBlock)) {
     return { approved: true };
-  }
-
-  let auditModel: string | undefined;
-  try {
-    const cfg = getCurrentAIConfig();
-    auditModel = cfg.model_summary || cfg.model_main || undefined;
-  } catch {
-    auditModel = undefined;
   }
 
   const { systemPrompt, userPrompt } = buildAuditPrompt(input);
 
   let raw = '';
   try {
-    raw = await callLLMRaw(systemPrompt, userPrompt, auditModel);
+    raw = await callLLMRaw(systemPrompt, userPrompt, undefined, { role: 'verification', taskContext, signal: taskContext?.signal });
   } catch (error) {
+    if (taskContext?.signal?.aborted) throw error;
     console.warn('[Affection Audit] Slot B call failed; falling back to single-pass clamp.', error);
     return buildSinglePassFallback(input, 'slot_b_call_failed');
   }

@@ -6,12 +6,18 @@ export const runChatToolLoop = async (
   initial: ProviderResponse,
   execute: (call: any, signal: AbortSignal) => Promise<ChatToolOutput>,
   followUp: (rounds: ChatToolRound[], allowTools: boolean, signal: AbortSignal) => Promise<ProviderResponse>,
-  options: { maxRounds?: number; maxCalls?: number; timeoutMs?: number } = {},
+  options: { maxRounds?: number; maxCalls?: number; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ProviderResponse> => {
+  if (options.signal?.aborted) throw new Error('Tool query cancelled');
   if (!initial.functionCalls?.length) return initial;
   const maxRounds = options.maxRounds ?? 4;
   const maxCalls = options.maxCalls ?? 12;
   const controller = new AbortController();
+  let cancel: () => void;
+  const cancelled = new Promise<never>((_, reject) => {
+    cancel = () => { controller.abort(); reject(new Error('Tool query cancelled')); };
+    options.signal?.addEventListener('abort', cancel, { once: true });
+  });
   let timer: ReturnType<typeof setTimeout>;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
@@ -19,7 +25,7 @@ export const runChatToolLoop = async (
       reject(new Error('Tool query timed out before all evidence was available'));
     }, options.timeoutMs ?? 90_000);
   });
-  const bounded = <T>(work: Promise<T>): Promise<T> => Promise.race([work, timeout]);
+  const bounded = <T>(work: Promise<T>): Promise<T> => Promise.race([work, timeout, cancelled]);
   const rounds: ChatToolRound[] = [];
   let result = initial;
   let callsUsed = 0;
@@ -48,6 +54,7 @@ export const runChatToolLoop = async (
     throw new Error('Tool query did not finish');
   } finally {
     clearTimeout(timer!);
+    options.signal?.removeEventListener('abort', cancel!);
   }
 };
 

@@ -2,6 +2,8 @@ import type { TtsConfig, EmotionType } from '../types';
 import { type TtsSynthesisResult } from './fishAudioService';
 import { EMOTION_TO_SOVITS_REF } from '../constants';
 import type { SovitsRefVariant } from '../constants';
+import type { TaskContext } from './taskRuntime';
+import { runStandaloneTransport, runTaskTransport } from './taskGateway';
 // F2B.3: dropped `isMobilePwa` + `httpApi` imports. SoVITS lives on PC's
 // 127.0.0.1:9880 — Electron loopback fetch is the only working path. The
 // PWA `tts:sovits-synth` proxy is gone with the rest of the bridge, and
@@ -59,6 +61,9 @@ export async function synthesizeWithSovits(
     temperature?: number;
     textSplitMethod?: string;
     fragmentInterval?: number;
+    signal?: AbortSignal;
+    taskContext?: TaskContext;
+    assertConfigCurrent?: () => void;
   } = {},
 ): Promise<TtsSynthesisResult> {
   const body: Record<string, unknown> = {
@@ -80,11 +85,12 @@ export async function synthesizeWithSovits(
     repetition_penalty: 1.35,
   };
 
+  const work = async (signal: AbortSignal): Promise<TtsSynthesisResult> => {
   const res = await fetch(`${baseUrl}/tts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(90000),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(90000)]),
   });
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
@@ -95,6 +101,11 @@ export async function synthesizeWithSovits(
   const bytesPerSample = 2;
   const durationEstimate = arrayBuffer.byteLength / (sampleRate * bytesPerSample);
   return { audio: arrayBuffer, durationEstimate };
+  };
+  const target = { provider: 'sovits', operation: 'tts-local', configRevision: 'captured', remote: false };
+  const check = options.assertConfigCurrent || (() => {});
+  return options.taskContext ? runTaskTransport({ ...options.taskContext, signal: options.signal || options.taskContext.signal }, target, work, check)
+    : runStandaloneTransport(target, work, check, options.signal);
 }
 
 /**
@@ -119,6 +130,9 @@ export function isSovitsV3V4Model(
 export async function genieTtsWithEmotion(
   text: string, emotion: EmotionType, ttsConfig: TtsConfig,
   voiceVariant?: string,
+  signal?: AbortSignal,
+  taskContext?: TaskContext,
+  assertConfigCurrent?: () => void,
 ): Promise<TtsSynthesisResult> {
   // F2B.3: simplified to direct loopback fetch. SoVITS HTTP API listens on
   // `http://127.0.0.1:9880` of the PC; only Electron desktop can reach
@@ -162,5 +176,8 @@ export async function genieTtsWithEmotion(
     temperature: ttsConfig.sovitsTemperature,
     textSplitMethod: ttsConfig.sovitsTextSplitMethod,
     fragmentInterval: ttsConfig.sovitsFragmentInterval,
+    signal,
+    taskContext,
+    assertConfigCurrent,
   });
 }

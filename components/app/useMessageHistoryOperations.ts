@@ -1,13 +1,22 @@
-import { useCallback, type MutableRefObject } from 'react';
+import { useCallback, useRef, type MutableRefObject } from 'react';
+import { hideMessagesLocally } from '../../services/messageViews';
 import type { Message, Language, BackupConfig, TtsConfig, MemoryQuerySession, SummaryArchiveState } from '../../types';
 import { recalculateTurnCountFromMessages } from './backupHelpers';
 import { normalizeSummaryArchiveState } from './summaryCycle';
 import { getCurrentAIConfig } from '../../services/geminiService';
 import { getImageBase64 } from '../../services/imageService';
 import { synthesizeSpeech } from '../../services/fishAudioService';
-import { saveVoiceFile } from '../../services/voiceFileService';
+import { deleteVoiceFile, saveVoiceFile } from '../../services/voiceFileService';
+import { withMediaWriteFence } from '../../services/mediaWriteFence';
+import { beginVoiceWrite, finishVoiceWrite } from '../../services/voiceWriteLedger';
 import { dialogService } from '../../services/dialogService';
 import { useAppStore } from '../../store';
+import { readTurnSources } from '../../services/turnCoordinator';
+import { withdrawUnprocessedSource } from '../../services/receivedTurns';
+import { getDataRestoreVersion, isDataRestoreBlocked } from '../../services/dataRestoreGate';
+import { assertMemoryAvailable, assertMemoryGenerationCurrent, getMemoryGeneration } from '../../services/memoryMaintenanceGate';
+import { assertTaskModelRevisionsCurrent, beginForegroundActivity, endForegroundActivity, type TaskContext } from '../../services/taskRuntime';
+import { db } from '../../services/db';
 
 export interface UseMessageHistoryOperationsParams {
   // Refs
@@ -94,6 +103,7 @@ export interface UseMessageHistoryOperationsResult {
 export const useMessageHistoryOperations = (
   params: UseMessageHistoryOperationsParams,
 ): UseMessageHistoryOperationsResult => {
+  const resendInFlightRef = useRef(false);
   const {
     messagesRef,
     ttsConfigRef,
@@ -211,6 +221,11 @@ export const useMessageHistoryOperations = (
   }, [applyManualHistoryMutation]);
 
   const handleUpdateMessage = useCallback((id: string, update: string | Partial<Message>) => {
+    if (typeof update === 'string' || ['text', 'role', 'timestamp', 'imageId', 'imageCaption', 'quote'].some(key => key in update)) {
+      setIsSettingsOpen(true);
+      setSystemNotice(language === 'zh' ? '修改已收到的原话请使用“数据管理 → 记忆维护”：先预览并清除错误来源，再在聊天里告知正确内容。' : 'Use Data Management → Memory maintenance to preview and remove the incorrect source, then share the correction in chat.');
+      return;
+    }
     const nextMessages = messagesRef.current.map(msg => {
       if (msg.id === id) {
         if (typeof update === 'string') return { ...msg, text: update };
@@ -225,9 +240,10 @@ export const useMessageHistoryOperations = (
   }, [applyManualHistoryMutation]);
 
   const handleDeleteMessage = useCallback((id: string) => {
-    const nextMessages = messagesRef.current.filter(msg => msg.id !== id);
-    applyManualHistoryMutation(nextMessages, 'hard_delete_message');
-  }, [applyManualHistoryMutation]);
+    void hideMessagesLocally([id]).catch(() => {
+      void dialogService.alert(language === 'en' ? 'Could not hide this message. Nothing was deleted.' : '暂时无法从你的聊天中删除这条消息，请稍后重试。');
+    });
+  }, [language]);
 
   const handleToggleHidden = useCallback((id: string) => {
     const nextMessages = messagesRef.current.map(msg => msg.id === id ? { ...msg, isHidden: !msg.isHidden } : msg);
@@ -261,63 +277,72 @@ export const useMessageHistoryOperations = (
   const handleResendMessage = useCallback(async (messageId: string) => {
     const msg = messagesRef.current.find(m => m.id === messageId);
     if (!msg || msg.sendStatus !== 'failed') return;
+    if (resendInFlightRef.current) return;
 
-    // v2.14.23: optimistic UX flip. Previously we awaited
-    // validateAIConnection() (which can take 1-3s on poor connections)
-    // BEFORE flipping `sendStatus` back to 'sending'. The user clicked
-    // "重新发送" and saw nothing change for several seconds, then either
-    // the message resent or it didn't - the lag made the button feel
-    // broken. Now we flip immediately so the bubble shows "sending" the
-    // moment they tap, and revert to 'failed' if the validate proves
-    // the connection is still down. This matches every other modern
-    // chat client (Telegram/微信 both flip optimistically).
-    //
-    // v2.14.26: also wipe any sticky "Kumiko 正在输入..." indicator and
-    // surface an immediate "正在重新发送..." system notice. Without the
-    // notice, mobile users staring at the bubble couldn't tell whether
-    // the resend tap actually registered (typing dots looked identical
-    // to the post-tap state). Drop the upfront `validateAIConnection`
-    // call entirely — resending is by definition "try again", and the
-    // real network/API errors that come back from `executeSend` will
-    // re-flip the bubble to failed via `revertToFailed` anyway. The
-    // only effect of validateAIConnection was a 1–3s artificial lag.
-    const previousFailReason = msg.failReason;
-    setIsDisconnected(false);
-    useAppStore.getState().setIsThinking(false);
-    setMessages(prev => prev.map(m =>
-      m.id === messageId ? { ...m, sendStatus: 'sending' as const, failReason: undefined } : m
-    ));
-    setSystemNotice(language === 'zh' ? '正在重新发送...' : 'Resending...');
-
-    pendingTextRef.current = msg.text;
-    // Hydrate the resend payload from `imageId` via IPC. Inline `msg.image`
-    // was retired in Plan 14 Phase A; messages only carry `imageId` now.
-    if (msg.imageId) {
-      try {
-        const hydrated = await getImageBase64(msg.imageId);
-        if (hydrated) {
-          pendingImageRef.current = hydrated;
-          pendingImageMessageIdRef.current = msg.id;
-        }
-      } catch (imgErr) {
-        console.warn('[handleResend] Failed to hydrate image from imageId:', msg.imageId, imgErr);
-      }
+    if (isDataRestoreBlocked()) {
+      setSystemNotice(language === 'zh' ? '正在恢复数据，完成后再重试回复。' : 'Data is being restored. Retry the reply after it finishes.');
+      return;
     }
-    pendingMessageIdsRef.current.add(msg.id);
-    generationIdRef.current += 1;
+    if (pendingMessageIdsRef.current.size || useAppStore.getState().isThinking || useAppStore.getState().isTalking) {
+      setSystemNotice(language === 'zh' ? '请等当前消息处理完成后再重试。' : 'Wait for the current message before retrying.');
+      return;
+    }
+    let retryIds = new Set<string>([messageId]);
+    let preparedRetry = false;
+    resendInFlightRef.current = true;
     try {
-      executeSend();
+      const original = await readTurnSources(messageId);
+      retryIds = new Set(original.sources.map(source => source.id));
+      // Compare the live view as well: persistence may still be flushing an edit.
+      for (const source of original.messages) {
+        const live = messagesRef.current.find(item => item.id === source.id);
+        if (!live || live.role !== 'user' || live.text !== source.text || live.timestamp !== source.timestamp
+          || live.imageId !== source.imageId || live.isHidden) throw new Error('User source changed or was removed');
+      }
+      const imageMessage = original.messages.filter(item => item.imageId).at(-1);
+      const image = imageMessage?.imageId ? await getImageBase64(imageMessage.imageId) : null;
+      if (imageMessage && !image) throw new Error('Original image is unavailable');
+      // Async image hydration cannot absorb newly queued input into the old turn.
+      if (isDataRestoreBlocked() || pendingMessageIdsRef.current.size) throw new Error('Another input or restore started');
+      const verified = await readTurnSources(messageId);
+      if (verified.epoch !== original.epoch || verified.turnId !== original.turnId) throw new Error('Data changed while retrying');
+      for (const source of verified.messages) {
+        const live = messagesRef.current.find(item => item.id === source.id);
+        if (!live || live.role !== 'user' || live.text !== source.text || live.timestamp !== source.timestamp
+          || live.imageId !== source.imageId || live.isHidden) throw new Error('User source changed or was removed');
+      }
+      setIsDisconnected(false);
+      setMessages(prev => prev.map(item => retryIds.has(item.id)
+        ? { ...item, sendStatus: 'sending' as const, failReason: undefined } : item));
+      setSystemNotice(language === 'zh' ? '正在重试回复...' : 'Retrying the reply...');
+      pendingTextRef.current = original.sources.map(source => source.text).join('\n');
+      pendingImageRef.current = image;
+      pendingImageMessageIdRef.current = imageMessage?.id || null;
+      pendingMessageIdsRef.current = new Set(retryIds);
+      preparedRetry = true;
+      generationIdRef.current += 1;
+      await executeSend();
     } catch (err) {
-      console.warn('[handleResend] executeSend threw synchronously:', err);
-      setMessages(prev => prev.map(m =>
-        m.id === messageId ? { ...m, sendStatus: 'failed' as const, failReason: previousFailReason ?? '重发失败' } : m
-      ));
-      setSystemNotice(language === 'zh' ? '重新发送失败，请稍后再试' : 'Resend failed, please try again later');
+      console.warn('[handleResend] Original turn retry failed:', err);
+      setMessages(prev => prev.map(item => retryIds.has(item.id)
+        ? { ...item, sendStatus: 'failed' as const, failReason: item.failReason || msg.failReason || '重试回复失败' } : item));
+      setSystemNotice(language === 'zh'
+        ? '没能重试原来的回复。若原消息已修改、删除或数据已恢复，请确认当前提醒状态后重新发送。'
+        : 'The original reply could not be retried. If messages changed or data was restored, check current reminders before sending a new request.');
+      if (preparedRetry) {
+        for (const id of retryIds) pendingMessageIdsRef.current.delete(id);
+        if (pendingImageMessageIdRef.current && retryIds.has(pendingImageMessageIdRef.current)) {
+          pendingImageRef.current = null; pendingImageMessageIdRef.current = null;
+        }
+        pendingTextRef.current = messagesRef.current.filter(item => pendingMessageIdsRef.current.has(item.id)).map(item => item.text).join('\n');
+      }
+    } finally {
+      resendInFlightRef.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- preserve original deps [executeSend, language]
   }, [executeSend, language]);
 
-  const handleWithdrawMessage = useCallback((messageId: string) => {
+  const handleWithdrawMessage = useCallback(async (messageId: string) => {
     const msg = messagesRef.current.find(m => m.id === messageId);
     if (!msg || msg.role !== 'user') return;
 
@@ -333,6 +358,10 @@ export const useMessageHistoryOperations = (
     // i.e. anything except a fully-acknowledged ("已读") user message.
     const isStuckUnread = msg.sendStatus === undefined && msg.isRead === false;
     if (msg.sendStatus !== 'failed' && msg.sendStatus !== 'sending' && !isStuckUnread) return;
+    if (!await withdrawUnprocessedSource({ id: msg.id, text: msg.text, timestamp: msg.timestamp })) {
+      setSystemNotice(language === 'zh' ? '这条消息已开始处理，无法撤回。' : 'This message is already being processed and cannot be withdrawn.');
+      return;
+    }
 
     // v2.14.28 H5: if the turn is currently in flight (stuck 未读), bump the
     // generation id so executeSendCore's isCancelled() guard fires on the
@@ -387,9 +416,13 @@ export const useMessageHistoryOperations = (
   }, [language]);
 
   // FIX: Clear pendingImageMessageIdRef on Recall if the recalled message was the one with the image
-  const handleRecall = useCallback((id: string) => {
+  const handleRecall = useCallback(async (id: string) => {
       const msgToRecall = messagesRef.current.find(m => m.id === id);
       if (!msgToRecall) return;
+      if (msgToRecall.role !== 'user' || !await withdrawUnprocessedSource({ id: msgToRecall.id, text: msgToRecall.text, timestamp: msgToRecall.timestamp })) {
+          setSystemNotice(language === 'zh' ? '这条消息已开始处理，无法撤回。' : 'This message is already being processed and cannot be withdrawn.');
+          return;
+      }
 
       setMessages(prev => prev.filter(m => m.id !== id));
 
@@ -426,6 +459,7 @@ export const useMessageHistoryOperations = (
 
   const handleRegenerateVoice = useCallback(async (msg: Message) => {
     if (!msg.isVoiceMessage || !msg.id) return;
+    const version = getDataRestoreVersion();
 
     setRegeneratingVoiceIds(prev => {
       const next = new Set(prev);
@@ -436,6 +470,17 @@ export const useMessageHistoryOperations = (
     try {
       const emotion = msg.storedEmotion || 'neutral';
       const ttsConfigToUse = { ...ttsConfigRef.current };
+      const current = await db.messages.get(msg.id);
+      if (!current || current.text !== msg.text || current.timestamp !== msg.timestamp) throw new Error('The source message changed.');
+      const sourceRevision = current.contentRevision ?? (current as any).sourceRevision ?? 'legacy';
+      const taskId = crypto.randomUUID();
+      const taskContext: TaskContext = { taskId, rootId: taskId, role: 'translation', lane: 'foreground', deadlineAt: Date.now() + 180_000,
+        epoch: version, memoryGeneration: getMemoryGeneration(), modelRevisions: {},
+        consultedSources: [{ kind: 'message', id: msg.id, version: sourceRevision, relation: 'context' }] };
+      const assertCurrent = () => {
+        assertMemoryAvailable(taskContext.memoryGeneration);
+        if (getDataRestoreVersion() !== version || JSON.stringify(ttsConfigRef.current) !== JSON.stringify(ttsConfigToUse)) throw new Error('Voice settings changed.');
+      };
       const backend = ttsConfigToUse.ttsBackend || 'fish';
 
       // Fish keeps inline [emotion] tags for expressiveness; SoVITS / Vocu expect
@@ -446,31 +491,53 @@ export const useMessageHistoryOperations = (
         : rawText.replace(/\[.*?\]/g, '').trim();
 
       let result;
+      await beginForegroundActivity(taskContext);
+      try {
       if (backend === 'sovits') {
         if (!ttsConfigToUse.sovitsDir) throw new Error('No SoVITS directory');
         const { genieTtsWithEmotion } = await import('../../services/genieAudioService');
-        result = await genieTtsWithEmotion(textToSpeak, emotion, ttsConfigToUse);
+        result = await genieTtsWithEmotion(textToSpeak, emotion, ttsConfigToUse, undefined, undefined, taskContext, assertCurrent);
       } else if (backend === 'vocu') {
         if (!ttsConfigToUse.vocuApiKey || !ttsConfigToUse.vocuVoiceId) {
           throw new Error('Missing Vocu credentials');
         }
         const { synthesizeWithVocu } = await import('../../services/vocuAudioService');
-        result = await synthesizeWithVocu(textToSpeak, ttsConfigToUse, emotion);
+        result = await synthesizeWithVocu(textToSpeak, ttsConfigToUse, emotion, undefined, taskContext, assertCurrent);
       } else {
         if (!ttsConfigToUse.fishAudioApiKey) throw new Error('No API key');
-        result = await synthesizeSpeech(textToSpeak, ttsConfigToUse);
+        result = await synthesizeSpeech(textToSpeak, ttsConfigToUse, undefined, taskContext, assertCurrent);
       }
+      assertCurrent();
+      const latest = await db.messages.get(msg.id);
+      if (!latest || (latest.contentRevision ?? (latest as any).sourceRevision ?? 'legacy') !== sourceRevision || latest.text !== current.text) throw new Error('The source message changed.');
 
       if (result.audio) {
-        const fileId = msg.voiceFileId || msg.id;
-        const saveSuccess = await saveVoiceFile(fileId, result.audio);
-        if (saveSuccess) {
-          handleUpdateMessage(msg.id, {
-            voiceFileId: fileId,
-            voiceDuration: result.durationEstimate
-          });
-        }
+        const fileId = 'voice-' + crypto.randomUUID();
+        let committed = false;
+        await withMediaWriteFence(version, async () => {
+          await beginVoiceWrite({ id: fileId, sourceIds: [msg.id], memoryGeneration: taskContext.memoryGeneration, taskId: taskContext.taskId });
+          try {
+            assertCurrent();
+            if (!await saveVoiceFile(fileId, result.audio)) throw new Error('Could not save regenerated voice.');
+            await db.transaction('rw', [db.keyval, db.messages], async () => {
+              await assertMemoryGenerationCurrent(taskContext.memoryGeneration);
+              await assertTaskModelRevisionsCurrent(taskContext);
+              assertCurrent();
+              const stored = await db.messages.get(msg.id);
+              if (!stored || (stored.contentRevision ?? (stored as any).sourceRevision ?? 'legacy') !== sourceRevision || stored.text !== current.text || stored.timestamp !== current.timestamp) throw new Error('The source message changed.');
+              await db.messages.update(msg.id, { voiceFileId: fileId, voiceDuration: result.durationEstimate });
+            });
+            committed = true;
+          } catch (error) {
+            if (!committed && !await deleteVoiceFile(fileId)) console.warn('[TTS] Could not remove uncommitted regenerated voice.');
+            throw error;
+          } finally {
+            await finishVoiceWrite(fileId);
+          }
+        }, taskContext.memoryGeneration);
+        if (committed) setMessages(previous => previous.map(message => message.id === msg.id ? { ...message, voiceFileId: fileId, voiceDuration: result.durationEstimate } : message));
       }
+      } finally { await endForegroundActivity(taskContext); }
     } catch (e) {
       console.error('[TTS] Failed to regenerate voice:', e);
     } finally {

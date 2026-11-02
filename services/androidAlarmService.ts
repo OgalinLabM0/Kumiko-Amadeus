@@ -29,6 +29,7 @@ export const FULL_SCREEN_INTENT_PERMISSION_PROMPTED_STORAGE_KEY = 'kumiko_full_s
 
 export interface ScheduleAlarmInput {
   reminderId: string;
+  version?: string;
   /** Epoch ms when the alarm should fire. */
   at: number;
   /** Short event description (e.g. "喝水"). */
@@ -72,6 +73,7 @@ export interface AlarmFiredEventPayload {
 interface KumikoAlarmsPluginShape {
   scheduleExact(opts: ScheduleAlarmInput): Promise<ScheduleAlarmResult>;
   cancel(opts: { reminderId: string }): Promise<{ cancelled: boolean }>;
+  listScheduled(): Promise<{ ids: string[] }>;
   canScheduleExact(): Promise<{ canScheduleExact: boolean }>;
   requestExactAlarmPermission(): Promise<void>;
   canUseFullScreenIntent(): Promise<{ canUseFullScreenIntent: boolean }>;
@@ -99,6 +101,13 @@ interface KumikoAlarmsPluginShape {
     event: 'kumikoAlarmFired',
     handler: (payload: AlarmFiredEventPayload) => void,
   ) => Promise<{ remove: () => Promise<void> }>;
+}
+
+export async function listScheduledAndroidAlarms(): Promise<string[] | null> {
+  const plugin = await getPlugin();
+  if (!plugin) return null;
+  try { return (await plugin.listScheduled()).ids; }
+  catch { return null; }
 }
 
 // v2.14.3 N.7: caches both the resolved plugin handle and the in-flight
@@ -145,8 +154,8 @@ export async function cancelAndroidAlarm(reminderId: string): Promise<boolean> {
   const plugin = await getPlugin();
   if (!plugin) return false;
   try {
-    const res = await plugin.cancel({ reminderId });
-    return res.cancelled;
+    await plugin.cancel({ reminderId });
+    return true; // A missing PendingIntent is already cancelled.
   } catch (e) {
     console.warn('[androidAlarms] cancel failed:', e);
     return false;

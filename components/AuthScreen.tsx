@@ -561,7 +561,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({
 
                         {setupTab === 'MANUAL' && (
                         <div className="w-full h-full flex flex-col gap-[clamp(12px,1.3vw,16px)] items-center justify-center text-center">
-                            <input type="file" ref={fileInputRef} className="hidden" accept=".json,.zip" onChange={handleManualImport} />
+                            <input type="file" ref={fileInputRef} className="hidden" accept=".json,.zip,.kab" onChange={handleManualImport} />
                             {setupError && (setupError.includes('成功') || setupError.includes('Successful')) ? (
                                 <div className="w-full min-h-[80px] flex-1 py-[clamp(14px,2.5vw,24px)] border border-green-300/40 text-green-600 ka-copy-sm font-semibold bg-green-50/50 rounded-xl flex flex-col items-center justify-center gap-2">
                                     <Check size={22} />

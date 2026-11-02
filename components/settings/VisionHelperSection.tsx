@@ -152,11 +152,12 @@ export const VisionHelperSection: React.FC<VisionHelperSectionProps> = ({
                 <label className={labelClass}>{language === 'zh' ? '视觉 API KEY (可选，默认使用主配置)' : 'VISION API KEY (Optional, fallback to main)'}</label>
                 <ComposableInput
                   type="password"
-                  value={localAiConfig.visionApiKey || ''}
+                  value={localAiConfig.visionApiKey?.startsWith('vault:') ? '' : (localAiConfig.visionApiKey || '')}
                   onChange={(e) => onUpdateAiConfig('visionApiKey', e.target.value)}
-                  placeholder={t_local.keyPlaceHolder}
+                  placeholder={localAiConfig.visionApiKey?.startsWith('vault:') ? '已配置 / Configured · 输入以替换 / Enter to replace' : t_local.keyPlaceHolder}
                   className={inputClass}
                 />
+                {localAiConfig.visionApiKey?.startsWith('vault:') && <button type="button" className="ka-copy-sm underline" onClick={() => onUpdateAiConfig('visionApiKey', '')}>{language === 'zh' ? '移除此配置' : 'Remove from configuration'}</button>}
               </div>
 
               <div className={`mt-4 pt-4 border-t ${isDarkMode ? 'border-[#8c6a3c]/30' : 'border-[#ebe1d3]'}`}>

@@ -50,6 +50,16 @@ export function useBlockRegulator(enabled: boolean): void {
 
   useEffect(() => {
     if (!enabled) return;
+    let active = true;
+    const resume = () => { if (active) void import('../services/blockRuntimeService')
+      .then(service => service.resumePendingBlockSchedules()).catch(error => console.warn('[BlockRuntime] pending alarm retry failed', error)); };
+    resume();
+    const interval = setInterval(resume, 30_000);
+    return () => { active = false; clearInterval(interval); };
+  }, [enabled]);
+
+  useEffect(() => {
+    if (!enabled) return;
 
     // Reset retry counters when blockRuntime identity changes (new
     // block started, or cleared and re-armed). The dependency below

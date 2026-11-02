@@ -52,6 +52,9 @@ function load(options = {}) {
       if (id === './db') return { db };
       if (id === './environment') return { isCapacitorNative: () => !!options.android };
       if (id === './androidRagService') return { invokeAndroidRag: invoke };
+      if (id === './taskRuntime') return { TaskCapacityError: class TaskCapacityError extends Error {} };
+      if (id === './memoryMaintenanceGate') return { getMemoryGeneration: () => 'initial', assertMemoryAvailable() {} };
+      if (id === './artifactIndexService') return { filterValidArtifactCandidates: async rows => rows };
       throw new Error(`Unexpected import: ${id}`);
     },
   };
@@ -137,6 +140,7 @@ async function testNativeRestoreHandler() {
     vm.runInNewContext(handlerSource, {
       ipcMain: { handle: (channel, fn) => { assert.equal(channel, 'rag:restore'); handler = fn; } },
       db, EMBEDDING_DIM: dimension, Buffer, Float32Array,
+      artifactIndex: { replaceArtifactProvenance() {} }, ragGeneration: 0,
       normalizeTier: tier => tier || 'core',
       rebuildHnswFromSqlite: async () => ({ total: rows.size, indexed: options.badIndex ? 0 : rows.size }),
       console: { log() {}, error() {} },

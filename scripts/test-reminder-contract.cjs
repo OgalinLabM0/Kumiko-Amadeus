@@ -28,8 +28,25 @@ function load(file, dependencies = {}) {
 const timing = load('services/reminderTime.ts');
 const prompts = load('services/reminderPrompt.ts', { './reminderTime': timing });
 const rows = new Map();
+let transactionQueue = Promise.resolve();
+const db = {
+  keyval: {
+    get: async key => rows.has(key) ? { key, value: structuredClone(rows.get(key)) } : undefined,
+    put: async ({ key, value }) => { rows.set(key, structuredClone(value)); },
+  },
+  transaction(_mode, _table, work) {
+    const result = transactionQueue.then(async () => {
+      const previous = structuredClone(rows);
+      try { return await work(); }
+      catch (error) { rows.clear(); for (const [key, value] of previous) rows.set(key, value); throw error; }
+    });
+    transactionQueue = result.catch(() => {});
+    return result;
+  },
+};
 const slice = load('store/slices/reminderSlice.ts', {
-  '../../services/db': { db: { setVal: async (key, value) => rows.set(key, structuredClone(value)) } },
+  '../../services/db': { db },
+    '../../services/reminderNativeCancellation': { queueReminderNativeCancellation: async () => {}, drainReminderNativeCancellations: async () => {} },
   '../../services/reminderTime': timing,
 });
 const backup = load('components/app/backupHelpers.ts', {
@@ -57,6 +74,9 @@ async function main() {
   assert.equal(scheduling.getNextDailyReminderAt(daily, now), expected, 'settings change does not move a saved promise');
   const restoredDaily = backup.sanitizeDailyReminderRecord(rows.get(slice.DAILY_REMINDER_STORAGE_KEY)[0]);
   assert.equal(scheduling.getNextDailyReminderAt(restoredDaily, now), expected, 'restart/backup retains original zone');
+  assert.equal(backup.sanitizeDailyReminderRecord({ ...daily, activeSince: now }).activeSince, now,
+    'backup retains the resume boundary so paused days are not replayed');
+  assert.equal(backup.sanitizeDailyReminderRecord({ ...daily, activeSince: 'invalid' }).activeSince, undefined);
   await state.saveDailyReminder('practice', 8, 0, '每天日本时间8点提醒我练习');
   assert.equal(state.dailyReminders[1].timeZone, 'Asia/Tokyo', 'explicit Japan clock wins');
   assert.equal(timing.resolveReminderTimeZone('按照你那边的时间8点提醒我', 'America/Sao_Paulo'), 'Asia/Tokyo');
@@ -92,34 +112,8 @@ async function main() {
   const extracted = await retry.extractReminderIntentLLM('明晚8点提醒我洗衣服', 'zh');
   assert.equal(extracted.hour, 20); assert.equal(extracted.daysOffset, 1);
   assert.ok(!modelPrompt.includes('America/Sao_Paulo'));
-  // Run the production creation path too, including the actual daily parser
-  // and persisted store, so correct helpers cannot hide incorrect wiring.
-  const chat = fs.readFileSync(path.join(root, 'components/app/chatActions.ts'), 'utf8');
-  const start = chat.indexOf('    const hasReminderIntent =');
-  const end = chat.indexOf('    if (shouldRetryReminderIntent && !createdReminderThisTurn)', start);
-  assert.ok(start >= 0 && end > start);
-  const creation = ts.transpileModule(`globalThis.create = async (response, userTextForRag, known) => {
-    const resolveUserKnownLocation = async () => known;
-    ${chat.slice(start, end)}
-    return createdReminderThisTurn;
-  };`, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText;
-  const context = {
-    ...timing, ...backup, s2: state, reminderRequestAt: requestAt,
-    reminderUserZone: 'Pacific/Honolulu', language: 'zh', console: { log() {} },
-    extractReminderIntentLLM: async () => null,
-  };
-  vm.runInNewContext(creation, context);
-  await context.create({ textParts: [], scheduleTrigger: { event: '洗衣服', recurrence: 'daily', hour: 8, minute: 0 } },
-    '每天晚上8点提醒我洗衣服', { timeZone: 'America/Sao_Paulo' });
-  assert.equal(state.dailyReminders.at(-1).hour, 20, 'production path preserves explicit evening');
-  assert.equal(state.dailyReminders.at(-1).timeZone, 'America/Sao_Paulo', 'known region wins over changed hidden settings for new promises');
-  await context.create({ textParts: [], scheduleTrigger: { event: '洗衣服', hour: 20, minute: 0 } },
-    '晚上8点提醒我洗衣服', { timeZone: 'America/Sao_Paulo' });
-  assert.equal(state.relativeReminders.at(-1).dueAt, expected, 'production one-shot conversion');
-  const count = state.dailyReminders.length;
-  assert.equal(await context.create({ textParts: [], scheduleTrigger: { event: '洗衣服', recurrence: 'daily', hour: 20, minute: 0 } },
-    '每天晚上8点提醒我洗衣服', { timeZone: null }), false);
-  assert.equal(state.dailyReminders.length, count, 'unresolved disclosed region must not silently borrow settings');
+  // Production turn/clock contracts now run in test-turn-coordinator.cjs.
+  // The removed inline chatActions path no longer owns execution.
   console.log('Reminder contract passed: creation clock, settings changes, persistence, explicit JST, one-shot/DST, private prompts and extraction.');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

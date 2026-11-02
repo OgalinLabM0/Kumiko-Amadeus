@@ -136,7 +136,7 @@ export const IntroScreen: React.FC<IntroScreenProps> = ({ onConnect, language, o
 
   useEffect(() => {
     const logs = [
-      "AMADEUS SYSTEM [Ver 3.04]",
+      `AMADEUS SYSTEM [Ver ${typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0'}]`,
       "Loading Kitauji_Winter_Theme...",
       "Audio Driver: Euphorium_Resonance.wav",
       "Tuning: Bb Major / A=442Hz",

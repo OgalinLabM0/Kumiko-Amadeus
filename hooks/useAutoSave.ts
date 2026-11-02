@@ -1,8 +1,12 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { isDataRestoreBlocked, getDataRestoreVersion } from '../services/dataRestoreGate';
+import { exportTurnExecutionState } from '../services/turnStateBackup';
 import { BackupConfig } from '../types';
 import { isDesktopElectron, writeDesktopBackupFile } from '../services/desktopBackupService';
 import { isCapacitorNative } from '../services/environment';
+import { protectSessionJson } from '../services/backupProtection';
+import { withMediaWriteFence } from '../services/mediaWriteFence';
 // F2B.3: dropped `isMobilePwa` + `httpInvoke` imports. The mobile-PWA
 // remote-file-write branch (`backup:write-desktop-file`) is gone with
 // the PC bridge; on Capacitor the LOCAL backup tab is hidden (F2A.4).
@@ -72,6 +76,7 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
 
   // 2. Perform Save Implementation
   const executeSave = useCallback(async (isRetry = false) => {
+    if (isDataRestoreBlocked()) return;
     const currentConfig = configRef.current;
     const currentHandle = fileHandleRef.current;
     const currentData = dataRef.current;
@@ -100,18 +105,23 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
     setStatus('SAVING');
 
     try {
+      const restoreVersion = getDataRestoreVersion();
+      const { captureRuntimeBackupData } = await import('../services/runtimeBackupSnapshot');
+      const snapshot = await captureRuntimeBackupData(currentData);
+      if (isDataRestoreBlocked() || restoreVersion !== getDataRestoreVersion()) return;
       const timestamp = Date.now();
       // COMPREHENSIVE PAYLOAD: Ensure all memory systems are included
       const payload = {
         timestamp,
         version: "1.3",
-        data: currentData // This contains messages, worldBook, coreMemory, anchors, notebook etc.
+        data: snapshot
       };
       
       let localSuccess = false;
 
       // Local File System Save
       if (currentHandle) {
+        await withMediaWriteFence(restoreVersion, async () => {
         const serializedPayload = JSON.stringify(payload, null, 2);
 
         if (isDesktopElectron() && typeof currentHandle === 'string') {
@@ -125,12 +135,15 @@ export const useAutoSave = ({ data, config, fileHandle, isBlocked, onSaveError, 
           // separate isMobilePwa() string-path branch (was for
           // MobileRemoteFileBrowser).
           // @ts-ignore
+          const protectedPayload = await protectSessionJson(serializedPayload, currentHandle);
           const writable = await currentHandle.createWritable();
-          await writable.write(serializedPayload);
+          if (isDataRestoreBlocked() || restoreVersion !== getDataRestoreVersion()) { await writable.abort(); return; }
+          await writable.write(protectedPayload);
           await writable.close();
         }
 
         localSuccess = true;
+        });
       }
 
       // Success!

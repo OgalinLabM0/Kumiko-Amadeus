@@ -80,6 +80,9 @@ const {
   handleGetFileInfo,
   handleParseImportFile,
   handleBuildZipFromPayload,
+  handleProtectionStatus,
+  handleProtectionSet,
+  handleProtectionClear,
 } = require('./electron/backup-ipc.cjs');
 const {
   markAutoBackupDone,
@@ -209,6 +212,8 @@ if (!singleInstanceLock) {
   app.quit();
 } else {
   app.on('second-instance', focusMainWindow);
+  const credentialRequests = require('./electron/credential-requests.cjs').createCredentialRequestRegistry();
+  ipcMain.handle('credentials:cancel', (event, payload) => ({ success: credentialRequests.cancel(event.sender, payload?.requestId) }));
 
   ipcMain.on('show-window', handleShowWindow);
   ipcMain.on('app:send-notification', handleSendNotification);
@@ -221,6 +226,66 @@ if (!singleInstanceLock) {
     app.isQuiting = true;
     app.quit();
     return { success: true };
+  });
+
+  ipcMain.handle('credentials:clear-user-credentials', async (event, payload) => {
+    try {
+      if (!require('./electron-rag.cjs').isDataResetOwner(event, payload?.restoreSessionId)) throw new Error('Reset fence required.');
+      const { safeStorage } = require('electron');
+      const { createCredentialVault } = require('./electron/credential-vault.cjs');
+      await createCredentialVault({ directory: path.join(app.getPath('userData'), 'credential-vault'), safeStorage }).clearCredentials();
+      return { success: true };
+    } catch {
+      return { success: false, error: 'Unable to clear protected credentials.' };
+    }
+  });
+
+  ipcMain.handle('credentials:store', async (_event, payload) => {
+    try {
+      const rag = require('./electron-rag.cjs');
+      if (rag.isDataRestoreActive()) throw new Error();
+      const generation = rag.getDataRestoreGeneration();
+      const { safeStorage } = require('electron');
+      const { createCredentialVault } = require('./electron/credential-vault.cjs');
+      const vault = createCredentialVault({ directory: path.join(app.getPath('userData'), 'credential-vault'), safeStorage });
+      const result = await vault.storeCredential(payload);
+      if (rag.isDataRestoreActive() || rag.getDataRestoreGeneration() !== generation) {
+        await vault.deleteCredential(result.handle);
+        throw new Error();
+      }
+      return { success: true, ...result };
+    } catch { return { success: false, error: 'Secure credential storage failed or is unavailable.' }; }
+  });
+  ipcMain.handle('credentials:gemini', async (event, payload) => {
+    try {
+      if (require('./electron-rag.cjs').isDataRestoreActive()) throw new Error();
+      const { safeStorage } = require('electron');
+      const { createCredentialVault } = require('./electron/credential-vault.cjs');
+      const vault = createCredentialVault({ directory: path.join(app.getPath('userData'), 'credential-vault'), safeStorage });
+      return { success: true, result: await credentialRequests.run(event.sender, payload?.requestId, signal => vault.generateGemini({ ...payload, signal })) };
+    } catch (error) {
+      const status = Number(error?.status);
+      return { success: false, error: Number.isInteger(status) && status >= 400 && status <= 599
+        ? `Protected Gemini request failed: HTTP ${status}` : 'Protected Gemini request failed.' };
+    }
+  });
+  ipcMain.handle('credentials:request', async (event, payload) => {
+    try {
+      if (require('./electron-rag.cjs').isDataRestoreActive() || !['openai', 'anthropic', 'embedding', 'embedding-gemini', 'fish', 'vocu'].includes(payload?.purpose)) throw new Error();
+      const { safeStorage } = require('electron');
+      const { createCredentialVault } = require('./electron/credential-vault.cjs');
+      const vault = createCredentialVault({ directory: path.join(app.getPath('userData'), 'credential-vault'), safeStorage });
+      return { success: true, result: await credentialRequests.run(event.sender, payload?.requestId, signal => vault.request({ ...payload, signal })) };
+    } catch { return { success: false, error: 'Protected API request failed.' }; }
+  });
+  ipcMain.handle('credentials:tavily', async (event, payload) => {
+    try {
+      if (require('./electron-rag.cjs').isDataRestoreActive()) throw new Error();
+      const { safeStorage } = require('electron');
+      const { createCredentialVault } = require('./electron/credential-vault.cjs');
+      const vault = createCredentialVault({ directory: path.join(app.getPath('userData'), 'credential-vault'), safeStorage });
+      return { success: true, result: await credentialRequests.run(event.sender, payload?.requestId, signal => vault.tavily({ ...payload, signal })) };
+    } catch { return { success: false, error: 'Protected search request failed.' }; }
   });
 
   ipcMain.handle('app:update:get-state', () => {
@@ -315,14 +380,23 @@ if (!singleInstanceLock) {
   // in one file. All three namespaces share a path-traversal-hardened
   // resolver + SAFE_*_ID regex pattern. See module header for details.
 
-  ipcMain.handle('images:save', handleImagesSave);
+  const rejectMediaWritesDuringReset = handler => (event, payload) => {
+    const rag = require('./electron-rag.cjs');
+    if (rag.isMemoryMaintenanceActive() || (rag.getLastMemoryGeneration() !== null && payload?.dataMemoryGeneration !== rag.getLastMemoryGeneration()))
+      return { success: false, error: 'Memory maintenance is in progress or this window must reload.' };
+    if (rag.isDataResetActive() || (rag.getLastDataResetGeneration() !== null
+      && payload?.dataResetGeneration !== rag.getLastDataResetGeneration()))
+      return { success: false, error: 'Data reset is in progress or this window must reload.' };
+    return handler(event, payload);
+  };
+  ipcMain.handle('images:save', rejectMediaWritesDuringReset(handleImagesSave));
   ipcMain.handle('images:load', handleImagesLoad);
   ipcMain.handle('images:delete', handleImagesDelete);
   ipcMain.handle('images:list', handleImagesList);
   ipcMain.handle('images:open-folder', handleImagesOpenFolder);
   ipcMain.handle('images:get-storage-info', handleImagesGetStorageInfo);
 
-  ipcMain.handle('voice:save', handleVoiceSave);
+  ipcMain.handle('voice:save', rejectMediaWritesDuringReset(handleVoiceSave));
   ipcMain.handle('voice:load', handleVoiceLoad);
   ipcMain.handle('voice:delete', handleVoiceDelete);
   ipcMain.handle('voice:list', handleVoiceList);
@@ -331,21 +405,25 @@ if (!singleInstanceLock) {
   // v2.14.28 M9: bulk voice cache clear (single round-trip).
   ipcMain.handle('voice:clear-all', handleVoiceClearAll);
 
-  ipcMain.handle('ringtone:save', handleRingtoneSave);
+  ipcMain.handle('ringtone:save', rejectMediaWritesDuringReset(handleRingtoneSave));
   ipcMain.handle('ringtone:load', handleRingtoneLoad);
   ipcMain.handle('ringtone:delete', handleRingtoneDelete);
   ipcMain.handle('ringtone:get-info', handleRingtoneGetInfo);
   ipcMain.handle('ringtone:open-folder', handleRingtoneOpenFolder);
 
   // ── Backup file IPC ────────────────────────────────────────────
+  require('./electron/memory-maintenance.cjs').register(ipcMain);
 
   ipcMain.handle('backup:pick-save-file', handlePickSaveFile);
   ipcMain.handle('backup:pick-open-file', handlePickOpenFile);
-  ipcMain.handle('backup:write-file', handleWriteFile);
+  ipcMain.handle('backup:write-file', rejectMediaWritesDuringReset(handleWriteFile));
   ipcMain.handle('backup:read-file', handleReadFile);
   ipcMain.handle('backup:get-file-info', handleGetFileInfo);
   ipcMain.handle('backup:parse-import-file', handleParseImportFile);
-  ipcMain.handle('backup:build-zip-from-payload', handleBuildZipFromPayload);
+  ipcMain.handle('backup:build-zip-from-payload', rejectMediaWritesDuringReset(handleBuildZipFromPayload));
+  ipcMain.handle('backup:protection-status', handleProtectionStatus);
+  ipcMain.handle('backup:protection-set', handleProtectionSet);
+  ipcMain.handle('backup:clear-protection', handleProtectionClear);
 
   // F2B.4: dropped mobile-fs IPC registrations. The remote-file sandbox
   // (`fs:list-directory`, `backup:read-desktop-file`, …) and the

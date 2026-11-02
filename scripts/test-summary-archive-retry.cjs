@@ -29,6 +29,20 @@ function transpile(filename) {
   }).outputText;
 }
 
+function loadRoutingModule(file) {
+  const module = { exports: {} };
+  vm.runInNewContext(transpile(path.join(root, 'services', file)), {
+    module, exports: module.exports,
+    require(id) {
+      if (id === './roleProfiles') return { resolveModelSessionCredential: x => x };
+      assert.equal(id, './appConfig');
+      return loadRoutingModule('appConfig.ts');
+    },
+  });
+  return module.exports;
+}
+const taskModelRouter = loadRoutingModule('taskModelRouter.ts');
+
 function loadConversationSummarizer() {
   const module = { exports: {} };
   const sandbox = {
@@ -38,23 +52,18 @@ function loadConversationSummarizer() {
     Intl,
     Date,
     require(id) {
+      if (id === './taskModelRouter') return taskModelRouter;
       if (id === './llmCore') return {
-        getCurrentAIConfig: () => ({ provider: 'openai', model_summary: 'test-summary' }),
-        getGenAI: () => ({ models: { generateContent: async () => ({ text: '' }) } }),
-      };
-      if (id === './llmProviderService') return {
-        callOpenAI: async () => {
+        callLLMRaw: async (_system, _prompt, _model, options) => {
+          assert.equal(options.role, 'memory', 'Fact archiving must retain the memory model binding');
           summarizerCalls += 1;
           if (modelMode === '503') throw new Error('HTTP 503');
-          if (modelMode === 'empty') return { text: '' };
-          if (modelMode === 'malformedChunks') return { text: '[DIARY_ENTRY]summary fact[/DIARY_ENTRY][NOTEBOOK_UPDATE]notebook fact[/NOTEBOOK_UPDATE][MEMORY_CHUNKS]not JSON[/MEMORY_CHUNKS]' };
-          if (modelMode === 'missingChunks') return { text: '[DIARY_ENTRY]summary fact[/DIARY_ENTRY][NOTEBOOK_UPDATE]notebook fact[/NOTEBOOK_UPDATE]' };
-          if (modelMode === 'missingNotebook') return { text: '[DIARY_ENTRY]summary fact[/DIARY_ENTRY][MEMORY_CHUNKS]["fact A"][/MEMORY_CHUNKS]' };
-          return {
-            text: '[DIARY_ENTRY]\nsummary fact\n[/DIARY_ENTRY]\n[NOTEBOOK_UPDATE]\nnotebook fact\n[/NOTEBOOK_UPDATE]\n[MEMORY_CHUNKS]\n["fact A", "fact B"]\n[/MEMORY_CHUNKS]',
-          };
+          if (modelMode === 'empty') return '';
+          if (modelMode === 'malformedChunks') return '[DIARY_ENTRY]summary fact[/DIARY_ENTRY][NOTEBOOK_UPDATE]notebook fact[/NOTEBOOK_UPDATE][MEMORY_CHUNKS]not JSON[/MEMORY_CHUNKS]';
+          if (modelMode === 'missingChunks') return '[DIARY_ENTRY]summary fact[/DIARY_ENTRY][NOTEBOOK_UPDATE]notebook fact[/NOTEBOOK_UPDATE]';
+          if (modelMode === 'missingNotebook') return '[DIARY_ENTRY]summary fact[/DIARY_ENTRY][MEMORY_CHUNKS]["fact A"][/MEMORY_CHUNKS]';
+          return '[DIARY_ENTRY]\nsummary fact\n[/DIARY_ENTRY]\n[NOTEBOOK_UPDATE]\nnotebook fact\n[/NOTEBOOK_UPDATE]\n[MEMORY_CHUNKS]\n["fact A", "fact B"]\n[/MEMORY_CHUNKS]';
         },
-        callAnthropic: async () => ({ text: '' }),
       };
       if (id === './appConfig') return { resolveTransportProvider: () => 'openai' };
       throw new Error(`unexpected summarizer dependency: ${id}`);
@@ -211,79 +220,11 @@ async function main() {
     'empty model output must be exposed to the archive caller',
   );
 
-  for (const mode of ['503', 'empty', 'malformedChunks', 'missingChunks', 'missingNotebook']) {
-    modelMode = mode;
-    const store = makeStore();
-    const trigger = loadSummaryActions(summarizeConversation, store, async () => {});
-    await invoke(trigger, store);
-    assert.equal(store.summaryArchiveState.segmentStartTurn, 0, `${mode} must not advance the archive cursor`);
-    assert.equal(store.summaryArchiveState.pendingArchive, null, `${mode} must not stage unusable output`);
-  }
-
-  modelMode = 'success';
-  summarizerCalls = 0;
-  const store = makeStore();
-  const attempts = [];
-  let failSecondChunk = true;
-  const trigger = loadSummaryActions(summarizeConversation, store, async payload => {
-    attempts.push(payload);
-    if (failSecondChunk && payload.endsWith('fact B')) throw new Error('simulated chunk write failure');
-  });
-
-  await invoke(trigger, store);
-  assert.equal(store.summaryArchiveState.segmentStartTurn, 0, 'chunk failure must not advance the archive cursor');
-  assert.ok(store.summaryArchiveState.pendingArchive, 'chunk failure must retain a retry record');
-  assert.equal(store.summaryArchiveState.pendingArchive.savedChunkPayloads.length, 1, 'the first successful chunk is recorded');
-  assert.equal(store.coreMemory, 'old summary', 'summary is not committed before chunks finish');
-
-  failSecondChunk = false;
-  const laterMessages = [...messages, { id: 'm3', role: 'user', text: 'new fact after failed archive', timestamp: 3 }];
-  await invoke(trigger, store, {
-    refs: { messagesRef: { current: laterMessages } },
-    params: { nextSegmentStartTurn: 3, nextSegmentStartMessageId: 'm3' },
-  });
-  assert.equal(summarizerCalls, 1, 'retry reuses the staged summary instead of calling the model again');
-  assert.equal(attempts.filter(payload => payload.endsWith('fact A')).length, 1, 'retry does not write an already-saved fact twice');
-  assert.equal(attempts.filter(payload => payload.endsWith('fact B')).length, 2, 'only the failed fact is retried');
-  assert.equal(store.summaryArchiveState.segmentStartTurn, 2, 'successful write advances the archive cursor');
-  assert.equal(store.summaryArchiveState.segmentStartMessageId, null, 'retry keeps its original cursor instead of skipping newly added messages');
-  assert.equal(store.summaryArchiveState.pendingArchive, null, 'successful archive clears its retry record');
-  assert.equal(store.coreMemory, 'summary fact', 'successful archive commits the generated summary');
-
-  const faultStore = makeStore();
-  const failingDb = makeDbMock({ failKey: 'kumiko_notebook' });
-  const faultTrigger = loadSummaryActions(summarizeConversation, faultStore, async () => {}, failingDb.db);
-  await invoke(faultTrigger, faultStore);
-  assert.equal(faultStore.summaryArchiveState.segmentStartTurn, 0, 'a preference transaction failure must not advance the archive cursor');
-  assert.ok(faultStore.summaryArchiveState.pendingArchive, 'a preference transaction failure must retain the retry record');
-  assert.equal(faultStore.coreMemory, 'old summary', 'a failed preference transaction must not commit core memory in runtime state');
-  assert.equal(failingDb.persisted.get('kumiko_core_memory'), undefined, 'a failed transaction must not persist a partial core-memory write');
-  assert.ok(failingDb.persisted.get('kumiko_summary_archive_state').pendingArchive, 'the durable pending record remains after final commit failure');
-
-  const staleStore = makeStore();
-  staleStore.summaryArchiveState = {
-    ...staleStore.summaryArchiveState,
-    segmentStartTurn: 2,
-    segmentStartMessageId: null,
-  };
-  const staleTrigger = loadSummaryActions(summarizeConversation, staleStore, async () => {});
-  summarizerCalls = 0;
-  await invoke(staleTrigger, staleStore, {
-    params: {
-      archiveState: { segmentStartTurn: 0, segmentStartMessageId: 'm1', recentSummarySegments: [] },
-      retryCount: 1,
-    },
-  });
-  assert.equal(summarizerCalls, 0, 'a stale timer must not regenerate an already-advanced segment');
-  assert.equal(staleStore.summaryArchiveState.segmentStartTurn, 2, 'a stale timer must not roll the cursor backward');
-
-  const concurrentStore = makeStore();
-  const concurrentTrigger = loadSummaryActions(summarizeConversation, concurrentStore, async () => {});
-  summarizerCalls = 0;
-  await invoke(concurrentTrigger, concurrentStore, { refs: { summaryRunningRef: { current: true } }, params: { retryCount: 1 } });
-  assert.equal(summarizerCalls, 0, 'retry obeys the same concurrent-run guard as a new archive pass');
-
-  console.log('summary archive retry regression tests passed');
+  const result = require('node:child_process').spawnSync(process.execPath, [require('node:path').join(__dirname, 'test-summary-jobs.cjs')], { encoding: 'utf8' });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  assert.equal(result.status, 0, 'durable summary jobs regression failed');
+  console.log('summary model validation and durable retry regression tests passed');
 }
 
 main().catch(error => {

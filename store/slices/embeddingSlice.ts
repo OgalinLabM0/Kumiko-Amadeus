@@ -35,6 +35,8 @@
 //   cloudEmbeddingService during initialisation.
 
 import type { StateCreator } from 'zustand';
+import { hasNativeCredentials } from '../../services/nativeCredentials';
+import { assertDataWritesAllowed } from '../../services/dataRestoreGate';
 import {
   DEFAULT_EMBEDDING_CONFIG,
   EMBEDDING_CONFIG_STORAGE_KEY,
@@ -56,9 +58,20 @@ function readInitialEmbeddingConfig(): EmbeddingProviderConfig {
 function persistEmbeddingConfig(cfg: EmbeddingProviderConfig): void {
   if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(EMBEDDING_CONFIG_STORAGE_KEY, JSON.stringify(cfg));
+    let persisted = cfg;
+    if (!hasNativeCredentials()) {
+      const raw = window.localStorage.getItem(EMBEDDING_CONFIG_STORAGE_KEY);
+      const previous = JSON.parse(raw || '{}') as Partial<EmbeddingProviderConfig>;
+      if (raw && previous.apiKey) {
+        const archiveKey = 'kumiko_legacy_embedding_config_' + crypto.randomUUID();
+        window.localStorage.setItem(archiveKey, raw);
+        if (window.localStorage.getItem(archiveKey) !== raw) throw new Error('Existing embedding credential could not be preserved.');
+      }
+      persisted = { ...cfg, apiKey: '' };
+    }
+    window.localStorage.setItem(EMBEDDING_CONFIG_STORAGE_KEY, JSON.stringify(persisted));
   } catch (e) {
-    console.warn('[embeddingSlice] localStorage persist failed:', e);
+    throw new Error('Embedding settings could not be saved.');
   }
 }
 
@@ -67,10 +80,29 @@ export interface EmbeddingSlice {
   setEmbeddingConfig: (cfg: EmbeddingProviderConfig) => void;
 }
 
-export const createEmbeddingSlice: StateCreator<EmbeddingSlice, [], [], EmbeddingSlice> = (set) => ({
+export const createEmbeddingSlice: StateCreator<EmbeddingSlice, [], [], EmbeddingSlice> = (set, get) => ({
   embeddingConfig: readInitialEmbeddingConfig(),
   setEmbeddingConfig: (cfg) => {
-    set({ embeddingConfig: cfg });
+    assertDataWritesAllowed();
+    const previous = get().embeddingConfig;
+    if (previous?.apiKey && cfg.apiKey === previous.apiKey
+      && (cfg.provider !== previous.provider || (cfg.provider === 'custom' && cfg.customEndpoint !== previous.customEndpoint))) {
+      // Preserve both the currently effective configuration and any distinct
+      // persisted predecessor before removing its key from the active binding.
+      if (typeof window === 'undefined') throw new Error('Cannot safely preserve existing embedding credentials.');
+      const raw = window.localStorage.getItem(EMBEDDING_CONFIG_STORAGE_KEY);
+      // Browser session keys must never be copied into a persistent archive.
+      // Only preserve bytes that were already stored there by an older build.
+      const candidates = [...new Set([raw, hasNativeCredentials() ? JSON.stringify(previous) : null]
+        .filter((value): value is string => !!value))];
+      for (const value of candidates) {
+        const archiveKey = 'kumiko_legacy_embedding_config_' + crypto.randomUUID();
+        window.localStorage.setItem(archiveKey, value);
+        if (window.localStorage.getItem(archiveKey) !== value) throw new Error('Existing embedding credentials could not be preserved.');
+      }
+      cfg = { ...cfg, apiKey: '' };
+    }
     persistEmbeddingConfig(cfg);
+    set({ embeddingConfig: cfg });
   },
 });

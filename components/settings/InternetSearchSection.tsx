@@ -4,12 +4,14 @@ import { Collapse } from '../Collapse';
 import { SettingsToggle } from './SettingsToggle';
 import { openExternalUrl } from '../../utils/openExternal';
 import { ComposableInput } from '../common/ComposableInput';
+import { hasNativeCredentials } from '../../services/nativeCredentials';
 
 interface InternetSearchTranslations {
   internetSearchConfig: string;
   internetSearchDesc?: string;
   enableInternetSearch: string;
   tavilyApiKey: string;
+  hasSavedKey: boolean;
   usage: string;
   testSearch: string;
 }
@@ -29,6 +31,8 @@ interface InternetSearchSectionProps {
   searchStatus?: string;
   searchStatusType?: 'neutral' | 'success' | 'error';
   onSaveConfig: (key: string, enabled: boolean) => void;
+  onKeyChange: (key: string) => void;
+  onRemoveConfig: () => void;
   onRefreshUsage: () => void;
   onTestSearch: () => void;
 }
@@ -43,11 +47,14 @@ export const InternetSearchSection: React.FC<InternetSearchSectionProps> = ({
   inputClass,
   t,
   tavilyApiKey,
+  hasSavedKey,
   enableInternetSearch,
   tavilyUsage,
   searchStatus,
   searchStatusType,
   onSaveConfig,
+  onKeyChange,
+  onRemoveConfig,
   onRefreshUsage,
   onTestSearch
 }) => {
@@ -77,7 +84,7 @@ export const InternetSearchSection: React.FC<InternetSearchSectionProps> = ({
               <div className="flex-shrink-0">
                 <SettingsToggle
                   checked={enableInternetSearch}
-                  onClick={() => onSaveConfig(tavilyApiKey, !enableInternetSearch)}
+                  onClick={() => onSaveConfig('', !enableInternetSearch)}
                   activeTrackClass="bg-teal-500/95"
                   inactiveTrackClass={isDarkMode ? 'bg-[#3e3429]' : 'bg-[#d7d2ca]'}
                   ariaLabel={t.enableInternetSearch}
@@ -90,10 +97,15 @@ export const InternetSearchSection: React.FC<InternetSearchSectionProps> = ({
                 <ComposableInput
                   type="password"
                   value={tavilyApiKey}
-                  onChange={(e) => onSaveConfig(e.target.value, enableInternetSearch)}
-                  placeholder="tvly-..."
+                  onChange={(e) => onKeyChange(e.target.value)}
+                  placeholder={hasSavedKey ? (language === 'zh' ? '已配置；输入以替换' : 'Configured; enter to replace') : 'tvly-...'}
                   className={`${inputClass} mt-1.5`}
                 />
+                <button type="button" disabled={!tavilyApiKey.trim()} onClick={() => onSaveConfig(tavilyApiKey, enableInternetSearch)} className="ka-copy-sm mt-2 underline disabled:opacity-50">
+                  {language === 'zh' ? '保存密钥' : 'Save key'}
+                </button>
+                {hasSavedKey && <button type="button" className="ka-copy-sm ml-3 underline" onClick={onRemoveConfig}>{language === 'zh' ? '移除此配置' : 'Remove from configuration'}</button>}
+                {!hasNativeCredentials() && <p className="ka-copy-sm">{language === 'zh' ? '新输入的密钥仅用于当前会话。旧存储副本单独保留。' : 'New keys remain in this session only. Older stored copies are kept separately.'}</p>}
                 <div className={`mt-1.5 flex flex-wrap items-center gap-2 ${isDarkMode ? 'text-[#b69f87]' : 'text-[#8f7458]'}`}>
                   <span className="ka-copy-sm">
                     {language === 'zh' ? '申请或查看额度：' : 'Open dashboard:'}

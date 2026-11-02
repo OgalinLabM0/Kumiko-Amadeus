@@ -14,6 +14,7 @@ export interface CustomDialogProps {
   message: string;
   type: 'alert' | 'confirm' | 'prompt';
   inputPlaceholder?: string;
+  inputSecret?: boolean;
   inputDefaultValue?: string;
   confirmText?: string;
   cancelText?: string;
@@ -51,6 +52,7 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
   message,
   type,
   inputPlaceholder,
+  inputSecret,
   inputDefaultValue,
   confirmText,
   cancelText,
@@ -152,7 +154,7 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
           {type === 'prompt' && (
             <ComposableInput
               ref={inputRef}
-              type="text"
+              type={inputSecret ? 'password' : 'text'}
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               placeholder={inputPlaceholder}

@@ -235,6 +235,7 @@ public class KumikoAlarmsPlugin extends Plugin {
             }
             String reminderEvent = call.getString("event", "提醒");
             String reminderText = call.getString("text", reminderEvent);
+            String version = call.getString("version", "legacy");
             boolean wantsCall = Boolean.TRUE.equals(call.getBoolean("wantsCall", false));
             String ringtoneFileId = call.getString("ringtoneFileId", "");
 
@@ -245,15 +246,15 @@ public class KumikoAlarmsPlugin extends Plugin {
                 return;
             }
 
-            boolean exactScheduled = scheduleAlarmInternal(
-                context, am, reminderId, atMs, reminderEvent, reminderText, wantsCall, ringtoneFileId, /*isPrewarm*/ false
-            );
-
             try {
-                persistLedgerEntry(context, reminderId, atMs, reminderEvent, reminderText, wantsCall, ringtoneFileId);
+                persistLedgerEntry(context, reminderId, atMs, reminderEvent, reminderText, wantsCall, ringtoneFileId, version);
             } catch (Throwable t) {
-                Log.w(TAG, "Failed to persist ledger entry; reboot recovery may not work", t);
+                call.reject("Failed to persist alarm ledger", new Exception(t));
+                return;
             }
+            boolean exactScheduled = scheduleAlarmInternal(
+                context, am, reminderId, atMs, reminderEvent, reminderText, wantsCall, ringtoneFileId, version, /*isPrewarm*/ false
+            );
 
             // v2.14.23: Xiaomi/HyperOS double-alarm prewarm.
             long delayMs = atMs - System.currentTimeMillis();
@@ -263,7 +264,7 @@ public class KumikoAlarmsPlugin extends Plugin {
                 try {
                     prewarmScheduled = scheduleAlarmInternal(
                         context, am, reminderId + PREWARM_REMINDER_SUFFIX, prewarmAt,
-                        reminderEvent, reminderText, wantsCall, ringtoneFileId, /*isPrewarm*/ true
+                        reminderEvent, reminderText, wantsCall, ringtoneFileId, version, /*isPrewarm*/ true
                     );
                 } catch (Throwable t) {
                     Log.w(TAG, "Failed to schedule Xiaomi prewarm alarm; main alarm still scheduled", t);
@@ -301,18 +302,31 @@ public class KumikoAlarmsPlugin extends Plugin {
                 return;
             }
 
-            boolean cancelledMain = cancelAlarmInternal(context, am, reminderId, /*isPrewarm*/ false);
-            cancelAlarmInternal(context, am, reminderId, /*isPrewarm*/ true);
-
             try {
                 removeLedgerEntry(context, reminderId);
             } catch (Throwable t) {
                 Log.w(TAG, "Failed to remove ledger entry for " + reminderId, t);
             }
+            boolean cancelledMain = cancelAlarmInternal(context, am, reminderId, /*isPrewarm*/ false);
+            cancelAlarmInternal(context, am, reminderId + PREWARM_REMINDER_SUFFIX, /*isPrewarm*/ true);
 
             JSObject ret = new JSObject();
             ret.put("cancelled", cancelledMain);
             call.resolve(ret);
+        });
+    }
+
+    @PluginMethod
+    public void listScheduled(PluginCall call) {
+        onWorker(call, "listScheduled", () -> {
+            com.getcapacitor.JSArray ids = new com.getcapacitor.JSArray();
+            for (JSONObject row : readPendingLedgerEntries(getContext())) {
+                String id = row.optString("reminderId", "");
+                if (!id.isEmpty()) ids.put(id);
+            }
+            JSObject result = new JSObject();
+            result.put("ids", ids);
+            call.resolve(result);
         });
     }
 
@@ -606,6 +620,7 @@ public class KumikoAlarmsPlugin extends Plugin {
         String reminderText,
         boolean wantsCall,
         String ringtoneFileId,
+        String version,
         boolean isPrewarm
     ) {
         Intent receiverIntent = new Intent(context, KumikoAlarmReceiver.class);
@@ -615,6 +630,8 @@ public class KumikoAlarmsPlugin extends Plugin {
         receiverIntent.putExtra(KumikoAlarmReceiver.EXTRA_WANTS_CALL, wantsCall);
         receiverIntent.putExtra(KumikoAlarmReceiver.EXTRA_RINGTONE_FILE_ID, ringtoneFileId);
         receiverIntent.putExtra(KumikoAlarmReceiver.EXTRA_IS_PREWARM, isPrewarm);
+        receiverIntent.putExtra(KumikoAlarmReceiver.EXTRA_SCHEDULED_AT, atMs);
+        receiverIntent.putExtra(KumikoAlarmReceiver.EXTRA_VERSION, version);
 
         int requestCode = isPrewarm
             ? (reminderId.hashCode() ^ PREWARM_REQUEST_CODE_OFFSET)
@@ -737,7 +754,8 @@ public class KumikoAlarmsPlugin extends Plugin {
         String reminderEvent,
         String reminderText,
         boolean wantsCall,
-        String ringtoneFileId
+        String ringtoneFileId,
+        String version
     ) throws JSONException {
         SharedPreferences prefs = context.getSharedPreferences(LEDGER_PREFS, Context.MODE_PRIVATE);
         JSONObject row = new JSONObject();
@@ -747,6 +765,7 @@ public class KumikoAlarmsPlugin extends Plugin {
         row.put("text", reminderText != null ? reminderText : "");
         row.put("wantsCall", wantsCall);
         row.put("ringtoneFileId", ringtoneFileId != null ? ringtoneFileId : "");
+        row.put("version", version != null ? version : "legacy");
         row.put("createdAt", System.currentTimeMillis());
         prefs.edit().putString(LEDGER_KEY_PREFIX + reminderId, row.toString()).apply();
     }
@@ -755,6 +774,17 @@ public class KumikoAlarmsPlugin extends Plugin {
         if (reminderId == null) return;
         SharedPreferences prefs = context.getSharedPreferences(LEDGER_PREFS, Context.MODE_PRIVATE);
         prefs.edit().remove(LEDGER_KEY_PREFIX + reminderId).apply();
+    }
+
+    public static boolean matchesLedgerEntry(Context context, String id, long at, String event, String version) {
+        try {
+            SharedPreferences prefs = context.getSharedPreferences(LEDGER_PREFS, Context.MODE_PRIVATE);
+            String raw = prefs.getString(LEDGER_KEY_PREFIX + id, null);
+            if (raw == null) return false;
+            JSONObject row = new JSONObject(raw);
+            return row.optLong("at", -1) == at && row.optString("event", "").equals(event)
+                && row.optString("version", "legacy").equals(version);
+        } catch (Throwable ignored) { return false; }
     }
 
     public static int[] pruneExpiredLedgerInternal(Context context) {

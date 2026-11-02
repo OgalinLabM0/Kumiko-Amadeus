@@ -30,8 +30,11 @@ const {
   getBackupFileInfo,
   parseBackupImportFile,
   getDefaultBackupFilePath,
+  assertBackupPathAllowed,
 } = require('./backup-files.cjs');
 const { buildBackupZip } = require('./backup-zip-builder.cjs');
+const protection = require('./backup-protection.cjs');
+const fs = require('node:fs');
 
 // Native dialog parent window. Injected via setBackupDialogParent(mainWindow)
 // from electron-main.cjs once BrowserWindow is ready. Dialogs fall back to
@@ -43,13 +46,27 @@ let dialogParent = null;
 // auto-zip-backup.cjs to decide which JSON backup to roll media into at
 // quit-time (Plan 9 SubPhase 3.3).
 let lastWrittenBackupPath = null;
+let lastWrittenBackupMemoryGeneration = null;
 
 function setBackupDialogParent(win) {
   dialogParent = win || null;
 }
 
-function getLastWrittenBackupPath() {
-  return lastWrittenBackupPath;
+function getLastWrittenBackupPath(requiredMemoryGeneration) {
+  return requiredMemoryGeneration && lastWrittenBackupMemoryGeneration !== requiredMemoryGeneration ? null : lastWrittenBackupPath;
+}
+
+function rememberSuccessfulBackup(filePath, memoryGeneration) {
+  lastWrittenBackupPath = filePath;
+  lastWrittenBackupMemoryGeneration = typeof memoryGeneration === 'string' ? memoryGeneration : null;
+  // After a crash before a correction journal exists, the first clean save
+  // re-establishes which dataset may be used for automatic backup.
+  if (lastWrittenBackupMemoryGeneration) {
+    try {
+      const config = require('./user-config.cjs');
+      if (config.readConfigValue('MemoryMaintenanceGeneration')) config.writeConfigValue('MemoryMaintenanceGeneration', lastWrittenBackupMemoryGeneration);
+    } catch (error) { console.warn('[LOCAL BACKUP] Could not update automatic-backup safety marker:', error.message); }
+  }
 }
 
 async function handlePickSaveFile(_event, payload = {}) {
@@ -58,7 +75,7 @@ async function handlePickSaveFile(_event, payload = {}) {
       title: '选择本地同步文件',
       defaultPath: getDefaultBackupFilePath(payload.defaultFileName),
       filters: [
-        { name: 'JSON Backup File', extensions: ['json'] }
+        { name: 'Backup File', extensions: ['json', 'kab'] }
       ]
     });
 
@@ -91,7 +108,7 @@ async function handlePickOpenFile() {
       title: '选择本地同步文件',
       properties: ['openFile'],
       filters: [
-        { name: 'JSON Backup File', extensions: ['json'] }
+        { name: 'Backup File', extensions: ['json', 'kab'] }
       ],
       defaultPath: app.getPath('documents')
     });
@@ -112,10 +129,29 @@ async function handlePickOpenFile() {
   }
 }
 
-function handleWriteFile(_event, payload = {}) {
+async function handleWriteFile(_event, payload = {}) {
   try {
-    if (payload.filePath) lastWrittenBackupPath = payload.filePath;
-    return writeBackupFile(payload.filePath, payload.content);
+    const rag = require('../electron-rag.cjs');
+    const generation = rag.getDataRestoreGeneration();
+    if (rag.isDataRestoreActive()) throw new Error('Data maintenance is in progress.');
+    const password = await protection.key();
+    let content = payload.content;
+    assertBackupPathAllowed(path.resolve(payload.filePath));
+    const crypto = await import('../services/portableBackupCrypto.mjs');
+    if (fs.existsSync(payload.filePath) && fs.statSync(payload.filePath).size > 720 * 1024 * 1024) throw new Error('Existing backup is too large.');
+    const existingEncrypted = fs.existsSync(payload.filePath) && crypto.isEncryptedBackup(fs.readFileSync(payload.filePath, 'utf8'));
+    if (!password && existingEncrypted) throw new Error('Protected backup cannot be replaced with plaintext.');
+    if (password) {
+      if (fs.existsSync(payload.filePath) && !existingEncrypted) throw new Error('Choose a new protected backup file; the existing plaintext backup is preserved.');
+      if (existingEncrypted) await crypto.decryptPortableBackup(fs.readFileSync(payload.filePath, 'utf8'), password);
+      content = await crypto.encryptPortableBackup(new TextEncoder().encode(content), password, 'json');
+    }
+    if (rag.isDataRestoreActive() || rag.getDataRestoreGeneration() !== generation) throw new Error('Backup was superseded by data maintenance.');
+    const result = writeBackupFile(payload.filePath, content);
+    if (result.success && payload.filePath) {
+      rememberSuccessfulBackup(payload.filePath, payload.dataMemoryGeneration);
+    }
+    return result;
   } catch (error) {
     console.error('[LOCAL BACKUP] Failed to write backup file:', error);
     return {
@@ -125,9 +161,17 @@ function handleWriteFile(_event, payload = {}) {
   }
 }
 
-function handleReadFile(_event, payload = {}) {
+async function handleReadFile(_event, payload = {}) {
   try {
-    return readBackupFile(payload.filePath);
+    const result = readBackupFile(payload.filePath);
+    const crypto = await import('../services/portableBackupCrypto.mjs');
+    if (crypto.isEncryptedBackup(result.content)) {
+      const password = payload.password || await protection.key();
+      const decoded = await crypto.decryptPortableBackup(result.content, password);
+      if (decoded.kind !== 'json') throw new Error('Expected a JSON backup.');
+      result.content = new TextDecoder().decode(decoded.bytes);
+    }
+    return result;
   } catch (error) {
     console.error('[LOCAL BACKUP] Failed to read backup file:', error);
     return {
@@ -151,7 +195,13 @@ function handleGetFileInfo(_event, payload = {}) {
 
 async function handleParseImportFile(_event, payload = {}) {
   try {
-    return await parseBackupImportFile(payload.filePath);
+    const target = path.resolve(payload.filePath);
+    assertBackupPathAllowed(target);
+    const fd = fs.openSync(target, 'r');
+    const prefix = Buffer.alloc(16);
+    try { fs.readSync(fd, prefix, 0, 16, 0); } finally { fs.closeSync(fd); }
+    const encrypted = prefix.toString('utf8') === 'KUMIKO-BACKUP-1\n';
+    return await parseBackupImportFile(target, encrypted ? (payload.password || await protection.key()) : undefined);
   } catch (error) {
     console.error('[LOCAL BACKUP] Failed to parse backup import file:', error);
     return {
@@ -187,6 +237,10 @@ function getDefaultBackupZipPath(defaultFileName) {
 //     to date) these are identical; on a corrupted install the fs version
 //     is closer to what kumiko-image:// will actually resolve post-restore.
 async function handleBuildZipFromPayload(_event, payload = {}) {
+  const rag = require('../electron-rag.cjs');
+  const generation = rag.getDataRestoreGeneration();
+  const canCommit = () => !rag.isDataRestoreActive() && rag.getDataRestoreGeneration() === generation;
+  if (!canCommit()) return { success: false, error: 'Data maintenance is in progress.' };
   const { dataJsonString, defaultFileName } = payload || {};
   if (typeof dataJsonString !== 'string' || dataJsonString.length === 0) {
     return {
@@ -200,7 +254,7 @@ async function handleBuildZipFromPayload(_event, payload = {}) {
     const result = await dialog.showSaveDialog(dialogParent || undefined, {
       title: '导出备份 ZIP',
       defaultPath: getDefaultBackupZipPath(defaultFileName),
-      filters: [{ name: 'Kumiko Backup ZIP', extensions: ['zip'] }],
+      filters: [{ name: 'Kumiko Backup', extensions: ['zip', 'kab'] }],
     });
 
     if (result.canceled || !result.filePath) {
@@ -226,6 +280,8 @@ async function handleBuildZipFromPayload(_event, payload = {}) {
       dataJsonString,
       mode: 'manual',
       outputPath,
+      canCommit,
+      password: await protection.key(),
     });
     if (buildResult.success) {
       return {
@@ -252,6 +308,22 @@ async function handleBuildZipFromPayload(_event, payload = {}) {
 }
 
 module.exports = {
+  handleProtectionStatus: async () => ({ success: true, enabled: protection.enabled() }),
+  handleProtectionSet: async (_event, payload = {}) => {
+    try {
+      const canCommit = () => !require('../electron-rag.cjs').isDataRestoreActive();
+      if (!canCommit()) throw new Error('Data reset or restore is in progress.');
+      await protection.enable(payload.password, canCommit); return { success: true, enabled: true };
+    }
+    catch (error) { return { success: false, error: error.message }; }
+  },
+  handleProtectionClear: async (event, payload = {}) => {
+    try {
+      if (!require('../electron-rag.cjs').isDataResetOwner(event, payload.restoreSessionId)) throw new Error('Data reset ownership required.');
+      await protection.clear(); return { success: true };
+    }
+    catch (error) { return { success: false, error: error.message }; }
+  },
   setBackupDialogParent,
   getLastWrittenBackupPath,
   handlePickSaveFile,

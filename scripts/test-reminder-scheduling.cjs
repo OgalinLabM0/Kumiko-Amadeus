@@ -63,80 +63,86 @@ function expectNext(now, expected, overrides = {}) {
   assert.equal(actual, at(expected), `${now}: ${JSON.stringify(overrides)}`);
 }
 
-function harness(start, initialRelative = [], initialDaily = []) {
-  let now = start;
-  let relatives = initialRelative;
-  let dailies = initialDaily;
-  let listener;
-  let scheduledResult = () => true;
-  const effects = [];
-  const intervals = [];
-  const schedules = [];
-  const cancels = [];
-  const delivered = [];
-  const prewarmed = [];
+function harness(start, initialRelative = [], initialDaily = [], restoreRace = null) {
+  let now = start, listener, queue = Promise.resolve();
+  const effects = [], intervals = [], schedules = [], cancels = [], delivered = [], prewarmed = [];
+  const rows = new Map();
+  const relKey = 'kumiko_relative_reminders', dayKey = 'kumiko_daily_reminders';
+  rows.set(relKey, structuredClone(initialRelative));
+  rows.set(dayKey, structuredClone(initialDaily.map(r => r.createdAt === 1 ? {...r, createdAt: start - 3_600_000} : r)));
+  const db = {
+    keyval: {
+      get: async key => rows.has(key) ? {key, value: structuredClone(rows.get(key))} : undefined,
+      put: async ({key, value}) => rows.set(key, structuredClone(value)),
+    },
+    messages: { put: async message => rows.set('message:' + message.id, structuredClone(message)) },
+    transaction(_mode, ...args) {
+      const run = args.at(-1), result = queue.then(run);
+      queue = result.catch(() => {}); return result;
+    },
+    getVal: async (key, fallback) => structuredClone(rows.get(key) ?? fallback),
+  };
   class Clock extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
     static now() { return now; }
   }
+  const sliceKeys = { RELATIVE_REMINDER_STORAGE_KEY: relKey, DAILY_REMINDER_STORAGE_KEY: dayKey,
+    KUMIKO_MISSED_REMINDERS_STORAGE_KEY: 'kumiko_missed_reminders' };
+  const occurrence = load('services/reminderOccurrences.ts', {
+    './db': {db}, '../store/slices/reminderSlice': sliceKeys,
+  }, { Date: Clock, Math, JSON });
+  const state = {
+    setRelativeReminders: value => rows.set(relKey, structuredClone(value)),
+    setDailyReminders: value => rows.set(dayKey, structuredClone(value)),
+    setMissedReminders: () => {}, setMessageAlerts: () => {}, setSystemNotice: () => {},
+  };
   const hook = load('components/app/useScheduledReminders.ts', {
-    react: {
-      useRef: value => ({ current: value }),
-      useCallback: fn => fn,
-      useEffect: fn => effects.push(fn),
-    },
+    react: { useRef: value => ({current: value}), useCallback: fn => fn, useEffect: fn => effects.push(fn) },
     './chatActions': {
-      triggerTimedReminderMessage: async (_refs, _helpers, row, id) => { delivered.push(id); return true; },
+      triggerTimedReminderMessage: async (_refs, _helpers, row, _id, guard) => {
+        if (!await guard.begin()) return false;
+        const ok = await guard.commit({id: guard.messageId, role: 'model', text: row.event, timestamp: now});
+        if (ok) delivered.push(row.id); return ok;
+      },
       prewarmTimedReminderMessage: async (_refs, _helpers, row) => { prewarmed.push(row.id); },
     },
-    '../../services/reminderPrewarmService': {
-      shouldKickReminderPrewarm: () => false,
-      readReminderPrewarm: () => null,
-      cancelReminderPrewarm: () => {},
-    },
-    './backupHelpers': backup,
-    './reminderScheduling': timing,
+    '../../services/reminderPrewarmService': { shouldKickReminderPrewarm: () => false, readReminderPrewarm: () => null, cancelReminderPrewarm: () => {} },
+    './backupHelpers': backup, './reminderScheduling': timing,
     '../../services/environment': { isCapacitorNative: () => true, getCapacitorPlatform: () => 'android' },
     '../../services/androidAlarmService': {
-      scheduleAndroidAlarm: async input => {
-        schedules.push({ ...input });
-        return { scheduled: scheduledResult(input), exact: true };
-      },
+      scheduleAndroidAlarm: async input => { schedules.push({...input}); return {scheduled:true, exact:true}; },
       cancelAndroidAlarm: async id => { cancels.push(id); return true; },
+      listScheduledAndroidAlarms: async () => [],
       addAlarmFiredListener: async fn => { listener = fn; return () => {}; },
     },
     '../../services/voiceFileService': { ensureNativeRingtoneForAlarm: async () => {} },
-    '../../store': {},
+    '../../store': { useAppStore: { getState: () => state } },
+    '../../services/db': {db}, '../../store/slices/reminderSlice': sliceKeys,
+    '../../services/dataRestoreGate': { isDataRestoreBlocked: () => !!restoreRace?.blocked, getDataRestoreVersion: () => restoreRace?.version || '' },
+    '../../services/reminderOccurrences': occurrence,
+    '../../services/reminderNativeCancellation': { drainReminderNativeCancellationsLocked: async () => {}, withReminderNativeAlarmLock: async fn => fn(), REMINDER_NATIVE_CANCEL_KEY: 'native_cancel' },
   }, {
-    Date: Clock,
-    document: { visibilityState: 'hidden', addEventListener() {}, removeEventListener() {} },
-    setInterval: (fn, period) => { intervals.push({ fn, period }); return intervals.length; },
-    clearInterval() {}, setTimeout: () => 1, clearTimeout() {},
+    Date: Clock, document: {visibilityState:'hidden', addEventListener(){}, removeEventListener(){}},
+    setInterval: (fn, period) => { intervals.push({fn,period}); return intervals.length; },
+    clearInterval(){}, setTimeout: () => 1, clearTimeout(){},
   });
   hook.useScheduledReminders({
-    flowState: 'APP', isTalking: false, isThinking: false,
-    messagesRef: { current: [] }, ttsConfigRef: { current: { voiceMode: 'text' } },
-    runVoicePipeline: async () => {},
-    getRelativeReminders: () => relatives, getDailyReminders: () => dailies,
-    removeRelativeReminder: async id => { relatives = relatives.filter(row => row.id !== id); },
-    markRelativeReminderRetry: async () => {},
-    markDailyReminderTriggered: async (id, date) => {
-      dailies = dailies.map(row => row.id === id ? { ...row, lastTriggeredDate: date } : row);
+    flowState:'APP', isTalking:false, isThinking:false, messagesRef:{current:[]}, ttsConfigRef:{current:{voiceMode:'text'}},
+    runVoicePipeline:async()=>{}, getRelativeReminders:()=>rows.get(relKey), getDailyReminders:()=>{
+      if (restoreRace?.changeOnRead) { restoreRace.version = 'restored'; restoreRace.changeOnRead = false; }
+      return rows.get(dayKey);
     },
-    markDailyReminderRetry: async () => {}, language: 'en', locationConfig: {},
-    addMessage: () => '', showBackgroundMessageNotification() {},
+    removeRelativeReminder:async()=>{}, markRelativeReminderRetry:async()=>{}, markDailyReminderTriggered:async()=>{},
+    markDailyReminderRetry:async()=>{}, language:'en', locationConfig:{}, addMessage:()=>'', showBackgroundMessageNotification(){},
   });
-  const settle = async () => { await new Promise(resolve => setImmediate(resolve)); };
+  const settle = async () => { for (let i=0;i<4;i++) await new Promise(resolve=>setImmediate(resolve)); };
   return {
-    schedules, cancels, delivered, prewarmed,
-    mount: async () => { effects.forEach(fn => fn()); await settle(); },
-    sync: async () => { intervals.find(item => item.period === 30_000).fn(); await settle(); },
-    wake: async id => { await listener({ reminderId: id }); await settle(); },
-    setNow: value => { now = value; },
-    setRelative: value => { relatives = value; },
-    setDaily: value => { dailies = value; },
-    setScheduleResult: fn => { scheduledResult = fn; },
-    getDaily: () => dailies,
+    schedules,cancels,delivered,prewarmed,rows,
+    mount:async()=>{ effects.forEach(fn=>fn()); await settle(); },
+    sync:async()=>{ intervals.find(x=>x.period===30_000).fn(); await settle(); },
+    wake:async id=>{ await listener({reminderId:id}); await settle(); },
+    setNow:value=>{now=value;}, setRelative:value=>rows.set(relKey,structuredClone(value)),
+    setDaily:value=>rows.set(dayKey,structuredClone(value)), getDaily:()=>rows.get(dayKey),
   };
 }
 
@@ -169,62 +175,51 @@ async function main() {
   const h = harness(start, [relative(due)], [daily()]);
   await h.mount();
   assert.equal(h.schedules.find(row => row.reminderId === 'daily-daily').at, at('2026-10-03T07:00:00Z'));
-  assert.equal(h.schedules.find(row => row.reminderId === 'relative__prewarm').at, start + 35_000);
-  h.setNow(start + 30_000);
-  await h.sync();
-  assert.ok(!h.cancels.includes('relative__prewarm'), 'T-5s existing prewarm is retained');
-  h.setNow(start + 40_000);
-  await h.sync();
-  assert.ok(!h.cancels.includes('relative__prewarm'), 'delayed native prewarm remains valid before main due');
-  assert.equal(h.schedules.filter(row => row.reminderId === 'relative__prewarm').length, 1, 'past prewarm is not rebuilt');
+  assert.ok(!h.schedules.some(row => row.reminderId.endsWith('__prewarm')), 'versionless prewarm is disabled');
   await h.wake('relative__prewarm');
-  assert.deepEqual(h.prewarmed, ['relative']);
-  h.setNow(due);
-  await h.wake('relative');
-  await h.wake('daily-daily');
+  assert.deepEqual(h.prewarmed, []);
+  h.setNow(due); await h.wake('relative'); await h.wake('daily-daily');
   assert.deepEqual(h.delivered, ['relative', 'daily']);
   assert.equal(h.getDaily()[0].lastTriggeredDate, '2026-10-03');
+  await h.wake('daily-daily'); assert.equal(h.delivered.length, 2, 'occurrence delivered only once');
   await h.sync();
-  assert.ok(h.cancels.includes('relative') && h.cancels.includes('relative__prewarm'), 'sent one-shot alarms are cancelled');
+  assert.ok(h.cancels.includes('relative'));
   assert.equal(h.schedules.filter(row => row.reminderId === 'daily-daily').at(-1).at, at('2026-10-04T07:00:00Z'));
-  h.setDaily([daily({ paused: true })]);
-  await h.sync();
-  assert.ok(h.cancels.includes('daily-daily'), 'disabled daily alarm is cancelled');
+  h.setDaily([daily({paused:true})]); await h.sync(); assert.ok(h.cancels.includes('daily-daily'));
 
-  const deleted = harness(start, [relative(due)]);
-  await deleted.mount();
-  deleted.setRelative([]);
-  await deleted.sync();
-  assert.deepEqual(deleted.cancels.sort(), ['relative', 'relative__prewarm']);
-
-  const changed = harness(start, [relative(due)]);
-  await changed.mount();
-  changed.setRelative([relative(start + 50_000)]);
-  await changed.sync();
-  assert.ok(changed.cancels.includes('relative__prewarm'), 'changed deadline does not retain old prewarm');
-  assert.equal(changed.schedules.filter(row => row.reminderId === 'relative__prewarm').length, 1);
-
-  const expired = harness(start, [relative(due)]);
-  await expired.mount();
-  expired.setNow(due + 1);
-  await expired.sync();
-  assert.deepEqual(expired.cancels.sort(), ['relative', 'relative__prewarm']);
-
-  const invalid = harness(start, [relative(Infinity)], [daily({ id: 'invalid', timeZone: 'Invalid' }), daily()]);
-  await invalid.mount();
-  assert.deepEqual(invalid.schedules.map(row => row.reminderId), ['daily-daily'], 'invalid rows do not suppress valid rows');
-  invalid.setDaily([daily({ minute: Infinity })]);
-  await invalid.sync();
-  assert.deepEqual(invalid.cancels, ['daily-daily']);
-
-  const failed = harness(start, [relative(due)]);
-  failed.setScheduleResult(input => !input.reminderId.endsWith('__prewarm'));
-  await failed.mount();
-  failed.setNow(start + 30_000);
-  await failed.sync();
-  assert.equal(failed.schedules.filter(row => row.reminderId === 'relative__prewarm').length, 1, 'failed prewarm is not recreated too late');
-  assert.ok(!failed.cancels.includes('relative__prewarm'), 'unscheduled prewarm is not treated as native pending');
-  console.log(`reminder F13/F14 production helper + hook regressions passed (${process.env.TZ})`);
+  const late = harness(start, [relative(start - 29*60_000)]); await late.mount(); await late.wake('relative');
+  assert.deepEqual(late.delivered, ['relative'], 'ordinary reminder within 30 minutes is delivered');
+  const missed = harness(start, [relative(start - 31*60_000)]); await missed.mount(); await missed.wake('relative');
+  assert.deepEqual(missed.delivered, []); assert.equal(missed.rows.get('kumiko_missed_reminders').length, 1);
+  const wakeMissed = harness(start, [relative(start - 11*60_000, {sourceText:'叫醒我'})]); await wakeMissed.mount(); await wakeMissed.wake('relative');
+  assert.deepEqual(wakeMissed.delivered, []); assert.equal(wakeMissed.rows.get('kumiko_missed_reminders').length, 1);
+  const dailyLate = harness(at('2026-10-03T07:06:00Z'), [], [daily({createdAt:at('2026-10-03T06:00:00Z')})]);
+  await dailyLate.mount(); await dailyLate.wake('daily-daily'); assert.deepEqual(dailyLate.delivered, ['daily']);
+  const oldDaily = harness(at('2026-10-03T07:06:00Z'), [], [daily({createdAt:at('2025-01-01T00:00:00Z')})]);
+  await oldDaily.mount(); await oldDaily.wake('daily-daily'); await oldDaily.wake('daily-daily');
+  assert.deepEqual(oldDaily.delivered, ['daily'], 'only the latest due daily occurrence is handled');
+  const history = oldDaily.rows.get('kumiko_missed_reminders');
+  assert.equal(history.length, 1, 'older missed occurrences are summarized once');
+  assert.equal(history[0].count, 640);
+  assert.equal(history[0].timeZone, 'Asia/Tokyo');
+  assert.equal(history[0].firstDueAt, at('2025-01-01T07:00:00Z'));
+  assert.equal(history[0].lastDueAt, at('2026-10-02T07:00:00Z'));
+  const dstRange = timing.getDueDailyReminderRange(daily({ timeZone:'America/New_York', hour:2, minute:30,
+    createdAt: at('2026-03-07T00:00:00Z') }), at('2026-03-09T12:00:00Z'));
+  assert.equal(dstRange.count, 2, 'the nonexistent spring-forward minute does not create an occurrence');
+  const fallRange = timing.getDueDailyReminderRange(daily({ timeZone:'America/New_York', hour:1, minute:30,
+    createdAt: at('2026-10-31T00:00:00Z') }), at('2026-11-02T12:00:00Z'));
+  assert.equal(fallRange.count, 3, 'a repeated wall minute counts once on the fall-back day');
+  const resumed = harness(at('2026-10-03T07:06:00Z'), [], [daily({createdAt:at('2025-01-01T00:00:00Z'), activeSince:at('2026-10-03T07:05:00Z')})]);
+  await resumed.mount(); await resumed.wake('daily-daily');
+  assert.deepEqual(resumed.delivered, [], 'paused dates are not replayed after resuming');
+  assert.equal(resumed.rows.get('kumiko_missed_reminders'), undefined);
+  const paused = harness(start, [relative(due, {paused:true})]); await paused.mount();
+  assert.ok(!paused.schedules.some(row => row.reminderId === 'relative'));
+  const restoreRace = { version:'before', changeOnRead:true };
+  const racing = harness(start, [relative(due)], [daily()], restoreRace); await racing.mount();
+  assert.deepEqual(racing.schedules, [], 'restore generation change stops stale native scheduling even after gate clears');
+  console.log(`reminder production helper + occurrence + hook regressions passed (${process.env.TZ})`);
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

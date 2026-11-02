@@ -13,18 +13,25 @@ import {
   cancelReminderPrewarm,
 } from '../../services/reminderPrewarmService';
 import { getTimePartsInTimezone } from './backupHelpers';
-import { getNextDailyReminderAt } from './reminderScheduling';
+import { getNextDailyReminderAt, getDueDailyReminderRange } from './reminderScheduling';
 import type { TimedReminderContext } from '../../services/reminderPrompt';
 import { getCapacitorPlatform, isCapacitorNative } from '../../services/environment';
 import {
   EXACT_ALARM_FALLBACK_NOTICE_STORAGE_KEY,
   addAlarmFiredListener,
   cancelAndroidAlarm,
+  listScheduledAndroidAlarms,
   scheduleAndroidAlarm,
   type ScheduleAlarmResult,
 } from '../../services/androidAlarmService';
 import { ensureNativeRingtoneForAlarm } from '../../services/voiceFileService';
 import { useAppStore } from '../../store';
+import { db } from '../../services/db';
+import { getDataRestoreVersion, isDataRestoreBlocked } from '../../services/dataRestoreGate';
+import { abandonReminderOccurrence, claimReminderOccurrence, commitReminderMessage, finishReminderOccurrence, isReminderOccurrenceCurrent, markReminderSending, recordPriorDailyMisses, reminderGraceMs } from '../../services/reminderOccurrences';
+import type { MessageEntity } from '../../services/db';
+import { drainReminderNativeCancellationsLocked, withReminderNativeAlarmLock, REMINDER_NATIVE_CANCEL_KEY } from '../../services/reminderNativeCancellation';
+import { DAILY_REMINDER_STORAGE_KEY, KUMIKO_MISSED_REMINDERS_STORAGE_KEY, RELATIVE_REMINDER_STORAGE_KEY } from '../../store/slices/reminderSlice';
 
 type FlowState = 'INTRO' | 'AUTH' | 'CONFIG' | 'APP';
 
@@ -141,12 +148,14 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
     // doesn't carry it (recurring reminders never get rescued).
     reminder: TimedReminderContext,
     reminderId?: string,
+    deliveryGuard?: { begin: () => Promise<boolean>; current: () => Promise<boolean>; commit: (message: MessageEntity) => Promise<boolean>; messageId: string },
   ): Promise<boolean> => {
     return triggerTimedReminderMessageAction(
       { messagesRef, ttsConfigRef } as Pick<ChatActionRefs, 'messagesRef' | 'ttsConfigRef'>,
       { runVoicePipeline },
       reminder,
       reminderId,
+      deliveryGuard,
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 1:1 preserve pre-extraction deps; body only uses refs + runVoicePipeline but action reads store live
   }, [language, contextLimit, coreMemory, worldBook, locationConfig, anchors, kumikoNotebook, addMessage, showBackgroundMessageNotification]);
@@ -183,82 +192,71 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
       if (flowState !== 'APP') return;
 
       const checkScheduledReminders = async () => {
-          if (reminderDispatchingRef.current || isTalking || isThinking) return;
+          if (reminderDispatchingRef.current || isTalking || isThinking || isDataRestoreBlocked()) return;
 
           reminderDispatchingRef.current = true;
           try {
               const now = Date.now();
               const relatives = await getRelativeReminders();
 
-              // v2.14.28 H17.A: kick T-60s prewarm for any relative reminder
-              // entering its [dueAt-60s, dueAt-50s] window. Runs alongside the
-              // dispatcher tick — no extra timer needed, the existing 1s/60s
-              // poll cadence covers the detection window. Backgrounded check
-              // happens inside triggerPrewarm itself.
-              for (const r of relatives) {
-                  if (r && r.id && shouldKickReminderPrewarm(r.dueAt, now)) {
-                      triggerPrewarm(r);
-                  }
-              }
-
+              // Generate and deliver only after a transactional claim. Old prewarm
+              // entries are deliberately discarded: their cache key lacks a version.
               const relativeReminder = relatives
-                  .filter(reminder => reminder.dueAt <= now && (!reminder.retryAt || reminder.retryAt <= now))
+                  .filter(r => !r.paused && r.dueAt <= now && (!r.retryAt || r.retryAt <= now))
                   .sort((a, b) => a.dueAt - b.dueAt)[0];
-
-              if (relativeReminder) {
-                  const delivered = await triggerTimedReminderMessage(relativeReminder, relativeReminder.id);
-                  if (delivered) {
-                      await removeRelativeReminder(relativeReminder.id);
-                      // v2.14.28 H17.A: drop any leftover prewarm cache slot
-                      // (consumeReminderPrewarm already removed it on hit, but
-                      // a status='failed' or stale entry would otherwise
-                      // linger. cancelReminderPrewarm is a no-op on a
-                      // missing key.).
-                      cancelReminderPrewarm(relativeReminder.id, 'fired');
-                  } else {
-                      await markRelativeReminderRetry(relativeReminder.id);
-                  }
-                  return;
+              const dailyCandidates = (await getDailyReminders()).filter(r => !r.paused && (!r.retryAt || r.retryAt <= now))
+                  .map(r => {
+                      const range = getDueDailyReminderRange(r, now);
+                      return { reminder: r, dueAt: range?.last ?? null, range };
+                  })
+                  .filter((x): x is { reminder: DailyReminder; dueAt: number; range: NonNullable<typeof x.range> } => x.dueAt !== null && x.dueAt <= now && !!x.range)
+                  .sort((a, b) => a.dueAt - b.dueAt);
+              const selected = relativeReminder
+                  ? { reminder: relativeReminder as RelativeReminder | DailyReminder, dueAt: relativeReminder.originalDueAt ?? relativeReminder.dueAt }
+                  : dailyCandidates[0];
+              if (!selected) return;
+              const { reminder, dueAt } = selected;
+              if ('range' in selected && selected.range.priorCount) {
+                  const recorded = await recordPriorDailyMisses(selected.reminder as DailyReminder, selected.range, language);
+                  if (!recorded) return;
+                  const state = useAppStore.getState();
+                  state.setMissedReminders(await db.getVal(KUMIKO_MISSED_REMINDERS_STORAGE_KEY, []));
+                  state.setMessageAlerts(await db.getVal('kumiko_message_alerts', []));
               }
-
-              const dueDailyReminder = (await getDailyReminders())
-                  .filter(reminder =>
-                      !reminder.paused &&
-                      (() => {
-                          // v2.14.28 M11: a 5-minute grace window after the
-                          // configured hour:minute. The previous strict
-                          // single-minute match would silently drop a daily
-                          // reminder if the polling tick skipped its exact
-                          // minute (60s heartbeat in the background, or
-                          // setInterval drift on a busy machine). The grace
-                          // window covers all realistic skew while still
-                          // staying inside the same hour and not bleeding
-                          // into the next day's reminder. lastTriggeredDate
-                          // dedup guarantees we only fire once per local day.
-                          const dueAt = getNextDailyReminderAt(reminder, now - 5 * 60_000 - 1);
-                          const insideGraceWindow = dueAt !== null && dueAt <= now;
-                          return (
-                              insideGraceWindow &&
-                              (!reminder.retryAt || reminder.retryAt <= now)
-                          );
-                      })()
-                  )
-                  .sort((a, b) => a.createdAt - b.createdAt)[0];
-
-              if (!dueDailyReminder) return;
-
-              // Daily reminders don't get prewarmed today — their dueAt is implicit
-              // (today's hh:mm in the reminder timezone) so the T-60s detection
-              // in shouldKickReminderPrewarm doesn't have a stable value to
-              // compare against. Acceptable: daily reminders fire once a day at a
-              // known wall-clock minute and the user is usually expecting them.
-              const dueAt = getNextDailyReminderAt(dueDailyReminder, now - 5 * 60_000 - 1)!;
-              const delivered = await triggerTimedReminderMessage({ ...dueDailyReminder, dueAt }, dueDailyReminder.id);
-              if (delivered) {
-                  const timeParts = getTimePartsInTimezone(new Date(dueAt), dueDailyReminder.timeZone || 'Asia/Tokyo');
-                  await markDailyReminderTriggered(dueDailyReminder.id, timeParts.dateKey);
-              } else {
-                  await markDailyReminderRetry(dueDailyReminder.id);
+              const dateKey = 'hour' in reminder ? getTimePartsInTimezone(new Date(dueAt), reminder.timeZone || 'Asia/Tokyo').dateKey : undefined;
+              const token = await claimReminderOccurrence(reminder, dueAt, now);
+              if (!token) return;
+              cancelReminderPrewarm(reminder.id, 'versioned dispatch');
+              let delivered = false;
+              let recordedMissed = false;
+              try {
+                  if (now - dueAt > reminderGraceMs(reminder)) {
+                      recordedMissed = await finishReminderOccurrence(reminder, dueAt, token, 'missed', dateKey, language);
+                  } else {
+                      const guard = {
+                          begin: async () => !isDataRestoreBlocked() && await markReminderSending(reminder, dueAt, token),
+                          current: async () => !isDataRestoreBlocked() && await isReminderOccurrenceCurrent(reminder, dueAt, token),
+                          commit: async (message: MessageEntity) => !isDataRestoreBlocked() && await commitReminderMessage(reminder, dueAt, token, message),
+                          messageId: `reminder:${reminder.id}:${reminder.version ?? 0}:${dueAt}`,
+                      };
+                      delivered = await triggerTimedReminderMessage({ ...reminder, dueAt, originalDueAt: now > dueAt + 60_000 ? dueAt : undefined }, undefined, guard);
+                      if (delivered) await finishReminderOccurrence(reminder, dueAt, token, 'delivered', dateKey);
+                      else await abandonReminderOccurrence(reminder, dueAt, token);
+                  }
+              } catch (error) {
+                  await abandonReminderOccurrence(reminder, dueAt, token);
+                  throw error;
+              } finally {
+                  // Reflect the committed transaction without deleting a newer version.
+                  const state = useAppStore.getState();
+                  state.setRelativeReminders(await db.getVal(RELATIVE_REMINDER_STORAGE_KEY, []));
+                  state.setDailyReminders(await db.getVal(DAILY_REMINDER_STORAGE_KEY, []));
+                  if (recordedMissed) {
+                      const missed = await db.getVal<any[]>(KUMIKO_MISSED_REMINDERS_STORAGE_KEY, []);
+                      const alerts = await db.getVal<any[]>('kumiko_message_alerts', []);
+                      state.setMissedReminders(prev => [...prev, ...missed.filter(x => !prev.some(y => y.id === x.id))]);
+                      state.setMessageAlerts(prev => [...alerts.filter(x => !prev.some(y => y.id === x.id)), ...prev].slice(0, 50));
+                  }
               }
           } finally {
               reminderDispatchingRef.current = false;
@@ -370,9 +368,23 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
       let reconciling = false;
 
       const reconcile = async () => {
-          if (reconciling) return;
+          if (reconciling || isDataRestoreBlocked()) return;
           reconciling = true;
+          const restoreVersion = getDataRestoreVersion();
+          const canContinue = () => !isDataRestoreBlocked() && getDataRestoreVersion() === restoreVersion;
           try {
+              await withReminderNativeAlarmLock(async () => {
+              if (!canContinue()) return;
+              await drainReminderNativeCancellationsLocked();
+              if (!canContinue()) return;
+              const pendingCancellations = await db.getVal<Array<{ id: string }>>(REMINDER_NATIVE_CANCEL_KEY, []);
+              if (!canContinue()) return;
+              if (pendingCancellations.length) {
+                  useAppStore.getState().setSystemNotice(language === 'en'
+                      ? 'A reminder was changed in the app, but system cancellation is awaiting confirmation.'
+                      : '提醒已在应用内更改，但系统撤销仍待确认。');
+              }
+              const blockedIds = new Set(pendingCancellations.map(job => job.id));
               const ttsConfig = ttsConfigRef.current;
               const wantsCall = ttsConfig.voiceMode !== 'text' && (
                   !!ttsConfig.fishAudioApiKey
@@ -381,19 +393,22 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
               );
               const ringtoneFileId = ttsConfig.ringtoneFileId || '';
               if (wantsCall) {
-                  await ensureNativeRingtoneForAlarm(ringtoneFileId);
+                  await ensureNativeRingtoneForAlarm(ringtoneFileId, restoreVersion);
               }
 
               const relatives = await getRelativeReminders();
               const dailies = await getDailyReminders();
+              if (!canContinue()) return;
 
               const seenIds = new Set<string>();
 
               for (const r of relatives) {
-                  if (!r || !r.id || !Number.isFinite(r.dueAt) || r.dueAt <= Date.now()) continue;
+                  if (!canContinue()) return;
+                  if (!r || !r.id || r.paused || blockedIds.has(r.id) || !Number.isFinite(r.dueAt) || r.dueAt <= Date.now()) continue;
                   seenIds.add(r.id);
                   const result = await scheduleAndroidAlarm({
                       reminderId: r.id,
+                      version: String(r.version ?? 0),
                       at: r.dueAt,
                       event: r.event,
                       text: r.event,
@@ -402,48 +417,12 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                   });
                   notifyExactAlarmFallbackOnce(result);
 
-                  // v2.14.28 H17.A Android: schedule a sibling "prewarm" alarm
-                  // 60 s before dueAt so the AlarmManager wakes the WebView
-                  // ahead of time, runs the same prewarmTimedReminderMessage
-                  // pipeline used by the desktop H17.A path, and stores the
-                  // result in services/reminderPrewarmService. The main alarm
-                  // at dueAt then dispatches via consumeReminderPrewarm and
-                  // the call screen / notification surfaces immediately.
-                  // Skip when there isn't a meaningful 60 s lead (reminder is
-                  // < 70 s away — we only schedule prewarm when there's
-                  // headroom for it to actually finish before T=0).
-                  const prewarmAt = r.dueAt - 60_000;
-                  const prewarmId = `${r.id}__prewarm`;
-                  // The lead-time cutoff only governs creation. An existing
-                  // alarm remains valid until the parent reminder is due,
-                  // even if its own wake-up is imminent or delayed by Doze.
-                  if (prewarmScheduledAt.get(prewarmId) === prewarmAt) {
-                      seenIds.add(prewarmId);
-                  }
-                  if (prewarmAt > Date.now() + 10_000) {
-                      const prewarmResult = await scheduleAndroidAlarm({
-                          reminderId: prewarmId,
-                          at: prewarmAt,
-                          // Mark `wantsCall=false` for the prewarm — when the
-                          // alarm fires we don't want to launch the
-                          // IncomingCallActivity, just nudge JS to start the
-                          // background generation. The JS listener detects the
-                          // `__prewarm` suffix and routes accordingly.
-                          event: r.event,
-                          text: r.event,
-                          wantsCall: false,
-                          ringtoneFileId: '',
-                      });
-                      // Don't toast the inexact-fallback notice for the
-                      // prewarm too — it would dupe the main alarm's notice.
-                      if (prewarmResult.scheduled) {
-                          prewarmScheduledAt.set(prewarmId, prewarmAt);
-                          seenIds.add(prewarmId);
-                      }
-                  }
+                  // Versionless prewarm caches cannot safely survive a modification.
+                  // Existing sibling alarms are cancelled by reconciliation.
               }
               for (const d of dailies) {
-                  if (!d || !d.id || d.paused) continue;
+                  if (!canContinue()) return;
+                  if (!d || !d.id || d.paused || blockedIds.has(d.id)) continue;
                   const atMs = getNextDailyReminderAt(d, Date.now());
                   if (atMs === null) continue;
                   // Daily alarms get a stable id to avoid orphaning across days.
@@ -451,6 +430,7 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
                   seenIds.add(alarmId);
                   const result = await scheduleAndroidAlarm({
                       reminderId: alarmId,
+                      version: String(d.version ?? 0),
                       at: atMs,
                       event: d.event,
                       text: d.event,
@@ -462,7 +442,11 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
 
               // Cancel alarms that were synced previously but are no longer
               // in the store (deleted by user or already fired).
-              for (const stale of lastSyncedIdsRef) {
+              const persistedIds = await listScheduledAndroidAlarms();
+              if (!canContinue()) return;
+              for (const stale of new Set([...lastSyncedIdsRef, ...(persistedIds ?? [])])) {
+                  if (!canContinue()) return;
+                  if (stale === 'kumiko_block_expiry') continue;
                   if (!seenIds.has(stale)) {
                       await cancelAndroidAlarm(stale);
                       prewarmScheduledAt.delete(stale);
@@ -470,6 +454,7 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
               }
               lastSyncedIdsRef.clear();
               for (const id of seenIds) lastSyncedIdsRef.add(id);
+              });
           } catch (e) {
               console.warn('[useScheduledReminders] native alarm sync failed:', e);
           } finally {
@@ -512,18 +497,7 @@ export const useScheduledReminders = (params: UseScheduledRemindersParams): void
       void addAlarmFiredListener(async (payload) => {
           const fired = payload?.reminderId || '';
           if (fired.endsWith('__prewarm')) {
-              const originalId = fired.slice(0, -'__prewarm'.length);
-              try {
-                  const list = await getRelativeReminders();
-                  const reminder = (Array.isArray(list) ? list : []).find(r => r.id === originalId);
-                  if (!reminder) {
-                      console.log(`[ALARM PREWARM] no matching reminder for ${originalId} — already fired or removed`);
-                      return;
-                  }
-                  triggerPrewarm(reminder);
-              } catch (e) {
-                  console.warn('[useScheduledReminders] prewarm dispatch failed:', e);
-              }
+              // Old caches have no occurrence identity; do not generate from them.
               return;
           }
           // Default path (main alarm): fire the dispatcher on the next

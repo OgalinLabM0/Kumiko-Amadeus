@@ -14,7 +14,7 @@ function load(file, deps = {}, extras = {}) {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }, fileName: file,
   }).outputText;
   vm.runInNewContext(code, {
-    module, exports: module.exports, console: silent, AbortController, setTimeout, clearTimeout, ...extras,
+    module, exports: module.exports, console: silent, AbortController, URL, setTimeout, clearTimeout, ...extras,
     require(id) { if (id in deps) return deps[id]; throw new Error(`Unexpected dependency: ${id}`); },
   }, { filename: file });
   return module.exports;
@@ -39,7 +39,7 @@ const anthropicMessage = (content, functionCalls = []) => ({ content: [
 
 function provider(queue) {
   const payloads = [];
-  const api = load('services/llmProviderService.ts', { '@google/genai': {}, './appConfig': {} }, {
+  const api = load('services/llmProviderService.ts', { '@google/genai': {}, './appConfig': {}, './nativeCredentials': { hasNativeCredentials: () => false } }, {
     fetch: async (_url, options) => {
       payloads.push(JSON.parse(options.body));
       assert.ok(queue.length, 'unexpected API request');
@@ -102,10 +102,18 @@ async function main() {
   let helperValue = 'a described object';
   const searchSources = [];
   const execution = load('services/chatToolExecution.ts', {
+    './taskRuntime': { TaskCapacityError: class TaskCapacityError extends Error {} },
+    './taskGateway': {},
+    './llmCore': { getCurrentAIConfig: () => config },
+    './taskModelRouter': { resolveRoleConnection: cfg => ({ config: cfg, model: cfg.model_vision, revision: 'test' }) },
     './userKnownLocation': { queryKnownUserLocationWeather: async () => ({ success: false, status: 'unknown' }) },
     './llmProviderService': { callVisionHelper: async () => helperValue },
     './imageService': { imageService: { getImage: async () => imageValue } },
     './localRagService': { searchLocalRagMemoryDetailed: async () => ({ blocks: ['memory evidence'] }) },
+    './tavilyCredentials': { requestTavily: async (_kind, _args, signal) => {
+      assert.ok(signal);
+      return { results: [{ url: 'https://example.test/source', title: 'source' }] };
+    } },
   }, {
     localStorage: { getItem: () => 'test-only' },
     fetch: async (_url, options) => {

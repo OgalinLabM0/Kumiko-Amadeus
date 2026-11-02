@@ -15,7 +15,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { app, ipcMain } = require('electron');
+const { app, ipcMain: electronIpcMain } = require('electron');
 const Database = require('better-sqlite3');
 const { Worker } = require('worker_threads');
 const { pathToFileURL } = require('url');
@@ -83,6 +83,46 @@ let ragWorkerLoadPromise = null;
 let rebuildCoreModulePromise = null;
 let activeRebuildJob = null;
 let rebuildJobCounter = 0;
+// A renderer restore owns this process-wide fence until it commits or rolls back.
+// Do not release it when its renderer disappears: recovery must run before recall.
+let restoreLock = null;
+let ragGeneration = 0;
+let lastResetGeneration = null;
+let activeRagIndexMutations = 0;
+
+// Read-only process fence for shutdown backup callers. Recovery owns release.
+function isDataRestoreActive() {
+    return restoreLock !== null;
+}
+function isDataResetOwner(event, id) {
+    return typeof id === 'string' && restoreLock?.kind === 'reset'
+        && restoreLock.id === id && restoreLock.sender === event.sender;
+}
+function isDataResetActive() { return restoreLock?.kind === 'reset'; }
+function isMemoryMaintenanceActive() { return restoreLock?.kind === 'memory'; }
+let lastMemoryGeneration = null;
+function isMemoryMaintenanceOwner(event, id) {
+    return typeof id === 'string' && restoreLock?.kind === 'memory' && restoreLock.id === id && restoreLock.sender === event.sender;
+}
+function getLastDataResetGeneration() { return lastResetGeneration; }
+
+function assertRagGeneration(generation) {
+    if (generation !== ragGeneration) {
+        throw new Error('RAG operation expired because a data restore started.');
+    }
+}
+
+function assertRagOperationAllowed(channel, event, payload) {
+    const token = payload && !Array.isArray(payload) ? payload.restoreSessionId : undefined;
+    const restoreWrite = ['rag:restore', 'rag:sync-messages', 'rag:get-all', 'rag:get-messages'].includes(channel);
+    if (restoreLock) {
+        if (!restoreWrite || restoreLock.sender !== event.sender || token !== restoreLock.id) {
+            throw new Error('RAG is isolated for data restore.');
+        }
+    } else if (token !== undefined) {
+        throw new Error('RAG restore session is no longer active.');
+    }
+}
 
 // HNSW State
 const createHnswState = () => ({
@@ -973,8 +1013,11 @@ function deleteMessageVectorsOnly() {
     return result.changes;
 }
 
-async function clearMessageVectors() {
-    const deletedCount = deleteMessageVectorsOnly();
+async function clearMessageVectors(messageIds) {
+    if (!Array.isArray(messageIds) || messageIds.some(id => typeof id !== 'string' || !id)) throw new Error('Explicit message IDs are required.');
+    if (!messageIds.length) return 0;
+    const remove = db.prepare('DELETE FROM vectors WHERE message_id = ?');
+    const deletedCount = db.transaction(() => [...new Set(messageIds)].reduce((sum, id) => sum + remove.run(id).changes, 0))();
     await rebuildHnswFromSqlite();
 
     console.log(`[RAG] Cleared ${deletedCount} message-linked vectors from SQLite and rebuilt HNSW indexes.`);
@@ -2271,8 +2314,101 @@ async function runRagRebuildJob(job) {
 // 7. IPC HANDLERS
 // ==========================================
 function registerIpcHandlers() {
-    ipcMain.handle('rag:embed', async (event, text) => {
+    // The database owns durable leases. The native boundary additionally fences
+    // an embedding that finishes after its lease expires or is superseded.
+    const diaryLeases = new Map();
+    const diaryMutations = new Map();
+    function assertDiaryLease(payload) {
+        if (!payload?.backgroundJob) return;
+        const expected = payload.backgroundJob;
+        const active = diaryLeases.get(expected.id);
+        if (!active || active.token !== expected.token || active.generation !== ragGeneration
+            || active.released || active.leaseUntil <= Date.now()
+            || payload.source !== 'diary' || payload.canonicalKey !== `diary:${expected.id.slice(6)}`) {
+            throw new Error('Diary index job lease expired or was superseded.');
+        }
+    }
+    const snapshotChannels = new Set(['rag:get-all', 'rag:get-messages', 'rag:status', 'rag:stats', 'rag:rebuild:status']);
+    const indexMutationChannels = new Set(['rag:restore', 'rag:clear-message-vectors']);
+    // Keep all ordinary handlers behind one fence; snapshot reads support rollback.
+    const ipcMain = { handle: (channel, handler) => electronIpcMain.handle(channel, async (event, payload) => {
+        let indexMutation = false;
         try {
+            const generation = ragGeneration;
+            const diaryRelease = channel === 'rag:diary-lease' && payload?.release;
+            if (!restoreLock && !diaryRelease && lastMemoryGeneration !== null
+                && payload?.dataMemoryGeneration !== lastMemoryGeneration) throw new Error('Memory changed; reload this window before using RAG.');
+            if (!restoreLock && !diaryRelease && lastResetGeneration !== null
+                && payload?.dataResetGeneration !== lastResetGeneration) throw new Error('Data was reset; reload this window before using RAG.');
+            if ((!snapshotChannels.has(channel) || restoreLock?.kind === 'memory') && !diaryRelease) assertRagOperationAllowed(channel, event, payload);
+            indexMutation = indexMutationChannels.has(channel);
+            if (indexMutation) activeRagIndexMutations += 1;
+            const result = await handler(event, payload);
+            if (!snapshotChannels.has(channel) && !diaryRelease) assertRagGeneration(generation);
+            return result;
+        } catch (error) {
+            return { success: false, error: error.message,
+                ...(channel === 'rag:search' ? { results: [] } : {}),
+                ...(channel === 'rag:expand-context' ? { messages: [] } : {}) };
+        } finally {
+            if (indexMutation) activeRagIndexMutations -= 1;
+        }
+    }) };
+    const artifactIndex = require('./electron/artifact-index.cjs');
+    artifactIndex.registerArtifactIndex(ipcMain, () => db, () => ragGeneration, id => {
+        const state = getHnswState(RAG_TIER_CORE);
+        return !state.index || state.reverseMap.has(id);
+    });
+
+    electronIpcMain.handle('rag:restore-lock', async (event, payload) => {
+        if (!payload || typeof payload.id !== 'string' || !payload.id.trim()
+            || (payload.kind !== undefined && !['reset', 'memory'].includes(payload.kind))
+            || payload.id.length > 256 || !['begin', 'end'].includes(payload.action)) {
+            return { success: false, error: 'Invalid restore lock request.' };
+        }
+        if (restoreLock?.id === payload.id && restoreLock.sender.isDestroyed?.()) restoreLock.sender = event.sender;
+        const sameOwner = restoreLock?.id === payload.id && restoreLock.sender === event.sender;
+        if (payload.action === 'end') {
+            if (!sameOwner) return { success: false, error: 'Restore lock owner does not match.' };
+            if (activeRagIndexMutations) return { success: false, error: 'RAG restore write is still running.' };
+            if (restoreLock.kind === 'memory' && payload.aborted === true && payload.committed === true)
+                return { success: false, error: 'Invalid maintenance completion state.' };
+            if (restoreLock.kind === 'memory' && payload.aborted === true) {
+                try {
+                    const config = require('./electron/user-config.cjs');
+                    if (restoreLock.previousMemoryBackupMarker) config.writeConfigValue('MemoryMaintenanceGeneration', restoreLock.previousMemoryBackupMarker);
+                    else config.deleteConfigValue('MemoryMaintenanceGeneration');
+                } catch (error) { return { success: false, error: `Could not restore backup protection: ${error.message}` }; }
+                lastMemoryGeneration = restoreLock.previousMemoryGeneration;
+            }
+            restoreLock = null;
+            return { success: true, active: false };
+        }
+        if (restoreLock) return sameOwner && restoreLock.kind === payload.kind
+            ? { success: true, active: true }
+            : { success: false, error: 'Another restore session owns RAG.' };
+        if (activeRebuildJob || activeRagIndexMutations) {
+            return { success: false, error: 'RAG rebuild or index update is running. Wait for it to finish before restoring.' };
+        }
+        let previousMemoryBackupMarker = null;
+        if (payload.kind === 'memory') {
+            try {
+                const config = require('./electron/user-config.cjs');
+                previousMemoryBackupMarker = config.readConfigValue('MemoryMaintenanceGeneration');
+                config.writeConfigValue('MemoryMaintenanceGeneration', payload.id);
+            } catch (error) { return { success: false, error: `Could not protect automatic backup: ${error.message}` }; }
+        }
+        ragGeneration += 1;
+        if (payload.kind === 'reset') lastResetGeneration = payload.id;
+        const previousMemoryGeneration = lastMemoryGeneration;
+        if (payload.kind === 'memory') lastMemoryGeneration = payload.id;
+        restoreLock = { id: payload.id, sender: event.sender, kind: payload.kind, previousMemoryGeneration, previousMemoryBackupMarker };
+        return { success: true, active: true };
+    });
+
+    ipcMain.handle('rag:embed', async (event, payload) => {
+        try {
+            const text = typeof payload === 'string' ? payload : payload?.text;
             const vector = await generateEmbedding(text);
             return { success: true, vector: Array.from(vector) };
         } catch (e) {
@@ -2280,9 +2416,74 @@ function registerIpcHandlers() {
             return { success: false, error: e.message };
         }
     });
+
+    ipcMain.handle('rag:diary-lease', async (event, payload) => {
+        if (!payload || typeof payload.id !== 'string' || !/^diary-\d{4}-\d{2}-\d{2}$/.test(payload.id)
+            || typeof payload.token !== 'string' || !payload.token || payload.token.length > 100) {
+            return { success: false, error: 'Invalid diary index lease.' };
+        }
+        const current = diaryLeases.get(payload.id);
+        if (payload.mutation) {
+            const lock = diaryMutations.get(payload.id);
+            if (payload.release) {
+                if (lock?.token === payload.token && lock.sender === event.sender) {
+                    event.sender.removeListener('destroyed', lock.onDestroyed);
+                    diaryMutations.delete(payload.id);
+                }
+                return { success: true };
+            }
+            if (lock) return { success: false, error: 'Diary source is already being updated.' };
+            const onDestroyed = () => {
+                if (diaryMutations.get(payload.id)?.token === payload.token) diaryMutations.delete(payload.id);
+            };
+            diaryMutations.set(payload.id, { token: payload.token, sender: event.sender, onDestroyed });
+            if (current) current.released = true;
+            event.sender.once('destroyed', onDestroyed);
+            return { success: true };
+        }
+        if (payload.release) {
+            if (current?.token === payload.token && current.sender === event.sender) current.released = true;
+            return { success: true };
+        }
+        if (payload.renew) {
+            if (!current || current.token !== payload.token || current.sender !== event.sender || current.released
+                || current.generation !== ragGeneration || current.leaseUntil <= Date.now()
+                || diaryMutations.has(payload.id) || !Number.isFinite(payload.leaseUntil)
+                || payload.leaseUntil <= current.leaseUntil || payload.leaseUntil > Date.now() + 125000
+                || !Number.isFinite(payload.claim?.job?.deadlineAt) || payload.leaseUntil > payload.claim.job.deadlineAt) {
+                return { success: false, error: 'Diary index lease cannot be renewed.' };
+            }
+            current.leaseUntil = payload.leaseUntil;
+            return { success: true };
+        }
+        if (diaryMutations.has(payload.id) || !Number.isFinite(payload.leaseUntil) || payload.leaseUntil <= Date.now()
+            || payload.leaseUntil > Date.now() + 125000
+            || (current?.generation === ragGeneration && (current.leaseUntil > payload.leaseUntil
+                || (current.leaseUntil === payload.leaseUntil && current.token !== payload.token)))) {
+            return { success: false, error: 'Diary index lease is no longer current.' };
+        }
+        diaryLeases.set(payload.id, { token: payload.token, leaseUntil: payload.leaseUntil, generation: ragGeneration, sender: event.sender });
+        return { success: true };
+    });
+
+    ipcMain.handle('rag:get-by-id', async (_event, payload) => {
+        if (!payload || typeof payload.id !== 'string' || payload.id.length > 200 || !payload.id.startsWith('diary-')) {
+            return { success: false, error: 'Invalid diary vector id.' };
+        }
+        if (payload.canonicalKey !== undefined && payload.canonicalKey !== `diary:${payload.id.slice(6)}`) {
+            return { success: false, error: 'Diary canonical key does not match id.' };
+        }
+        const row = db.prepare('SELECT id, text, timestamp, canonical_key FROM vectors WHERE id = ? OR canonical_key = ? ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, timestamp DESC LIMIT 1')
+            .get(payload.id, payload.canonicalKey || '', payload.id);
+        if (row?.text?.length > 2 * 1024 * 1024) return { success: false, error: 'Diary index text exceeds read limit.' };
+        return { success: true, row: row ? { id: row.id, text: row.text, timestamp: row.timestamp,
+            canonicalKey: row.canonical_key } : null };
+    });
     
     ipcMain.handle('rag:save', async (event, payload) => {
         try {
+            assertDiaryLease(payload);
+            const generation = ragGeneration;
             const { id: providedId, text, messageId, tier, source, score, canonicalKey, timestamp, role } = payload || {};
             const normalizedTier = normalizeTier(tier);
             const normalizedSource = typeof source === 'string' && source.trim() ? source.trim() : 'unknown';
@@ -2302,6 +2503,8 @@ function registerIpcHandlers() {
             }
 
             const vector = await generateEmbedding(text);
+            assertRagGeneration(generation);
+            assertDiaryLease(payload);
             if (normalizedTier === RAG_TIER_EPISODIC) {
                 const mergeTarget = findRecentEpisodicMergeTarget({
                     canonicalKey: normalizedCanonicalKey || createCanonicalKeyFromRawText(text),
@@ -2315,6 +2518,7 @@ function registerIpcHandlers() {
                     const mergedText = buildMergedEpisodicText(mergeTarget.text, text);
                     const mergedCanonicalKey = createCanonicalKeyFromRawText(mergedText);
                     const mergedVector = await generateEmbedding(mergedText);
+                    assertRagGeneration(generation);
                     const mergedRole = inferRoleScopeFromText(mergedText, mergeTarget.role || normalizedRole);
                     const mergedScore = Math.min(
                         Math.max(Number(mergeTarget.score) || 0, normalizedScore) + 0.5,
@@ -2364,7 +2568,7 @@ function registerIpcHandlers() {
                 addToHnswIndex(normalizedId, vector, normalizedTier);
             }
             
-            console.log(`[RAG] Saved ${normalizedTier} vector: "${text.substring(0, 50)}..."`);
+            console.log(`[RAG] Saved ${normalizedTier} vector.`);
             return { success: true, id: normalizedId };
         } catch (e) {
             console.error('[RAG IPC] save failed:', e);
@@ -2375,7 +2579,12 @@ function registerIpcHandlers() {
     ipcMain.handle('rag:search', async (event, { query, topK, startTime, endTime, role, memoryIntent, keywords }) => {
         try {
             const results = await searchVectors(query, topK || 5, { startTime, endTime, role }, memoryIntent || 'default', keywords);
-            return { success: true, results };
+            const provenance = artifactIndex.readArtifactProvenance(db);
+            return { success: true, results: results.map(result => {
+                const key = typeof result.canonicalKey === 'string' && result.canonicalKey.startsWith('ka-artifact:')
+                    ? result.canonicalKey.slice('ka-artifact:'.length) : '';
+                return { ...result, ...(provenance.get(key) || {}) };
+            }) };
         } catch (e) {
             console.error('[RAG IPC] search failed:', e);
             return { success: false, error: e.message, results: [] };
@@ -2435,6 +2644,12 @@ function registerIpcHandlers() {
             const items = rawMessages.map(normalizeRawMessageRecord).filter(Boolean);
             const replaceAll = !!payload?.replaceAll;
             const droppedCount = rawMessages.length - items.length;
+            if (payload?.restoreSessionId !== undefined
+                && (!Array.isArray(payload.messages) || droppedCount > 0
+                    || items.some(item => !item.id.trim())
+                    || new Set(items.map(item => item.id)).size !== items.length)) {
+                return { success: false, error: 'Invalid or duplicate raw messages in restore snapshot.' };
+            }
             if (droppedCount > 0) {
                 console.warn('[RAG IPC] sync-messages dropped invalid raw messages.', {
                     received: rawMessages.length,
@@ -2468,6 +2683,7 @@ function registerIpcHandlers() {
             const rows = db.prepare(
                 'SELECT id, message_id, text, vector, timestamp, tier, source, score, canonical_key, role FROM vectors'
             ).all();
+            const provenance = artifactIndex.readArtifactProvenance(db);
             return {
                 success: true,
                 vectors: rows.map(row => ({
@@ -2481,6 +2697,7 @@ function registerIpcHandlers() {
                     score: Number.isFinite(row.score) ? row.score : 0,
                     canonicalKey: row.canonical_key || undefined,
                     role: row.role || 'unknown',
+                    ...(provenance.get(row.id) || {}),
                 }))
             };
         } catch (e) {
@@ -2489,8 +2706,9 @@ function registerIpcHandlers() {
         }
     });
     
-    ipcMain.handle('rag:restore', async (event, vectors) => {
+    ipcMain.handle('rag:restore', async (event, payload) => {
         try {
+            const vectors = Array.isArray(payload) ? payload : payload?.vectors;
             if (!Array.isArray(vectors)) return { success: false, error: 'Invalid data' };
             // Reject incompatible snapshots before replacing the active store.
             const ids = new Set();
@@ -2526,6 +2744,7 @@ function registerIpcHandlers() {
                         typeof item.role === 'string' ? item.role : 'unknown'
                     );
                 }
+                artifactIndex.replaceArtifactProvenance(db, items, ragGeneration);
                 const count = db.prepare('SELECT COUNT(*) AS count FROM vectors').get().count;
                 if (count !== items.length) throw new Error('Restored vector row count does not match the backup.');
                 return count;
@@ -2556,10 +2775,10 @@ function registerIpcHandlers() {
         }
     });
 
-    ipcMain.handle('rag:clear-message-vectors', async () => {
+    ipcMain.handle('rag:clear-message-vectors', async (_event, payload) => {
         try {
-            const count = await clearMessageVectors();
-            return { success: true, count };
+            const count = await clearMessageVectors(payload?.messageIds);
+            return { success: true, count, removed: count, deleted: count };
         } catch (e) {
             console.error('[RAG IPC] clear-message-vectors failed:', e);
             return { success: false, error: e.message };
@@ -2634,6 +2853,7 @@ function registerIpcHandlers() {
             backgroundIndexed: stats.backgroundIndexed,
             messageCount: stats.messageCount,
             rebuildRunning: !!activeRebuildJob,
+            restoreActive: !!restoreLock,
             rebuildJob: activeRebuildJob ? buildRebuildJobPayload(activeRebuildJob) : null,
             dbPath: getDbPath()
         };
@@ -2645,7 +2865,7 @@ function registerIpcHandlers() {
 // ==========================================
 // 8. INIT & EXPORT
 // ==========================================
-async function initRag() {
+async function initRag(options = {}) {
     try {
         initDatabase();
         initHnswIndexes();
@@ -2653,7 +2873,7 @@ async function initRag() {
         registerIpcHandlers();
         
         // Load model asynchronously (don't block app startup)
-        loadModel().then(success => {
+        if (options.loadEmbeddingModel !== false) loadModel().then(success => {
             if (success) {
                 console.log('[RAG] ✅ Full RAG system ready (SQLite + HNSW + bge-m3 ONNX).');
             } else {
@@ -2674,6 +2894,8 @@ async function initRag() {
 // subsequent install/upgrade saw the .so file locked. Awaiting closes
 // the gap.
 async function closeRag() {
+    ragGeneration += 1;
+    restoreLock = null;
     if (db) {
         db.close();
         db = null;
@@ -2710,4 +2932,4 @@ async function closeRag() {
     };
 }
 
-module.exports = { initRag, closeRag };
+module.exports = { initRag, closeRag, isDataRestoreActive, isDataResetOwner, isDataResetActive, isMemoryMaintenanceActive, isMemoryMaintenanceOwner, getLastMemoryGeneration: () => lastMemoryGeneration, getLastDataResetGeneration, getDataRestoreGeneration: () => ragGeneration };

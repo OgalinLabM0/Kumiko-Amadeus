@@ -1,8 +1,13 @@
 import { type MutableRefObject } from 'react';
 import { EMOTION_TO_FISH_AUDIO_TAGS, EMOTION_TTS_TEMPERATURE } from '../constants';
 import { callLLMRaw, getCurrentAIConfig } from '../services/geminiService';
+import { TaskCapacityError, type TaskContext } from '../services/taskRuntime';
+import { assertMemoryAvailable, getMemoryGeneration } from '../services/memoryMaintenanceGate';
 import { synthesizeSpeech, TtsError } from '../services/fishAudioService';
 import { isVoiceServiceAvailable, saveVoiceFile } from '../services/voiceFileService';
+import { getDataRestoreVersion } from '../services/dataRestoreGate';
+import { assertMediaGeneration, withMediaWriteFence } from '../services/mediaWriteFence';
+import { beginVoiceWrite, finishVoiceWrite } from '../services/voiceWriteLedger';
 import { useAppStore } from '../store';
 import type { EmotionType, TtsConfig } from '../types';
 
@@ -50,6 +55,8 @@ export type RunVoicePipelineFn = (
   // and the partial voice file (if already written) gets discarded by
   // the caller's normal "no addMessageToStore" flow.
   signal?: AbortSignal,
+  taskContext?: TaskContext,
+  sourceIds?: string[],
 ) => Promise<{ success: boolean; voiceFileId?: string; voiceDuration?: number; japaneseText?: string }>;
 
 export interface UseVoicePipelineReturn {
@@ -59,7 +66,7 @@ export interface UseVoicePipelineReturn {
 }
 
 export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseVoicePipelineReturn {
-  const translateToJapaneseWithEmotion = async (sourceText: string, emotion: EmotionType): Promise<string | null> => {
+  const translateToJapaneseWithEmotion = async (sourceText: string, emotion: EmotionType, taskContext?: TaskContext): Promise<string | null> => {
     try {
       const config = getCurrentAIConfig();
       const emotionTags = EMOTION_TO_FISH_AUDIO_TAGS[emotion] ?? [];
@@ -160,16 +167,17 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
         'Output: [sad]悔しい……[sighs]悔しくて……死にそう……',
       ].join('\n');
 
-      const jaText = await callLLMRaw(systemPrompt, sourceText, config.model_translator || ttsConfigRef.current.model_translator || config.model_main);
+      const jaText = await callLLMRaw(systemPrompt, sourceText, config.modelRoleBindings?.translation?.model ? undefined : config.model_translator || ttsConfigRef.current.model_translator || config.model_main, { role: 'translation', taskContext, signal: taskContext?.signal });
       if (!jaText || jaText.length < 2) return null;
       return jaText;
     } catch (err) {
+      if (err instanceof TaskCapacityError || taskContext?.signal?.aborted) throw err;
       console.error('[TTS] Translation failed:', err);
       return null;
     }
   };
 
-  const translateForGenie = async (sourceText: string, emotion: EmotionType): Promise<string | null> => {
+  const translateForGenie = async (sourceText: string, emotion: EmotionType, taskContext?: TaskContext): Promise<string | null> => {
     try {
       const config = getCurrentAIConfig();
       const language = useAppStore.getState().language;
@@ -210,10 +218,11 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
         '- neutral: Natural mix, avoid all-。endings.',
         'Do NOT end every sentence with flat 。— that produces emotionless TTS output.',
       ].join('\n');
-      const jaText = await callLLMRaw(systemPrompt, sourceText, config.model_translator || ttsConfigRef.current.model_translator || config.model_main);
+      const jaText = await callLLMRaw(systemPrompt, sourceText, config.modelRoleBindings?.translation?.model ? undefined : config.model_translator || ttsConfigRef.current.model_translator || config.model_main, { role: 'translation', taskContext, signal: taskContext?.signal });
       if (!jaText || jaText.length < 2) return null;
       return jaText;
     } catch (err) {
+      if (err instanceof TaskCapacityError || taskContext?.signal?.aborted) throw err;
       console.error('[TTS-Genie] Translation failed:', err);
       return null;
     }
@@ -225,18 +234,29 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
     emotion,
     voiceVariant,
     signal,
+    taskContext,
+    sourceIds,
   ) => {
-    return enqueueVoicePipelineWork(async () => runVoicePipelineImpl(messageId, sourceText, emotion, voiceVariant, signal), { success: false }, signal);
+    const version = getDataRestoreVersion();
+    const memoryGeneration = taskContext?.memoryGeneration || getMemoryGeneration();
+    return enqueueVoicePipelineWork(async () => {
+      try { assertMediaGeneration(version); } catch { return { success: false }; }
+      return runVoicePipelineImpl(messageId, sourceText, emotion, voiceVariant, signal, version, memoryGeneration, taskContext, sourceIds);
+    }, { success: false }, signal);
   };
 
   // v2.14.28 M28: actual pipeline body. Wrapped above so concurrent callers
   // queue rather than racing the same TTS HTTP service.
-  const runVoicePipelineImpl: RunVoicePipelineFn = async (
-    messageId,
-    sourceText,
-    emotion,
-    voiceVariant,
-    signal,
+  const runVoicePipelineImpl = async (
+    messageId: string,
+    sourceText: string,
+    emotion: EmotionType,
+    voiceVariant: string | undefined,
+    signal: AbortSignal | undefined,
+    version: string,
+    memoryGeneration: string,
+    taskContext?: TaskContext,
+    sourceIds?: string[],
   ) => {
     const cfg = ttsConfigRef.current;
     const backend = cfg.ttsBackend || 'fish';
@@ -263,8 +283,8 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
     try {
       // Fish Audio needs bracket emotion tags; SoVITS and Vocu want clean Japanese.
       let jaText = backend === 'fish'
-        ? await translateToJapaneseWithEmotion(sourceText, emotion)
-        : await translateForGenie(sourceText, emotion);
+        ? await translateToJapaneseWithEmotion(sourceText, emotion, taskContext)
+        : await translateForGenie(sourceText, emotion, taskContext);
 
       if (!jaText) {
         console.error('[TTS] Translation returned empty result — degrading to text');
@@ -287,16 +307,23 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
       }
 
       let result;
+      const ttsIdentity = JSON.stringify([cfg.ttsBackend, cfg.fishAudioApiKey, cfg.fishAudioModel, cfg.fishAudioReferenceId,
+        cfg.vocuApiKey, cfg.vocuVoiceId, cfg.vocuPromptId, cfg.vocuPreset]);
+      const assertTtsCurrent = () => {
+        const current = ttsConfigRef.current;
+        if (JSON.stringify([current.ttsBackend, current.fishAudioApiKey, current.fishAudioModel, current.fishAudioReferenceId,
+          current.vocuApiKey, current.vocuVoiceId, current.vocuPromptId, current.vocuPreset]) !== ttsIdentity) throw new Error('Voice configuration changed during task.');
+      };
       if (backend === 'sovits') {
         const { genieTtsWithEmotion } = await import('../services/genieAudioService');
-        result = await genieTtsWithEmotion(jaText, emotion, cfg, voiceVariant);
+        result = await genieTtsWithEmotion(jaText, emotion, cfg, voiceVariant, signal, taskContext, assertTtsCurrent);
       } else if (backend === 'vocu') {
         const { synthesizeWithVocu } = await import('../services/vocuAudioService');
-        result = await synthesizeWithVocu(jaText, cfg, emotion);
+        result = await synthesizeWithVocu(jaText, cfg, emotion, signal, taskContext, assertTtsCurrent);
       } else {
         const emotionTemp = EMOTION_TTS_TEMPERATURE[emotion] ?? 0.6;
         const cfgWithEmotion = { ...cfg, temperature: emotionTemp };
-        result = await synthesizeSpeech(jaText, cfgWithEmotion);
+        result = await synthesizeSpeech(jaText, cfgWithEmotion, signal, taskContext, assertTtsCurrent);
       }
 
       // v2.14.28 H17.B: gate point #3 — bail before disk write so we
@@ -306,12 +333,29 @@ export function useVoicePipeline({ ttsConfigRef }: UseVoicePipelineParams): UseV
         return { success: false };
       }
 
-      const saved = await saveVoiceFile(messageId, result.audio);
+      assertTtsCurrent();
+      assertMemoryAvailable(memoryGeneration);
+      const fileId = 'voice-' + crypto.randomUUID();
+      const saved = await withMediaWriteFence(version, async () => {
+        await beginVoiceWrite({ id: fileId, sourceIds: [...new Set([...(sourceIds ?? []), ...(taskContext?.consultedSources ?? []).map(ref => ref.id)])], memoryGeneration, taskId: taskContext?.taskId });
+        try {
+          assertTtsCurrent();
+          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+          if (!await saveVoiceFile(fileId, result.audio)) { await finishVoiceWrite(fileId); return false; }
+          assertMemoryAvailable(memoryGeneration);
+          assertTtsCurrent();
+          if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+          return true;
+        } catch (error) {
+          await finishVoiceWrite(fileId).catch(() => {});
+          throw error;
+        }
+      }, memoryGeneration, async () => { await finishVoiceWrite(fileId).catch(() => {}); });
       if (!saved) {
         console.error('[TTS] Failed to save voice file');
         return { success: false };
       }
-      return { success: true, voiceFileId: messageId, voiceDuration: result.durationEstimate, japaneseText: jaText };
+      return { success: true, voiceFileId: fileId, voiceDuration: result.durationEstimate, japaneseText: jaText };
     } catch (err) {
       const label = err instanceof TtsError ? `${err.kind} (${err.status})` : String(err);
       const backendLabel = backend === 'sovits' ? 'Genie' : backend === 'vocu' ? 'Vocu' : 'Fish';

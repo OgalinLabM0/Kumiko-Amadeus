@@ -20,6 +20,9 @@ export const formatJstTimeForRag = (timestamp: number) => {
 };
 
 export const mapMessageToEntity = (message: Message): MessageEntity => ({
+  sourceRevision: message.sourceRevision,
+  contentRevision: message.contentRevision,
+  sourceRefs: message.sourceRefs,
   id: message.id,
   role: message.role,
   text: message.text,
@@ -45,6 +48,9 @@ export const mapMessageToEntity = (message: Message): MessageEntity => ({
 });
 
 export const mapEntityToMessage = (entity: MessageEntity): Message => ({
+  sourceRevision: entity.sourceRevision,
+  contentRevision: entity.contentRevision,
+  sourceRefs: entity.sourceRefs,
   id: entity.id,
   role: entity.role,
   text: entity.text,
@@ -130,6 +136,9 @@ export const normalizeImportedBackupMessages = (
       : undefined;
 
     normalizedMessages.push({
+      sourceRevision: typeof candidate.sourceRevision === 'string' ? candidate.sourceRevision : undefined,
+      contentRevision: typeof candidate.contentRevision === 'string' ? candidate.contentRevision : undefined,
+      sourceRefs: Array.isArray(candidate.sourceRefs) ? candidate.sourceRefs.filter((ref: any) => ref && typeof ref.id === 'string' && typeof ref.version === 'string' && ['message','diary','fragment','receipt','artifact'].includes(ref.kind)) : undefined,
       id,
       role,
       text: typeof candidate?.text === 'string' ? candidate.text : '',

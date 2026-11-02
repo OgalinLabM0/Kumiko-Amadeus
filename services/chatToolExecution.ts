@@ -3,12 +3,18 @@ import { callVisionHelper, type ChatToolOutput } from './llmProviderService';
 import { imageService } from './imageService';
 import { searchLocalRagMemoryDetailed } from './localRagService';
 import { queryKnownUserLocationWeather } from './userKnownLocation';
+import { requestTavily } from './tavilyCredentials';
+import { TaskCapacityError, type TaskContext } from './taskRuntime';
+import { runTaskTransport } from './taskGateway';
+import { getCurrentAIConfig } from './llmCore';
+import { resolveRoleConnection, roleConnectionFingerprint } from './taskModelRouter';
 
 export const createChatToolExecutor = (
   config: AIConfig,
   language: Language,
   groundingSources: { title: string; uri: string }[],
   allowedTools: readonly string[],
+  taskContext?: TaskContext,
 ) => async (call: ChatToolOutput['call'], signal: AbortSignal): Promise<ChatToolOutput> => {
   const reminder = language === 'zh'
     ? '请先输出 [[System_Log]]（Kumiko_Thought、Emotion），再回复用户。工具失败或未执行的内容必须保留为未知。'
@@ -24,18 +30,12 @@ export const createChatToolExecutor = (
   try {
     if (call.name === 'query_known_user_weather') {
       if (Object.keys(call.args).length > 0) return finish({ success: false, status: 'unknown', error: 'This tool takes no arguments; only the user-disclosed saved place may be queried.' });
-      return finish(await queryKnownUserLocationWeather(signal));
+      return finish(await queryKnownUserLocationWeather(signal, taskContext));
     }
     if (call.name === 'search_internet') {
       const query = call.args.query;
       if (typeof query !== 'string' || !query.trim()) return finish({ success: false, error: 'query must be a non-empty string' });
-      const apiKey = localStorage.getItem('tavily_api_key');
-      if (!apiKey) return finish({ success: false, error: '请先在设置中填写 Tavily API Key 以启用搜索' });
-      const response = await fetch(`https://search.omkk.org/api/search?q=${encodeURIComponent(query.trim())}`, {
-        headers: { 'x-api-key': apiKey }, signal,
-      });
-      if (!response.ok) throw new Error(`Search server returned ${response.status}`);
-      const data = await response.json();
+      const data = await requestTavily('search', query.trim(), signal, taskContext);
       if (Array.isArray(data.results)) {
         for (const hit of data.results.slice(0, 5)) {
           if (hit && typeof hit.url === 'string' && hit.url.trim() && !groundingSources.some(source => source.uri === hit.url)) {
@@ -48,7 +48,7 @@ export const createChatToolExecutor = (
     if (call.name === 'recall_memory') {
       const query = call.args.query;
       if (typeof query !== 'string' || !query.trim()) return finish({ success: false, error: 'query must be a non-empty string' });
-      const recall = await searchLocalRagMemoryDetailed(query.trim(), 5, undefined, 'semantic_recall', undefined, { suppressEmptyWarning: true });
+      const recall = await searchLocalRagMemoryDetailed(query.trim(), 5, undefined, 'semantic_recall', undefined, { suppressEmptyWarning: true, taskContext });
       const blocks = recall.blocks ?? [];
       return finish({ success: true, blocks, count: blocks.length, timeHint: call.args.timeHint || null });
     }
@@ -63,7 +63,21 @@ export const createChatToolExecutor = (
       if (!match) return finish({ success: false, error: 'Invalid image data format' });
       const image = { mimeType: match[1], data: match[2].replace(/[\r\n]/g, '') };
       if (config.useVisionHelper) {
-        const description = await callVisionHelper(config, image.data, image.mimeType, language);
+        const base = getCurrentAIConfig();
+        const target = resolveRoleConnection(base, 'vision');
+        if (taskContext) taskContext.modelRevisions ||= {};
+        const custom = !!base.modelRoleBindings?.vision?.profileId;
+        const visionConfig = custom ? { ...target.config, visionProvider: target.config.provider,
+          useVisionCustomEndpoint: target.config.useCustomEndpoint, visionCustomEndpoint: target.config.customEndpoint,
+          visionApiKey: target.config.activeKey === 'backup' ? target.config.apiKey_backup : target.config.apiKey_primary,
+          model_vision: target.model } : base;
+        const run = (requestSignal: AbortSignal) => callVisionHelper(visionConfig, image.data, image.mimeType, language, requestSignal);
+        const description = taskContext ? await runTaskTransport({ ...taskContext, role: 'vision', signal }, {
+          provider: visionConfig.visionProvider || visionConfig.provider || 'gemini', model: visionConfig.model_vision,
+          operation: 'vision', connectionId: base.modelRoleBindings?.vision?.profileId, configRevision: target.revision,
+        }, run, () => {
+          if (roleConnectionFingerprint(resolveRoleConnection(getCurrentAIConfig(), 'vision'), true) !== roleConnectionFingerprint(target, true)) throw new Error('Vision configuration changed during task.');
+        }) : await run(signal);
         if (!description?.trim() || /\[Vision Helper returned no description\]/i.test(description)) {
           return finish({ success: false, error: 'Vision helper did not provide image evidence' });
         }
@@ -73,7 +87,7 @@ export const createChatToolExecutor = (
     }
     return finish({ success: false, error: `Unknown tool: ${call.name}` });
   } catch (error) {
-    if (signal.aborted) throw error;
+    if (signal.aborted || error instanceof TaskCapacityError) throw error;
     return finish({ success: false, error: error instanceof Error ? error.message : String(error) });
   }
 };

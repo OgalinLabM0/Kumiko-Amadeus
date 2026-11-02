@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, type MutableRefObject } from 'react';
 import type { BackupConfig, EmotionType, Language, TtsConfig } from '../../types';
 import { db } from '../../services/db';
 import { isDesktopElectron } from '../../services/desktopBackupService';
+import { hasNativeCredentials } from '../../services/nativeCredentials';
 // F2B.3: dropped `isMobilePwa` + `httpInvoke` imports. Auto-zip + tts-config
 // were synced PC↔phone via Fastify; with the PWA bridge gone the only
 // runtime that hits this code is Electron desktop (Capacitor APK skips
@@ -124,11 +125,27 @@ export const useAppPreferencesSync = ({
     // the per-click work behind the settings flash regression. We also opt out
     // of the generic `preferences:changed` broadcast because the dedicated
     // `tts-config:changed` IPC below already fans out to every paired phone.
-    queueLocalStoragePreferenceSync('kumiko_tts_config', JSON.stringify(sanitized), {
+    let persisted = sanitized;
+    if (!hasNativeCredentials()) {
+      const raw = localStorage.getItem('kumiko_tts_config');
+      let previous: Partial<TtsConfig> = {};
+      try { previous = JSON.parse(raw || '{}'); } catch { throw new Error('Existing voice configuration cannot be safely preserved.'); }
+      if (raw && (previous.fishAudioApiKey || previous.vocuApiKey)) {
+        const archiveKey = 'kumiko_legacy_tts_config_' + crypto.randomUUID();
+        localStorage.setItem(archiveKey, raw);
+        if (localStorage.getItem(archiveKey) !== raw) throw new Error('Existing voice credentials could not be preserved.');
+      }
+      persisted = { ...sanitized, fishAudioApiKey: '', vocuApiKey: '' };
+    }
+    queueLocalStoragePreferenceSync('kumiko_tts_config', JSON.stringify(persisted), {
       propagateToDesktop: false,
       applyToStore: false,
       broadcast: false,
     });
+    const rawWritten = localStorage.getItem('kumiko_tts_config');
+    if (!rawWritten || JSON.stringify(sanitizeTtsConfig(JSON.parse(rawWritten))) !== JSON.stringify(sanitizeTtsConfig(persisted))) {
+      throw new Error('Voice settings could not be verified after saving.');
+    }
 
     // v2.14.28 M1: removed the desktop `mobile-event-broadcast` ping.
     // The preload allowlist dropped that IPC channel in F2B.4, so the

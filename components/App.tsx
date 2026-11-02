@@ -1,5 +1,8 @@
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { getDataRestoreSnapshot, subscribeDataRestore, isDataRestoreBlocked, requiresDataRestoreReload } from '../services/dataRestoreGate';
+import { getMemoryMaintenanceSnapshot, subscribeMemoryMaintenance, requiresMemoryReload, isMemoryMaintenanceBlocked } from '../services/memoryMaintenanceGate';
+import { useMemoryMaintenanceMediaStop } from '../hooks/useMemoryMaintenanceMediaStop';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useAppStore } from '../store';
 import { SystemToast } from './SystemToast';
@@ -163,6 +166,8 @@ import { PermissionOnboardingWizard, isAndroidOnboardingCompleted } from './onbo
 
 
 export const App = () => {
+  useMemoryMaintenanceMediaStop();
+  useEffect(() => { const reload = () => window.location.reload(); window.addEventListener('kumiko:database-upgraded', reload); return () => window.removeEventListener('kumiko:database-upgraded', reload); }, []);
   // F2B.2: removed `useMobileApiProxy()` / `useMobileBroadcaster()` /
   // `useMobileMessageSync()` calls. They were the bidirectional
   // Phase 1/2/4 PC↔phone HTTP+WebSocket bridge. With the PWA being
@@ -218,22 +223,28 @@ export const App = () => {
   const forceRawHistoryResyncRef = useRef(false);
   const skipNextRawHistorySyncRef = useRef(false);
   const memoryQuerySessionRef = useRef<MemoryQuerySession | null>(null);
-  const updateMemoryQuerySession = useCallback((nextSession: MemoryQuerySession | null) => {
+  const updateMemoryQuerySession = useCallback((nextSession: MemoryQuerySession | null, options?: { persist?: boolean }) => {
     const normalizedSession = normalizeMemoryQuerySession(nextSession);
     memoryQuerySessionRef.current = normalizedSession;
-    void db.setVal(MEMORY_QUERY_SESSION_STORAGE_KEY, normalizedSession);
+    if (options?.persist !== false) void db.setVal(MEMORY_QUERY_SESSION_STORAGE_KEY, normalizedSession);
   }, []);
 
   // --- PERSISTENCE LOGIC START ---
   const isDataLoaded = useAppStore(s => s.isDataLoaded);
   const setIsDataLoaded = useAppStore(s => s.setIsDataLoaded);
   const dataLoadError = useAppStore(s => s.dataLoadError);
+  const restoreSnapshot = React.useSyncExternalStore(subscribeDataRestore, getDataRestoreSnapshot, () => '');
+  const memorySnapshot = React.useSyncExternalStore(subscribeMemoryMaintenance, getMemoryMaintenanceSnapshot, () => '');
+  useEffect(() => { if (requiresMemoryReload()) window.location.reload(); }, [memorySnapshot]);
+  useEffect(() => {
+    if (requiresDataRestoreReload()) window.location.reload();
+  }, [restoreSnapshot]);
   const setDataLoadError = useAppStore(s => s.setDataLoadError);
   const messages = useAppStore(s => s.messages);
   const setMessages = useAppStore(s => s.setMessages);
 
   useEffect(() => {
-    if (!isDataLoaded || isBulkRestoreInProgressRef.current) return;
+    if (!isDataLoaded || isBulkRestoreInProgressRef.current || isDataRestoreBlocked() || isMemoryMaintenanceBlocked()) return;
     if (skipNextRawHistorySyncRef.current) {
       skipNextRawHistorySyncRef.current = false;
       return;
@@ -597,6 +608,7 @@ export const App = () => {
   const messagesRef = useRef(messages);
 
   const summarySemanticEmbeddingCacheRef = useRef<Map<string, Float32Array>>(new Map());
+  useEffect(() => subscribeMemoryMaintenance(() => summarySemanticEmbeddingCacheRef.current.clear()), []);
   const recentRagDedupeKeysRef = useRef<string[]>([]);
   
   const fileHandleRef = useRef<any>(null); 
@@ -744,7 +756,7 @@ export const App = () => {
     fileHandle: fileHandleRef.current,
     // dataLoadError blocks saves: if IndexedDB load failed we must NOT overwrite
     // the user's real backup with the empty default state (P0 #3).
-    isBlocked: isTalking || isThinking || !!dataLoadError,
+    isBlocked: isTalking || isThinking || !!dataLoadError || !!restoreSnapshot,
     onSaveError: (msg) => {
         console.error("AutoSave Error:", msg);
         setSyncErrorMessage(msg);
@@ -949,8 +961,20 @@ export const App = () => {
 
   // FIX: Add missing callback handlers for various UI actions.
   const handleDeleteAnchor = useCallback((id: string) => {
-    setAnchors(prev => prev.filter(anchor => anchor.id !== id));
-  }, []);
+    const expected = anchors.find(anchor => anchor.id === id);
+    if (!expected) return;
+    void db.transaction('rw', db.keyval, async () => {
+      const previous = await db.getVal<AnchorEntry[]>('kumiko_anchors', []);
+      const current = previous.find(anchor => anchor.id === id);
+      if (current && JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('Anchor changed since it was displayed.');
+      const next = previous.filter(anchor => anchor.id !== id);
+      await db.keyval.put({ key: 'kumiko_anchors', value: next });
+      return next;
+    }).then(next => {
+      setAnchors(next);
+      void import('../services/preferencesSync').then(({ noteKeyvalPreferenceWrite }) => noteKeyvalPreferenceWrite('kumiko_anchors', next));
+    }).catch(() => useAppStore.getState().setSystemNotice(language === 'zh' ? '这条记忆已变化，请刷新后重试。' : 'This memory changed. Refresh before trying again.'));
+  }, [anchors, language]);
 
   const handleRebuildRag = useCallback(async () => {
     return handleRebuildRagAction();
@@ -1108,22 +1132,21 @@ export const App = () => {
     backupConfig, isRagHistoryDirty, ragDirtyNoticeShown, language,
   });
 
-  const confirmDeleteSelected = () => {
-    const nextMessages = messagesRef.current.filter(msg => !selectedIds.has(msg.id));
-    applyManualHistoryMutation(nextMessages, 'batch_hard_delete');
+  const confirmDeleteSelected = async () => {
+    const { hideMessagesLocally } = await import('../services/messageViews');
+    try { await hideMessagesLocally(Array.from(selectedIds)); }
+    catch { useAppStore.getState().setSystemNotice(language === 'zh' ? '删除未完成，请重试。' : 'Could not hide these messages. Please retry.'); return; }
     setShowDeleteConfirm(false);
     setIsSelectionMode(false);
     setSelectedIds(new Set());
   };
-  const handleClearAll = () => {
-      const nextMessages = messagesRef.current.map(msg => ({ ...msg, isHidden: true }));
-      applyVisualHistoryMutation(nextMessages);
+  const handleClearAll = async () => {
+      const { hideMessagesLocally } = await import('../services/messageViews');
+      try { await hideMessagesLocally(messagesRef.current.map(msg => msg.id)); }
+      catch { useAppStore.getState().setSystemNotice(language === 'zh' ? '清空显示未完成，请重试。' : 'Could not clear this view. Please retry.'); return; }
       setShowClearFlow(false);
       setIsSelectionMode(false);
-    pendingTextRef.current = "";
-    pendingImageRef.current = null;
-    pendingMessageIdsRef.current.clear();
-    pendingImageMessageIdRef.current = null; 
+      setSelectedIds(new Set());
   };
 
   const handleSend = useCallback(() => {
@@ -1375,6 +1398,16 @@ export const App = () => {
     isDisconnected,
   });
 
+  if (restoreSnapshot || memorySnapshot) {
+    return <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-8 bg-stone-50 text-stone-800">
+      <p>{language === 'zh' ? '正在恢复或清理数据，聊天和自动保存已暂停。' : 'Restoring or clearing data. Chat and automatic saves are paused.'}</p>
+      {dataLoadError && <p className="max-w-xl text-sm">{dataLoadError}</p>}
+      <p className="max-w-xl text-sm">{language === 'zh' ? '如果操作中断，可以重新启动，继续完成未结束的步骤。' : 'If the operation was interrupted, restart to continue its unfinished steps.'}</p>
+      <button className="rounded-lg border px-4 py-2" onClick={() => window.location.reload()}>
+        {language === 'zh' ? '重新启动并继续' : 'Restart and continue'}
+      </button>
+    </div>;
+  }
   if (!isDataLoaded) {
     return <LoadingDataScreen language={language} />;
   }

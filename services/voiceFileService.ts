@@ -4,6 +4,8 @@ import { isCapacitorNative } from './environment';
 // Fastify; with the bridge gone, only Electron (electronAPI IPC) and
 // Capacitor (Capacitor Filesystem + Dexie keyval) remain.
 import { db } from './db';
+import { withMediaWriteFence } from './mediaWriteFence';
+import { getDataRestoreVersion } from './dataRestoreGate';
 
 // A4.4: Capacitor native ringtone storage. Single user-uploaded ringtone
 // fits comfortably in a Dexie keyval row (typical mp3 < 1 MB), so we
@@ -160,8 +162,13 @@ async function capacitorVoiceDelete(messageId: string): Promise<boolean> {
             directory: Directory.Data,
         });
         return true;
-    } catch {
-        return false;
+    } catch (error) {
+        const code = (error as { code?: unknown } | null)?.code;
+        const message = error instanceof Error ? error.message : String(error);
+        // A crash may leave a ledger reservation before the file was made.
+        // Only a definite missing-file result is an idempotent success.
+        return code === 'ENOENT' || code === 'OS-PLUG-FILE-0008'
+          || /^(?:Error:\s*)?(?:ENOENT\b|OS-PLUG-FILE-0008\b|File (?:does not exist|not found)\b)/i.test(message);
     }
 }
 
@@ -275,19 +282,39 @@ async function capacitorDeleteNativeRingtoneCopies(): Promise<void> {
     }
 }
 
+// Strict restore path: native alarm copy failures must reach the recovery session.
+export async function restoreNativeRingtoneCopy(entry: { ext: string; buffer: ArrayBuffer } | null): Promise<void> {
+    const { Filesystem, Directory } = await import('@capacitor/filesystem');
+    try { await Filesystem.mkdir({ path: RINGTONE_DIR, directory: Directory.Data, recursive: true }); } catch { /* may already exist */ }
+    const list = await Filesystem.readdir({ path: RINGTONE_DIR, directory: Directory.Data });
+    for (const file of list.files) {
+        if (/^custom\.(mp3|wav|ogg|m4a|aac|flac)$/i.test(file.name)) {
+            await Filesystem.deleteFile({ path: `${RINGTONE_DIR}/${file.name}`, directory: Directory.Data });
+        }
+    }
+    if (entry) {
+        await Filesystem.writeFile({ path: `${RINGTONE_DIR}/custom.${entry.ext}`, data: arrayBufferToBase64(entry.buffer), directory: Directory.Data });
+        const saved = await Filesystem.readFile({ path: `${RINGTONE_DIR}/custom.${entry.ext}`, directory: Directory.Data });
+        if (typeof saved.data !== 'string' || saved.data !== arrayBufferToBase64(entry.buffer)) throw new Error('Native ringtone copy verification failed');
+    }
+}
+
 export const getBuiltInRingtoneUrl = (ringtoneFileId: string): string | null => {
     if (!isBuiltInRingtoneId(ringtoneFileId) || typeof window === 'undefined') return null;
     return new URL(`ringtones/${ringtoneFileId}`, window.location.href).toString();
 };
 
-export async function ensureNativeRingtoneForAlarm(ringtoneFileId?: string | null): Promise<void> {
+export async function ensureNativeRingtoneForAlarm(ringtoneFileId?: string | null, expectedVersion = getDataRestoreVersion()): Promise<void> {
     if (!isCapacitorNative() || !isCustomRingtoneId(ringtoneFileId)) return;
-    const loaded = await loadRingtoneFileWithName();
-    if (!loaded) return;
-    await capacitorWriteNativeRingtoneCopy(ringtoneFileId, loaded.buffer);
+    await withMediaWriteFence(expectedVersion, async () => {
+        const loaded = await loadRingtoneFileWithName();
+        if (!loaded) return;
+        await capacitorWriteNativeRingtoneCopy(ringtoneFileId, loaded.buffer);
+    });
 }
 
-export async function saveVoiceFile(messageId: string, buffer: ArrayBuffer): Promise<boolean> {
+export async function saveVoiceFile(messageId: string, buffer: ArrayBuffer, expectedVersion?: string): Promise<boolean> {
+    if (expectedVersion !== undefined) return withMediaWriteFence(expectedVersion, () => saveVoiceFile(messageId, buffer));
     const ipc = getIpc();
     if (ipc) {
         const result = await ipc.invoke('voice:save', { messageId, buffer: new Uint8Array(buffer) });
@@ -431,7 +458,8 @@ export async function getVoiceStorageInfo(): Promise<VoiceStorageInfo> {
     return { count: 0, totalBytes: 0 };
 }
 
-export async function saveRingtoneFile(buffer: ArrayBuffer, ext: string, originalName?: string): Promise<boolean> {
+export async function saveRingtoneFile(buffer: ArrayBuffer, ext: string, originalName?: string, expectedVersion?: string): Promise<boolean> {
+    if (expectedVersion !== undefined) return withMediaWriteFence(expectedVersion, () => saveRingtoneFile(buffer, ext, originalName));
     const ipc = getIpc();
     if (ipc) {
         const result = await ipc.invoke('ringtone:save', {

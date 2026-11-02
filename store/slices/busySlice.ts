@@ -57,6 +57,11 @@ export interface BusyFollowUp {
   preparedTextParts?: string[];            // Set after successful prepare.
   preparedEmotion?: EmotionType;
   preparedResponseEventId?: string;
+  preparedMemoryGeneration?: string;
+  preparedRestoreVersion?: string;
+  preparedSourceRevisions?: Array<{ id: string; contentRevision?: string }>;
+  preparedModelRevisions?: Record<string, string>;
+  preparedConsultedSources?: import('../../services/runtimeEntities').EvidenceRef[];
   preparedPsycheDelta?: ResponsePsycheDelta;
   preparedAt?: number;
   failureCount: number;                    // Prepare attempts that errored.

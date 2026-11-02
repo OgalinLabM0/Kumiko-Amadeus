@@ -1,0 +1,10 @@
+'use strict';
+const fs=require('node:fs'), path=require('node:path'), vm=require('node:vm'), ts=require('typescript'), assert=require('node:assert/strict');
+const code=ts.transpileModule(fs.readFileSync(path.join(__dirname,'../services/tavilyCredentials.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+const rows=new Map([['tavily_api_key','fixture-secret']]);const localStorage={getItem:k=>rows.get(k)||null};let failed=true;const calls=[];
+const window={electronAPI:{invoke:async (channel,payload)=>{calls.push({channel,payload});return channel==='credentials:store'?(failed?{success:false,error:'unavailable'}:{success:true,handle:'a'.repeat(64)}):{success:true,result:{status:200,body:JSON.stringify({results:[]})}};}}};
+const deps={'./environment':{isElectron:()=>true,isCapacitorNative:()=>false},'./dataRestoreGate':{assertDataWritesAllowed(){},getDataRestoreVersion:()=>1},'./preferencesSync':{queueLocalStoragePreferenceSync:(k,v)=>rows.set(k,v)}};
+deps['./nativeCredentials']={hasNativeCredentials:()=>true,invokeCredential:(operation,payload)=>window.electronAPI.invoke('credentials:'+operation,payload)};
+deps['./taskGateway']={runStandaloneTransport:(_target,work)=>work(new AbortController().signal)};
+const m={exports:{}};vm.runInNewContext(code,{module:m,exports:m.exports,window,localStorage,require:id=>deps[id],URL,DOMException,console});
+(async()=>{await assert.rejects(m.exports.requestTavily('search','hello'),/unavailable/);assert.equal(rows.get('tavily_api_key'),'fixture-secret');failed=false;const result=await m.exports.requestTavily('search','hello');assert.equal(result.results.length,0);assert.match(rows.get('tavily_api_key'),/^vault:/);assert.equal(calls.at(-1).payload.operation,'search');assert.equal(calls.at(-1).payload.query,'hello');assert.ok(!JSON.stringify(calls.at(-1)).includes('fixture-secret'));console.log('Tavily credential migration and protected search fixture passed.');})().catch(e=>{console.error(e);process.exitCode=1});

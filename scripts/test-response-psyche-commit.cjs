@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { AsyncLocalStorage } = require('node:async_hooks');
+const { webcrypto } = require('node:crypto');
 const ts = require('typescript');
 const root = path.resolve(__dirname, '..');
 const quiet = { log() {}, warn() {}, error() {} };
@@ -22,9 +23,15 @@ function transpile(source, filename) {
 function load(file, deps = {}, globals = {}) {
   const module = { exports: {} };
   vm.runInNewContext(transpile(fs.readFileSync(path.join(root, file), 'utf8'), file), {
-    module, exports: module.exports, console: quiet, Date: Clock,
+    module, exports: module.exports, console: quiet, Date: Clock, crypto: webcrypto, TextEncoder,
     require(id) {
       if (Object.hasOwn(deps, id)) return deps[id];
+      if (id === './memoryMaintenanceGate') return { getMemoryGeneration: () => 'initial', assertMemoryAvailable() {}, async assertMemoryGenerationCurrent() {} };
+      if (id === './taskRuntime') return { assertTaskModelRevisionsCurrent: async () => {} };
+      if (id === './artifactIndexService') return { assertSourceRefsCurrent: async () => {} };
+      if (id === './stateProvenance') return { recordStateProvenance: async () => {} };
+      if (id === '../services/dataRestoreGate') return { isDataRestoreBlocked: () => false, getDataRestoreVersion: () => 'test' };
+      if (id === '../services/memoryMaintenanceGate') return { isMemoryMaintenanceBlocked: () => false, getMemoryGeneration: () => 'initial' };
       throw new Error(`Unexpected dependency ${id} in ${file}`);
     }, ...globals,
   }, { filename: file });
@@ -38,7 +45,7 @@ function portion(file, start, end) {
   return source.slice(from, to);
 }
 function storage() {
-  let rows = { psyche: { id: 'current', stress: 30, energy: 80, relaxation: 50, lastUpdated: now }, messages: {} };
+  let rows = { psyche: { id: 'current', stress: 30, energy: 80, relaxation: 50, lastUpdated: now }, messages: {}, keyval: {} };
   const context = new AsyncLocalStorage();
   let queue = Promise.resolve();
   let failMarker = false;
@@ -51,7 +58,9 @@ function storage() {
         active().psyche = structuredClone(value);
       },
     },
-    messages: { put: async value => { active().messages[value.id] = structuredClone(value); } },
+    keyval: { get: async key => structuredClone(active().keyval[key]), put: async row => { active().keyval[row.key] = structuredClone(row); } },
+    messages: { get: async id => structuredClone(active().messages[id]), put: async value => { active().messages[value.id] = structuredClone(value); },
+      add: async value => { if (active().messages[value.id]) throw new Error('duplicate message'); active().messages[value.id] = structuredClone(value); } },
     transaction: (...args) => {
       const run = args.at(-1);
       if (context.getStore()) return run();
@@ -66,8 +75,9 @@ function storage() {
     },
   };
   const psyche = load('services/psycheStateService.ts', { './db': { db }, './kumikoStateMachine': {} });
-  const reload = () => load('services/responsePsycheCommit.ts', { './db': { db }, './psycheStateService': psyche });
-  return { db, reload, get: () => structuredClone(rows), fail: value => { failMarker = value; } };
+  const effect = load('services/responseEffectCommit.ts', { './db': { db }, './dataRestoreGate': { getDataRestoreVersion: () => 'test', isDataRestoreBlocked: () => false } });
+  const reload = () => load('services/responsePsycheCommit.ts', { './db': { db }, './psycheStateService': psyche, './responseEffectCommit': effect });
+  return { db, reload, effect, get: () => structuredClone(rows), fail: value => { failMarker = value; } };
 }
 const candidate = load('services/responsePsycheCandidate.ts');
 const response = (id = 'response-test') => ({ responseEventId: id, psycheDelta: { stress: 5, energy: 0, relaxation: 0 }, textParts: ['one', 'two'], emotion: 'neutral', groundingSources: [] });
@@ -122,7 +132,7 @@ async function testParserRewrite() {
     getUnsupportedKumikoThoughtLiteralIssue: () => null,
     activateSleepModeAfterResponse: false, isStrictMemoryLookupTurn: false,
     isMemoryPlannedTurn: false, applyMemoryResponsePlanToTextParts: value => value,
-    tavilyGroundingSources: [],
+    tavilyGroundingSources: [], turnRuntime: undefined, standaloneTaskContext: undefined, activeTaskContext: undefined,
   };
   const parser = vm.runInNewContext(transpile(`(async () => { ${body} })`, 'production-response-parser.ts'), context);
   context.sendMessageToGemini = async (...args) => {
@@ -162,7 +172,14 @@ function chatHarness() {
     '../../services/voiceFileService': { isVoiceServiceAvailable: () => true, loadVoiceFile: async () => null },
     '../../services/desktopBackupService': { isDesktopElectron: () => false },
     '../../services/db': { db: h.db },
+    '../../services/dataRestoreGate': { isDataRestoreBlocked: () => false, getDataRestoreVersion: () => 'test' },
+    '../../services/memoryMaintenanceGate': { getMemoryGeneration: () => 'initial', assertMemoryGenerationCurrent: async () => {} },
+    '../../services/taskRuntime': { beginForegroundActivity: async () => {}, endForegroundActivity: async () => {}, assertTaskModelRevisionsCurrent: async () => {} },
+    '../../services/artifactIndexService': { assertSourceRefsCurrent: async () => {} },
+    '../../services/responseEffectCommit': h.effect,
+    '../../services/receivedTurns': { seedReceivedTurns: async () => {}, readReceivedTurns: async () => [], hasUnreadReceivedTurns: async () => false },
     '../../services/responsePsycheCommit': h.reload(),
+    '../../services/reminderVoiceCommit': load('services/reminderVoiceCommit.ts', { './db': { db: h.db }, '../components/app/messageMappers': load('components/app/messageMappers.ts') }),
     '../../services/reminderPrewarmService': load('services/reminderPrewarmService.ts', {}, { AbortController }),
     '../../services/reminderPrompt': load('services/reminderPrompt.ts', { './reminderTime': load('services/reminderTime.ts') }),
     './messageMappers': load('components/app/messageMappers.ts'),
@@ -170,7 +187,7 @@ function chatHarness() {
   const filename = 'components/app/chatActions.ts';
   const module = { exports: {} };
   const document = { hidden: false, hasFocus: () => true };
-  const globals = { module, exports: module.exports, console: quiet, Date: Clock, Intl, AbortController,
+  const globals = { module, exports: module.exports, console: quiet, Date: Clock, Intl, AbortController, crypto: webcrypto, TextEncoder,
     document, window: {}, setTimeout(fn, ms) { if (ms < 20_000) { timerAction(ms); fn(); } return 1; },
     require(id) { return deps[id] ?? {}; },
   };
@@ -192,7 +209,7 @@ async function testDeliveryRoutes() {
   const followUp = { id: 'busy-task', slotDescription: 'class', unreadUserMessageIds: [] };
   const prepared = await h.api.prepareBusyFollowUpResponse(followUp);
   assert.equal(h.get().psyche.stress, 35, 'busy draft generation stays silent');
-  Object.assign(followUp, { preparedTextParts: prepared.textParts, preparedEmotion: prepared.emotion, preparedResponseEventId: prepared.responseEventId, preparedPsycheDelta: prepared.psycheDelta });
+  Object.assign(followUp, { preparedTextParts: prepared.textParts, preparedEmotion: prepared.emotion, preparedResponseEventId: prepared.responseEventId, preparedPsycheDelta: prepared.psycheDelta, preparedMemoryGeneration: prepared.memoryGeneration, preparedRestoreVersion: prepared.restoreVersion, preparedSourceRevisions: prepared.sourceVersions });
   h.state.busyFollowUp = followUp;
   assert.equal(await h.api.displayPreparedProactiveMessage(followUp), true);
   assert.equal(h.get().psyche.stress, 39);
@@ -222,7 +239,7 @@ async function testDeliveryRoutes() {
     let release;
     const voice = action === 'accept-then-close' ? new Promise(resolve => { release = resolve; }) : Promise.resolve({ success: action.endsWith('-voice'), voiceFileId: 'voice-file' });
     const pending = reminder.api.triggerTimedReminderMessage(voiceRefs, { runVoicePipeline: () => voice }, { event: 'medicine' });
-    for (let i = 0; i < 8; i++) await Promise.resolve();
+    for (let i = 0; i < 100 && !reminder.state.voiceCallOverlayData; i++) await new Promise(resolve => setImmediate(resolve));
     if (action === 'accept' || action === 'accept-voice') await reminder.state.voiceCallOverlayData.onAccept();
     if (action === 'double-accept') {
       const overlay = reminder.state.voiceCallOverlayData;
@@ -248,7 +265,7 @@ async function testNormalChatBranches() {
   const body = section.slice(section.indexOf('ctx.markPendingRead();'));
   for (const mode of ['text', 'voice-success', 'voice-failed', 'cancel-text', 'cancel-voice', 'cancel-typo']) {
     const h = chatHarness(); let cancelled = false;
-    const ctx = { ttsConfig: { voiceMode: mode.includes('voice') ? 'full' : 'text', ttsBackend: 'sovits' },
+    const ctx = { ttsConfig: { voiceMode: mode.includes('voice') ? 'full' : 'text', ttsBackend: 'sovits' }, getMessagesSnapshot: () => h.state.messages,
       markPendingRead() {}, isCancelled: () => cancelled,
       runVoicePipeline: async () => {
         if (mode === 'cancel-voice') cancelled = true;
@@ -259,6 +276,9 @@ async function testNormalChatBranches() {
     // A fixed random value avoids cosmetic temporary typo/recall bubbles.
     const sandbox = { ...h.globals, ctx, response: { ...response(mode), textParts: ['first real response', 'two'], emotion: mode === 'cancel-typo' ? 'angry' : 'neutral' }, language: 'en',
       useAppStore: h.deps['../../store'].useAppStore, isVoiceServiceAvailable: () => true,
+      turnRuntime: { checkDelivery: async () => {}, responseMessageId: index => mode + ':reply:' + index, signal: new AbortController().signal },
+      replyStep: async promise => { const value = await promise; if (cancelled) throw new Error('cancelled'); return value; },
+      replyGuard: { check: async () => {} }, isReplyActive: () => !cancelled,
       Math: Object.assign(Object.create(Math), { random: () => mode === 'cancel-typo' ? 0.1 : 0.8 }),
       addMessageToStore: h.api.addMessageToStore, showBackgroundNotification() {},
       commitAcceptedResponsePsyche: async (reply, id) => {
@@ -266,7 +286,8 @@ async function testNormalChatBranches() {
         return h.reload().commitVisibleResponsePsyche(reply, row);
       },
     };
-    await vm.runInNewContext(transpile(`(async () => { ${body} })()`, 'production-delivery.ts'), sandbox);
+    try { await vm.runInNewContext(transpile(`(async () => { ${body} })()`, 'production-delivery.ts'), sandbox); }
+    catch (error) { if (!mode.startsWith('cancel') || !/cancelled/.test(error.message)) throw error; }
     assert.equal(h.get().psyche.stress, mode.startsWith('cancel') ? 30 : 35, mode);
     if (!mode.startsWith('cancel')) assert.equal(Object.keys(h.get().psyche.committedResponseEvents).length, 1);
   }

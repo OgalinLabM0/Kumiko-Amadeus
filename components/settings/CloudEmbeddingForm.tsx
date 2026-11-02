@@ -20,10 +20,12 @@ import {
   type EmbeddingProvider,
   type EmbeddingProviderConfig,
   testEmbeddingConfig,
+  storeEmbeddingCredential,
 } from '../../services/cloudEmbeddingService';
 import { useAppStore } from '../../store';
 import { ThemedSelect, type ThemedSelectItem } from '../common/ThemedSelect';
 import { ComposableInput } from '../common/ComposableInput';
+import { hasNativeCredentials } from '../../services/nativeCredentials';
 
 const PROVIDER_LABELS: Record<EmbeddingProvider, { zh: string; en: string }> = {
   openai: { zh: 'OpenAI', en: 'OpenAI' },
@@ -113,6 +115,20 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
   fieldLabelClass,
   helperClass,
 }) => {
+  const [credentialDraft, setCredentialDraft] = useState('');
+  const [credentialError, setCredentialError] = useState('');
+  const saveCredential = async () => {
+    const before = useAppStore.getState().embeddingConfig;
+    try {
+      const key = await storeEmbeddingCredential(before, credentialDraft);
+      const current = useAppStore.getState().embeddingConfig;
+      if (JSON.stringify(current) !== JSON.stringify(before)) throw new Error('Embedding settings changed while saving.');
+      useAppStore.getState().setEmbeddingConfig({ ...current, apiKey: key });
+      const stored = JSON.parse(localStorage.getItem(EMBEDDING_CONFIG_STORAGE_KEY) || '{}');
+      if (hasNativeCredentials() && stored.apiKey !== key) { useAppStore.getState().setEmbeddingConfig(before); throw new Error('Embedding settings could not be verified.'); }
+      setCredentialDraft(''); setCredentialError('');
+    } catch (error) { setCredentialError(error instanceof Error ? error.message : 'Secure storage failed.'); }
+  };
   // v2.14.12: subscribe directly to the Zustand-backed embeddingConfig.
   // Both this form (rendered inside AIConfigScreen + EmbeddingConfigSection)
   // and any other instance share the same reactive state — no more dual
@@ -325,14 +341,19 @@ export const CloudEmbeddingForm: React.FC<CloudEmbeddingFormProps> = ({
         <label className={fieldLabelClass}>API Key</label>
         <ComposableInput
           type="password"
-          value={config.apiKey}
-          onChange={(e) => update({ apiKey: e.target.value })}
+          value={credentialDraft}
+          onChange={(e) => setCredentialDraft(e.target.value)}
           className={`${inputClass} w-full mt-1`}
-          placeholder={config.provider === 'openai' ? 'sk-...' : (config.provider === 'gemini' ? 'AIza...' : '...')}
+          placeholder={config.apiKey ? '已配置 / Configured' : config.provider === 'openai' ? 'sk-...' : (config.provider === 'gemini' ? 'AIza...' : '...')}
           autoComplete="off"
           autoCapitalize="off"
           spellCheck={false}
         />
+        <button type="button" disabled={!credentialDraft.trim()} onClick={() => void saveCredential()} className="ka-copy-sm mt-2 underline disabled:opacity-50">{language === 'zh' ? '保存密钥' : 'Save key'}</button>
+        {config.apiKey && (config.apiKey.startsWith('vault:') || !hasNativeCredentials()) && <button type="button" className="ka-copy-sm ml-3 underline" onClick={() => update({ apiKey: '' })}>{language === 'zh' ? '移除此配置' : 'Remove from configuration'}</button>}
+        {credentialError && <p className="ka-copy-sm text-red-500">{credentialError}</p>}
+        {config.apiKey?.startsWith('vault:') && <p className={helperClass}>{language === 'zh' ? '密钥绑定当前服务地址；更改服务或地址后需重新输入。' : 'This key is bound to the current service endpoint; re-enter it after changing the service or address.'}</p>}
+        {!hasNativeCredentials() && <p className={helperClass}>{language === 'zh' ? '新密钥仅用于当前会话；旧存储副本被单独保留。' : 'New keys are session-only; older stored copies are kept separately.'}</p>}
       </div>
 
       {config.provider === 'custom' && (

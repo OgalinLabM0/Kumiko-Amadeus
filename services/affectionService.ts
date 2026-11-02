@@ -14,6 +14,7 @@
 // damping, queued delta, drift).
 
 import { db, KumikoAffectionEntity } from './db';
+import { commitResponseEffect, type ResponseEffectGuard } from './responseEffectCommit';
 import type { AffectionBand } from '../types';
 
 const DEFAULT_AFFECTION_STATE: KumikoAffectionEntity = {
@@ -65,11 +66,16 @@ export const applyAffectionDelta = async (
 };
 
 let affectionDeltaQueue: Promise<unknown> = Promise.resolve();
-export const applyAffectionDeltaQueued = (delta: number): Promise<KumikoAffectionEntity | null> => {
+export const applyAffectionDeltaQueued = (delta: number, guard?: ResponseEffectGuard): Promise<KumikoAffectionEntity | null> => {
   const task = affectionDeltaQueue
     .catch(() => undefined)
-    .then(() => applyAffectionDelta(delta))
+    .then(async () => {
+      if (!guard) return applyAffectionDelta(delta);
+      const result = await commitResponseEffect(guard, 'affection', [db.kumikoAffection], () => applyAffectionDelta(delta));
+      return result.value ?? null;
+    })
     .catch(e => {
+      if (guard) throw e;
       console.warn('[Affection] Queued delta failed:', e);
       return null as KumikoAffectionEntity | null;
     });
@@ -79,7 +85,7 @@ export const applyAffectionDeltaQueued = (delta: number): Promise<KumikoAffectio
 
 export const tickAffectionDrift = async (
   now: number = Date.now(),
-): Promise<KumikoAffectionEntity> => {
+): Promise<KumikoAffectionEntity> => db.transaction('rw', db.kumikoAffection, async () => {
   const state = await getAffectionState();
   const daysElapsed = Math.max(0, (now - state.lastUpdated) / 86_400_000);
   if (daysElapsed < 1) return state;
@@ -94,7 +100,7 @@ export const tickAffectionDrift = async (
   };
   await db.kumikoAffection.put(next);
   return next;
-};
+});
 
 export const getAffectionBand = (score: number): AffectionBand => {
   if (score <= 25) return 'distrusting';

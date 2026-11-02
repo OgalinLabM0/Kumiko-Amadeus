@@ -1,8 +1,7 @@
 
 import { TemporalQueryPrecision, TemporalQuerySource, TemporalQueryDiagnosticsStatus, TemporalQueryConfidence, LocationConfig, Message } from "../types";
-import { getCurrentAIConfig, getGenAI } from "./llmCore";
-import { callOpenAI, callAnthropic } from "./llmProviderService";
-import { resolveTransportProvider } from "./appConfig";
+import { callLLMRaw } from "./llmCore";
+import { TaskCapacityError, type TaskContext } from './taskRuntime';
 
 export interface TemporalQueryAnalysis {
   isTemporalQuery: boolean;
@@ -743,7 +742,7 @@ const buildHeuristicTemporalQueryAnalysis = (query: string, locationConfig?: Loc
   return null;
 };
 
-export const analyzeTemporalQueryDetailed = async (query: string, locationConfig?: LocationConfig): Promise<TemporalQueryAnalysisResult> => {
+export const analyzeTemporalQueryDetailed = async (query: string, locationConfig?: LocationConfig, taskContext?: TaskContext): Promise<TemporalQueryAnalysisResult> => {
   const heuristicResult = buildHeuristicTemporalQueryAnalysis(query, locationConfig);
   if (heuristicResult) {
       console.log("[Temporal Intent] Using local heuristic parser.", heuristicResult);
@@ -755,9 +754,6 @@ export const analyzeTemporalQueryDetailed = async (query: string, locationConfig
 
   let rawModelOutput = "";
   try {
-      const config = getCurrentAIConfig();
-      const provider = config.provider || 'gemini';
-      const transportProvider = resolveTransportProvider(provider, config.useCustomEndpoint ? config.customEndpoint : undefined);
       
       const now = new Date();
       let jstTime = "??:??";
@@ -805,24 +801,8 @@ You MUST output ONLY valid JSON matching this schema exactly:
 }
 `;
 
-      let modelName = config.model_main || 'gemini-2.5-flash'; // Enforcing use of the MAIN model as requested by user
-
-      let text = "";
-      if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-          const result = await callOpenAI(config, modelName, "You are an AI Text-to-SQL Intent Parser. Output pure JSON.", [], prompt);
-          text = result.text || "";
-      } else if (transportProvider === 'anthropic') {
-          const result = await callAnthropic(config, modelName, "You are an AI Text-to-SQL Intent Parser. Output pure JSON.", [], prompt);
-          text = result.text || "";
-      } else {
-          const ai = getGenAI();
-          const result = await ai.models.generateContent({
-            model: modelName, 
-            contents: prompt,
-            config: { responseMimeType: 'application/json' }
-          });
-          text = result.text || "";
-      }
+      const text = await callLLMRaw('You are an AI Text-to-SQL Intent Parser. Output pure JSON.', prompt, undefined,
+        { taskContext, signal: taskContext?.signal, role: 'recall' });
       rawModelOutput = text;
       const parsed = parseTemporalQueryAnalysis(text, 'main_model');
       if (!parsed) {
@@ -848,6 +828,7 @@ You MUST output ONLY valid JSON matching this schema exactly:
         diagnostics: buildTemporalQueryDiagnostics('main_model_success', analysis, null, text.slice(0, 200) || null),
       };
   } catch (e) {
+      if (e instanceof TaskCapacityError || taskContext?.signal?.aborted) throw e;
       const fallback = buildHeuristicTemporalQueryAnalysis(query, locationConfig);
       if (fallback) {
           console.warn("[Temporal Intent] Main-model parsing failed; using local heuristic fallback.", e);
@@ -878,7 +859,7 @@ You MUST output ONLY valid JSON matching this schema exactly:
 export const rewriteHistoricalRecallQueryDetailed = async (
   query: string,
   locationConfig?: LocationConfig,
-  options?: { bypassGate?: boolean; recentMessages?: Message[] }
+  options?: { bypassGate?: boolean; recentMessages?: Message[]; taskContext?: TaskContext }
 ): Promise<HistoricalQueryRewriteResult> => {
   const normalized = String(query || '').replace(/\s+/g, ' ').trim();
   if (!options?.bypassGate && !isMemoryHistoryQueryLike(normalized)) {
@@ -891,10 +872,6 @@ export const rewriteHistoricalRecallQueryDetailed = async (
 
   let rawModelOutput = "";
   try {
-    const config = getCurrentAIConfig();
-    const provider = config.provider || 'gemini';
-    const transportProvider = resolveTransportProvider(provider, config.useCustomEndpoint ? config.customEndpoint : undefined);
-    const modelName = config.model_main || 'gemini-2.5-flash';
     const now = new Date();
     let jstTime = "??:??";
     try {
@@ -965,41 +942,8 @@ ${recentContextStr}
 15. If there is not enough information to improve the query, keep rewrittenQuery close to the original meaning but still make it more canonical. Set searchStrategy to "none" only if the query has NOTHING to do with recalling past conversations.
 `;
 
-    const callRewrite = async (model: string): Promise<string> => {
-      if (transportProvider === 'openai' || transportProvider === 'deepseek' || transportProvider === 'grok' || transportProvider === 'openrouter') {
-        const result = await callOpenAI(config, model, "You rewrite history queries and output pure JSON.", [], prompt);
-        return result.text || "";
-      } else if (transportProvider === 'anthropic') {
-        const result = await callAnthropic(config, model, "You rewrite history queries and output pure JSON.", [], prompt);
-        return result.text || "";
-      } else {
-        const ai = getGenAI();
-        const result = await ai.models.generateContent({
-          model,
-          contents: prompt,
-          config: { responseMimeType: 'application/json' }
-        });
-        return result.text || "";
-      }
-    };
-
-    let text = "";
-    try {
-      text = await callRewrite(modelName);
-    } catch (mainError) {
-      console.warn('[HISTORICAL QUERY REWRITE] Main model failed, retrying...', mainError);
-      try {
-        text = await callRewrite(modelName);
-      } catch (retryError) {
-        const fallbackModel = config.model_summary;
-        if (fallbackModel && fallbackModel !== modelName) {
-          console.warn('[HISTORICAL QUERY REWRITE] Retry failed, falling back to summary model:', fallbackModel);
-          text = await callRewrite(fallbackModel);
-        } else {
-          throw retryError;
-        }
-      }
-    }
+    const text = await callLLMRaw('You rewrite history queries and output pure JSON.', prompt, undefined,
+      { taskContext: options?.taskContext, signal: options?.taskContext?.signal, role: 'recall' });
 
     rawModelOutput = text;
     const parsed = parseHistoricalQueryRewrite(text);
@@ -1025,6 +969,7 @@ ${recentContextStr}
       outputPreview: text.slice(0, 200) || null,
     };
   } catch (error) {
+    if (error instanceof TaskCapacityError || options?.taskContext?.signal?.aborted) throw error;
     console.warn('[HISTORICAL QUERY REWRITE] All rewrite attempts failed.', error);
     return {
       rewrite: null,

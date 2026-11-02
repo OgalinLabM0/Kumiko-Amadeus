@@ -48,6 +48,8 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
      *  treats it as a no-op (just consumes the wake to nudge the kernel
      *  out of deep doze before the real alarm fires). */
     public static final String EXTRA_IS_PREWARM = "is_prewarm";
+    public static final String EXTRA_SCHEDULED_AT = "scheduled_at";
+    public static final String EXTRA_VERSION = "reminder_version";
     /** v2.14.27: tells MainActivity that the activity launch was caused by
      *  an alarm and the WebView should be notified via a kumikoAlarmFired
      *  JS event. Pre-v2.14.27 receiver builds did not set this. */
@@ -84,6 +86,12 @@ public class KumikoAlarmReceiver extends BroadcastReceiver {
             // deep doze 5min before the real alarm) is the entire point.
             if (isPrewarm) {
                 Log.i(TAG, "Prewarm alarm fired (no-op): id=" + reminderId);
+                return;
+            }
+
+            if (!KumikoAlarmsPlugin.matchesLedgerEntry(context, reminderId,
+                    intent.getLongExtra(EXTRA_SCHEDULED_AT, -1), reminderEvent, intent.getStringExtra(EXTRA_VERSION))) {
+                Log.i(TAG, "Discarding obsolete alarm " + reminderId);
                 return;
             }
 

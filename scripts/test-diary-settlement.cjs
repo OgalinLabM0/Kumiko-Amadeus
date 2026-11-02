@@ -23,12 +23,22 @@ function load(relativePath, dependencies = {}, globals = {}) {
     module, exports: module.exports, console: silentConsole,
     require(id) {
       if (Object.hasOwn(dependencies, id)) return dependencies[id];
+      if (id === './taskModelRouter') return taskModelRouter;
+      if (id === './memoryMaintenanceGate') return { getMemoryGeneration: () => 'initial', assertMemoryAvailable() {}, async assertMemoryGenerationCurrent() {} };
+      if (id === './taskRuntime') return { TaskCapacityError: class TaskCapacityError extends Error {} };
+      if (id === './roleProfiles') return { resolveModelSessionCredential: value => value };
+      if (id === '../services/dataRestoreGate') return { isDataRestoreBlocked: () => false };
+      if (id === '../services/memoryMaintenanceGate') return { isMemoryMaintenanceBlocked: () => false };
       throw new Error(`Unexpected dependency ${id} in ${relativePath}`);
     },
     ...globals,
   }, { filename });
   return module.exports;
 }
+
+const taskModelRouter = load('services/taskModelRouter.ts', {
+  './appConfig': load('services/appConfig.ts'),
+});
 
 function createHookHarness() {
   let now = timestamp('2026-09-12T00:10:00');
@@ -70,6 +80,7 @@ function createHookHarness() {
       return ambientBehavior();
     } },
     '../components/app/chatActions': { triggerNativeProactiveMessage: async () => {} },
+    '../services/diaryGenerationJobs': { enqueueDailyDiary: async (...args) => { calls.push(args); await behavior(); } },
     '../services/diarySettlement': diaryHelper,
     '../services/db': { db: {
       kumikoDiary: { where: () => ({ equals: date => ({ first: async () => diaries.get(date) }) }) },
@@ -83,6 +94,7 @@ function createHookHarness() {
         if (!await behavior()) return null;
         const diary = { date: args[0], id: args[0], content: 'test diary' };
         diaries.set(diary.date, diary);
+        deleted.push(diary.date); fragments.delete(diary.date);
         return diary;
       },
       embedDiaryToRAG: async diary => { embedded.push(diary.date); return { ok: true }; },
@@ -110,7 +122,7 @@ function createHookHarness() {
         setCurrentEmotion() {}, ...overrides,
       });
       // The mount-only sleep bootstrap is unrelated to diary settlement.
-      cleanup = effects[1]();
+      cleanup = effects[2]();
     },
     async tick() {
       const callbacks = [...intervals.values()];
@@ -158,122 +170,57 @@ async function testCalendar() {
 }
 
 async function testHook() {
-  const yesterday = { role: 'user', text: 'yesterday important chat', timestamp: timestamp('2026-09-11T21:00:00') };
-  const afterMidnight = { role: 'model', text: 'new day chat', timestamp: timestamp('2026-09-12T00:01:00') };
-  const tonight = { role: 'user', text: 'tonight important chat', timestamp: timestamp('2026-09-12T22:00:00') };
-  const h = createHookHarness();
-  h.render([yesterday, afterMidnight]); await h.tick();
-  assert.equal(h.calls.length, 1);
-  assert.equal(h.calls[0][0], '2026-09-11');
-  assert.equal(JSON.stringify(h.calls[0][1]), JSON.stringify([yesterday]));
-  assert.equal(h.calls[0][3], undefined, 'yesterday weather must use historical fetch');
-  assert.equal(h.calls[0][4], true, 'holiday must be keyed by target date');
-  assert.equal(h.ambientCalls, 0);
-  assert.ok(h.fragments.has('2026-09-12'), 'today fragments survive yesterday settlement');
-  assert.deepEqual(h.deleted, ['2026-09-11']);
-  assert.deepEqual(h.embedded, ['2026-09-11']);
-  await h.tick(); assert.equal(h.calls.length, 1, 'existing diary must be retained');
-  h.setTime('2026-09-12T23:10:00'); h.render([yesterday, afterMidnight, tonight]); await h.tick();
-  assert.equal(h.calls.length, 2, 'midnight must not block tonight');
-  assert.equal(h.calls[1][0], '2026-09-12');
-  assert.equal(JSON.stringify(h.calls[1][1]), JSON.stringify([afterMidnight, tonight]));
-  assert.match(h.calls[1][3], /TODAY_WEATHER_ONLY/);
-  assert.equal(h.calls[1][4], false, 'ambient holiday text must not replace target calendar');
-
-  const race = createHookHarness();
-  let release;
+  const yesterday = { role: 'user', text: 'yesterday', timestamp: timestamp('2026-09-11T21:00:00') };
+  const h = createHookHarness(); h.render([yesterday]); await h.tick();
+  assert.equal(h.calls.length, 1); assert.equal(h.calls[0][0], '2026-09-11');
+  assert.equal(h.ambientCalls, 0, 'enqueue does not fetch weather on foreground');
+  assert.deepEqual(h.deleted, []); assert.deepEqual(h.embedded, []);
+  assert.ok(h.fragments.has('2026-09-11'), 'enqueue retains unsettled fragments');
+  const race = createHookHarness(); let release;
   const gate = new Promise(resolve => { release = resolve; });
-  race.setBehavior(() => gate); race.render([yesterday]);
-  const first = race.tick();
-  for (let i = 0; i < 20 && !race.calls.length; i++) await Promise.resolve();
-  assert.equal(race.calls.length, 1);
-  await race.tick();
-  race.render([yesterday, afterMidnight]); await race.tick();
-  assert.equal(race.calls.length, 1, 'pending generation survives interval and effect restarts');
-  release(true); await first;
-  await race.tick(); assert.equal(race.calls.length, 1);
-
-  const retry = createHookHarness();
-  retry.setBehavior(async () => { throw new Error('model failure'); });
-  retry.render([yesterday]); await retry.tick();
-  assert.equal(retry.deleted.length, 0, 'failed generation retains fragments');
-  retry.setBehavior(async () => false); await retry.tick();
-  assert.equal(retry.deleted.length, 0, 'null generation retains fragments');
-  retry.setBehavior(async () => true); await retry.tick();
-  assert.equal(retry.calls.length, 3, 'failure releases the settlement lock');
-  assert.deepEqual(retry.deleted, ['2026-09-11']);
-
-  const midnight = createHookHarness();
-  let releaseAmbient;
-  midnight.setAmbientBehavior(() => new Promise(resolve => { releaseAmbient = resolve; }));
-  midnight.setTime('2026-09-12T23:59:59'); midnight.render([tonight]);
-  const crossing = midnight.tick();
-  for (let i = 0; i < 20 && !releaseAmbient; i++) await Promise.resolve();
-  assert.ok(releaseAmbient);
-  midnight.setTime('2026-09-13T00:01:00'); releaseAmbient('NEW_DAY_WEATHER');
-  await crossing;
-  assert.equal(midnight.calls[0][0], '2026-09-12');
-  assert.equal(midnight.calls[0][3], undefined, 'ambient response after midnight cannot describe previous date');
-
-  const skip = createHookHarness();
-  skip.setTime('2026-09-12T03:00:00'); skip.render([yesterday]); await skip.tick();
-  assert.equal(skip.calls.length, 0);
-  skip.setTime('2026-09-12T23:00:00'); skip.render([tonight], { isThinking: true }); await skip.tick();
+  race.setBehavior(() => gate); race.render([yesterday]); const first = race.tick();
+  for (let i = 0; i < 30 && !race.calls.length; i++) await Promise.resolve();
+  await race.tick(); race.render([yesterday]); await race.tick();
+  assert.equal(race.calls.length, 1, 'in-flight enqueue is not duplicated');
+  release(); await first;
+  const retry = createHookHarness(); retry.setBehavior(async () => { throw Error('queue unavailable'); });
+  retry.render([yesterday]); await retry.tick(); retry.setBehavior(async () => {}); await retry.tick();
+  assert.equal(retry.calls.length, 2, 'enqueue failure permits retry');
+  assert.deepEqual(retry.deleted, []);
+  const skip = createHookHarness(); skip.setTime('2026-09-12T03:00:00'); skip.render([yesterday]); await skip.tick();
   assert.equal(skip.calls.length, 0);
 }
 
 async function testHistoricalWeatherIntegration() {
-  for (const { native, weatherAvailable, holiday } of [
-    { native: false, weatherAvailable: true, holiday: true },
-    { native: true, weatherAvailable: true, holiday: true },
-    { native: false, weatherAvailable: false, holiday: undefined },
-  ]) {
-    const weatherDates = [];
-    const prompts = [];
-    const fragments = ['YESTERDAY_FRAGMENT'];
-    const emptyQuery = { reverse() { return this; }, limit() { return this; }, toArray: async () => [] };
+  for (const weatherAvailable of [true, false]) {
+    const weatherDates = [], prompts = [];
+    const source = { id:'source', role:'user', text:'hello', timestamp:timestamp('2026-09-11T20:00:00'), isRead:true };
+    const fragments = [{ id:'fragment', date:'2026-09-11', content:'YESTERDAY_FRAGMENT', timestamp:source.timestamp }];
+    const db = {
+      messages:{ where:()=>({between:()=>({toArray:async()=>[source]})}) },
+      dailyFragments:{ where:()=>({equals:()=>({toArray:async()=>fragments})}) },
+      kumikoDiary:{where:()=>({below:()=>({reverse:()=>({limit:()=>({toArray:async()=>[]})})}),equals:()=>({toArray:async()=>[]}),above:()=>({first:async()=>undefined})})}, keyval:{get:async()=>undefined},
+      transaction:async (...args)=>args.at(-1)(),
+    };
     const service = load('services/lifeStreamService.ts', {
-      './db': {
-        db: {
-          dailyFragments: { where: () => ({ equals: date => ({ sortBy: async () => {
-            assert.equal(date, '2026-09-11');
-            return fragments.map(content => ({ content, timestamp: timestamp('2026-09-11T20:00:00') }));
-          } }) }) },
-          kumikoDiary: { where: () => ({ below: () => emptyQuery }), put: async () => {} },
-        },
-        getWorldCharacterStatus: async () => ({}),
-      },
-      './geminiService': {
-        getCurrentAIConfig: () => ({ model_main: 'test' }),
-        callLLMRaw: async prompt => { prompts.push(prompt); return '<diary_content>今天安静地整理东西。</diary_content><diary_summary>安静的一天</diary_summary>'; },
-      },
-      './diaryValidatorService': { verifyAgainstHistory: async () => [] },
-      './kumikoStateMachine': { getSchoolTermContext: () => '', getSchoolPrepPhase: () => null, getDayScheduleSummary: () => '' },
-      './psycheStateService': {},
-      './environment': { isCapacitorNative: () => native },
-      './ambientWeatherDirect': { fetchHistoricalWeatherDirect: async date => { weatherDates.push(date); return { success: weatherAvailable, weather: 'YESTERDAY_WEATHER' }; } },
-    }, {
-      crypto: { randomUUID: () => 'test-diary-id' },
-      window: native ? {} : { electronAPI: { invoke: async (channel, date) => {
-        assert.equal(channel, 'app:get-historical-weather'); weatherDates.push(date);
-        return { success: weatherAvailable, weather: 'YESTERDAY_WEATHER' };
-      } } },
-    });
-    const diary = await service.generateDailyDiary('2026-09-11', [], undefined, undefined, holiday, false);
-    assert.ok(diary, 'production diary service completes with isolated boundaries');
-    assert.deepEqual(weatherDates, ['2026-09-11']);
-    assert.match(prompts[0], /YESTERDAY_FRAGMENT/);
-    if (weatherAvailable) {
-      assert.match(prompts[0], /YESTERDAY_WEATHER/);
-      assert.match(prompts[0], /是否节假日：是/);
-      assert.match(prompts[0], /今天是日本法定节假日/);
-    } else {
-      assert.match(prompts[0], /天气：天气不详/);
-      assert.match(prompts[0], /是否节假日：未知/);
-      const dailyContext = prompts[0].split('【你今天的作息时间线】')[1].split('【今天记录到的生活切片')[0];
-      assert.match(dailyContext, /节假日状态未知/);
-      assert.doesNotMatch(dailyContext, /普通工作日|今日日程|今日详细课表|今日镜头重点/);
-    }
+      './db': {db, INITIAL_WORLD_CHARACTER_STATUS:{}},
+      './geminiService': {getCurrentAIConfig:()=>({}), callLLMRaw:async prompt=>{
+        prompts.push(prompt);
+        return prompts.length===1 ? '<diary_content>今天聊了天。</diary_content><diary_summary>聊了天</diary_summary><diary_source_ids>["source"]</diary_source_ids>' : '{"approved":true,"sourceIds":["source"]}';
+      }},
+      './diaryValidatorService':{verifyAgainstHistory:async()=>[]},
+      './diaryIndexJobs':{saveDiaryWithIndexJob:async diary=>diary,indexSavedDiary:async()=>({ok:true})},
+      './diaryReflection':{createDiaryReflection:async()=>async()=>{}},
+      './stateProvenance':{recordStateProvenance:async()=>{}}, './artifactIndexService':{assertSourceRefsCurrent:async()=>{}},
+      './taskRuntime':{TaskCapacityError:class extends Error{},beginForegroundActivity:async()=>{},endForegroundActivity:async()=>{},assertTaskModelRevisionsCurrent:async()=>{}},
+      './dataRestoreGate':{getDataRestoreVersion:()=> 'fixture',assertDataWritesAllowed(){}},
+      './kumikoStateMachine':{getSchoolTermContext:()=>'',getSchoolPrepPhase:()=>null,getDayScheduleSummary:()=>''},
+      './psycheStateService':{}, './environment':{isCapacitorNative:()=>false},
+      './ambientWeatherDirect':{fetchHistoricalWeatherDirect:async date=>{weatherDates.push(date);return {success:weatherAvailable,weather:'YESTERDAY_WEATHER'}}},
+    }, {crypto:{randomUUID:()=> 'fixture'}, window:{}, TextEncoder});
+    const diary = await service.generateDailyDiary('2026-09-11', [], undefined, undefined, true, false);
+    assert.ok(diary); assert.deepEqual(weatherDates,['2026-09-11']); assert.match(prompts[0],/YESTERDAY_FRAGMENT/);
+    if(weatherAvailable) assert.match(prompts[0],/YESTERDAY_WEATHER/); else assert.match(prompts[0],/天气：天气不详/);
   }
 }
 
